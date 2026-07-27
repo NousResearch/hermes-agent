@@ -88,6 +88,43 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+/** True only when a gateway explicitly rejected the current OAuth session. */
+function isGatewayAuthRejection(error) {
+  if (error && typeof error === 'object' && (error as any).needsOauthLogin === true) {
+    return true
+  }
+
+  const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+
+  return statusCode === 401 || statusCode === 403
+}
+
+function gatewayTicketFailure(error, authMessage, transportMessage) {
+  const needsOauthLogin = isGatewayAuthRejection(error)
+  const err = new Error(needsOauthLogin ? authMessage : transportMessage)
+
+  if (needsOauthLogin) {
+    ;(err as any).needsOauthLogin = true
+  }
+
+  err.cause = error
+
+  return err
+}
+
+/** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
+async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
+  try {
+    return { ok: true as const, wsUrl: await resolveWsUrl() }
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      ...(isGatewayAuthRejection(error) ? { needsOauthLogin: true as const } : {}),
+      ok: false as const
+    }
+  }
+}
+
 /**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
@@ -102,12 +139,10 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
  *   - oauth, mint ok       → ws(s)://…/api/ws?ticket=…
  *   - oauth, mint fails    → THROWS  (NOT a skip)
  *
- * The oauth-mint-failure throw is the important case: the real boot path
- * (resolveRemoteBackend in main.ts) treats a mint failure as a hard
- * "session expired" auth error and refuses to connect. Swallowing it here
- * would re-introduce the exact false-positive this test exists to catch —
- * HTTP /api/status passes, the test reports "reachable", then the renderer
- * can't authenticate /api/ws and boot dies with "Could not connect".
+ * The oauth-mint-failure throw is the important case: swallowing it here would
+ * re-introduce the exact false-positive this test exists to catch. An explicit
+ * 401/403 asks for sign-in; transport and server failures remain connectivity
+ * errors so a temporary outage is not mislabeled as an expired session.
  *
  * @param {string} baseUrl
  * @param {'token'|'oauth'} authMode
@@ -128,14 +163,12 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
-          '(it may have expired). Open Settings → Gateway and sign in again.'
+      throw gatewayTicketFailure(
+        error,
+        'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
+          'Open Settings → Gateway and sign in again.',
+        'Reached the gateway over HTTP, but could not mint a WebSocket ticket. Check the remote gateway connection and try again.'
       )
-
-      ;(err as any).needsOauthLogin = true
-      err.cause = error
-      throw err
     }
 
     return buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -168,6 +201,127 @@ function normAuthMode(mode) {
 // so no resolution site forgets the third arm.
 function modeIsRemoteLike(mode) {
   return mode === 'remote' || mode === 'cloud'
+}
+
+function normalizeSshConfig(entry) {
+  if (!entry || typeof entry !== 'object' || entry.mode !== 'ssh') {
+    return null
+  }
+
+  let host = String(entry.host || '').trim()
+
+  if (!host) {
+    return null
+  }
+
+  let parsedUser
+  let parsedPort
+  const at = host.indexOf('@')
+
+  if (at > 0) {
+    parsedUser = host.slice(0, at)
+    host = host.slice(at + 1)
+  }
+
+  const bracketed = /^\[([^\]]+)](?::(\d+))?$/.exec(host)
+
+  if (bracketed) {
+    host = bracketed[1]
+
+    if (bracketed[2]) {
+      parsedPort = Number(bracketed[2])
+    }
+  } else if ((host.match(/:/g) || []).length === 1) {
+    const [name, rawPort] = host.split(':')
+
+    if (/^\d+$/.test(rawPort)) {
+      host = name
+      parsedPort = Number(rawPort)
+    }
+  }
+
+  if (!host) {
+    return null
+  }
+
+  const out: any = { mode: 'ssh', host }
+  const user = String(entry.user || '').trim() || parsedUser || ''
+
+  if (user) {
+    out.user = user
+  }
+
+  const rawExplicitPort = String(entry.port ?? '').trim()
+  const explicitPort = /^\d+$/.test(rawExplicitPort) ? Number(rawExplicitPort) : null
+  const port = explicitPort ?? parsedPort
+
+  if (Number.isInteger(port) && port > 0 && port <= 65535 && port !== 22) {
+    out.port = port
+  }
+
+  const keyPath = String(entry.keyPath || '').trim()
+
+  if (keyPath) {
+    out.keyPath = keyPath
+  }
+
+  const remoteHermesPath = String(entry.remoteHermesPath || '').trim()
+
+  if (remoteHermesPath) {
+    out.remoteHermesPath = remoteHermesPath
+  }
+
+  return out
+}
+
+function profileSshOverride(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+
+  return normalizeSshConfig(entry)
+}
+
+function savedProfileSsh(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+
+  if (!entry || entry.mode !== 'local') {
+    return null
+  }
+
+  return normalizeSshConfig(entry.savedSsh)
+}
+
+function profileHasRemoteConnection(config, profile) {
+  return Boolean(profileRemoteOverride(config, profile) || profileSshOverride(config, profile))
+}
+
+function localProfileEntry(existing) {
+  const ssh = normalizeSshConfig(existing) || normalizeSshConfig(existing?.savedSsh)
+
+  return ssh ? { mode: 'local', savedSsh: ssh } : null
+}
+
+function hostLabelFromBaseUrl(baseUrl) {
+  const raw = String(baseUrl || '').trim()
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(raw)
+
+    if (!parsed.hostname) {
+      return null
+    }
+
+    return parsed.port && parsed.port !== '80' && parsed.port !== '443'
+      ? `${parsed.hostname}:${parsed.port}`
+      : parsed.hostname
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -337,14 +491,23 @@ export {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
+  hostLabelFromBaseUrl,
+  isGatewayAuthRejection,
+  localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   PRIVY_SESSION_COOKIE_VARIANTS,
+  profileHasRemoteConnection,
   profileRemoteOverride,
+  profileSshOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  savedProfileSsh,
   tokenPreview
 }

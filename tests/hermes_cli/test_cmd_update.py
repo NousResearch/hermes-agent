@@ -59,10 +59,10 @@ def _patch_managed_uv(request):
     def _fake_resolve_uv():
         return shutil.which("uv")
 
-    def _fake_ensure_uv():
+    def _fake_ensure_uv(**_kwargs):
         return shutil.which("uv")
 
-    def _fake_update_managed_uv():
+    def _fake_update_managed_uv(**_kwargs):
         return None  # never actually self-update in tests
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
@@ -255,45 +255,6 @@ class TestCmdUpdateNpmLockfileCache:
         assert cache_roots == [shared_root, shared_root]
 
 
-class TestCmdUpdatePip:
-    """Regression tests for pip-install update flows."""
-
-    @patch("shutil.which", return_value="/usr/bin/uv")
-    @patch("subprocess.run")
-    def test_update_pip_exports_virtualenv_from_sys_prefix(
-        self, mock_run, _mock_which, mock_args, monkeypatch
-    ):
-        from hermes_cli import main as hm
-
-        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(hm.sys, "prefix", "/tmp/hermes-launcher-venv")
-        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
-
-        hm._cmd_update_pip(mock_args)
-
-        assert mock_run.call_count == 1
-        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
-        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/tmp/hermes-launcher-venv"
-
-    @patch("shutil.which", return_value="/usr/bin/uv")
-    @patch("subprocess.run")
-    def test_update_pip_does_not_export_virtualenv_for_system_python(
-        self, mock_run, _mock_which, mock_args, monkeypatch
-    ):
-        from hermes_cli import main as hm
-
-        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(hm.sys, "prefix", "/usr")
-        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
-
-        hm._cmd_update_pip(mock_args)
-
-        assert mock_run.call_count == 1
-        assert "env" not in mock_run.call_args.kwargs
-
-
 class TestCmdUpdateTermuxUvBootstrap:
     """Regression tests for Termux-specific uv bootstrap behavior."""
 
@@ -398,15 +359,63 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="0"
         )
 
-        cmd_update(mock_args)
+        with patch("hermes_cli.managed_uv.update_managed_uv") as mock_uv_update, \
+             patch(
+                 "hermes_cli.managed_uv.ensure_uv",
+                 return_value=None,
+             ) as mock_uv_ensure:
+            cmd_update(mock_args)
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+        update_observer = mock_uv_update.call_args.kwargs["repair_observer"]
+        ensure_observer = mock_uv_ensure.call_args.kwargs["repair_observer"]
+        assert update_observer.__self__ is ensure_observer.__self__
+        assert update_observer.__self__ == []
 
         # Should NOT have called pull
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_zero_commit_runtime_repair_requires_process_restart(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path
+    ):
+        from hermes_cli.managed_uv import RuntimeRepairResult
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+        backup = tmp_path / "venv.stale.runtime-test"
+        repair = RuntimeRepairResult(
+            "repaired",
+            sqlite_before="3.50.4",
+            sqlite_after="3.53.1",
+            backup_venv=backup,
+        )
+
+        def fake_update(*, repair_observer):
+            repair_observer(repair)
+            return "/managed/uv"
+
+        with patch(
+            "hermes_cli.managed_uv.update_managed_uv",
+            side_effect=fake_update,
+        ), patch(
+            "hermes_cli.managed_uv.ensure_uv",
+            return_value="/managed/uv",
+        ), patch(
+            "hermes_cli.main._is_windows",
+            return_value=False,
+        ):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        assert "Restart required to finish the managed Python runtime repair" in captured.out
+        assert "long-lived processes still use the previous runtime" in captured.out
+        assert str(backup) in captured.out
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -483,6 +492,7 @@ class TestCmdUpdateBranchFallback:
         root_flags = [
             "/usr/bin/npm",
             "ci",
+            "--include=dev",
             "--no-fund",
             "--no-audit",
             "--progress=false",
@@ -491,6 +501,7 @@ class TestCmdUpdateBranchFallback:
         ws_flags = [
             "/usr/bin/npm",
             "ci",
+            "--include=dev",
             "--no-fund",
             "--no-audit",
             "--progress=false",
@@ -507,7 +518,7 @@ class TestCmdUpdateBranchFallback:
             # The web/ install runs from the workspace root when the root
             # lockfile exists (npm workspaces hoist node_modules upward).
             assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--workspace", "web", "--silent"], PROJECT_ROOT),
+                (["/usr/bin/npm", "ci", "--include=dev", "--workspace", "web", "--silent"], PROJECT_ROOT),
             ]
 
         # The web UI build itself went through the streaming helper.
@@ -987,21 +998,6 @@ class TestCmdUpdateCheckBranchFlag:
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
 
-    @patch("hermes_cli.config.detect_install_method", return_value="pip")
-    @patch("hermes_cli.banner.check_via_pypi", return_value=0)
-    @patch("subprocess.run")
-    def test_check_branch_warns_on_pypi_install(
-        self, mock_run, _mock_pypi, _mock_method, capsys
-    ):
-        """PyPI install + --branch=<non-main> surfaces a warning instead of silent drop."""
-        args = SimpleNamespace(check=True, branch="bb/gui")
-
-        cmd_update(args)
-
-        out = capsys.readouterr().out
-        assert "--branch is ignored for PyPI installs" in out
-        assert "bb/gui" in out
-
 
 class TestCmdUpdateZipBranchRefusal:
     """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
@@ -1060,3 +1056,183 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+class TestNodeRuntimeNpmResolution:
+    """Regression tests for #30271 — WSL must not run Windows npm against the
+    Linux checkout, and a failed Node refresh must not report success."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/mnt/c/Program Files/nodejs/npm",
+            "/mnt/c/Program Files/nodejs/npm.cmd",
+            "C:\\Program Files\\nodejs\\npm.exe",
+            "/usr/local/bin/npm.bat",
+        ],
+    )
+    def test_windows_npm_paths_detected(self, path):
+        from hermes_cli import main as hm
+
+        assert hm._is_windows_npm_path(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/usr/bin/npm",
+            "/root/.local/bin/npm",
+            "/home/u/.nvm/versions/node/v22/bin/npm",
+        ],
+    )
+    def test_linux_npm_paths_not_flagged(self, path):
+        from hermes_cli import main as hm
+
+        assert hm._is_windows_npm_path(path) is False
+
+    def test_resolve_rejects_windows_npm_and_rescans_path(self, monkeypatch):
+        """On WSL/Linux, a Windows npm is refused and PATH is re-scanned
+        (skipping /mnt mounts) for a Linux-native npm."""
+        from hermes_cli import main as hm
+        import hermes_constants
+
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setenv(
+            "PATH", "/mnt/c/Program Files/nodejs:/root/.local/bin:/usr/bin"
+        )
+
+        def fake_which(cmd, path=None):
+            if path is None:
+                # Mirrors WSL: interop puts the Windows shim first on PATH.
+                return "/mnt/c/Program Files/nodejs/npm"
+            if path == "/root/.local/bin":
+                return "/root/.local/bin/npm"
+            return None
+
+        monkeypatch.setattr(
+            hermes_constants,
+            "find_node_executable",
+            lambda _command: "/mnt/c/Program Files/nodejs/npm",
+        )
+        monkeypatch.setattr(hm.shutil, "which", fake_which)
+        assert hm._resolve_node_runtime_npm() == "/root/.local/bin/npm"
+
+    def test_resolve_returns_none_when_only_windows_npm(self, monkeypatch):
+        from hermes_cli import main as hm
+        import hermes_constants
+
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs:/usr/bin")
+
+        def fake_which(cmd, path=None):
+            if path is None:
+                return "/mnt/c/Program Files/nodejs/npm"
+            return None
+
+        monkeypatch.setattr(
+            hermes_constants,
+            "find_node_executable",
+            lambda _command: "/mnt/c/Program Files/nodejs/npm",
+        )
+        monkeypatch.setattr(hm.shutil, "which", fake_which)
+        assert hm._resolve_node_runtime_npm() is None
+
+    def test_resolve_keeps_platform_npm_on_windows(self, monkeypatch):
+        from hermes_cli import main as hm
+        import hermes_constants
+
+        monkeypatch.setattr(hm, "_is_windows", lambda: True)
+        monkeypatch.setattr(
+            hermes_constants,
+            "find_node_executable",
+            lambda _command: "C:\\nodejs\\npm.cmd",
+        )
+        assert hm._resolve_node_runtime_npm() == "C:\\nodejs\\npm.cmd"
+
+    def test_node_failure_returns_failed_labels_and_warns(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
+        monkeypatch.setattr(
+            hm,
+            "_run_npm_install_deterministic",
+            lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
+        )
+
+        failed = hm._update_node_dependencies()
+        assert failed == ["repo root"]
+        out = capsys.readouterr().out
+        assert "mixed state" in out
+
+    def test_node_success_returns_empty(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
+        monkeypatch.setattr(
+            hm,
+            "_run_npm_install_deterministic",
+            lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        )
+
+        assert hm._update_node_dependencies() == []
+
+    def test_wsl_windows_only_npm_flags_skip(self, tmp_path, monkeypatch, capsys):
+        from hermes_cli import main as hm
+        import hermes_constants
+
+        (tmp_path / "package.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: None)
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setattr(
+            hm.shutil, "which", lambda cmd, path=None: "/mnt/c/nodejs/npm"
+        )
+
+        failed = hm._update_node_dependencies()
+        assert failed == ["repo root"]
+        assert "Windows npm" in capsys.readouterr().out
+
+    def test_wsl_update_skips_windows_npm_build_paths(self, mock_args, monkeypatch):
+        """A Windows-only npm on WSL must not reach web or desktop builds."""
+        from hermes_cli import main as hm
+        import hermes_constants
+
+        windows_npm = "/mnt/c/Program Files/nodejs/npm"
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.setattr(
+            hermes_constants,
+            "find_node_executable",
+            lambda command: windows_npm if command == "npm" else None,
+        )
+        monkeypatch.setattr(
+            hm.shutil,
+            "which",
+            lambda command, path=None: windows_npm if command == "npm" else "/usr/bin/uv",
+        )
+        monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs")
+
+        with patch("subprocess.run") as mock_run, \
+             patch.object(hm, "_web_ui_build_needed", return_value=True), \
+             patch.object(hm, "_desktop_packaged_executable", return_value=None), \
+             patch.object(hm, "_desktop_dist_exists", return_value=True), \
+             patch.object(hm, "_run_npm_install_deterministic") as mock_npm_install, \
+             patch.object(hm, "_run_with_idle_timeout") as mock_idle_build, \
+             patch.object(hm, "_run_logged_subprocess") as mock_desktop_build:
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+            cmd_update(mock_args)
+
+        mock_npm_install.assert_not_called()
+        mock_idle_build.assert_not_called()
+        mock_desktop_build.assert_not_called()
+        assert all(
+            not call.args or not call.args[0] or call.args[0][0] != windows_npm
+            for call in mock_run.call_args_list
+        )

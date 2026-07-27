@@ -86,6 +86,7 @@ test('lockfile resolves the pinned electron', () => {
   if (!fs.existsSync(ROOT_LOCK)) {
     return
   } // skip if lockfile not present
+
   const spec = electronSpec(desktopPkg())
   const lock = JSON.parse(fs.readFileSync(ROOT_LOCK, 'utf-8'))
   const packages = (lock.packages ?? {}) as Record<string, { version?: string }>

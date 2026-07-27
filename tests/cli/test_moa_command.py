@@ -79,4 +79,56 @@ def test_decode_legacy_encoded_moa_turn_still_works():
     encoded = build_moa_turn_prompt("hello", _make_cli().config["moa"], preset="review")
     prompt, cfg = decode_moa_turn(encoded)
     assert prompt == "hello"
-    assert cfg["reference_models"] == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
+    assert cfg["reference_models"] == [
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
+    ]
+
+
+class TestNormalizeMoaModel:
+    """#56828: `-Q -m moa:<preset>` must route through the MoA virtual provider.
+
+    ``_normalize_moa_model`` maps the model string to (provider, preset); the
+    __init__ wiring then forces ``requested_provider="moa"`` so the existing
+    resolve_runtime_provider / agent_init MoA path runs in non-interactive mode.
+    """
+
+    def test_moa_prefix_maps_to_provider_and_preset(self):
+        from cli import _normalize_moa_model
+        assert _normalize_moa_model("moa:strategy") == ("moa", "strategy")
+
+    def test_moa_prefix_is_case_insensitive_and_trims(self):
+        from cli import _normalize_moa_model
+        assert _normalize_moa_model("  MOA:code-review ") == ("moa", "code-review")
+
+    def test_bare_moa_without_preset_is_not_treated_as_virtual(self):
+        from cli import _normalize_moa_model
+        # No preset after the colon → leave untouched (no provider override).
+        assert _normalize_moa_model("moa:") == (None, "moa:")
+
+    def test_non_moa_model_unchanged(self):
+        from cli import _normalize_moa_model
+        assert _normalize_moa_model("anthropic/claude-opus-4.8") == (None, "anthropic/claude-opus-4.8")
+
+    def test_none_model_unchanged(self):
+        from cli import _normalize_moa_model
+        assert _normalize_moa_model(None) == (None, None)
+
+    def test_colon_model_that_is_not_moa_unchanged(self):
+        from cli import _normalize_moa_model
+        # A provider:model form for a real provider must not be hijacked.
+        assert _normalize_moa_model("openrouter:deepseek/deepseek-v4") == (
+            None,
+            "openrouter:deepseek/deepseek-v4",
+        )
+
+    def test_override_wins_over_explicit_provider(self):
+        # __init__ resolves requested_provider as
+        # ``_moa_provider_override or provider or ...``, so a moa: prefix must
+        # take precedence over an explicit --provider (the #56828 deepseek case
+        # where MoA was silently ignored).
+        from cli import _normalize_moa_model
+        override, model = _normalize_moa_model("moa:strategy")
+        requested_provider = override or "deepseek" or "auto"
+        assert requested_provider == "moa"
+        assert model == "strategy"
+

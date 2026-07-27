@@ -166,6 +166,52 @@ class TestValidateSignature:
         req = _mock_request(headers={})  # no sig headers at all
         assert adapter._validate_signature(req, b"{}", "my-secret") is False
 
+    def test_non_ascii_signature_headers_reject_without_raising(self):
+        """The signature headers are attacker-controlled on a public, unauth
+        endpoint. A non-ASCII byte in one must be rejected (False), not crash
+        the handler: hmac.compare_digest raises TypeError on a non-ASCII str."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        hostile = "ské-not-a-valid-signature"
+        for header in (
+            "X-Hub-Signature-256",
+            "X-Gitlab-Token",
+            "X-Webhook-Signature",
+        ):
+            req = _mock_request(headers={header: hostile})
+            # Must return False, never raise.
+            assert adapter._validate_signature(req, body, secret) is False
+
+    def test_non_ascii_generic_v2_signature_rejected(self):
+        """V2 branch (timestamp-bound) also rejects a non-ASCII signature."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": "ské-bad",
+            "X-Webhook-Timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "secret") is False
+
+    def test_non_ascii_svix_signature_rejected(self):
+        """The Svix branch also runs its `v1,<sig>` comparison through the
+        hardened helper: a valid svix-id + fresh timestamp reaches the compare,
+        and a non-ASCII signature must reject rather than raise."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "svix-id": "msg_2xabc",
+            "svix-timestamp": str(int(time.time())),  # inside the replay window
+            "svix-signature": "v1,ské-not-a-valid-base64-sig",
+        })
+        assert adapter._validate_signature(req, b'{"x":1}', "shh-secret") is False
+
+    def test_non_ascii_secret_still_validates_a_matching_token(self):
+        """A non-ASCII configured secret must still match its exact GitLab
+        token value byte for byte (bytes comparison keeps this working)."""
+        adapter = _make_adapter()
+        secret = "gl-tökén-välue"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert adapter._validate_signature(req, b"{}", secret) is True
+
     def test_validate_no_secret_allows_all(self):
         """When the secret is empty/falsy, the validator is never even called
         by the handler (secret check is 'if secret and secret != _INSECURE...').
@@ -1248,6 +1294,117 @@ class TestSessionIsolation:
         assert len(captured_events) == 2
         ids = {ev.source.chat_id for ev in captured_events}
         assert len(ids) == 2, "Each delivery must have a unique session chat_id"
+
+
+# ===================================================================
+# Silence-marker suppression
+# ===================================================================
+
+
+class TestWebhookSilenceSuppression:
+    """A webhook route that answers ``[SILENT]`` must deliver nothing.
+
+    Webhook routes are autonomous lanes with nobody waiting on the other end,
+    so a subscription prompt tells the agent to reply ``[SILENT]`` on a tick
+    that produced no story.  Models routinely append a sentence saying WHY they
+    stayed quiet, and the live gateway's exact-whole-response rule then treats
+    that as a real report — which is how a Helper support lane ended up
+    repeatedly messaging its owner to say it had nothing to say.
+    """
+
+    def _adapter_with_mock_target(self):
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+        adapter.gateway_runner = mock_runner
+
+        chat_id = "webhook:helper-events:d-1"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "-100123"},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+        return adapter, mock_target, chat_id
+
+    @pytest.mark.asyncio
+    async def test_bare_marker_is_not_delivered(self):
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(chat_id, "[SILENT]")
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marker_followed_by_prose_is_not_delivered(self):
+        """The regression this suppression exists for.
+
+        The agent explains its own silence on the lines after the marker.  The
+        strict interactive rule reads that as substantive prose and delivers the
+        whole thing, marker included.
+        """
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "[SILENT]\n\nThe new inbound was the same email quoted back a second "
+            "time, on a ticket we already answered. Nothing new to reply to, so I "
+            "closed it; it reopens by itself if they write back.",
+        )
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marker_on_the_last_line_is_not_delivered(self):
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(chat_id, "Nothing to report this tick.\n\n[SILENT]")
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_report_is_still_delivered(self):
+        """Suppression must not swallow an actual story."""
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "Refunded $240 to the buyer and replied; the seller had already agreed.",
+        )
+
+        assert result.success is True
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_report_mentioning_the_marker_mid_sentence_is_delivered(self):
+        """A report that merely quotes a marker is not a silence request."""
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "I considered staying [SILENT] but this one moved money, so: refunded "
+            "$240 and replied to the buyer.",
+        )
+
+        assert result.success is True
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_suppression_precedes_log_delivery(self):
+        """A `log` route also suppresses, so the two lanes behave the same."""
+        adapter = _make_adapter()
+        chat_id = "webhook:helper-events:d-log"
+        adapter._delivery_info[chat_id] = {"deliver": "log", "deliver_extra": {}}
+        adapter._delivery_info_created[chat_id] = time.time()
+
+        result = await adapter.send(chat_id, "[SILENT]\n\nnothing happened")
+
+        assert result.success is True
 
 
 # ===================================================================

@@ -27,7 +27,7 @@ class TestSpecSafety:
     @pytest.mark.parametrize("spec", [
         "mistralai>=2.3.0,<3",
         "elevenlabs>=1.0,<2",
-        "honcho-ai>=2.0.1,<3",
+        "honcho-ai>=2.2.0,<3",
         "boto3>=1.35.0,<2",
         "mautrix[encryption]>=0.20,<1",
         "google-api-python-client>=2.100,<3",
@@ -253,13 +253,13 @@ class TestIsSatisfiedVersionAware:
         monkeypatch.setattr(_md, "version", _version)
 
     def test_exact_pin_match_returns_true(self, monkeypatch):
-        self._fake_version(monkeypatch, {"honcho-ai": "2.0.1"})
-        assert ld._is_satisfied("honcho-ai==2.0.1") is True
+        self._fake_version(monkeypatch, {"honcho-ai": "2.2.0"})
+        assert ld._is_satisfied("honcho-ai==2.2.0") is True
 
     def test_exact_pin_mismatch_returns_false(self, monkeypatch):
-        # Installed 2.0.0, spec requires 2.0.1 → False (needs upgrade).
-        self._fake_version(monkeypatch, {"honcho-ai": "2.0.0"})
-        assert ld._is_satisfied("honcho-ai==2.0.1") is False
+        # Installed 2.1.2, spec requires 2.2.0 → False (needs upgrade).
+        self._fake_version(monkeypatch, {"honcho-ai": "2.1.2"})
+        assert ld._is_satisfied("honcho-ai==2.2.0") is False
 
     def test_range_within_returns_true(self, monkeypatch):
         self._fake_version(monkeypatch, {"slack-bolt": "1.27.0"})
@@ -293,6 +293,22 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
+    def test_trace_upload_hub_at_core_locked_version_is_current(self, monkeypatch):
+        """#60783 regression: refresh must not churn the shared hub install.
+
+        huggingface-hub arrives in the venv via the core lock (transformers /
+        sentence-transformers for local Hindsight, faster-whisper, tokenizers).
+        With the LAZY_DEPS pin held in lockstep with uv.lock, the version the
+        core installs satisfies the trace-upload spec, so the `hermes update`
+        lazy-refresh pass reports "current" instead of reinstalling — the
+        downgrade that used to break the Hindsight daemon can't happen.
+        """
+        spec = ld.LAZY_DEPS["tool.trace_upload"][0]
+        pinned = ld._specifier_from_spec(spec).lstrip("=")
+        self._fake_version(monkeypatch, {"huggingface-hub": pinned})
+        assert ld._is_satisfied(spec) is True
+        assert ld.feature_missing("tool.trace_upload") == ()
+
 
 # ---------------------------------------------------------------------------
 # active_features + refresh_active_features (Piece A — hermes update wiring)
@@ -304,7 +320,7 @@ class TestActiveFeatures:
         monkeypatch.setattr(ld, "_is_present", lambda spec: False)
         assert ld.active_features() == []
 
-    def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
+    def test_finds_features_with_anchor_package_installed(self, monkeypatch):
         # Pretend only honcho-ai is installed; nothing else.
         monkeypatch.setattr(
             ld, "_is_present",
@@ -316,15 +332,23 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_anchor_present(self, monkeypatch):
+        # platform.slack has multiple packages; the first spec is its anchor.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_dependency_does_not_activate_feature(self, monkeypatch):
+        # asyncpg is a generic dependency that may be installed for unrelated
+        # reasons. It must not make hermes update try to refresh Matrix unless
+        # the Matrix anchor package (mautrix) is present.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "asyncpg",
+        )
+        assert "platform.matrix" not in ld.active_features()
 
 
 class TestRefreshActiveFeatures:

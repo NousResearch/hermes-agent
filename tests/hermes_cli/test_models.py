@@ -252,10 +252,16 @@ class TestDetectProviderForModel:
         assert result[0] == "anthropic"
 
     def test_deepseek_model_detected(self):
-        """deepseek-chat should resolve to deepseek provider."""
+        """Retired deepseek-chat alias still resolves to deepseek for /model."""
         result = detect_provider_for_model("deepseek-chat", "openai-codex")
         assert result is not None
         # Provider is deepseek (direct) or openrouter (fallback) depending on creds
+        assert result[0] in {"deepseek", "openrouter"}
+
+    def test_deepseek_v4_model_detected(self):
+        """Current DeepSeek V4 IDs resolve to the deepseek provider."""
+        result = detect_provider_for_model("deepseek-v4-flash", "openai-codex")
+        assert result is not None
         assert result[0] in {"deepseek", "openrouter"}
 
     def test_current_provider_model_returns_none(self):
@@ -976,3 +982,20 @@ class TestCodexSoftAcceptPlausibilityGate:
         r = validate_requested_model("gpt-5.5", "openai-codex")
         assert r["accepted"] is True
         assert r["recognized"] is True
+
+
+class TestClaudeSonnet5InCuratedLists:
+    """Regression: Claude Sonnet 5 must appear in curated model lists (#55846)."""
+
+    def test_anthropic_native_list_includes_sonnet_5(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "claude-sonnet-5" in _PROVIDER_MODELS["anthropic"]
+
+    def test_openrouter_fallback_includes_sonnet_5(self):
+        from hermes_cli.models import OPENROUTER_MODELS
+        ids = [mid for mid, _ in OPENROUTER_MODELS]
+        assert "anthropic/claude-sonnet-5" in ids
+
+    def test_nous_list_includes_sonnet_5(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "anthropic/claude-sonnet-5" in _PROVIDER_MODELS["nous"]

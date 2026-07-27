@@ -52,9 +52,10 @@ def test_structured_and_bytes_round_trip_as_printable_nul_free_text(
 
 @pytest.mark.parametrize("fts_table", ("messages_fts", "messages_fts_trigram"))
 def test_structured_content_fts_mirror_is_nul_free_when_available(db, fts_table):
+    # Upstream's trigram index intentionally excludes tool rows.
     message_id = db.append_message(
         "codec",
-        role="tool",
+        role="assistant",
         content={"parts": [{"text": "line\x00break"}]},
     )
 

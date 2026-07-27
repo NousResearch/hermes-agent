@@ -277,3 +277,157 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
     # Discovery found the probe file (2 tests), proving the positional path
     # was consumed as a root, not forwarded to pytest as a bad flag.
     assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
+    """A pass-on-retry is green, loud, and retains the failing traceback."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    marker = tmp_path / "ran-once"
+    probe = tmp_path / "test_flaky_probe.py"
+    probe.write_text(
+        textwrap.dedent(
+            f"""
+            from pathlib import Path
+
+            def test_flaky_once():
+                marker = Path({str(marker)!r})
+                if not marker.exists():
+                    marker.write_text("failed once")
+                    assert False, "simulated first-attempt flake"
+                assert True
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--files",
+            str(probe),
+            "--file-retries",
+            "1",
+            "-j",
+            "1",
+            "-q",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "FLAKY file" in proc.stdout
+    assert "simulated first-attempt flake" in proc.stdout
+    assert "first-attempt output" in proc.stdout
+    assert "retry output" in proc.stdout
+
+
+def test_file_retry_does_not_launder_deterministic_failure(tmp_path: Path) -> None:
+    """A real regression fails both attempts and the runner remains red."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    probe = tmp_path / "test_red_probe.py"
+    probe.write_text(
+        "def test_always_red():\n    assert False, 'deterministic regression'\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--files",
+            str(probe),
+            "--file-retries",
+            "1",
+            "-j",
+            "1",
+            "-q",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 1, proc.stdout
+    assert "deterministic regression" in proc.stdout
+    assert "FLAKY file" not in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Zero-collection is not a pass; node ids are translated, not dropped.
+#
+# Both behaviors were real foot-guns: a run where NOTHING was collected printed
+# "0 tests passed, 0 failed (100% complete)" (reads green), and a pytest node id
+# (`file.py::Class::test`) was silently discarded by path discovery so the run
+# ended with "No test files to run" while looking like an accepted selector.
+
+
+def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
+    """A -k that matches nothing must FAIL, not report a green summary."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-k", "zzz_matches_nothing")
+    assert proc.returncode == 1, proc.stdout
+    assert "NO TESTS RAN" in proc.stdout
+    assert "NOT a pass" in proc.stdout
+
+
+def test_all_skipped_file_is_still_a_pass(tmp_path: Path) -> None:
+    """Per-file zero-collection stays tolerated.
+
+    A platform-gated file (every test skipped) reports "N skipped" — collected,
+    just not executed — and must NOT trip the nothing-ran guard.
+    """
+    probe_dir = tmp_path / "skipprobe"
+    probe_dir.mkdir()
+    (probe_dir / "test_allskipped.py").write_text(
+        "import pytest\n\n"
+        "pytestmark = pytest.mark.skip(reason='platform-gated')\n\n"
+        "def test_one():\n    assert True\n\n"
+        "def test_two():\n    assert True\n"
+    )
+    proc = _run_runner(probe_dir)
+    assert proc.returncode == 0, proc.stdout
+    assert "NO TESTS RAN" not in proc.stdout
+
+
+def test_node_id_selector_runs_the_named_test(tmp_path: Path) -> None:
+    """``file.py::test_alpha`` runs that test instead of discovering nothing."""
+    probe_dir = _make_probe_dir(tmp_path)
+    target = probe_dir / "test_flagprobe.py"
+    repo_root = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         f"{target}::test_alpha", "-j", "1", "--file-timeout", "30"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "No test files to run" not in proc.stdout
+    assert "node id" in proc.stdout  # explains the translation
+    # Ran exactly the one selected test, not both in the file.
+    assert "1 tests passed" in proc.stdout
+
+
+def test_explicit_k_wins_over_node_id_inference(tmp_path: Path) -> None:
+    """A caller's own ``-k`` is not overridden by the node-id translation."""
+    probe_dir = _make_probe_dir(tmp_path)
+    target = probe_dir / "test_flagprobe.py"
+    repo_root = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         f"{target}::test_alpha", "-k", "test_beta",
+         "-j", "1", "--file-timeout", "30"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=60,
+    )
+    # -k test_beta wins: one test ran, and it wasn't filtered to nothing.
+    assert proc.returncode == 0, proc.stdout
+    assert "1 tests passed" in proc.stdout

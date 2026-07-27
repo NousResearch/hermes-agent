@@ -10,6 +10,7 @@ import {
   mergeRepoWorktreeGroups,
   overlayLiveLanes,
   overlayLivePreviews,
+  sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   sortWorktreeGroups
@@ -470,6 +471,15 @@ describe('liveSessionProjectId', () => {
     expect(id).toBe('p_app')
   })
 
+  it('anchors a cwd-less session on its git_repo_root (backend groups it there too)', () => {
+    // Older/imported rows carry only a repo root; the sidebar files them under
+    // the repo's project, so membership (and color) must resolve from the root.
+    expect(liveSessionProjectId(makeSession(null, { git_repo_root: '/www/app' }), [])).toBe('/www/app')
+    expect(
+      liveSessionProjectId(makeSession(null, { git_repo_root: '/www/app' }), [makeProject('p_app', ['/www/app'])])
+    ).toBe('p_app')
+  })
+
   it('skips cwd-less, kanban-task, and out-of-tree (sibling) worktree sessions', () => {
     expect(liveSessionProjectId(makeSession(null), [])).toBeNull()
     // Kanban task worktree → folds into the kanban bucket, not a project preview.
@@ -495,6 +505,24 @@ describe('liveSessionProjectId', () => {
     expect(id).toBe('p_app')
   })
 
+  it('places a cwd-outside-root session under an explicit project matching either path', () => {
+    // A mid-session relocation (or a sibling worktree) leaves cwd outside the
+    // recorded repo root. An explicit folder match is still authoritative —
+    // only the auto-project (repo root) fallback needs cwd-under-root
+    // confidence. Match via the repo root...
+    expect(
+      liveSessionProjectId(makeSession('/www/elsewhere', { git_repo_root: '/home/u/proj' }), [
+        makeProject('p_proj', ['/home/u/proj'])
+      ])
+    ).toBe('p_proj')
+    // ...and via the cwd.
+    expect(
+      liveSessionProjectId(makeSession('/www/elsewhere/sub', { git_repo_root: '/home/u/proj' }), [
+        makeProject('p_www', ['/www/elsewhere'])
+      ])
+    ).toBe('p_www')
+  })
+
   it('matches a mixed-case/separator Windows cwd to its explicit project in the live overlay', () => {
     // The bug: a fresh Windows session drops into the overlay before the next
     // backend refresh; case-sensitive matching missed its project until then.
@@ -516,6 +544,60 @@ describe('liveSessionProjectId', () => {
     expect(liveSessionProjectId(makeSession('/work/notes'), [makeProject('p_notes', ['/Work/Notes'])])).toBe(
       '/work/notes'
     )
+  })
+})
+
+describe('sessionProjectColor', () => {
+  const colored = (id: string, folders: string[], color: string): ProjectInfo => ({
+    ...makeProject(id, folders),
+    color
+  })
+
+  it('inherits the color of the explicit project the session belongs to', () => {
+    const session = makeSession('/www/app/src', { git_repo_root: '/www/app' })
+
+    expect(sessionProjectColor(session, [colored('p_app', ['/www/app'], '#4a9eff')])).toBe('#4a9eff')
+  })
+
+  it('returns null when the owning project has no color set', () => {
+    const session = makeSession('/www/app/src', { git_repo_root: '/www/app' })
+
+    expect(sessionProjectColor(session, [makeProject('p_app', ['/www/app'])])).toBeNull()
+  })
+
+  it('colors a cwd-less session by its git_repo_root project (the grouped-but-grey fix)', () => {
+    const session = makeSession(null, { git_repo_root: '/www/app' })
+
+    expect(sessionProjectColor(session, [colored('p_app', ['/www/app'], '#4a9eff')])).toBe('#4a9eff')
+  })
+
+  it('colors a cwd-outside-root session when an explicit project folder matches', () => {
+    // The backend tree groups such a row under the project; the client color
+    // derivation must agree instead of leaving the row (and its tab) grey.
+    const session = makeSession('/www/elsewhere', { git_repo_root: '/home/u/proj' })
+
+    expect(sessionProjectColor(session, [colored('p_proj', ['/home/u/proj'], '#4a9eff')])).toBe('#4a9eff')
+  })
+
+  it('returns null for a session that only maps to an auto repo root (no explicit project)', () => {
+    // liveSessionProjectId falls back to the repo root id, which is not a
+    // project row and therefore carries no color.
+    expect(sessionProjectColor(makeSession('/www/app'), [])).toBeNull()
+  })
+
+  it('returns null for an unplaceable (cwd-less) session', () => {
+    expect(sessionProjectColor(makeSession(null), [colored('p_app', ['/www/app'], '#4a9eff')])).toBeNull()
+  })
+
+  it('uses the longest-prefix project when nested projects both match', () => {
+    const session = makeSession('/www/app/packages/api/src', { git_repo_root: '/www/app' })
+
+    const projects = [
+      colored('p_root', ['/www/app'], '#111111'),
+      colored('p_api', ['/www/app/packages/api'], '#222222')
+    ]
+
+    expect(sessionProjectColor(session, projects)).toBe('#222222')
   })
 })
 

@@ -1,5 +1,6 @@
 """Tests for Mem0Backend abstraction — PlatformBackend, OSSBackend, SelfHostedBackend."""
 
+import copy
 import pytest
 
 from plugins.memory.mem0._backend import (
@@ -190,6 +191,45 @@ class TestOSSBackend:
         backend, _ = self._make()
         result = backend.delete("m1")
         assert result == {"result": "Memory deleted.", "memory_id": "m1"}
+
+    def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
+        import sys
+        import types
+
+        captured = {}
+
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                captured.update(config)
+                return FakeOSSMemory()
+
+        # OSSBackend.__init__ does `from mem0 import Memory`. mem0 is a lazy
+        # optional dep absent from CI's env, so inject a stub module rather
+        # than importing the real package (which would ModuleNotFoundError).
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+        raw = {
+            "llm": {
+                "provider": "openai",
+                "config": {"model": "gpt-5-mini", "api_base": "https://llm.example/v1"},
+            },
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "nomic-embed-text", "api_base": "http://ollama:11434"},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        before = copy.deepcopy(raw)
+
+        OSSBackend(raw)
+
+        assert captured["llm"]["config"]["openai_base_url"] == "https://llm.example/v1"
+        assert captured["embedder"]["config"]["ollama_base_url"] == "http://ollama:11434"
+        assert "api_base" not in captured["llm"]["config"]
+        assert "api_base" not in captured["embedder"]["config"]
+        assert raw == before
 
 
 httpx = pytest.importorskip("httpx")

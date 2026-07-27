@@ -14,7 +14,10 @@ progress.
 
 from __future__ import annotations
 
-from agent.turn_context import _compression_made_progress
+from agent.turn_context import (
+    _compression_made_progress,
+    _compression_warrants_another_preflight_pass,
+)
 
 
 class TestCompressionMadeProgress:
@@ -83,4 +86,27 @@ class TestCompressionMadeProgress:
         """Degenerate estimate (0 tokens) must not be read as a token win."""
         assert _compression_made_progress(
             orig_len=10, new_len=10, orig_tokens=0, new_tokens=0
+        ) is False
+
+
+class TestCompressionWarrantsAnotherPreflightPass:
+    def test_material_reduction_above_threshold_allows_another_pass(self):
+        assert _compression_warrants_another_preflight_pass(
+            orig_tokens=400_000,
+            new_tokens=350_000,
+            threshold_tokens=272_000,
+        ) is True
+
+    def test_marginal_reduction_above_threshold_stops(self):
+        assert _compression_warrants_another_preflight_pass(
+            orig_tokens=350_000,
+            new_tokens=345_000,
+            threshold_tokens=272_000,
+        ) is False
+
+    def test_clearing_threshold_needs_no_additional_pass(self):
+        assert _compression_warrants_another_preflight_pass(
+            orig_tokens=280_000,
+            new_tokens=250_000,
+            threshold_tokens=272_000,
         ) is False

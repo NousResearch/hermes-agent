@@ -92,7 +92,7 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
     monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
         "get_installed": lambda self, name: {"install_path": "category/" + name}
     })())
-    monkeypatch.setattr(cli_hub, "do_install", lambda identifier, category="", force=False, console=None: installs.append((identifier, category, force)))
+    monkeypatch.setattr(cli_hub, "do_install", lambda identifier, category="", force=False, console=None, source_id=None: installs.append((identifier, category, force)))
 
     do_update(console=console)
     return sink.getvalue(), installs
@@ -247,6 +247,123 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+# ---------------------------------------------------------------------------
+# Cross-registry hijack regression tests
+#
+# An update must never change a skill's source registry. Skill names are not
+# namespaced across registries, so an unconstrained name resolve can install a
+# different author's same-named skill over the user's files.
+# ---------------------------------------------------------------------------
+
+
+def test_do_update_pins_install_to_locked_source(monkeypatch):
+    """do_update must forward the lockfile's `source` to do_install.
+
+    Without the pin, a bare identifier like "reddit" reaches
+    _resolve_short_name()'s fuzzy catalog search inside do_install and can
+    resolve to a same-named skill in another registry.
+    """
+    import tools.skills_hub as hub
+    import hermes_cli.skills_hub as cli_hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    calls = []
+
+    monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: [
+        {"name": "reddit", "identifier": "reddit", "source": "clawhub",
+         "status": "update_available"},
+    ])
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
+        "get_installed": lambda self, name: {"install_path": "category/" + name}
+    })())
+    monkeypatch.setattr(
+        cli_hub, "do_install",
+        lambda identifier, category="", force=False, console=None, source_id=None:
+            calls.append({"identifier": identifier, "source_id": source_id}),
+    )
+
+    do_update(console=console)
+
+    assert calls == [{"identifier": "reddit", "source_id": "clawhub"}]
+
+
+def test_do_install_refuses_unknown_pinned_source(monkeypatch, hub_env):
+    """A pinned source with no matching adapter must abort, not fall back.
+
+    Falling back to the full source router is what allowed a foreign registry
+    to satisfy the install.
+    """
+    import tools.skills_hub as hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    resolved = []
+
+    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [])
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(
+        "hermes_cli.skills_hub._resolve_short_name",
+        lambda name, sources, c: resolved.append(name) or "",
+    )
+
+    do_install("reddit", source_id="clawhub", console=console)
+
+    assert resolved == [], "must not attempt a fuzzy resolve when the pin is unsatisfiable"
+    assert "provenance" in sink.getvalue()
+
+
+def test_check_for_skill_updates_does_not_fall_back_across_registries():
+    """An entry whose source has no adapter reports `unavailable`.
+
+    Previously `candidate_sources ... or sources` fell back to every source, so
+    a same-named skill in another registry could satisfy the fetch and be
+    reported as this entry's update -- the step that preceded the overwrite.
+    The foreign source here returns a *valid* bundle with a different hash, so
+    the old code reports `update_available` (sourced from the wrong registry)
+    while the fixed code reports `unavailable`.
+    """
+    from tools.skills_hub import check_for_skill_updates
+
+    class _ForeignBundle:
+        name = "reddit"
+        files = {"SKILL.md": "# a different author's reddit skill"}
+        source = "skills.sh"
+        identifier = "skills-sh/someone-else/reddit"
+        trust_level = "community"
+        metadata: dict = {}
+
+    class _ForeignSource:
+        """skills-sh adapter; must NOT be consulted for a clawhub-locked entry."""
+
+        def source_id(self):
+            return "skills-sh"
+
+        def fetch(self, identifier):
+            return _ForeignBundle()
+
+        def inspect(self, identifier):
+            return _ForeignBundle()
+
+    lock = _DummyLockFile([
+        {"name": "reddit", "identifier": "reddit", "source": "clawhub",
+         "content_hash": "hash-of-the-clawhub-copy"},
+    ])
+
+    results = check_for_skill_updates(
+        lock=lock,  # type: ignore[arg-type]  # duck-typed double, matches _DummyLockFile usage above
+        sources=[_ForeignSource()],  # type: ignore[list-item]
+    )
+
+    assert len(results) == 1
+    assert results[0]["source"] == "clawhub", "provenance must be preserved"
+    assert results[0]["status"] == "unavailable", (
+        "a clawhub-locked skill must not be matched against a skills-sh bundle; "
+        "reporting update_available here is the cross-registry hijack"
+    )
+    assert "bundle" not in results[0], "must not carry a foreign registry's bundle"
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():

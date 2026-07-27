@@ -25,7 +25,18 @@ const fsAllow = [
   )
 ]
 
-export default defineConfig({
+// The dev-only render/state churn counters (src/debug) must be imported
+// STATICALLY above react-dom — react-dom captures the devtools hook at module
+// init, so a dynamic import lands too late and observes zero commits. A static
+// side-effect import can't be tree-shaken, so instead the whole graph is
+// aliased out of any non-dev build. `command === 'serve'` covers `vite dev`;
+// the perf harness opts a production build back in with VITE_PERF_PROBE=1.
+const debugEntry = (command: string, env: Record<string, string>) =>
+  command === 'serve' || env.VITE_PERF_PROBE === '1'
+    ? path.resolve(__dirname, './src/debug/dev-only.ts')
+    : path.resolve(__dirname, './src/debug/dev-only.noop.ts')
+
+export default defineConfig(({ command }) => ({
   base: './',
   plugins: [react(), tailwindcss()],
   css: {
@@ -57,8 +68,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@/debug/dev-only': debugEntry(command, process.env as Record<string, string>),
       '@': path.resolve(__dirname, './src'),
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
+      '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
       react: path.resolve(__dirname, '../../node_modules/react'),
       'react-dom': path.resolve(__dirname, '../../node_modules/react-dom'),
@@ -79,4 +92,4 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 4174
   }
-})
+}))

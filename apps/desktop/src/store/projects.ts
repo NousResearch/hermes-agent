@@ -2,15 +2,16 @@ import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import { getHermesConfig, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
-import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
@@ -92,6 +93,32 @@ export function untombstoneSessions(ids: Array<null | string | undefined>): void
     $removedSessionIds.set(next)
   }
 }
+
+// Ids whose delete/archive RPC is still in flight. Their tombstones are pinned
+// against the projects.tree prune below: a refresh whose snapshot predates the
+// mutation completing must NOT drop the tombstone, or the row flashes back until
+// the backend catches up. Keyed by id, so concurrent deletes stay independent.
+export const $sessionMutationsInFlight = atom<Set<string>>(new Set())
+
+function mutateInFlight(ids: Array<null | string | undefined>, add: boolean): void {
+  const current = $sessionMutationsInFlight.get()
+  const next = new Set(current)
+
+  for (const id of ids) {
+    const trimmed = id?.trim()
+
+    if (trimmed) {
+      add ? next.add(trimmed) : next.delete(trimmed)
+    }
+  }
+
+  if (next.size !== current.size) {
+    $sessionMutationsInFlight.set(next)
+  }
+}
+
+export const beginSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, true)
+export const endSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, false)
 
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
@@ -180,6 +207,44 @@ export function projectIdForCwd(cwd: string): null | string {
   return best
 }
 
+// The display NAME of the explicit, named project owning `cwd` (longest path
+// match), or null when the cwd sits in no named project. The status bar reads
+// this to label the workspace by project instead of the bare cwd leaf. We skip
+// auto-projects (a repo root promoted with no projects.db row) and the synthetic
+// "No project" bucket on purpose: those have no human name, so their sessions
+// keep the cwd-leaf label — matching the backend `_project_info_for_cwd`, which
+// only resolves projects.db rows, so the desktop and TUI name the same session
+// identically without threading a second per-session copy through session.info.
+export function projectNameForCwd(cwd: string): null | string {
+  const target = (cwd || '').trim()
+
+  if (!target) {
+    return null
+  }
+
+  let best: null | string = null
+  let bestLen = -1
+
+  for (const project of $projectTree.get()) {
+    if (project.isAuto || project.isNoProject) {
+      continue
+    }
+
+    const paths = [project.path, ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])]
+
+    for (const path of paths) {
+      const p = (path || '').trim()
+
+      if (p && underPath(p, target) && p.length > bestLen) {
+        bestLen = p.length
+        best = project.label
+      }
+    }
+  }
+
+  return best
+}
+
 // The active session's agent relocated itself (created/entered another repo or
 // worktree via the terminal — backend re-anchors its cwd and emits session.info).
 // Re-pull projects + tree so a freshly created/auto project and the relocated
@@ -227,6 +292,34 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+async function gatewayRequestOn<T>(
+  gateway: HermesGateway,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  return gateway.request<T>(method, params)
+}
+
+interface ActiveProjectsContext {
+  gateway: HermesGateway
+  profile: string
+}
+
+async function activeProjectsContext(): Promise<ActiveProjectsContext> {
+  const profile = $activeGatewayProfile.get() || 'default'
+  let gateway = activeGateway()
+
+  if (!gateway || gateway.connectionState !== 'open') {
+    gateway = await ensureActiveGatewayOpen()
+  }
+
+  if (!gateway || gateway !== activeGateway() || profile !== ($activeGatewayProfile.get() || 'default')) {
+    throw new Error('Active Hermes profile changed while connecting')
+  }
+
+  return { gateway, profile }
+}
+
 function applyPayload(payload: ProjectsPayload): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
@@ -250,28 +343,35 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-// Pull the authoritative project tree (overview structure + counts + preview
-// sessions + the scoped-session-id set). Best-effort: a failure leaves the
-// cached tree intact so the sidebar doesn't flicker.
-export async function refreshProjectTree(): Promise<void> {
-  $projectTreeLoading.set(true)
+let projectTreeRefreshGeneration = 0
+
+async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
+  const generation = ++projectTreeRefreshGeneration
+
+  if (activeGateway() === gateway) {
+    $projectTreeLoading.set(true)
+  }
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
-    // The flat Sessions list shows everything; scoped ids are only used here to
-    // reconcile the optimistic eviction layer against what the server still lists.
-    const scoped = new Set(res.scoped_session_ids ?? [])
+    const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
+      preview_limit: 3
+    })
 
+    if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
+      return
+    }
+
+    const scoped = new Set(res.scoped_session_ids ?? [])
     $projectTree.set(res.projects ?? [])
     $activeProjectId.set(res.active_id ?? null)
-
-    // Reconcile the optimistic eviction layer against the fresh snapshot: keep
-    // evicting ids the server still lists (delete in flight) and drop the rest
-    // (server caught up), so the set can't grow unbounded across a long session.
     const tombstones = $removedSessionIds.get()
 
     if (tombstones.size) {
-      const pending = new Set([...tombstones].filter(id => scoped.has(id)))
+      // Keep a tombstone while the backend still lists the id (delete pending on
+      // its side) OR while its mutation is still in flight locally — dropping it
+      // early flashes the row back until the RPC lands.
+      const inFlight = $sessionMutationsInFlight.get()
+      const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
 
       if (pending.size !== tombstones.size) {
         $removedSessionIds.set(pending)
@@ -280,10 +380,25 @@ export async function refreshProjectTree(): Promise<void> {
 
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
-    // Backend may not be ready; keep the last known tree.
+    if (activeGateway() === gateway) {
+      markProjectsRpcFailure(err)
+    }
   } finally {
-    $projectTreeLoading.set(false)
+    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+      $projectTreeLoading.set(false)
+    }
+  }
+}
+
+// Pull the authoritative project tree (overview structure + counts + preview
+// sessions + the scoped-session-id set). Best-effort: a failure leaves the
+// cached tree intact so the sidebar doesn't flicker.
+export async function refreshProjectTree(): Promise<void> {
+  try {
+    const { gateway } = await activeProjectsContext()
+    await refreshProjectTreeOn(gateway)
+  } catch {
+    // Backend may not be ready; keep the last known tree.
   }
 }
 
@@ -302,30 +417,129 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   }
 }
 
-// One filesystem scan per app run: the heavy disk walk happens once, the result
-// is cached in the backend, and later opens read the cache. Desktop-only (needs
-// the native crawler); elsewhere discovery falls back to session-derived repos.
-let didScanRepos = false
+export interface RepoDiscoveryPolicy {
+  enabled: boolean
+  roots: string[]
+  exclude_paths: string[]
+}
+
+export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPolicy {
+  const desktopValue = config && typeof config === 'object' ? (config as { desktop?: unknown }).desktop : undefined
+
+  const desktop =
+    desktopValue && typeof desktopValue === 'object'
+      ? (desktopValue as {
+          repo_scan_enabled?: unknown
+          repo_scan_exclude_paths?: unknown
+          repo_scan_roots?: unknown
+        })
+      : {}
+
+  return {
+    enabled: desktop.repo_scan_enabled !== false,
+    roots: Array.isArray(desktop.repo_scan_roots)
+      ? desktop.repo_scan_roots.filter((value): value is string => typeof value === 'string')
+      : [],
+    exclude_paths: Array.isArray(desktop.repo_scan_exclude_paths)
+      ? desktop.repo_scan_exclude_paths.filter((value): value is string => typeof value === 'string')
+      : []
+  }
+}
+
+export function repoDiscoveryPolicySignature(policy: RepoDiscoveryPolicy): string {
+  return JSON.stringify(policy)
+}
+
+interface RepoScanState {
+  completedSignature?: string
+  generation: number
+  runningSignature?: string
+}
+
+const repoScanStates = new WeakMap<HermesGateway, RepoScanState>()
+const scanningGatewayGenerations = new WeakMap<HermesGateway, number>()
+
+function syncReposScanning(): void {
+  const gateway = activeGateway()
+  $reposScanning.set(Boolean(gateway && scanningGatewayGenerations.has(gateway)))
+}
+
+$gateway.subscribe(syncReposScanning)
 
 export async function scanAndRecordRepos(force = false): Promise<void> {
-  const scan = desktopGit()?.scanRepos
-
-  if (!scan || (didScanRepos && !force)) {
+  if (isDesktopFsRemoteMode()) {
     return
   }
 
-  didScanRepos = true
-  $reposScanning.set(true)
+  let context: ActiveProjectsContext
 
   try {
-    const repos = await scan([])
-    await gatewayRequest('projects.record_repos', { repos })
-    // The disk scan may surface new zero-session repos; refold them into the tree.
-    await refreshProjectTree()
+    context = await activeProjectsContext()
   } catch {
-    didScanRepos = false // let a later open retry a failed scan
+    return
+  }
+
+  const scan = desktopGit()?.scanRepos
+
+  if (!scan) {
+    return
+  }
+
+  const state = repoScanStates.get(context.gateway) ?? { generation: 0 }
+  repoScanStates.set(context.gateway, state)
+  let generation: number | undefined
+
+  try {
+    const policy = repoDiscoveryPolicyFromConfig(await getHermesConfig(context.profile))
+    const signature = repoDiscoveryPolicySignature(policy)
+
+    if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
+      return
+    }
+
+    generation = ++state.generation
+    state.runningSignature = signature
+
+    if (!policy.enabled) {
+      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
+        discovery_policy: policy,
+        repos: []
+      })
+    } else {
+      scanningGatewayGenerations.set(context.gateway, generation)
+      syncReposScanning()
+
+      const repos = await scan(policy.roots, {
+        enabled: true,
+        excludePaths: policy.exclude_paths
+      })
+
+      if (state.generation !== generation) {
+        return
+      }
+
+      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
+        discovery_policy: policy,
+        repos
+      })
+    }
+
+    if (state.generation !== generation) {
+      return
+    }
+
+    state.completedSignature = signature
+    await refreshProjectTreeOn(context.gateway)
+  } catch {
+    state.completedSignature = undefined
   } finally {
-    $reposScanning.set(false)
+    state.runningSignature = undefined
+
+    if (scanningGatewayGenerations.get(context.gateway) === generation) {
+      scanningGatewayGenerations.delete(context.gateway)
+    }
+
+    syncReposScanning()
   }
 }
 
@@ -533,6 +747,38 @@ export async function updateProject(
       ...(patch.icon === null && { icon: '' })
     })
   )
+}
+
+// Appearance for an AUTO (inherited git-repo) project has no projects.db row to
+// write to — its id is just the repo path. So the first color/icon change ADOPTS
+// the repo as a real project (folder = repo root, name = its label) carrying the
+// chosen look; from then on it patches in place like any explicit project.
+// Returns true when an adoption happened, so an incremental picker can close
+// (the node's id changes on adopt, and a second stale write would double-create).
+export async function setProjectAppearance(
+  project: Pick<SidebarProjectTree, 'color' | 'icon' | 'id' | 'isAuto' | 'label' | 'path'>,
+  patch: { color?: null | string; icon?: null | string }
+): Promise<boolean> {
+  if (!project.isAuto) {
+    await updateProject(project.id, patch)
+
+    return false
+  }
+
+  if (!project.path) {
+    return false
+  }
+
+  await createProject({
+    name: project.label,
+    folders: [project.path],
+    primaryPath: project.path,
+    // Carry any already-set look so setting one field doesn't wipe the other.
+    color: (patch.color ?? project.color) || undefined,
+    icon: (patch.icon ?? project.icon) || undefined
+  })
+
+  return true
 }
 
 export async function addProjectFolder(

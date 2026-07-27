@@ -119,6 +119,41 @@ class TestDetectDangerousRm:
         assert key is not None
         assert "delete" in desc.lower()
 
+    def test_rm_flags_after_operands_detected(self):
+        # GNU rm permutes options: `rm build/ -rf` == `rm -rf build/`.
+        # Port of openai/codex#33464.
+        for cmd in (
+            "rm build/ -rf",
+            "rm build/ -r -f",
+            "rm build/ -fR",
+            "rm build/ --recursive --force",
+            "rm build/ --force --recursive",
+            "rm ~/projects -rf",
+            "sudo rm build/ -rf",
+            "rm -f build/ -r",
+            "rm one two three -rf",
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"{cmd!r} should require approval"
+            assert "delete" in desc.lower()
+
+    def test_rm_flags_after_operands_no_false_positives(self):
+        for cmd in (
+            # after a bare `--`, -rf-looking tokens are literal filenames
+            "rm -- -weird-r-file",
+            "rm -f -- -r-file",
+            # a later pipeline/command segment's flags don't belong to rm
+            "rm foo | grep -r bar",
+            "rm foo; ls -lart",
+            # long options whose `r` is not whitespace-anchored
+            "npm rm somepkg --registry=https://registry.npmjs.org",
+            "rm old.log --verbose",
+            # plain multi-operand deletes stay safe
+            "rm build/file.txt other.txt",
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"{cmd!r} should be safe, got: {desc}"
+
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
@@ -234,14 +269,14 @@ class TestWindowsShellDestructiveCommands:
         assert dangerous is True
         assert desc == "Windows PowerShell destructive delete"
 
-    def test_powershell_benign_path_containing_del_not_flagged(self):
-        # A benign file path that merely contains "del" must NOT trip the guard
-        # (verb-position anchoring prevents matching inside a -File arg).
+    def test_powershell_benign_path_containing_del_not_matched_as_delete(self):
+        # The path text must not be mistaken for a destructive verb. Running a
+        # script via -File is independently approval-worthy.
         dangerous, key, desc = detect_dangerous_command(
             r"powershell -File C:\del-logs\run.ps1"
         )
-        assert dangerous is False
-        assert key is None
+        assert dangerous is True
+        assert key != "Windows PowerShell destructive delete"
 
     def test_plain_text_does_not_trigger_windows_delete(self):
         dangerous, key, desc = detect_dangerous_command(
@@ -702,12 +737,13 @@ class TestHermesConfigWriteProtection:
         assert dangerous is True
 
     def test_perl_eval_no_inplace_safe(self):
-        # `perl -e` with no -i flag is code evaluation, not file mutation —
-        # the perl/ruby -i pattern must not fire on it.
+        # `perl -e` with no -i flag is code evaluation, not file mutation. It
+        # requires approval, but must not be attributed to the in-place rule.
         dangerous, key, desc = detect_dangerous_command(
             "perl -wne 'print' ~/.hermes/config.yaml"
         )
-        assert dangerous is False
+        assert dangerous is True
+        assert key != "in-place edit of Hermes config/env (perl/ruby)"
 
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.

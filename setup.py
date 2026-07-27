@@ -1,87 +1,74 @@
-from __future__ import annotations
+"""
+setup.py — wheel/sdist build guard.
 
-from collections import defaultdict
-from pathlib import Path
-import tempfile
+pip/PyPI and Homebrew are no longer supported distribution methods for
+Hermes Agent (see website/docs/getting-started/platform-support.md). The
+wheel would ship without bundled assets (locales, skills, optional-mcps,
+web_dist, tui_dist, plugin manifests) since those are resolved at runtime
+via env-var overrides set by the nix wrapper or the source-checkout layout.
+
+This file overrides the ``bdist_wheel`` and ``sdist`` setuptools commands
+to raise an error when run outside a Nix build. The PEP 517
+``build_wheel`` / ``build_sdist`` hooks in
+``setuptools.build_meta`` call these commands internally, so the guard
+fires for ``uv build``, ``pip wheel``, ``python -m build``, and direct
+``setup.py`` invocations alike.
+
+The one legitimate consumer of ``build_wheel`` is uv2nix, which calls
+``setuptools.build_meta.build_wheel`` (→ ``bdist_wheel``) inside a Nix
+build sandbox. ``nix/python.nix`` sets ``HERMES_NIX_BUILD=1`` on the
+Hermes package derivation, so only that build may create an artifact.
+
+Editable installs (``uv sync``, ``pip install -e .``, ``nix develop``)
+use ``build_editable``, which does NOT call ``bdist_wheel`` — it calls
+``build_ext`` in editable mode. So the guard does not affect development.
+"""
+
+import os
 
 from setuptools import setup
-from setuptools.command.build import build as _build
-from setuptools.command.egg_info import egg_info as _egg_info
+from setuptools.command.sdist import sdist
 
+_IN_NIX_BUILD = os.environ.get("HERMES_NIX_BUILD") == "1"
 
-REPO_ROOT = Path(__file__).parent.resolve()
-
-
-def _source_tree_is_writable() -> bool:
-    probe = REPO_ROOT / ".setuptools-write-probe"
-    try:
-        with probe.open("w", encoding="utf-8") as handle:
-            handle.write("")
-        probe.unlink()
-    except OSError:
-        try:
-            probe.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return False
-    return True
-
-
-def _temporary_build_dir(kind: str) -> str:
-    return tempfile.mkdtemp(prefix=f"hermes-agent-{kind}-")
-
-
-def _would_write_under_source(path_value: str | None) -> bool:
-    if path_value is None:
-        return True
-    path = Path(path_value)
-    if not path.is_absolute():
-        path = REPO_ROOT / path
-    try:
-        path.resolve().relative_to(REPO_ROOT)
-    except ValueError:
-        return False
-    return True
-
-
-class ReadOnlySourceBuild(_build):
-    def finalize_options(self) -> None:
-        if (
-            not _source_tree_is_writable()
-            and _would_write_under_source(self.build_base)
-        ):
-            self.build_base = _temporary_build_dir("build")
-        super().finalize_options()
-
-
-class ReadOnlySourceEggInfo(_egg_info):
-    def finalize_options(self) -> None:
-        if (
-            not _source_tree_is_writable()
-            and _would_write_under_source(self.egg_base)
-        ):
-            self.egg_base = _temporary_build_dir("egg-info")
-        super().finalize_options()
-
-
-def _data_file_tree(root_name: str) -> list[tuple[str, list[str]]]:
-    root = REPO_ROOT / root_name
-    grouped: defaultdict[str, list[str]] = defaultdict(list)
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel_path = path.relative_to(REPO_ROOT)
-        grouped[str(rel_path.parent)].append(str(rel_path))
-    return sorted(grouped.items())
-
-
-setup(
-    cmdclass={
-        "build": ReadOnlySourceBuild,
-        "egg_info": ReadOnlySourceEggInfo,
-    },
-    data_files=[
-        *_data_file_tree("skills"),
-        *_data_file_tree("optional-skills"),
-    ]
+_BLOCK_MESSAGE = (
+    "Building wheels or sdists for hermes-agent is not supported.\n"
+    "Hermes is distributed via the shell installer, Docker image, or Nix.\n"
+    "See: https://hermes-agent.nousresearch.com/docs/getting-started/installation\n"
+    "\n"
+    "If you are developing, use an editable install instead:\n"
+    "  uv sync          # or: uv pip install -e .\n"
+    "\n"
+    "If you are building with Nix (uv2nix), this error should not fire —\n"
+    "the Hermes Nix derivation sets HERMES_NIX_BUILD=1. If it does, file a bug."
 )
+
+
+class _GuardedSdist(sdist):
+    def run(self, *args, **kwargs):
+        if not _IN_NIX_BUILD:
+            raise RuntimeError(_BLOCK_MESSAGE)
+        return super().run(*args, **kwargs)
+
+
+cmdclass = {"sdist": _GuardedSdist}
+
+# bdist_wheel is only available when the `wheel` package is installed.
+# setuptools.build_meta.build_wheel() calls it internally, so the guard
+# fires for all PEP 517 wheel build paths. Define the subclass only when
+# the import succeeds — otherwise a None base class raises TypeError at
+# class-definition time, before the cmdclass guard can run.
+try:
+    from setuptools.command.bdist_wheel import bdist_wheel
+
+    class _GuardedBdistWheel(bdist_wheel):
+        def run(self, *args, **kwargs):
+            if not _IN_NIX_BUILD:
+                raise RuntimeError(_BLOCK_MESSAGE)
+            return super().run(*args, **kwargs)
+
+    cmdclass["bdist_wheel"] = _GuardedBdistWheel
+except ImportError:
+    pass
+
+setup(cmdclass=cmdclass)

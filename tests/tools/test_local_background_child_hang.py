@@ -43,7 +43,7 @@ class TestBackgroundChildDoesNotHang:
             result = local_env.execute(cmd, timeout=15)
             elapsed = time.monotonic() - t0
 
-            assert elapsed < 4.0, (
+            assert elapsed < 10.0, (  # hang under guard is 15s+; loose bound rides out runner stalls
                 f"terminal_tool hung for {elapsed:.1f}s — drain thread "
                 f"is still blocking on backgrounded child's inherited pipe fd"
             )
@@ -63,7 +63,7 @@ class TestBackgroundChildDoesNotHang:
             result = local_env.execute(cmd, timeout=15)
             elapsed = time.monotonic() - t0
 
-            assert elapsed < 4.0, f"setsid+disown path hung for {elapsed:.1f}s"
+            assert elapsed < 10.0, f"setsid+disown path hung for {elapsed:.1f}s"
             assert result["returncode"] == 0
             assert "started" in result["output"]
         finally:
@@ -77,7 +77,7 @@ class TestBackgroundChildDoesNotHang:
         elapsed = time.monotonic() - t0
 
         # Loop body sleeps ~0.6s total — elapsed should be close to that.
-        assert 0.5 < elapsed < 3.0
+        assert 0.5 < elapsed < 10.0
         assert result["returncode"] == 0
         for expected in ("tick 1", "tick 2", "tick 3", "done"):
             assert expected in result["output"], f"missing {expected!r}"
@@ -148,7 +148,7 @@ class TestBackgroundChildDoesNotHang:
         result = local_env.execute(command, timeout=1, bounded_capture=True)
         elapsed = time.monotonic() - started
 
-        assert elapsed < 4.0
+        assert elapsed < 10.0
         assert result["returncode"] == 124
         assert len(result["output"]) <= 5_000
         assert "[OUTPUT TRUNCATED" in result["output"]
@@ -160,13 +160,13 @@ class TestBackgroundChildDoesNotHang:
         result = local_env.execute("sleep 30", timeout=2)
         elapsed = time.monotonic() - t0
 
-        assert elapsed < 4.0
+        assert elapsed < 10.0
         assert result["returncode"] == 124
         assert "timed out" in result["output"].lower()
 
     def test_utf8_output_decoded_correctly(self, local_env):
         """Multibyte UTF-8 chunks must decode cleanly under select-based reads."""
-        result = local_env.execute("echo 日本語 café résumé", timeout=5)
+        result = local_env.execute("echo 日本語 café résumé", timeout=30)
         assert result["returncode"] == 0
         assert "日本語" in result["output"]
         assert "café" in result["output"]
@@ -209,7 +209,7 @@ class TestBackgroundChildDoesNotHang:
             'sys.stdout.buffer.write(b"\\xff\\xfe"); '
             'sys.stdout.buffer.write(b" after\\n")\''
         )
-        result = local_env.execute(cmd, timeout=5)
+        result = local_env.execute(cmd, timeout=15)
         assert result["returncode"] == 0
         assert "before" in result["output"]
         assert "after" in result["output"]

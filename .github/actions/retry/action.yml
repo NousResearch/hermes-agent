@@ -3,7 +3,8 @@ description: >-
   Run a shell command, retrying on non-zero exit. For dependency installs
   (npm ci, uv sync) whose only failures are transient network/toolchain
   flakes — a node-gyp header fetch, a registry blip — so CI self-heals
-  instead of needing a manual re-run.
+  instead of needing a manual re-run. Can also capture stdout as a step
+  output for commands whose result must be consumed by later steps.
 
 inputs:
   command:
@@ -19,10 +20,16 @@ inputs:
     description: Directory to run in.
     default: "."
 
+outputs:
+  stdout:
+    description: Captured stdout from the successful attempt (empty if not needed).
+    value: ${{ steps.retry.outputs.stdout }}
+
 runs:
   using: composite
   steps:
-    - shell: bash
+    - id: retry
+      shell: bash
       working-directory: ${{ inputs.working-directory }}
       # command goes through env, never interpolated into the script body, so
       # a command with quotes/specials can't break or inject into the runner.
@@ -32,12 +39,25 @@ runs:
         _DELAY: ${{ inputs.delay }}
       run: |
         set -uo pipefail
+        _OUTFILE="$(mktemp)"
+        trap 'rm -f "$_OUTFILE"' EXIT
         n=0
         while :; do
           n=$((n + 1))
           echo "::group::attempt $n/$_ATTEMPTS: $_CMD"
-          if bash -c "$_CMD"; then
+          # Run the command, capturing stdout to a temp file while still
+          # streaming to the log. We redirect first, then tee the file to
+          # stdout — this avoids pipefail + tee exit-code interactions that
+          # can cause the if-branch to be skipped under set -e.
+          if bash -c "$_CMD" > "$_OUTFILE"; then
+            cat "$_OUTFILE"
             echo "::endgroup::"
+            # Preserve newlines in the output via heredoc delimiter.
+            {
+              echo 'stdout<<__RETRY_STDOUT_EOF__'
+              cat "$_OUTFILE"
+              echo '__RETRY_STDOUT_EOF__'
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "::endgroup::"

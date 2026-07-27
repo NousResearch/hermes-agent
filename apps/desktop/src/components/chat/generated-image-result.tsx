@@ -96,7 +96,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   if (failed && image) {
     return (
       <a
-        className="mt-2 inline-block font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        className="mt-2 link-chip inline-block font-semibold wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()

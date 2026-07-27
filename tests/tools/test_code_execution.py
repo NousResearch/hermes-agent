@@ -167,6 +167,9 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertFalse(result["stdout_truncated"])
+        self.assertEqual(result["stdout_bytes_total"], len("hello\n".encode("utf-8")))
         mkdir_cmd = env.commands[1][0]
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
         cleanup_cmd = env.commands[-1][0]
@@ -993,9 +996,13 @@ print("TAIL_MARKER_END")
         self.assertIn("TAIL_MARKER_END", output)
         # Truncation notice should be present
         self.assertIn("TRUNCATED", output)
+        self.assertTrue(result["stdout_truncated"])
+        self.assertGreater(result["stdout_bytes_total"], result["stdout_bytes_captured"])
+        self.assertGreater(result["stdout_bytes_omitted"], 0)
+        self.assertIn("execute_code stdout was truncated", result["warning"])
 
     def test_truncation_notice_format(self):
-        """Truncation notice includes character counts."""
+        """Truncation notice includes byte counts."""
         code = '''
 for i in range(15000):
     print(f"padding_line_{i:06d}_xxxxxxxxxxxxxxxxxxxxxxxxxx")
@@ -1003,8 +1010,50 @@ for i in range(15000):
         result = self._run(code)
         output = result["output"]
         if "TRUNCATED" in output:
-            self.assertIn("chars omitted", output)
+            self.assertIn("bytes omitted", output)
             self.assertIn("total", output)
+
+    def test_short_output_has_explicit_non_truncated_metadata(self):
+        """Even non-truncated output exposes unambiguous truncation metadata."""
+        result = self._run('print("small output")')
+        self.assertFalse(result["stdout_truncated"])
+        self.assertEqual(result["stdout_bytes_omitted"], 0)
+        self.assertEqual(result["stdout_bytes_total"], result["stdout_bytes_captured"])
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_remote_large_output_gets_truncation_metadata(self):
+        """Remote backend output capping is explicit in the JSON result."""
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                self.commands.append((command, cwd, timeout))
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "HEAD\n" + ("x" * 80_000) + "\nTAIL\n", "returncode": 0}
+                return {"output": ""}
+
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('large')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["stdout_truncated"])
+        self.assertIn("HEAD", result["output"])
+        self.assertIn("TAIL", result["output"])
+        self.assertGreater(result["stdout_bytes_total"], result["stdout_bytes_captured"])
+        self.assertGreater(result["stdout_bytes_omitted"], 0)
+        self.assertIn("execute_code stdout was truncated", result["warning"])
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):

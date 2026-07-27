@@ -314,8 +314,9 @@ def auth_add_command(args) -> None:
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
         # Add a distinct, self-contained pool entry per account (matching the
-        # xai-oauth / qwen-oauth patterns) instead of
-        # routing through the singleton ``_save_codex_tokens`` save path.
+        # qwen-oauth / minimax-oauth multi-account patterns, and the
+        # xai-oauth path below) instead of routing through the singleton
+        # ``_save_codex_tokens`` save path.
         # The singleton round-trip collapsed every added account into the
         # latest login: a second ``hermes auth add openai-codex`` overwrote
         # the first account's singleton-mirrored ``device_code`` entry rather
@@ -349,19 +350,40 @@ def auth_add_command(args) -> None:
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
             open_browser=not getattr(args, "no_browser", False),
         )
-        auth_mod._save_xai_oauth_tokens(
-            creds["tokens"],
-            discovery=creds.get("discovery"),
-            redirect_uri=creds.get("redirect_uri", ""),
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["tokens"]["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        # Add a distinct, self-contained pool entry per account (matching the
+        # openai-codex / qwen-oauth / minimax-oauth patterns) instead of
+        # routing through the singleton ``_save_xai_oauth_tokens`` save path.
+        # The singleton round-trip collapsed every added account into the
+        # latest login: a second ``hermes auth add xai-oauth`` overwrote the
+        # first account's singleton-mirrored ``device_code`` entry rather than
+        # creating an independent one. ``manual:device_code`` entries refresh
+        # from their own token pair (``_sync_xai_oauth_entry_from_auth_store``
+        # only adopts the singleton for ``source=="device_code"``), so they
+        # need no singleton shadow.
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=SOURCE_MANUAL_DEVICE_CODE,
+            access_token=creds["tokens"]["access_token"],
+            refresh_token=creds["tokens"].get("refresh_token"),
+            base_url=creds.get("base_url") or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL,
             last_refresh=creds.get("last_refresh"),
-            auth_mode="oauth_device_code",
         )
-        pool = load_pool(provider)
-        entry = next((e for e in pool.entries() if getattr(e, "source", "") == "device_code"), None)
-        shown_label = entry.label if entry is not None else label_from_token(
-            creds["tokens"]["access_token"], _oauth_default_label(provider, 1)
-        )
-        print(f'Saved {provider} OAuth credentials: "{shown_label}"')
+        first_credential = not pool.entries()
+        pool.add_entry(entry)
+        # Adding the first xAI credential should make it the active provider
+        # (the old singleton save path did this implicitly via
+        # _save_provider_state). Subsequent adds leave the active provider as-is.
+        if first_credential:
+            auth_mod.mark_provider_active_if_unset(provider)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
     if provider == "qwen-oauth":

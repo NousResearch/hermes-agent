@@ -614,10 +614,14 @@ function SessionRow({
                 )}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
-                  {(session.model ?? t.common.unknown).split("/").pop()}
-                </span>
-                <span className="text-border">&#183;</span>
+                {session.model && (
+                  <>
+                    <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
+                      {session.model.split("/").pop()}
+                    </span>
+                    <span className="text-border">&#183;</span>
+                  </>
+                )}
                 <span className="shrink-0">
                   {session.message_count} {t.common.msgs}
                 </span>
@@ -1752,19 +1756,29 @@ export default function SessionsPage() {
                     className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
-                        {s.title ?? t.common.untitled}
+                      <span
+                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
+                      >
+                        {s.title ??
+                          (s.preview
+                            ? s.preview.slice(0, 60)
+                            : t.common.untitled)}
                       </span>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        <span className="font-mono-ui">
-                          {(s.model ?? t.common.unknown).split("/").pop()}
-                        </span>{" "}
-                        · {s.message_count} {t.common.msgs} ·{" "}
+                        {s.model && (
+                          <>
+                            <span className="font-mono-ui">
+                              {s.model.split("/").pop()}
+                            </span>{" "}
+                            ·{" "}
+                          </>
+                        )}
+                        {s.message_count} {t.common.msgs} ·{" "}
                         {timeAgo(s.last_active)}
                       </span>
 
-                      {s.preview && (
+                      {s.preview && s.title && (
                         <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
                           {s.preview}
                         </p>

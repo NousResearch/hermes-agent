@@ -4,9 +4,16 @@ import { useEffect, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  preventCloseButtonAutoFocus
+} from '@/components/ui/dialog'
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
+import { Progress } from '@/components/ui/progress'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
@@ -94,7 +101,13 @@ export function UpdatesOverlay() {
 
   return (
     <Dialog onOpenChange={handleClose} open={open}>
-      <DialogContent className="max-w-sm overflow-hidden p-0 gap-0" showCloseButton={phase !== 'applying'}>
+      {/* This dialog has no inputs, so Radix's default autofocus would land on
+          the close button and trigger its tooltip immediately on open. */}
+      <DialogContent
+        className="max-w-sm overflow-hidden p-0 gap-0"
+        onOpenAutoFocus={preventCloseButtonAutoFocus}
+        showCloseButton={phase !== 'applying'}
+      >
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
 
         {phase === 'manual' && (
@@ -384,15 +397,12 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         ) : null}
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            percent === null && 'w-1/3 animate-pulse'
-          )}
-          style={percent !== null ? { width: `${percent}%` } : undefined}
-        />
-      </div>
+      <Progress
+        aria-label={label}
+        indeterminate={percent === null}
+        size="lg"
+        value={percent === null ? 0 : percent / 100}
+      />
 
       {recentLog.length > 1 ? (
         <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">

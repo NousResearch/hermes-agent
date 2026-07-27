@@ -1,14 +1,14 @@
 ---
-title: "Huggingface Tokenizers — Fast tokenizers optimized for research and production"
+title: "Huggingface Tokenizers — Fast BPE/WordPiece tokenization and custom vocab training"
 sidebar_label: "Huggingface Tokenizers"
-description: "Fast tokenizers optimized for research and production"
+description: "Fast BPE/WordPiece tokenization and custom vocab training"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Huggingface Tokenizers
 
-Fast tokenizers optimized for research and production. Rust-based implementation tokenizes 1GB in &lt;20 seconds. Supports BPE, WordPiece, and Unigram algorithms. Train custom vocabularies, track alignments, handle padding/truncation. Integrates seamlessly with transformers. Use when you need high-performance tokenization or custom tokenizer training.
+Fast BPE/WordPiece tokenization and custom vocab training.
 
 ## Skill metadata
 

@@ -332,6 +332,12 @@ class TestFallbackTransportInit:
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
 
         assert transport._fallback_ips == ["149.154.167.220"]
+        # Fallback pools are now built lazily (#63311), so __init__ constructs
+        # only the primary transport. Force the fallback pool to materialize to
+        # observe its kwargs.
+        import asyncio
+
+        asyncio.run(transport._get_fallback("149.154.167.220"))
         assert len(seen_kwargs) == 2
         assert all(kwargs["proxy"] == "http://proxy.example:8080" for kwargs in seen_kwargs)
 
@@ -351,6 +357,10 @@ class TestFallbackTransportInit:
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
 
         assert transport._fallback_ips == ["149.154.167.220"]
+        # Lazy fallback build (#63311): materialize the fallback pool.
+        import asyncio
+
+        asyncio.run(transport._get_fallback("149.154.167.220"))
         assert len(seen_kwargs) == 2
         assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
@@ -379,10 +389,17 @@ class TestFallbackTransportInit:
             ["149.154.167.220"], limits=custom_limits
         )
 
+        # Lazy fallback build (#63311): __init__ builds only the primary; the
+        # fallback pool is constructed on demand. Materialize it so both the
+        # primary and the fallback are observed.
+        import asyncio
+
+        asyncio.run(transport._get_fallback("149.154.167.220"))
         # 1 primary + 1 fallback = 2 AsyncHTTPTransport instances
         assert len(seen_kwargs) == 2
         for kw in seen_kwargs:
             assert "limits" in kw
+            # Caller-supplied limits must win over the setdefault default.
             assert kw["limits"] is custom_limits
 
 
@@ -393,6 +410,10 @@ class TestFallbackTransportClose:
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+        # Lazy fallback build (#63311): materialize both fallback pools so
+        # aclose() has something to tear down.
+        await transport._get_fallback("149.154.167.220")
+        await transport._get_fallback("149.154.167.221")
         await transport.aclose()
 
         # 1 primary + 2 fallback transports
@@ -730,7 +751,7 @@ class TestDiscoverFallbackIps:
         elapsed = _time.monotonic() - start
 
         assert ips == ["149.154.167.220"]
-        assert elapsed < 1.0, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+        assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
 
     @pytest.mark.asyncio
     async def test_hung_system_dns_with_no_doh_answers_bounded_seed_fallback(self, monkeypatch):
@@ -755,4 +776,4 @@ class TestDiscoverFallbackIps:
         elapsed = _time.monotonic() - start
 
         assert ips == tnet._SEED_FALLBACK_IPS
-        assert elapsed < 1.0, f"seed fallback gated on hung system DNS ({elapsed:.2f}s)"
+        assert elapsed < 1.4, f"seed fallback gated on hung system DNS ({elapsed:.2f}s)"

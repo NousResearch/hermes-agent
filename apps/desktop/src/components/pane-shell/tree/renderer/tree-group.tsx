@@ -10,7 +10,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useRef, useState } from 'react'
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
+import { hiddenPaneProps, PaneVisibleContext } from '../../pane-visibility'
 import type { DropPosition, GroupNode, RootEdge } from '../model'
 import { adjacentGroup } from '../model'
 import {
@@ -37,6 +38,7 @@ import {
   $hiddenTreePanes,
   $layoutTree,
   $narrowViewport,
+  $newSessionTabAction,
   $treeDragging,
   activateTreePane,
   closeTreePane,
@@ -52,6 +54,7 @@ import {
 } from '../store'
 
 import { type DoubleTapContext, startPaneDrag } from './drag-session'
+import { forceLoneHeaderForPanes } from './lone-header'
 import { paneChrome } from './track-model'
 
 /** A directional action in the zone menu (computed per group state). */
@@ -86,7 +89,11 @@ function ZoneMenu({
   /** False for the zone hosting the uncloseable workspace — collapsing the
    *  MAIN pane strands the app behind a strip. */
   minimizable?: boolean
-  directions: ZoneMenuDirection[]
+  /** Called when the menu renders, not on every zone re-render: resolving the
+   *  neighbor zones has to read the layout tree, and subscribing every zone to
+   *  it made a sash drag re-render every mounted pane. Same lazy shape as
+   *  `closable`. */
+  directions: () => ZoneMenuDirection[]
   headerHidden?: boolean
   minimized?: boolean
   nodeId: string
@@ -97,7 +104,7 @@ function ZoneMenu({
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent>
-        {directions.map(direction => (
+        {directions().map(direction => (
           <ContextMenuItem key={direction.side} onSelect={direction.run}>
             {direction.label}
           </ContextMenuItem>
@@ -161,6 +168,7 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
+  const newSessionTabAction = useStore($newSessionTabAction)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -177,6 +185,30 @@ export function TreeGroup({
   const active = paneFor(activeId)
   const isEmpty = node.panes.length === 0
 
+  // KEEP-ALIVE: every pane that has been ACTIVE in this zone stays mounted —
+  // an inactive tab merely hides (visibility), it does not unmount. Remounting
+  // on every tab switch re-measured and re-scrolled the content from scratch
+  // (the thread visibly layout-shifted each time a session tab was revisited).
+  // Lazy on purpose: a pane first mounts when first activated, so a
+  // boot-restored tab stack doesn't resume every session up front.
+  const everActivePanesRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!node.minimized && !isEmpty) {
+      everActivePanesRef.current.add(activeId)
+    }
+
+    // Prune panes that left the zone (closed / moved to another group), so a
+    // long-lived zone doesn't pin stale ids forever.
+    for (const id of everActivePanesRef.current) {
+      if (!node.panes.includes(id)) {
+        everActivePanesRef.current.delete(id)
+      }
+    }
+  })
+
+  const keptPanes = shown.filter(id => id === activeId || everActivePanesRef.current.has(id))
+
   // ONE header style: the app's compact pane-header. DEFAULT is contextual —
   // a single pane isn't a "tab", so its header auto-hides; a stack shows its
   // chips. EXCEPTIONS force a lone pane to keep its header (tab + close X):
@@ -187,13 +219,9 @@ export function TreeGroup({
   // The uncloseable workspace and side chrome (sessions/files) keep the clean
   // no-tab default. Double-click toggles it either way; a minimized group
   // always shows its header (it IS the header).
-  const forceLoneHeader =
-    shown.some(id => {
-      const chrome = paneChrome(paneFor(id))
-
-      return !chrome.uncloseable && chrome.placement === 'main'
-    }) ||
-    (shown.length === 1 && isCollapsePane(shown[0]))
+  // Session-tile ids force the header even before chrome registers — cycling
+  // onto a freshly-split tile used to land headerless ("name card missing").
+  const forceLoneHeader = forceLoneHeaderForPanes(shown, id => paneChrome(paneFor(id)), isCollapsePane)
 
   // A full-page view (headerVeto) suppresses the strip while it's the active
   // pane — a page is not a tab-able surface; the bar returns with the chat.
@@ -231,30 +259,43 @@ export function TreeGroup({
   //  - a single pane -> "Move <dir>": join the zone visually adjacent on that
   //    side (splitting here would only make an invisible empty zone). Sides
   //    with no visible neighbor are omitted entirely.
-  const tree = useStore($layoutTree)
+  // NOT `useStore($layoutTree)`: this subscribes every zone — and therefore
+  // every mounted pane and its whole transcript — to the entire layout tree.
+  // A sash drag rewrites the tree once per frame, so dragging the sidebar
+  // re-rendered all five tiles' message lists on every pointermove (measured:
+  // TreeGroup 180 renders cascading into ChatView/Thread/TileChat at ~4.5s
+  // each, holding the drag at ~3fps).
+  //
+  // The tree is only read to build the zone context menu's move/split
+  // directions, which are consumed when the menu OPENS — so read it at that
+  // moment with `.get()` instead of subscribing to every intermediate frame.
+  const menuDirections = (): ZoneMenuDirection[] => {
+    if (shown.length > 1) {
+      return DIRECTION_ORDER.map(side => ({
+        side,
+        label: `${t.zones.split(dirWord[side])} ${DIRECTION_ARROW[side]}`,
+        run: () => splitTreeZone(node.id, side, menuPane ?? activeId)
+      }))
+    }
 
-  const menuDirections: ZoneMenuDirection[] =
-    shown.length > 1
-      ? DIRECTION_ORDER.map(side => ({
+    const tree = $layoutTree.get()
+
+    return DIRECTION_ORDER.flatMap(side => {
+      const neighbor = tree ? adjacentGroup(tree, node.id, side, g => g.panes.some(paneShown)) : null
+
+      if (!neighbor || neighbor.id === node.id) {
+        return []
+      }
+
+      return [
+        {
           side,
-          label: `${t.zones.split(dirWord[side])} ${DIRECTION_ARROW[side]}`,
-          run: () => splitTreeZone(node.id, side, menuPane ?? activeId)
-        }))
-      : DIRECTION_ORDER.flatMap(side => {
-          const neighbor = tree ? adjacentGroup(tree, node.id, side, g => g.panes.some(paneShown)) : null
-
-          if (!neighbor || neighbor.id === node.id) {
-            return []
-          }
-
-          return [
-            {
-              side,
-              label: `${t.zones.move(dirWord[side])} ${DIRECTION_ARROW[side]}`,
-              run: () => moveTreePane(activeId, { groupId: neighbor.id, pos: 'center' })
-            }
-          ]
-        })
+          label: `${t.zones.move(dirWord[side])} ${DIRECTION_ARROW[side]}`,
+          run: () => moveTreePane(activeId, { groupId: neighbor.id, pos: 'center' })
+        }
+      ]
+    })
+  }
 
   // Close targets the right-clicked chip (falling back to the active pane);
   // only panes that declare `uncloseable` (the main workspace) are exempt.
@@ -449,6 +490,9 @@ export function TreeGroup({
                     role="tab"
                     style={{ cursor: 'grab' }}
                   >
+                    {chrome.tabLead ? (
+                      <span className="ml-2 -mr-1 flex shrink-0 items-center">{chrome.tabLead()}</span>
+                    ) : null}
                     <PaneTabLabel>{title}</PaneTabLabel>
                   </PaneTab>
                 )
@@ -457,6 +501,23 @@ export function TreeGroup({
                 // tile tab); the wrapper needs the key since it's the root.
                 return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
               })}
+
+              {/* Plain "+" after the last tab of the MAIN strip (the workspace
+                  zone) — always shown, no tab/button chrome, just the glyph.
+                  Creates a new session tab (mirrors ⌘T) via the app-registered
+                  action; hidden when unwired or the zone is minimized. */}
+              {node.panes.includes('workspace') && newSessionTabAction && !node.minimized && (
+                <button
+                  aria-label={t.zones.newSessionTab}
+                  className="grid size-7 shrink-0 place-items-center self-center bg-transparent text-(--ui-text-quaternary) transition-colors hover:text-foreground [-webkit-app-region:no-drag]"
+                  onClick={() => newSessionTabAction()}
+                  onPointerDown={e => e.stopPropagation()}
+                  title={t.zones.newSessionTab}
+                  type="button"
+                >
+                  <Codicon name="add" size="0.8125rem" />
+                </button>
+              )}
             </div>
             {minimizable && (
               <button
@@ -474,18 +535,47 @@ export function TreeGroup({
         </ZoneMenu>
       )}
 
-      {/* Body: the active pane's contributed content, or the empty zone. */}
+      {/* Body: the zone's pane content — every kept (ever-active) pane stays
+          mounted in an absolute layer; only the active one is visible.
+          `visibility` (not display) keeps the hidden pane's layout box, so
+          scroll positions and measurements survive the round-trip — which also
+          makes a hidden layer's rect identical to the visible one's, hence the
+          marker document-wide lookups filter on (see pane-visibility.ts). */}
       {!node.minimized && (
-        <div className="relative min-h-0 min-w-0 flex-1 overflow-auto">
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {isEmpty ? (
             <div className="grid h-full place-items-center">
               {/* Same decode primitive as the CONNECTING boot overlay. */}
               <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="HERMES" />
             </div>
-          ) : active?.render ? (
-            <ContribBoundary id={active.id}>{active.render()}</ContribBoundary>
           ) : (
-            <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">{t.zones.missingPane(activeId)}</div>
+            keptPanes.map(paneId => {
+              const pane = paneFor(paneId)
+              const isActive = paneId === activeId
+
+              return (
+                <div
+                  aria-hidden={!isActive || undefined}
+                  className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
+                  key={paneId}
+                  {...hiddenPaneProps(!isActive)}
+                >
+                  {pane?.render ? (
+                    // Visibility flows to the pane so a kept-alive chat surface
+                    // can gate its hot (per-token) subscriptions while hidden.
+                    <PaneVisibleContext.Provider value={isActive}>
+                      <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
+                    </PaneVisibleContext.Provider>
+                  ) : (
+                    isActive && (
+                      <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">
+                        {t.zones.missingPane(paneId)}
+                      </div>
+                    )
+                  )}
+                </div>
+              )
+            })
           )}
         </div>
       )}

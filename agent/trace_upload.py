@@ -162,7 +162,7 @@ def build_trace_jsonl(
         if cwd:
             r = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=3, cwd=cwd,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
             )
             if r.returncode == 0:
                 git_branch = r.stdout.strip()

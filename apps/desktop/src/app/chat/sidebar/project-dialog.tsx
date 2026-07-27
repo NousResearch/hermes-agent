@@ -14,6 +14,7 @@ import {
 import { GenerateButton } from '@/components/ui/generate-button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
@@ -197,16 +198,18 @@ export function ProjectDialog() {
                         {p.primaryBadge}
                       </span>
                     )}
-                    <Button
-                      aria-label={p.removeFolder}
-                      className="size-5 shrink-0 text-(--ui-text-quaternary) hover:text-foreground"
-                      onClick={() => setFolders(prev => prev.filter(f => f !== folder))}
-                      size="icon-xs"
-                      type="button"
-                      variant="ghost"
-                    >
-                      <Codicon name="close" size="0.75rem" />
-                    </Button>
+                    <Tip label={p.removeFolder}>
+                      <Button
+                        aria-label={p.removeFolder}
+                        className="size-5 shrink-0 text-(--ui-text-quaternary) hover:text-foreground"
+                        onClick={() => setFolders(prev => prev.filter(f => f !== folder))}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="close" size="0.75rem" />
+                      </Button>
+                    </Tip>
                   </li>
                 ))}
               </ul>
@@ -258,17 +261,19 @@ export function ProjectDialog() {
                   {template.label}
                 </button>
               ))}
-              <Button
-                aria-label={p.ideaShuffle}
-                className="size-5 text-(--ui-text-quaternary) hover:text-foreground"
-                disabled={submitting}
-                onClick={() => setTemplates(randomIdeaTemplates())}
-                size="icon-xs"
-                type="button"
-                variant="ghost"
-              >
-                <Codicon name="refresh" size="0.75rem" />
-              </Button>
+              <Tip label={p.ideaShuffle}>
+                <Button
+                  aria-label={p.ideaShuffle}
+                  className="size-5 text-(--ui-text-quaternary) hover:text-foreground"
+                  disabled={submitting}
+                  onClick={() => setTemplates(randomIdeaTemplates())}
+                  size="icon-xs"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Codicon name="refresh" size="0.75rem" />
+                </Button>
+              </Tip>
             </div>
           </div>
         )}

@@ -27,9 +27,56 @@ class TestMatrixExecApprovalReactions:
         assert result.success is True
         assert adapter._approval_prompt_by_session["sess-1"] == "$evt1"
         assert adapter._approval_prompts_by_event["$evt1"].session_key == "sess-1"
-        assert adapter._send_reaction.await_count == 3
+        assert adapter._send_reaction.await_count == 4
         emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
-        assert emojis == ["✅", "♾️", "❌"]
+        assert emojis == ["✅", "🌀", "♾️", "❌"]
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_tirith_seeds_session_but_not_always(self, monkeypatch):
+        """allow_permanent=False (tirith-only prompt) keeps the session tier
+        but drops the permanent reaction."""
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
+        adapter._client = types.SimpleNamespace()
+        adapter.send = AsyncMock(return_value=types.SimpleNamespace(success=True, message_id="$evt2"))
+        adapter._send_reaction = AsyncMock(return_value="$r")
+
+        result = await adapter.send_exec_approval(
+            chat_id="!room:example.org",
+            command="curl https://bit.ly/abc",
+            session_key="sess-2",
+            description="shortened URL",
+            allow_permanent=False,
+        )
+
+        assert result.success is True
+        emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
+        assert emojis == ["✅", "🌀", "❌"]
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_no_session_seeds_once_deny_only(self, monkeypatch):
+        """allow_session=False (Smart-DENY-style) collapses to once/deny."""
+        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
+        adapter._client = types.SimpleNamespace()
+        adapter.send = AsyncMock(return_value=types.SimpleNamespace(success=True, message_id="$evt3"))
+        adapter._send_reaction = AsyncMock(return_value="$r")
+
+        result = await adapter.send_exec_approval(
+            chat_id="!room:example.org",
+            command="rm -rf /tmp/x",
+            session_key="sess-3",
+            description="dangerous",
+            allow_session=False,
+        )
+
+        assert result.success is True
+        emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
+        assert emojis == ["✅", "❌"]
 
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):

@@ -41,6 +41,8 @@ def _clean_op_env(monkeypatch):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
     monkeypatch.delenv("OP_ACCOUNT", raising=False)
+    monkeypatch.delenv("OP_CONNECT_HOST", raising=False)
+    monkeypatch.delenv("OP_CONNECT_TOKEN", raising=False)
     yield
 
 
@@ -214,6 +216,31 @@ def test_fetch_child_env_is_allowlisted(monkeypatch, tmp_path):
     assert env.get("NO_COLOR") == "1"
 
 
+def test_fetch_child_env_passes_load_desktop_app_settings(monkeypatch, tmp_path):
+    """OP_LOAD_DESKTOP_APP_SETTINGS must reach the op child when the user sets it.
+
+    On a headless box with a valid service-account token but a wedged 1Password
+    desktop app, `op read` hangs on the desktop-settings probe unless
+    OP_LOAD_DESKTOP_APP_SETTINGS=false is passed through. It's an allowlisted
+    var, so a user who exports it should see it in the op child env.
+    """
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_tok")
+    monkeypatch.setenv("OP_LOAD_DESKTOP_APP_SETTINGS", "false")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _ok("v")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+    op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, binary=fake_op, use_cache=False
+    )
+    assert captured["env"].get("OP_LOAD_DESKTOP_APP_SETTINGS") == "false"
+
+
 # ---------------------------------------------------------------------------
 # Caching
 # ---------------------------------------------------------------------------
@@ -321,6 +348,35 @@ def test_session_change_invalidates_cache(monkeypatch, tmp_path):
     # Switch identity.
     monkeypatch.delenv("OP_SESSION_acctA", raising=False)
     monkeypatch.setenv("OP_SESSION_acctB", "sessB")
+    op._CACHE.clear()
+    op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    assert calls["n"] == 2  # cache key changed → refetch
+
+
+def test_connect_credential_change_invalidates_cache(monkeypatch, tmp_path):
+    """A different 1Password Connect identity must not reuse a cached value."""
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    calls = {"n": 0}
+
+    def fake_run(*a, **k):
+        calls["n"] += 1
+        return _ok("v")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+    op._reset_cache_for_tests(tmp_path)
+
+    monkeypatch.setenv("OP_CONNECT_HOST", "https://connect.example.com")
+    monkeypatch.setenv("OP_CONNECT_TOKEN", "tokenA")
+    op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, cache_ttl_seconds=300,
+        binary=fake_op, home_path=tmp_path,
+    )
+    # Rotate the Connect token → new identity.
+    monkeypatch.setenv("OP_CONNECT_TOKEN", "tokenB")
     op._CACHE.clear()
     op.fetch_onepassword_secrets(
         references={"K": "op://V/I/F"}, cache_ttl_seconds=300,

@@ -64,7 +64,7 @@ def _get_git_commit(project_root: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             cwd=str(project_root),
         )
         if result.returncode == 0:
@@ -99,7 +99,7 @@ def _get_git_commit_date(project_root: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "log", "-1", "--format=%cd", "--date=short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             cwd=str(project_root),
         )
         if result.returncode == 0:
@@ -167,7 +167,9 @@ def _cron_summary(hermes_home: Path) -> str:
     if not jobs_file.exists():
         return "0"
     try:
-        with open(jobs_file, encoding="utf-8") as f:
+        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+        # may leave a UTF-8 BOM that plain utf-8 json.load rejects.
+        with open(jobs_file, encoding="utf-8-sig") as f:
             data = json.load(f)
         jobs = data.get("jobs", [])
         active = sum(1 for j in jobs if j.get("enabled", True))

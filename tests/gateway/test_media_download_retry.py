@@ -12,6 +12,7 @@ in this environment.
 """
 
 import asyncio
+import socket
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -233,6 +234,54 @@ class TestCacheImageFromUrl:
         # Only 1 attempt, no sleep
         assert mock_client.stream.call_count == 1
         mock_sleep.assert_not_called()
+
+
+class TestCacheImageFromUrlConnectGuard:
+    def test_blocks_private_dns_answer_at_connect_time(self, tmp_path, monkeypatch):
+        """A hostname that rebinds after preflight must not reach TCP connect."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        for proxy_var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(proxy_var, raising=False)
+
+        answers = [
+            [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+            [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))],
+        ]
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            assert host == "rebind.test"
+            return answers.pop(0)
+
+        from httpcore._backends.auto import AutoBackend
+
+        async def fail_connect_tcp(
+            self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            raise AssertionError(f"TCP connect attempted for {host}:{port}")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        monkeypatch.setattr(AutoBackend, "connect_tcp", fail_connect_tcp)
+
+        async def run():
+            from gateway.platforms.base import cache_image_from_url
+            await cache_image_from_url("http://rebind.test/image.jpg", ext=".jpg", retries=0)
+
+        with pytest.raises(ValueError, match="during connect"):
+            asyncio.run(run())
+
+        assert answers == []
 
 
 # ---------------------------------------------------------------------------

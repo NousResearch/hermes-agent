@@ -24,8 +24,9 @@ from gateway.run import GatewayRunner, _parse_session_key
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
 
-    def __init__(self, sessions):
+    def __init__(self, sessions, consumed=False):
         self._sessions = list(sessions)
+        self._consumed = consumed
 
     def get(self, session_id):
         if self._sessions:
@@ -33,7 +34,7 @@ class _FakeRegistry:
         return None
 
     def is_completion_consumed(self, session_id):
-        return False
+        return self._consumed
 
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
@@ -246,6 +247,70 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path):
+    """#65379: after process(wait) already returned the completion inline,
+    the gateway watcher must NOT also push the raw
+    "[Background process ... finished with exit code ...]" message.
+
+    The agent-notify branch already honored _completion_consumed, but its
+    skip fell through to the text-notification branch, double-delivering the
+    same output to the chat (observed on Slack with
+    background_process_notifications: all)."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="sleep 1; echo done",
+    )]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=True)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    # notify_on_complete=True mirrors the reported scenario: the watcher's
+    # agent-notify skip must not fall through to a raw adapter.send().
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_consumed_completion_skips_raw_notification_without_agent_notify(
+    monkeypatch, tmp_path
+):
+    """#65379 variant: same double-delivery guard for plain watchers
+    (notify_on_complete=False) — wait/log consumption suppresses the raw
+    completion message in every mode."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done",
+    )]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=True)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -556,3 +621,72 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+
+# ---------------------------------------------------------------------------
+# api_server (stateless) wake routing — gateway/wake.py self-post path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch, tmp_path):
+    """An event whose session_key is a RAW api_server session id (not an
+    agent:main:... structured key) must wake the real session via the
+    /v1/chat/completions self-post instead of being dropped for missing
+    routing metadata."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append({"text": text, "session_id": session_id})
+
+    import gateway.wake as wake_mod
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "raw-hq-session-id",  # no agent:main:... structure
+    }
+    result = await runner._inject_watch_notification("[SYSTEM: subagent finished]", evt)
+
+    assert result is True
+    api_adapter.handle_message.assert_not_awaited()
+    assert posts == [
+        {"text": "[SYSTEM: subagent finished]", "session_id": "raw-hq-session-id"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp_path):
+    """origin_session_id (stamped at dispatch time by async_delegation) takes
+    precedence as the wake target."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append(session_id)
+
+    import gateway.wake as wake_mod
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "",
+        "origin_session_id": "raw-origin-sid",
+    }
+    result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
+    assert result is True
+    assert posts == ["raw-origin-sid"]

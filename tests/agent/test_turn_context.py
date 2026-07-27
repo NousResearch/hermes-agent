@@ -42,6 +42,7 @@ class _FakeAgent:
         self.session_id = "sess-1"
         self.model = "test/model"
         self.provider = "openrouter"
+        self.requested_provider = "openrouter"
         self.base_url = "https://openrouter.ai/api/v1"
         self.api_key = "sk-x"
         self.api_mode = "chat_completions"
@@ -57,6 +58,17 @@ class _FakeAgent:
         self.context_compressor = types.SimpleNamespace(
             protect_first_n=2, protect_last_n=2
         )
+        # Make the fake compressor honour the ContextEngine contract that the
+        # real code now relies on (should_compress_info returns a (bool, reason)
+        # tuple). Without it build_turn_context raises AttributeError.
+        def _fake_should_compress(tokens=None):
+            return False
+
+        def _fake_should_compress_info(tokens=None):
+            return (False, None)
+
+        self.context_compressor.should_compress = _fake_should_compress
+        self.context_compressor.should_compress_info = _fake_should_compress_info
         self._cached_system_prompt = "SYSTEM"
         self._memory_store = None
         self._memory_manager = None
@@ -66,6 +78,8 @@ class _FakeAgent:
         self._todo_store = _FakeTodoStore()
         self._tool_guardrails = _FakeGuardrails()
         self._compression_warning = None
+        self._emit_warning = MagicMock()
+        self._last_ctx_overflow_warn = None
         self._interrupt_requested = False
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None
@@ -80,6 +94,21 @@ class _FakeAgent:
         # Records _cached_system_prompt at the moment _ensure_db_session()
         # is called (regression guard for #45499 turn-setup ordering).
         self._ensure_db_prompt_at_call = "<unset>"
+
+    def _warn_context_overflow_blocked(self, reason, preflight_tokens, threshold_tokens):
+        # Mirror the real AIAgent helper so tests can assert the warning fired.
+        _warn_kind = (reason or "unknown").split(":", 1)[0]
+        _warn_key = ("ctx_overflow_blocked", _warn_kind)
+        if self._last_ctx_overflow_warn != _warn_key:
+            self._last_ctx_overflow_warn = _warn_key
+            self._emit_warning(
+                f"⚠ Context is over the compression threshold "
+                f"(~{preflight_tokens:,} tokens >= {threshold_tokens:,}) "
+                f"but compression is currently blocked ({reason})."
+            )
+
+    def _clear_context_overflow_warn(self):
+        self._last_ctx_overflow_warn = None
 
     # --- methods the prologue calls ---
     def _ensure_db_session(self):
@@ -179,6 +208,37 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_turn_start_replaces_stale_parent_history_with_compression_child():
+    agent = _FakeAgent()
+    stale_history = [{"role": "user", "content": "stale parent"}]
+    compacted_history = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        {"role": "assistant", "content": "child tail"},
+    ]
+
+    def _recover(_agent):
+        _agent.session_id = "compression-child"
+        return compacted_history
+
+    log_context = MagicMock()
+    with patch(
+        "agent.turn_context.recover_rotated_compression_session",
+        side_effect=_recover,
+    ):
+        ctx = _build(
+            agent,
+            conversation_history=stale_history,
+            set_session_context=log_context,
+        )
+
+    assert agent.session_id == "compression-child"
+    assert agent._current_turn_id.startswith("compression-child:")
+    log_context.assert_called_once_with("compression-child")
+    assert ctx.conversation_history == compacted_history
+    assert ctx.messages == compacted_history + [{"role": "user", "content": "hello"}]
+    assert all(message.get("content") != "stale parent" for message in ctx.messages)
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
@@ -257,6 +317,42 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     assert ctx.messages[-1]["content"] == "[MODEL NOTE]\n\nclean prompt"
     assert ctx.messages[-1]["_db_persisted"] is True
     assert agent._pending_cli_user_message is None
+
+
+def test_runtime_main_sync_happens_after_restore():
+    agent = _FakeAgent()
+    agent.model = "stale-fallback-model"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_key = "fallback-key"
+    agent.api_mode = "codex_responses"
+
+    def restore_primary():
+        agent.model = "primary-model"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_key = "primary-key"
+        agent.api_mode = "anthropic_messages"
+        agent.requested_provider = "anthropic"
+
+    agent._restore_primary_runtime = restore_primary
+    calls = []
+    with patch(
+        "agent.auxiliary_client.set_runtime_main",
+        side_effect=lambda *args, **kwargs: calls.append((args, kwargs)),
+    ):
+        _build(agent)
+
+    assert calls == [(
+        ("anthropic", "primary-model"),
+        {
+            "base_url": "https://api.anthropic.com",
+            "api_key": "primary-key",
+            "api_mode": "anthropic_messages",
+            "auth_mode": "",
+            "requested_provider": "anthropic",
+        },
+    )]
 
 
 def test_memory_nudge_fires_at_interval():
@@ -416,4 +512,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

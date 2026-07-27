@@ -6,7 +6,7 @@ import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -19,7 +19,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 
-import { appViewForPath, isOverlayView } from '../routes'
+import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -33,6 +33,8 @@ export interface TitlebarTool {
   href?: string
   icon: ReactNode
   onSelect?: (event?: MouseEvent) => void
+  /** Keybind action id — when set, the tooltip shows the label + keybind hint. */
+  actionId?: string
   title?: string
   to?: string
 }
@@ -123,6 +125,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const leftToolbarTools: TitlebarTool[] = [
     {
+      actionId: 'view.toggleSidebar',
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
       label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,
@@ -132,6 +135,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     },
     {
+      actionId: 'view.flipPanes',
       icon: <Codicon name="arrow-swap" />,
       id: 'flip-panes',
       label: t.titlebar.swapSidebarSides,
@@ -145,6 +149,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   ]
 
   const rightSidebarTool: TitlebarTool = {
+    actionId: 'view.toggleRightSidebar',
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
     label: rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar,
@@ -184,6 +189,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       onSelect: toggleHaptics
     },
     {
+      actionId: 'keybinds.openPanel',
+      icon: <Codicon name="keyboard" />,
+      id: 'keybinds',
+      label: t.titlebar.openKeybinds,
+      onSelect: () => {
+        triggerHaptic('open')
+        navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
+      }
+    },
+    {
+      actionId: 'nav.settings',
       icon: <Codicon name="settings-gear" />,
       id: 'settings',
       label: t.titlebar.openSettings,
@@ -256,9 +272,15 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   // for a11y.
   const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
 
+  const tooltipLabel = tool.actionId ? (
+    <TipKeybindLabel actionId={tool.actionId} text={tool.title ?? tool.label} />
+  ) : (
+    (tool.title ?? tool.label)
+  )
+
   if (tool.href) {
     return (
-      <Tip label={tool.title ?? tool.label}>
+      <Tip label={tooltipLabel}>
         <Button asChild className={className} size="icon-titlebar" variant="ghost">
           <a
             aria-label={tool.label}
@@ -275,7 +297,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   }
 
   return (
-    <Tip label={tool.title ?? tool.label}>
+    <Tip label={tooltipLabel}>
       <Button
         aria-label={tool.label}
         aria-pressed={tool.active ?? undefined}

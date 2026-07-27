@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
     "@hermes/shared": "file:../apps/shared",

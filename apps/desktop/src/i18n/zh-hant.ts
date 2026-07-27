@@ -1616,11 +1616,11 @@ export const zhHant = defineLocale({
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',
     shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
     noWorkspace: '無工作區',
-    noProject: '無專案',
     projectEmpty: '尚無工作階段',
     noSessions: '尚無工作階段',
     projects: {
       sectionLabel: '專案',
+      home: '主頁',
       newButton: '新增專案',
       createTitle: '新增專案',
       createDesc: '為工作區命名並新增一個或多個資料夾。',

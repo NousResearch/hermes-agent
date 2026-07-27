@@ -786,9 +786,23 @@ Every topic gets its own conversation history, model state, tool execution, and 
 
 ### Auto-renamed topics
 
-When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
+When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database". Titles prefer 1–3 words, favor an explicitly named project or proper name, and avoid filler such as "Fixing", "Update", or "Analysis".
 
-To disable this and keep your manually-chosen topic names untouched, set:
+The title policy is configurable for every Hermes surface:
+
+```yaml
+auxiliary:
+  title_generation:
+    max_words: 2
+    max_characters: 24
+    name_aliases:
+      project atlas: ProjectAtlas
+      atlas app: ProjectAtlas
+```
+
+`name_aliases` is case-insensitive and keeps personal project vocabulary in user config rather than Hermes source code. When an alias appears in the opening exchange, Hermes deterministically uses its configured canonical name even if the title model returns something else; explicit canonical names take precedence over the generic character preference.
+
+To disable topic renaming and keep your manually-chosen topic names untouched, set:
 
 ```yaml
 gateway:

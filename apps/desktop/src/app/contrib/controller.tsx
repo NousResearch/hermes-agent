@@ -27,6 +27,8 @@ import {
   revealTreePane,
   setPaneCollapsed,
   setTreePaneHidden,
+  setTreeSideCollapsed,
+  treeSideOfPane,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -533,7 +535,13 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 // rode the rail's row and vanished with it), its zone stands on its own.
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
-bindPaneVisibility('files', $hasWorkspace)
+// The tree pane's own presence tracks ⌘J directly, not just the column's
+// collapse — otherwise revealing a preview (which opens that shared column)
+// would drag the tree along with it. See revealPreview.
+bindPaneVisibility(
+  'files',
+  computed([$hasWorkspace, $fileBrowserOpen], (workspace, open) => workspace && open)
+)
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',
@@ -596,6 +604,18 @@ registerPaneCloser('files', () =>
 // the side, unhide, front — a NEW target while already visible still fronts.
 const revealPreview = () => {
   dockPaneBeside('preview', 'files')
+
+  // The preview shares a collapsible column with the file tree, and
+  // revealTreePane un-collapses a column through its bound store — here ⌘J /
+  // $fileBrowserOpen, which IS the tree's toggle. Going through it would open
+  // the tree every time a preview opened. Un-collapse the column directly and
+  // leave the toggle alone, so a preview can appear on its own.
+  const side = treeSideOfPane('preview')
+
+  if (side) {
+    setTreeSideCollapsed(side, false)
+  }
+
   revealTreePane('preview')
 }
 

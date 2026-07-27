@@ -135,6 +135,24 @@ def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     return "(s.cwd = ? OR s.cwd LIKE ? OR s.cwd LIKE ?)", [prefix, f"{prefix}/%", f"{prefix}\\%"]
 
 
+def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
+    """Match sessions whose ``workspace_key(row)`` equals ``key``.
+
+    Mirrors :func:`workspace_key`: a session belongs to workspace ``key``
+    when its recorded ``git_repo_root`` equals ``key``, or — for rows that
+    predate per-session git metadata — when its ``cwd`` is at or under
+    ``key`` (so a session started in ``repo/src`` still groups with ``repo``).
+    Used by ``hermes -c``/``--resume`` to continue the most recent session in
+    the *current* workspace rather than the global MRU.
+    """
+    prefix = key.rstrip("/\\") or key
+    cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
+    return (
+        f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
+        [prefix, *cwd_params],
+    )
+
+
 # Session preview = the head of the first user message, shown wherever a
 # session has no title (sidebar rows, pickers, exports, the desktop's
 # `sessionTitle` fallback).
@@ -8656,12 +8674,18 @@ class SessionDB:
         source: str = None,
         limit: int = 20,
         offset: int = 0,
+        workspace_key: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
         Returns rows enriched with a computed ``last_active`` column (latest
         message timestamp for the session, falling back to ``started_at``),
         ordered by most-recently-used first.
+
+        Pass ``workspace_key`` to scope rows to one workspace — matching
+        :func:`workspace_key` semantics (git repo root, else cwd). Used by
+        ``hermes -c``/``--resume`` so the "last" session is the last one in
+        the *current* workspace, not the global MRU.
         """
         select_with_last_active = (
             "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
@@ -8671,20 +8695,24 @@ class SessionDB:
             "FROM messages GROUP BY session_id"
             ") m ON m.session_id = s.id "
         )
+        where_clauses = []
+        params: list = []
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if workspace_key:
+            ws_clause, ws_params = _workspace_key_clause(workspace_key)
+            where_clauses.append(ws_clause)
+            params.extend(ws_params)
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        params.extend([limit, offset])
         with self._lock:
-            if source:
-                cursor = self._conn.execute(
-                    f"{select_with_last_active}"
-                    "WHERE s.source = ? "
-                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
-                    (source, limit, offset),
-                )
-            else:
-                cursor = self._conn.execute(
-                    f"{select_with_last_active}"
-                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                )
+            cursor = self._conn.execute(
+                f"{select_with_last_active}"
+                f"{where_sql} "
+                "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
+                params,
+            )
             return [dict(row) for row in cursor.fetchall()]
 
     # =========================================================================

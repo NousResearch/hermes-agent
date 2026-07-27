@@ -68,7 +68,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
-import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
+import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 
@@ -458,7 +458,7 @@ export function useSessionActions({
       }
 
       if (item.route) {
-        navigate(item.route)
+        navigateToWorkspacePage(navigate, item.route)
       }
     },
     [navigate, startFreshSessionDraft]

@@ -353,7 +353,7 @@ export function TreeGroup({
         <ZoneMenu {...zoneMenu}>
           <div
             className={cn(
-              'flex h-full w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--pane-tab-strip-bg) [--pane-tab-strip-bg:var(--theme-card-seed)]',
+              'flex h-full w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)',
               // Strip line faces the content the zone collapsed away from.
               railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
             )}
@@ -397,11 +397,11 @@ export function TreeGroup({
       {headerVisible && (
         <ZoneMenu {...zoneMenu}>
           <div
-            // Active = sidebar surface (merges into body). Strip =
-            // `--theme-card-seed` (VS Code `tab.inactiveBackground`). No bottom
-            // rule — the active tab's primary underline is the only seam.
+            // Strip and active tab both sit on the sidebar surface, so the
+            // header reads as one piece of chrome with the titlebar above it.
+            // No bottom rule — the active tab's primary underline is the only seam.
             // data-zone-tabstrip: a drop over here STACKS (drag-session reads it).
-            className="group/pane-header relative flex h-7 shrink-0 select-none bg-(--pane-tab-strip-bg) [-webkit-app-region:no-drag] [--pane-tab-active-bg:var(--ui-sidebar-surface-background)] [--pane-tab-strip-bg:var(--theme-card-seed)]"
+            className="group/pane-header relative flex h-7 shrink-0 select-none bg-(--ui-sidebar-surface-background) [-webkit-app-region:no-drag] [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]"
             data-zone-tabstrip={node.id}
             onContextMenu={e => {
               setMenuPane(

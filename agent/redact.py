@@ -111,6 +111,23 @@ _PREFIX_PATTERNS = [
     r"fw-[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
+    # GitLab token families (each pattern keeps a full literal prefix so the
+    # _PREFIX_SUBSTRINGS pre-screen stays false-negative-free). Ported from
+    # openclaw/openclaw#112954; follow-up invited in #4541.
+    r"glpat-[A-Za-z0-9_\-]{10,}",       # GitLab personal access token
+    r"gloas-[A-Za-z0-9_\-]{10,}",       # GitLab OAuth application secret
+    r"gldt-[A-Za-z0-9_\-]{10,}",        # GitLab deploy token
+    r"glrt-[A-Za-z0-9_.\-]{10,}",       # GitLab runner authentication token (routable tokens are dotted)
+    r"glrtr-[A-Za-z0-9_.\-]{10,}",      # GitLab runner registration token (routable)
+    r"glcbt-[A-Za-z0-9_\-]{10,}",       # GitLab CI/CD job token
+    r"glptt-[A-Za-z0-9_\-]{10,}",       # GitLab pipeline trigger token
+    r"glft-[A-Za-z0-9_\-]{10,}",        # GitLab feed token
+    r"glimt-[A-Za-z0-9_\-]{10,}",       # GitLab incoming mail token
+    r"glagent-[A-Za-z0-9_\-]{10,}",     # GitLab agent (KAS) token
+    r"glsoat-[A-Za-z0-9_\-]{10,}",      # GitLab service-account access token
+    r"glffct-[A-Za-z0-9_\-]{10,}",      # GitLab feature-flags client token
+    r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
+    r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.

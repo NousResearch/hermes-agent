@@ -49,7 +49,7 @@ EXCLUDED_SKILL_DIRS = frozenset(
 # archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
-# ── M2 org-shared skills (hsp-1-contract.md §11) ───────────────────────────
+# ── Org-shared skills (sync contract) ───────────────────────────
 # Org mirrors live under ~/.hermes/skills/_org/<org_id>/. Resolution is
 # TOKEN-GATED via a marker file the sync client writes after verifying the
 # token (skills_sync_client.pull_org_skills): only the marked org's mirror is

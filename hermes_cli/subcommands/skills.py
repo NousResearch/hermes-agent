@@ -320,7 +320,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     # reports that instead of failing opaquely).
     skills_propose = skills_subparsers.add_parser(
         "propose",
-        help="Propose a skill to your org's shared skill set (M2)",
+        help="Propose a skill to your organisation's shared skill set",
         description=(
             "Snapshot the local skill and submit it to the org canonical set. "
             "An org admin's push merges directly; a member's push becomes a "

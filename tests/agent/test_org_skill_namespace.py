@@ -174,3 +174,66 @@ class TestOrgMirrorReadOnly:
         d = _mk_skill(skills, f"{sku.ORG_MIRROR_DIR_NAME}/org-1/shared-x", name="shared-x")
         monkeypatch.setattr(su, "_skills_dir", lambda: skills)
         assert su.is_curation_eligible("shared-x", d) is False
+
+
+class TestOrgPullIsWiredIn:
+    """Guards the integration gap that unit tests structurally cannot catch.
+
+    The org pull functions were fully implemented and unit-tested while having
+    ZERO runtime callers, so org skills never loaded for anyone. Testing the
+    functions directly could never surface that. These tests assert the CALL
+    SITES exist, so the feature can't silently become dead code again.
+    """
+
+    def test_session_startup_calls_maybe_pull_org_skills(self):
+        import pathlib
+
+        cli_src = (
+            pathlib.Path(__file__).resolve().parents[2] / "cli.py"
+        ).read_text(encoding="utf-8")
+        assert "maybe_pull_org_skills" in cli_src, (
+            "cli.py session startup must call maybe_pull_org_skills() — "
+            "without a call site the org mirror is never populated and org "
+            "skills never load (the function being importable is not enough)."
+        )
+        # It must sit alongside the personal pull, not replace it.
+        assert "maybe_pull_skills" in cli_src
+
+    def test_sync_pull_command_refreshes_org_mirror(self):
+        import pathlib
+
+        main_src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "hermes_cli"
+            / "main.py"
+        ).read_text(encoding="utf-8")
+        assert "maybe_pull_org_skills" in main_src, (
+            "`hermes sync pull` must also refresh the org mirror."
+        )
+
+    def test_sync_status_exposes_org_state(self):
+        from tools import skills_sync_client as ssc
+
+        status = ssc.sync_status()
+        # These keys must always be present so a user can tell whether the org
+        # workflow applies to them, rather than it being invisible.
+        for key in ("org_available", "org_id", "org_role", "org_skills"):
+            assert key in status, f"sync status must expose {key!r}"
+
+    def test_no_internal_jargon_in_user_facing_strings(self):
+        """User-visible help/errors must not leak internal design coordinates."""
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        targets = [
+            root / "hermes_cli" / "subcommands" / "sync.py",
+            root / "hermes_cli" / "subcommands" / "skills.py",
+        ]
+        banned = re.compile(r"\(M[12]\)|HSP/1|§[0-9]|DEV-PHASE|hsp-1-contract")
+        for path in targets:
+            for i, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+                if "help=" in line or "description=" in line:
+                    assert not banned.search(line), (
+                        f"{path.name}:{i} leaks internal jargon to users: {line.strip()}"
+                    )

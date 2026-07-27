@@ -4453,7 +4453,7 @@ def cmd_sync(args):
             "  pull              Pull the owner's HEAD, materialize opted-in skills\n"
             "  push              Push opted-in skills to the owner's HEAD\n"
             "  now               Reconcile now: pull then push\n"
-            "  enable <skill>    Opt a skill into sync (M1-D opt-in)\n"
+            "  enable <skill>    Opt a skill into sync\n"
             "  disable <skill>   Opt a skill out of sync\n"
             "  device [--name N] Show or set this device's sync label",
             file=sys.stderr,
@@ -4502,12 +4502,25 @@ def cmd_sync(args):
     if sub == "status":
         status = ssc.sync_status()
         print(_json.dumps(status, indent=2, ensure_ascii=False))
+        if status.get("org_available"):
+            n = len(status.get("org_skills") or [])
+            print(
+                f"\nOrg skills: {n} shared skill(s) mirrored read-only from "
+                f"your organisation (your role: {status.get('org_role')}). "
+                f"They load alongside your own, labeled by origin.",
+                file=sys.stderr,
+            )
+        elif status.get("logged_in"):
+            print(
+                "\nOrg skills: not applicable — this account isn't a member "
+                "of a shared organisation.",
+                file=sys.stderr,
+            )
         if not status.get("logged_in"):
             print("\nNot logged into Nous Portal — sync is inert.", file=sys.stderr)
         elif not status.get("dev_gate_ok"):
             print(
-                "\nDEV-PHASE gate closed: your token lacks 'tool_gateway_admin'. "
-                "Sync is inert during the dev rollout.",
+                "\nSync is not enabled for your account yet.",
                 file=sys.stderr,
             )
         elif not status.get("feature_enabled"):
@@ -4532,7 +4545,7 @@ def cmd_sync(args):
         return 1
     if not identity.get("dev_gate_ok"):
         print(
-            "sync inert: DEV-PHASE gate closed (token lacks 'tool_gateway_admin').",
+            "sync unavailable: not enabled for your account yet.",
             file=sys.stderr,
         )
         return 1
@@ -4547,6 +4560,16 @@ def cmd_sync(args):
     try:
         if sub == "pull":
             result = ssc.pull_skills(identity=identity)
+            # Refresh the org mirror too when this account belongs to an
+            # organisation (no-op otherwise), so one pull covers both.
+            org_result = ssc.maybe_pull_org_skills()
+            if org_result:
+                n = len(org_result.get("updated") or [])
+                print(
+                    f"org: refreshed {n} shared skill(s) from your "
+                    f"organisation.",
+                    file=sys.stderr,
+                )
         elif sub == "push":
             result = ssc.push_skills(identity=identity, message="hermes sync push")
         elif sub == "now":

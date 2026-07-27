@@ -8,6 +8,7 @@ import {
   kanbanWorktreeDir,
   liveSessionProjectId,
   mergeRepoWorktreeGroups,
+  NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
   sessionProjectColor,
@@ -458,6 +459,25 @@ const projectNode = (over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree
   ...over
 })
 
+// Home as the backend emits it: no path, one synthetic lane carrying the rows.
+const homeNode = (sessions: SessionInfo[]): SidebarProjectTree =>
+  projectNode({
+    id: NO_PROJECT_ID,
+    isNoProject: true,
+    label: 'Home',
+    path: null,
+    repos: [
+      {
+        id: NO_PROJECT_ID,
+        label: 'Home',
+        path: null,
+        sessionCount: sessions.length,
+        groups: [lane({ id: NO_PROJECT_ID, label: 'Home', sessions })]
+      }
+    ],
+    sessionCount: sessions.length
+  })
+
 describe('liveSessionProjectId', () => {
   it('maps a brand-new (unpersisted) session to its auto project (the repo root)', () => {
     expect(liveSessionProjectId(makeSession('/www/app'), [])).toBe('/www/app')
@@ -789,6 +809,26 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['keep'])
     expect(overlaid.sessionCount).toBe(1)
   })
+
+  it('adds a brand-new detached chat to Home, and evicts a deleted one', () => {
+    const existing = makeSession(null, { id: 'old', started_at: 1 })
+    const doomed = makeSession(null, { id: 'gone', started_at: 2 })
+    const home = homeNode([existing, doomed])
+
+    const overlaid = overlayLiveLanes(home, [makeSession(null, { id: 'fresh', started_at: 9 })], new Set(['gone']))
+
+    expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['fresh', 'old'])
+    expect(overlaid.sessionCount).toBe(2)
+  })
+
+  it('leaves Home alone for a session that has a cwd', () => {
+    // A cwd-carrying row the backend hasn't placed yet (junk root, deleted
+    // workspace) needs its probes — guessing here would flicker it into Home
+    // and back out on the next snapshot.
+    const home = homeNode([])
+
+    expect(overlayLiveLanes(home, [makeSession('/www/app', { id: 'fresh' })])).toBe(home)
+  })
 })
 
 describe('overlayLivePreviews', () => {
@@ -817,5 +857,11 @@ describe('overlayLivePreviews', () => {
     const previews = overlayLivePreviews([project], [], [], 3, new Set(['gone']))
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['old'])
+  })
+
+  it('previews a detached session under Home, which no cwd could place', () => {
+    const previews = overlayLivePreviews([homeNode([])], [makeSession(null, { id: 'fresh' })], [], 3)
+
+    expect(previews[NO_PROJECT_ID].map(s => s.id)).toEqual(['fresh'])
   })
 })

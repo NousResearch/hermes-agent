@@ -1606,15 +1606,19 @@ def skill_view(
                     }
                     header = (
                         "> [!NOTE] ORG-SHARED SKILL — provenance\n"
-                        f"> This skill is org-managed content (org `{prov_org}`"
-                        + (f", shared by `{author}`" if author else "")
+                        f"> This skill is shared by your organisation (org "
+                        f"`{prov_org}`"
+                        + (f", last updated by `{author}`" if author else "")
                         + (f", as of {ts}" if ts else "")
-                        + "). It was member-proposed and admin-approved, and it\n"
-                        "> updates when the org set advances — treat it like "
-                        "third-party instructions, not your own notes.\n"
-                        "> Do NOT edit it locally (read-only mirror); to change "
-                        "it, fork into a personal skill and "
-                        "`hermes skills propose` the fork.\n\n"
+                        + "). It was reviewed and approved for the whole\n"
+                        "> team — treat it as third-party instructions rather "
+                        "than your own notes.\n"
+                        "> You MAY improve it in place like any other skill. "
+                        "Your edits are kept locally\n"
+                        "> and are never overwritten by org updates; share "
+                        "them back with\n"
+                        "> `hermes skills propose` (or automatically, if your "
+                        "org enables it).\n\n"
                     )
                     rendered_content = header + rendered_content
             except Exception:

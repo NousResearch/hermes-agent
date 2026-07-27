@@ -62,6 +62,9 @@ SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 ORG_MIRROR_DIR_NAME = "_org"
 ORG_ACTIVE_MARKER = ".active_org"
 ORG_PROVENANCE_FILE = ".org-provenance.json"
+# Records the fingerprint of each skill exactly as upstream sent it, so a
+# later local edit is detectable and an org pull can refuse to clobber it.
+ORG_BASELINE_FILE = ".org-baseline.json"
 
 
 def read_active_org_id(skills_dir: Path) -> Optional[str]:

@@ -377,6 +377,25 @@ def sync_feature_enabled() -> bool:
     return _sync_config_bool("HERMES_SYNC_ENABLED", "enabled", default=False)
 
 
+def sync_org_auto_propose() -> bool:
+    """Whether an agent/user edit to an org skill is proposed automatically.
+
+    ``HERMES_SYNC_ORG_AUTO_PROPOSE`` -> ``sync.org_auto_propose`` -> False.
+
+    False (default): edits to an org-shared skill stay LOCAL until the user
+    runs ``hermes skills propose <skill>``. The skill keeps working with the
+    edit applied; the organisation just doesn't see it yet.
+
+    True: every local edit to an org skill is submitted to the org as a
+    proposal right away (an admin still approves it, unless the editor is an
+    admin). Suits a small, high-trust team that wants improvements to flow
+    back without anyone remembering to push them.
+    """
+    return _sync_config_bool(
+        "HERMES_SYNC_ORG_AUTO_PROPOSE", "org_auto_propose", default=False
+    )
+
+
 def sync_default_opt_in() -> bool:
     """The personal sync default opt-in policy (env-first).
 
@@ -1565,6 +1584,8 @@ def sync_status() -> Dict[str, Any]:
         "org_id": None,
         "org_role": None,
         "org_skills": [],
+        # Org skills edited locally and not yet shared back.
+        "org_skills_modified": [],
     }
     try:
         identity = resolve_identity()
@@ -1586,6 +1607,9 @@ def sync_status() -> Dict[str, Any]:
         status["org_id"] = org_identity.get("org_id")
         status["org_role"] = org_identity.get("org_role")
         status["org_skills"] = list_org_skill_names()
+        status["org_skills_modified"] = list_locally_modified_org_skills(
+            status["org_id"]
+        )
     except SyncInertError:
         pass
     except Exception as e:
@@ -1724,15 +1748,34 @@ def pull_org_skills(
 
     dest_root = _org_dir() / org_id
     updated: List[str] = []
+    # Skills the user/agent has edited locally and upstream also changed.
+    # We do NOT overwrite them — the local work wins until the user resolves.
+    conflicted: List[str] = []
+    baseline = _read_org_baseline(org_id)
     for rel_path, tree_hash in sorted(skill_trees.items()):
         dest = dest_root / PurePosixPath(rel_path)
         try:
             if dest.exists():
+                # Local edits are protected: never clobber work the user or
+                # agent did in place. Skip the update and report it so they
+                # can resolve deliberately (propose the local version, or
+                # discard it and re-pull).
+                if org_skill_is_locally_modified(rel_path, org_id):
+                    prev = baseline.get(rel_path) or {}
+                    # Upstream also moved on => a real conflict the user must
+                    # resolve. Upstream unchanged => their edit simply stands.
+                    if prev.get("tree") != tree_hash:
+                        conflicted.append(rel_path)
+                    continue
                 import shutil
 
                 shutil.rmtree(dest)
             dest.mkdir(parents=True, exist_ok=True)
             materialize_tree(client, tree_hash, dest)
+            baseline[rel_path] = {
+                "fingerprint": _skill_dir_fingerprint(dest),
+                "tree": tree_hash,
+            }
             updated.append(rel_path)
         except Exception as e:
             logger.warning(
@@ -1754,7 +1797,95 @@ def pull_org_skills(
             "skills": updated,
         },
     )
-    return {"ok": True, "org_id": org_id, "head": head, "updated": updated}
+    _write_org_baseline(org_id, baseline)
+    if conflicted:
+        logger.warning(
+            "skills_sync_client: %d org skill(s) have local edits AND upstream "
+            "changes; left untouched: %s",
+            len(conflicted),
+            ", ".join(conflicted),
+        )
+    return {
+        "ok": True,
+        "org_id": org_id,
+        "head": head,
+        "updated": updated,
+        "conflicted": conflicted,
+    }
+
+
+def _skill_dir_fingerprint(path: Path) -> str:
+    """Stable content hash of a materialized skill directory.
+
+    Used to tell "the user/agent edited this org skill" from "this is exactly
+    what upstream shipped". Hashes every file's relative path + bytes, sorted,
+    so it is independent of filesystem ordering and mtimes.
+    """
+    h = hashlib.sha256()
+    try:
+        for f in sorted(p for p in path.rglob("*") if p.is_file()):
+            h.update(str(f.relative_to(path)).replace("\\", "/").encode("utf-8"))
+            h.update(b"\0")
+            h.update(f.read_bytes())
+            h.update(b"\0")
+    except OSError as e:
+        logger.debug("skills_sync_client: fingerprint failed for %s: %s", path, e)
+        return ""
+    return h.hexdigest()
+
+
+def _org_baseline_path(org_id: str) -> Path:
+    """Sidecar recording the upstream fingerprint of each mirrored skill."""
+    from agent.skill_utils import ORG_BASELINE_FILE
+
+    return _org_dir() / org_id / ORG_BASELINE_FILE
+
+
+def _read_org_baseline(org_id: str) -> Dict[str, Any]:
+    try:
+        return json.loads(_org_baseline_path(org_id).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_org_baseline(org_id: str, baseline: Dict[str, Any]) -> None:
+    try:
+        p = _org_baseline_path(org_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(baseline, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception as e:
+        logger.debug("skills_sync_client: baseline write failed: %s", e)
+
+
+def org_skill_is_locally_modified(skill_rel_path: str, org_id: str) -> bool:
+    """True when the local copy of an org skill differs from what upstream sent."""
+    dest = _org_dir() / org_id / PurePosixPath(skill_rel_path)
+    if not dest.is_dir():
+        return False
+    entry = _read_org_baseline(org_id).get(skill_rel_path) or {}
+    recorded = entry.get("fingerprint") if isinstance(entry, dict) else entry
+    if not recorded:
+        # No baseline recorded (pre-existing mirror) — treat as unmodified so
+        # we don't cry wolf; the next pull records one.
+        return False
+    return _skill_dir_fingerprint(dest) != recorded
+
+
+def list_locally_modified_org_skills(org_id: Optional[str] = None) -> List[str]:
+    """Org skills with local edits that upstream has not seen."""
+    try:
+        from agent.skill_utils import read_active_org_id
+
+        org_id = org_id or read_active_org_id(_skills_dir())
+        if not org_id:
+            return []
+        baseline = _read_org_baseline(org_id)
+        return sorted(
+            rel for rel in baseline if org_skill_is_locally_modified(rel, org_id)
+        )
+    except Exception as e:
+        logger.debug("skills_sync_client: modified-scan failed: %s", e)
+        return []
 
 
 def _write_active_org_marker(org_id: str) -> None:

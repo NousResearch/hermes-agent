@@ -4508,12 +4508,21 @@ def cmd_sync(args):
         print(_json.dumps(status, indent=2, ensure_ascii=False))
         if status.get("org_available"):
             n = len(status.get("org_skills") or [])
+            modified = status.get("org_skills_modified") or []
             print(
-                f"\nOrg skills: {n} shared skill(s) mirrored read-only from "
-                f"your organisation (your role: {status.get('org_role')}). "
-                f"They load alongside your own, labeled by origin.",
+                f"\nOrg skills: {n} shared skill(s) from your organisation "
+                f"(your role: {status.get('org_role')}). They load alongside "
+                f"your own, labeled by origin, and you can edit them.",
                 file=sys.stderr,
             )
+            if modified:
+                print(
+                    f"  {len(modified)} with local edits not yet shared: "
+                    f"{', '.join(modified)}\n"
+                    f"  Share them back with `hermes skills propose <skill>`. "
+                    f"Org updates will not overwrite them.",
+                    file=sys.stderr,
+                )
         elif status.get("logged_in"):
             print(
                 "\nOrg skills: not applicable — this account isn't a member "
@@ -4574,6 +4583,17 @@ def cmd_sync(args):
                     f"organisation.",
                     file=sys.stderr,
                 )
+                clashes = org_result.get("conflicted") or []
+                if clashes:
+                    print(
+                        f"org: {len(clashes)} skill(s) have BOTH local edits "
+                        f"and org updates, so they were left as-is: "
+                        f"{', '.join(clashes)}\n"
+                        f"     Your local version is intact. Review it, then "
+                        f"either propose it or delete the local copy and pull "
+                        f"again to take the org version.",
+                        file=sys.stderr,
+                    )
         elif sub == "push":
             result = ssc.push_skills(identity=identity, message="hermes sync push")
         elif sub == "now":

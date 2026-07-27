@@ -277,3 +277,79 @@ def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
     readme_texts = [t for t, _, _ in _items("@README")]
 
     assert not any("README.md" in t for t in readme_texts), readme_texts
+
+
+# ── Fuzzy DIRECTORY matching ─────────────────────────────────────────────
+# `@Desktop` used to return nothing: the fuzzy scanner ranks basenames from
+# `_list_repo_files`, which lists FILES only, so a directory whose name no
+# file inside it happens to match was unreachable without typing a `/`.
+
+
+def test_fuzzy_finds_directory_by_name(tmp_path, monkeypatch):
+    """A folder is reachable by bare name, with no trailing slash typed."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "Desktop" / "nested").mkdir(parents=True)
+    # Deliberately named so NO file basename fuzzy-matches "Desktop".
+    (tmp_path / "Desktop" / "nested" / "zzz.txt").write_text("x")
+
+    entries = _items("@Desktop")
+    texts = [t for t, _, _ in entries]
+
+    assert "@folder:Desktop/" in texts, texts
+
+    row = next(r for r in entries if r[0] == "@folder:Desktop/")
+    assert row[1] == "Desktop/"
+    assert row[2] == "dir"
+
+
+def test_fuzzy_directory_prefix_match(tmp_path, monkeypatch):
+    """Partial folder names match too — `@Desk` finds `Desktop/`."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "Desktop").mkdir()
+    (tmp_path / "Desktop" / "zzz.txt").write_text("x")
+
+    assert "@folder:Desktop/" in [t for t, _, _ in _items("@Desk")]
+
+
+def test_fuzzy_ranks_folder_above_file_at_same_tier(tmp_path, monkeypatch):
+    """At an equal match tier the folder leads: `@docs` means the directory."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "intro.md").write_text("x")
+    (tmp_path / "docs.md").write_text("x")
+
+    texts = [t for t, _, _ in _items("@docs")]
+
+    assert texts[0] == "@folder:docs/", texts
+    assert "@file:docs.md" in texts
+
+
+def test_fuzzy_hides_dot_directories_unless_asked(tmp_path, monkeypatch):
+    """Dot-folders follow the same rule as dotfiles."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "zzz.txt").write_text("x")
+
+    assert not any(".config" in t for t, _, _ in _items("@config"))
+    assert any(t.startswith("@folder:.config") for t, _, _ in _items("@.config"))
+
+
+def test_fuzzy_finds_top_level_entries_outside_a_git_repo(tmp_path, monkeypatch):
+    """Outside a repo the fallback walk can exhaust its file budget on one
+    deep subtree before reaching a sibling, hiding top-level folders. The
+    root listdir seed guarantees immediate children are always candidates.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(server, "_FUZZY_CACHE_MAX_FILES", 5)
+
+    # A deep subtree that soaks up the entire (patched) file budget...
+    deep = tmp_path / "aaa_hog"
+    deep.mkdir()
+    for i in range(40):
+        (deep / f"f{i:03d}.txt").write_text("x")
+
+    # ...and the folder the user actually wants, sorted after it.
+    (tmp_path / "Desktop").mkdir()
+    (tmp_path / "Desktop" / "note.txt").write_text("x")
+
+    assert "@folder:Desktop/" in [t for t, _, _ in _items("@Desktop")]

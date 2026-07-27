@@ -447,30 +447,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # first turn — flip-flopping the wire shape mid-conversation and
         # silently degrading to the legacy single-breakpoint layout.
         #
-        # Safety: the rebuilt stable tier is used ONLY when the restored
-        # prompt literally starts with it (checked here AND re-checked by
-        # ``_apply_system_cache_markers``'s ``startswith`` gate). If any
-        # stable-tier input changed since the prompt was persisted (skills
-        # edited, identity changed), the prefix mismatches, ``_static``
-        # stays None, and the request falls back to the legacy layout with
-        # the restored prompt bytes untouched — never a rewritten prompt.
-        #
-        # Gated on ``_use_prompt_caching`` so non-Anthropic routes skip the
-        # rebuild entirely (the static prefix is only consumed by
-        # ``apply_anthropic_cache_control``).
-        if getattr(agent, "_use_prompt_caching", False):
-            try:
-                from agent.system_prompt import build_system_prompt_parts as _build_parts
+        # ``reconstruct_static_prefix`` gates on ``_use_prompt_caching`` (so
+        # non-Anthropic routes skip the rebuild), applies the startswith
+        # safety gate (stored prompt bytes are never rewritten), and
+        # fails open to the legacy cache layout.
+        from agent.system_prompt import reconstruct_static_prefix
 
-                _static = _build_parts(agent, system_message=system_message)["stable"]
-                if _static and stored_prompt.startswith(_static):
-                    agent._cached_system_prompt_static = _static
-            except Exception:
-                # Fail-open: restore continues with the legacy cache layout.
-                logger.debug(
-                    "static system-prefix reconstruction failed on restore",
-                    exc_info=True,
-                )
+        reconstruct_static_prefix(agent, system_message=system_message)
         return
     if stored_prompt:
         stored_state = "stale_runtime"
@@ -846,29 +829,16 @@ def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
     (gated on ``_use_prompt_caching`` at restore time). A later failover to a
     cache-on provider would otherwise redecorate with ``static_system_prefix=
     None`` and silently fall back to the legacy system-plus-3 layout (#72626).
-    """
-    if not getattr(agent, "_use_prompt_caching", False):
-        return
-    stored = getattr(agent, "_cached_system_prompt", None)
-    if not isinstance(stored, str) or not stored:
-        return
-    existing = getattr(agent, "_cached_system_prompt_static", None)
-    if isinstance(existing, str) and existing and stored.startswith(existing):
-        return
-    try:
-        from agent.system_prompt import build_system_prompt_parts as _build_parts
 
-        static = _build_parts(agent, system_message=system_message)["stable"]
-        if static and stored.startswith(static):
-            agent._cached_system_prompt_static = static
-        else:
-            agent._cached_system_prompt_static = None
-    except Exception:
-        logger.debug(
-            "static system-prefix reconstruction failed on failover redecoration",
-            exc_info=True,
-        )
-        agent._cached_system_prompt_static = None
+    Thin wrapper over :func:`agent.system_prompt.reconstruct_static_prefix`,
+    which memoizes failed rebuilds so this stays cheap on the retry-loop hot
+    path (it runs at the top of every attempt).
+    """
+    from agent.system_prompt import reconstruct_static_prefix
+
+    reconstruct_static_prefix(
+        agent, system_message=system_message, log_label="failover redecoration"
+    )
 
 
 def _peel_moa_guidance(

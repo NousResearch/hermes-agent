@@ -40,11 +40,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -205,14 +210,68 @@ def extract_markdown_entries(text: str) -> List[str]:
 
 
 def parse_existing_memory_entries(path: Path) -> List[str]:
+    """Parse the DESTINATION memory store into entries.
+
+    ``memories/MEMORY.md`` is the entry-delimited store written by
+    ``MemoryStore._write_file`` (tools/memory_tool.py), not a markdown
+    document, so this splits on ``ENTRY_DELIMITER`` only — exactly what
+    ``MemoryStore._parse_entries`` does.  A store with no delimiter (a single
+    entry, or one that was hand-edited / shell-appended) is therefore ONE
+    intact entry.
+
+    Do NOT fall back to :func:`extract_markdown_entries` here.  That extractor
+    is correct for CLAUDE.md / AGENTS.md *sources*, but it drops fenced code
+    blocks and table rows and splits a block into one entry per bullet — and
+    the merged result is written straight back over the user's store, so the
+    loss is permanent.
+    """
     if not path.exists():
         return []
     raw = read_text(path)
     if not raw.strip():
         return []
-    if ENTRY_DELIMITER in raw:
-        return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-    return extract_markdown_entries(raw)
+    return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
+
+
+def backup_memory_file(path: Path) -> Optional[Path]:
+    """Snapshot ``path`` before a destructive rewrite; return the backup path.
+
+    Restores parity with the openclaw migration script this module was ported
+    from, which calls ``maybe_backup(destination)`` before rewriting a memory
+    store.  Uses the same ``<name>.bak.<unix_ts>`` naming as
+    ``MemoryStore._backup_drifted_file``.  Returns None when there is nothing
+    to back up.
+    """
+    if not path.exists():
+        return None
+    backup = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` via temp file + atomic rename.
+
+    Mirrors ``MemoryStore._write_file``: an interrupted or failed write can
+    never leave a truncated memory store on disk, and readers always see
+    either the old complete file or the new one.  ``atomic_replace`` also
+    keeps a symlinked destination a symlink.
+    """
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix=".import_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        atomic_replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def merge_entries(
@@ -513,9 +572,19 @@ class AgentImporter:
             return
         if self.execute:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(
+            try:
+                backup = backup_memory_file(destination)
+            except OSError as exc:
+                # Never rewrite the store when the safety net failed.
+                self.record(kind, source, destination, "error",
+                            f"Could not back up existing memory file: {exc}",
+                            **details)
+                return
+            if backup is not None:
+                details["backup"] = str(backup)
+            atomic_write_text(
+                destination,
                 ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""),
-                encoding="utf-8",
             )
             self.record(kind, source, destination, "imported", **details)
         else:

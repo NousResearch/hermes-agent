@@ -56,6 +56,32 @@ def test_extract_markdown_entries_promotes_heading_context():
     assert "Tyler Williams > Active Projects: Hermes Agent" in entries
 
 
+def test_parse_existing_memory_entries_keeps_undelimited_store_intact(tmp_path):
+    """The DESTINATION store is §-delimited, not a markdown document.
+
+    ``migrate_memory`` and ``migrate_daily_memory`` read the Hermes-side
+    memories/MEMORY.md (and USER.md) and write the merged result back over it.
+    A store with no delimiter is ONE entry — running the source markdown
+    extractor over it would drop the code block and the table row below.
+    """
+    mod = load_module()
+    raw = (
+        "Homelab runbook. Restart the ingress controller with:\n"
+        "\n"
+        "```bash\n"
+        "kubectl -n ingress rollout restart deploy/nginx\n"
+        "```\n"
+        "\n"
+        "| Severity | Contact | Window |\n"
+        "| SEV1     | on-call | 15m    |\n"
+    )
+    path = tmp_path / "MEMORY.md"
+    path.write_text(raw, encoding="utf-8")
+
+    assert mod.ENTRY_DELIMITER not in raw
+    assert mod.parse_existing_memory_entries(path) == [raw.strip()]
+
+
 def test_merge_entries_respects_limit_and_reports_overflow():
     mod = load_module()
     existing = ["alpha"]

@@ -11,8 +11,10 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
-import pytest
 import re
+from unittest.mock import MagicMock
+
+import pytest
 
 
 def extract_media_tags_fixed(result_messages, history_len):
@@ -167,6 +169,35 @@ caption
         paths = _collect_history_media_paths(history)
         assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
         assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
+
+    def test_non_streaming_dedup_excludes_current_turn_tool_output(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        old_path = "/tmp/gen/old.png"
+        current_path = "/tmp/gen/current.png"
+        transcript = [
+            {"role": "user", "content": "make the old image"},
+            {"role": "assistant", "content": f"MEDIA:{old_path}"},
+            {"role": "user", "content": "make a new image"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "current", "function": {"name": "image_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "current",
+                "content": f'{{"success": true, "image": "{current_path}"}}',
+            },
+            {"role": "assistant", "content": f"MEDIA:{current_path}"},
+        ]
+        adapter = MagicMock()
+        adapter._session_store.peek_session_id.return_value = "session-id"
+        adapter._session_store.load_transcript.return_value = transcript
+
+        paths = BasePlatformAdapter._history_media_paths_for_session(
+            adapter, "session-key"
+        )
+        assert paths == {old_path}
 
     def test_image_generate_not_reemitted_after_compression(self):
         """End-to-end of the #46627 fix: collect history paths, then the

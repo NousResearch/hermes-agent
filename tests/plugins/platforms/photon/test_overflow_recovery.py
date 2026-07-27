@@ -19,6 +19,7 @@ No Node sidecar is spawned and no ports are bound.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 import pytest
@@ -174,6 +175,10 @@ async def test_unexpected_sidecar_exit_raises_retryable_fatal(
     # than crashing the whole gateway.
     assert adapter.fatal_error_retryable is True
     assert adapter._running is False
+    # The notification is dispatched onto its own task rather than awaited on
+    # the supervisor's stack, so that disconnect() cancelling the supervisor
+    # cannot kill the handoff. Let that task run before asserting delivery.
+    await _drain_pending_tasks()
     assert notified == [True]
 
 
@@ -233,4 +238,25 @@ async def test_degraded_stream_health_raises_retryable_fatal(
     assert adapter.has_fatal_error is True
     assert adapter.fatal_error_code == "UPSTREAM_STREAM_DEGRADED"
     assert adapter.fatal_error_retryable is True
+    # Dispatched detached (see _dispatch_fatal_notification) so the health
+    # task's own teardown cannot cancel the handoff; drain before asserting.
+    await _drain_pending_tasks()
     assert notified == [True]
+
+
+async def _drain_pending_tasks(limit: int = 50) -> None:
+    """Let detached fatal-notification tasks finish before asserting on them.
+
+    ``_dispatch_fatal_notification`` deliberately does not await the
+    notification (that is what kept ``disconnect()`` from cancelling its own
+    caller), so a test that drives ``_monitor_sidecar_health`` /
+    ``_supervise_sidecar`` directly returns before the notification has run.
+    """
+    for _ in range(limit):
+        pending = [
+            t for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and not t.done()
+        ]
+        if not pending:
+            return
+        await asyncio.wait(pending, timeout=1.0)

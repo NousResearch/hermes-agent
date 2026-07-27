@@ -1848,7 +1848,7 @@ def run_doctor(args):
                     _chromium_installed,
                     _is_camofox_mode,
                     _get_cloud_provider,
-                    _get_cdp_override,
+                    _get_cdp_override_raw,
                     _using_lightpanda_engine,
                 )
             except Exception:
@@ -1861,7 +1861,7 @@ def run_doctor(args):
                 # Lightpanda all bypass the local Chromium requirement.
                 skip_chromium_check = (
                     _is_camofox_mode()
-                    or bool(_get_cdp_override())
+                    or bool(_get_cdp_override_raw())
                     or _get_cloud_provider() is not None
                     or _using_lightpanda_engine()
                 )

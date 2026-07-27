@@ -46,14 +46,40 @@ function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   return appended ? { ...message, parts } : message
 }
 
-function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): ChatMessage {
-  if (message.parts.some(part => part.type === 'reasoning')) {
+/**
+ * Carry structural parts an authoritative row cannot express.
+ *
+ * A live turn's authoritative projection is TEXT-ONLY: the gateway's `inflight`
+ * snapshot carries `user`/`assistant` strings, and history is not committed
+ * until the turn finishes. The renderer's cached state is therefore the sole
+ * carrier of the running turn's reasoning and tool calls, so switching threads
+ * mid-turn and back re-hydrated an assistant row stripped of both — the turn
+ * looked inert, with no thinking trace and no tool activity.
+ *
+ * Preserved only when the rows are the SAME turn: identical text, or the
+ * authoritative text extending the cached one (another delta landed). Anything
+ * else may be a different turn at the same role ordinal — compression rewrites
+ * history — and must not inherit foreign parts. Tool calls dedupe on
+ * `toolCallId` so a row that already carries them is left alone.
+ */
+function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): ChatMessage {
+  const carried = previous.parts.filter(part => part.type === 'reasoning' || part.type === 'tool-call')
+
+  if (!carried.length) {
     return message
   }
 
-  const reasoningParts = previous.parts.filter(part => part.type === 'reasoning')
+  const hasReasoning = message.parts.some(part => part.type === 'reasoning')
 
-  return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
+  const presentToolCallIds = new Set(
+    message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+  )
+
+  const missing = carried.filter(part =>
+    part.type === 'reasoning' ? !hasReasoning : !presentToolCallIds.has(part.toolCallId)
+  )
+
+  return missing.length ? { ...message, parts: [...missing, ...message.parts] } : message
 }
 
 // Compile-time exhaustiveness guards. If a new field is added to ChatMessage
@@ -209,12 +235,29 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const previousVisibleText = textWithoutEmbeddedImages(previousText)
     let preserved = message
 
-    if (nextText === previousVisibleText || nextText === previousText.trim()) {
-      preserved = preserveReasoningParts(preserved, previous)
+    const sameText = nextText === previousVisibleText || nextText === previousText.trim()
 
-      if (message.role === 'user' && preserved.attachmentRefs === undefined && previous.attachmentRefs?.length) {
-        preserved = { ...preserved, attachmentRefs: [...previous.attachmentRefs] }
-      }
+    // Mid-turn, the authoritative text has advanced past the cached copy by one
+    // or more deltas. That is still the same turn, and the cached row holds the
+    // only copy of its reasoning / tool calls, so treat an extension as a match
+    // for structural carry-over. Attachment refs and image re-appending stay on
+    // the strict equality path — they reconcile a SETTLED row, and a growing
+    // row is by definition not settled.
+    const sameTurn =
+      sameText ||
+      (nextText.length > 0 && previousVisibleText.length > 0 && nextText.startsWith(previousVisibleText.trim()))
+
+    if (sameTurn) {
+      preserved = preserveStructuralParts(preserved, previous)
+    }
+
+    if (
+      sameText &&
+      message.role === 'user' &&
+      preserved.attachmentRefs === undefined &&
+      previous.attachmentRefs?.length
+    ) {
+      preserved = { ...preserved, attachmentRefs: [...previous.attachmentRefs] }
     }
 
     const previousImages = embeddedImageUrls(previousText)

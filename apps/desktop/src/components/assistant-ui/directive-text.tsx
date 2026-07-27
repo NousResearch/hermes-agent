@@ -113,7 +113,7 @@ const SLASH_CHIP_VARIANT: Record<SlashChipKind, string> = {
 }
 
 export const SLASH_CHIP_BASE_CLASS =
-  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-medium leading-none'
+  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-[-0.12em] text-[0.86em] font-medium leading-none'
 
 export function slashChipClass(kind: SlashChipKind): string {
   return `${SLASH_CHIP_BASE_CLASS} ${SLASH_CHIP_VARIANT[kind]}`
@@ -145,9 +145,15 @@ const DirectiveIcon: FC<{ type: string; className?: string }> = ({
 
 /** Shared chip styling — used by both the rendered <DirectiveChip> and the
  * raw HTML composer chips in `rich-editor.ts`. Neutral subtle wash + plain
- * muted-foreground text so chips read as quiet tags on any bubble color. */
+ * muted-foreground text so chips read as quiet tags on any bubble color.
+ *
+ * `align-[-0.12em]` rather than `align-middle`: `middle` centers the pill on
+ * the x-height midpoint, which sits above the center of the surrounding text
+ * box, so the chip visibly rides low next to the words it's nestled in. The
+ * em nudge lands the chip's own text baseline on the line's baseline (measured
+ * to within 0.08px) without growing the line box. */
 export const DIRECTIVE_CHIP_CLASS =
-  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-normal leading-none bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
+  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-[-0.12em] text-[0.86em] font-normal leading-none bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
 
 /**
  * Parses our composer's `@type:value` references into directive segments

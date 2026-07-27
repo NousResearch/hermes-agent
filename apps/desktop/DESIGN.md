@@ -192,7 +192,12 @@ Notes:
   semantics when unifying appearance.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
-  z-index literals.
+  z-index literals. Pick a rung of the ladder in `styles.css` instead —
+  `--z-modal-backdrop` / `--z-modal` / `--z-modal-popover`, `--z-over-modal`
+  (toasts, tooltips, command surfaces) and `--z-over-modal-content`,
+  `--z-switcher-backdrop` / `--z-switcher`, then the boot chain
+  `--z-connecting` → `--z-onboarding` → `--z-setup` → `--z-crash`. Plain
+  `z-10`/`z-20` are still right for stacking *within* one component.
 
 ## Iconography & brand
 

@@ -1094,15 +1094,26 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_db = object()
+    stored_system_prompt = (
+        "You are Hermes.\n\n"
+        "<memory_provider_context>\n"
+        "Pinboard provider instructions\n"
+        "</memory_provider_context>"
+    )
+    fake_db = MagicMock()
+    fake_db.get_session.return_value = {
+        "system_prompt": stored_system_prompt,
+    }
 
     class FakeInPlaceCompressAgent:
         last_instance = None
 
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
+            self.platform = kwargs.get("platform")
             self.session_id = kwargs.get("session_id", "fake-session")
             self._session_db = kwargs.get("session_db")
+            self._cached_system_prompt = None
             self.compression_in_place = False
             self._last_compaction_in_place = False
             self.context_compressor = SimpleNamespace(
@@ -1118,6 +1129,8 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         def _compress_context(self, messages, *_args, **_kwargs):
             assert self.compression_in_place is True
             assert self._session_db is fake_db
+            assert self.platform == "gateway_hygiene"
+            assert self._cached_system_prompt == stored_system_prompt
             self._last_compaction_in_place = True
             return ([{"role": "assistant", "content": "compressed in place"}], None)
 
@@ -1190,6 +1203,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     assert result == "ok"
     agent = FakeInPlaceCompressAgent.last_instance
     assert agent is not None
+    fake_db.get_session.assert_called_once_with("sess-1")
     agent.context_compressor.bind_session_state.assert_called_once_with(fake_db, "sess-1")
     # In-place compaction already persisted via archive_and_compact() —
     # rewrite_transcript would replace_messages(active_only=False) and DELETE
@@ -1429,7 +1443,7 @@ def _make_progress_runner(monkeypatch, tmp_path, agent_cls, cfg_text):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(cfg_text)
+    cfg_path.write_text(cfg_text, encoding="utf-8")
 
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner

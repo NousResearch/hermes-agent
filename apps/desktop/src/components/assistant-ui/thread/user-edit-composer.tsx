@@ -98,6 +98,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
   // `trigger`, which keyup sees as already-null after Escape).
   const triggerKeyConsumedRef = useRef(false)
+  const composingRef = useRef(false) // true during IME composition (CJK input)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -556,6 +557,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     setSubmitting(true)
     aui.composer().send()
+
+    // Clear latch after cooldown to allow re-submission. This prevents rapid
+    // double-Enter but doesn't require tracking when onEdit settles (which may
+    // be synchronous or async, and whose promise we don't have access to).
+    window.setTimeout(() => {
+      setSubmitting(false)
+    }, 200)
   }
 
   const handleEditBlur = useCallback(
@@ -597,6 +605,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // IME composition: Enter confirms composed text, not a message submission.
+    // We check both composingRef (set by compositionstart/compositionend, robust
+    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
+    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
+    // preedit fires submitEdit() and splits the message mid-word.
+    if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -736,6 +753,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               data-slot={RICH_INPUT_SLOT}
               onBeforeInput={handleBeforeInput}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onCompositionEnd={() => {
+                composingRef.current = false
+              }}
+              onCompositionStart={() => {
+                composingRef.current = true
+              }}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}

@@ -118,7 +118,9 @@ export function useSessionStateCache({
         if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
           runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
 
-          if (sessionId === $activeSessionId.get()) {
+          // A rotation event needs a real next id — a null/cleared stored id
+          // is a detach, not a rotation the route-follow effect should chase.
+          if (storedSessionId && sessionId === $activeSessionId.get()) {
             setActiveSessionStoredIdRotation({
               nextStoredSessionId: storedSessionId,
               previousStoredSessionId: existing.storedSessionId,

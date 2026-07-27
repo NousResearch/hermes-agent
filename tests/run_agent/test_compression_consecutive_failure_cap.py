@@ -165,7 +165,7 @@ class TestConsecutiveFailureCompressionCap:
             compress_calls.append(len(messages))
             return messages, "compressed prompt"
 
-        agent.context_compressor._last_compression_made_progress = True
+        agent.context_compressor.compression_made_progress = lambda: True
         agent.context_compressor.should_defer_preflight_to_real_usage.return_value = True
 
         responses = [_tool_response(0), _tool_response(1), _stop_response()]

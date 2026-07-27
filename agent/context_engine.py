@@ -189,6 +189,16 @@ class ContextEngine(ABC):
                 host filters unsupported optional arguments by signature.
         """
 
+    def compression_made_progress(self) -> bool:
+        """Return True when the most recent compress() call reduced context.
+
+        The built-in ContextCompressor returns True after successful
+        summarization or pruning.  Custom engines that do not track
+        progress should keep the safe default (False) — this errs on
+        the side of honouring the anti-thrash cap.
+        """
+        return False
+
     # -- Optional: proactive tool-result prune -----------------------------
 
     def prune_tool_results_only(

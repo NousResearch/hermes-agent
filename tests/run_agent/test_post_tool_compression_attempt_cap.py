@@ -139,9 +139,9 @@ def _run_tool_loop(agent, n_tool_iterations: int, *, effective=False):
 
     _fake_compress = _fake_compress_effective if effective else _fake_compress_identity
 
-    # Mirror the real compressor's progress flag so the effectiveness
+    # Mirror the real compressor's progress signal so the effectiveness
     # tracker sees material progress only when the test expects it.
-    agent.context_compressor._last_compression_made_progress = effective
+    agent.context_compressor.compression_made_progress = lambda: effective
 
     with (
         patch.object(agent, "_compress_context", side_effect=_fake_compress),

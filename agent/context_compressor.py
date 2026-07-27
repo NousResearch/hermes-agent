@@ -2077,6 +2077,9 @@ class ContextCompressor(ContextEngine):
         # no-op/abort without inferring progress from message-list length.
         self._last_compression_made_progress: bool = False
         self._summary_failure_cooldown_until: float = 0.0
+
+    def compression_made_progress(self) -> bool:
+        return self._last_compression_made_progress
         # True while the live local cooldown failed to persist to the DB;
         # a refresh must then treat an empty durable row as unknown, not
         # cleared (see get_active_compression_failure_cooldown).

@@ -36,12 +36,24 @@ from gateway.session import SessionSource
 
 class _CapturingAgent:
     last_init = None
+    last_run = None
 
     def __init__(self, *args, **kwargs):
         type(self).last_init = dict(kwargs)
         self.tools = []
 
-    def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
+    def run_conversation(
+        self,
+        user_message,
+        conversation_history=None,
+        conversation_history_revision=None,
+        task_id=None,
+        persist_user_message=None,
+    ):
+        type(self).last_run = {
+            "conversation_history": conversation_history,
+            "conversation_history_revision": conversation_history_revision,
+        }
         return {
             "final_response": "ok",
             "messages": [],

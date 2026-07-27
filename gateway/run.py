@@ -1347,6 +1347,13 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
+def _unpack_transcript_snapshot(value):
+    """Accept revision-aware stores and legacy/test transcript loaders."""
+    if isinstance(value, tuple) and len(value) == 2:
+        return value
+    return value, None
+
+
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
@@ -4995,6 +5002,14 @@ class TurnRunner:
                 agent_history = strip_stale_dangerous_confirmations(
                     _selected, now=time.time()
                 )
+                # The selected cached projection is newer than the transcript
+                # loaded at turn start. Fence it with the cached agent's own
+                # durable revision instead of reusing the stale load token.
+                _live_revision = getattr(
+                    agent, "_durable_transcript_revision", None
+                )
+                if getattr(_live_revision, "session_id", None) == ctx.session_id:
+                    ctx.history_revision = _live_revision
         
         # Collect MEDIA paths already in history so we can exclude them
         # from the current turn's extraction. This is compression-safe:
@@ -5289,6 +5304,10 @@ class TurnRunner:
                 "conversation_history": agent_history,
                 "task_id": ctx.session_id,
             }
+            if ctx.history_revision is not None:
+                _conversation_kwargs["conversation_history_revision"] = (
+                    ctx.history_revision
+                )
             if _persist_user_message_override is not None:
                 _conversation_kwargs["persist_user_message"] = _persist_user_message_override
             elif observed_group_context:
@@ -16450,7 +16469,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _lease_state.lease_generation = run_generation
 
         # Load conversation history from transcript
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        _loaded_transcript = await self.async_session_store.load_transcript(
+            session_entry.session_id,
+            with_revision=True,
+        )
+        history, history_revision = _unpack_transcript_snapshot(_loaded_transcript)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -17033,7 +17056,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     if _hyg_rotated:
                                         # Reset stored token count — transcript rewritten
                                         session_entry.last_prompt_tokens = 0
-                                        history = _compressed
+                                        _loaded_transcript = (
+                                            await self.async_session_store.load_transcript(
+                                                session_entry.session_id,
+                                                with_revision=True,
+                                            )
+                                        )
+                                        history, history_revision = _unpack_transcript_snapshot(
+                                            _loaded_transcript
+                                        )
                                         _new_count = len(_compressed)
                                         _new_tokens = estimate_messages_tokens_rough(
                                             _compressed
@@ -17043,7 +17074,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         # compacted transcript inside _compress_context.
                                         # Reset counts to match the new active set.
                                         session_entry.last_prompt_tokens = 0
-                                        history = _compressed
+                                        _loaded_transcript = (
+                                            await self.async_session_store.load_transcript(
+                                                session_entry.session_id,
+                                                with_revision=True,
+                                            )
+                                        )
+                                        history, history_revision = _unpack_transcript_snapshot(
+                                            _loaded_transcript
+                                        )
                                         _new_count = len(_compressed)
                                         _new_tokens = estimate_messages_tokens_rough(
                                             _compressed
@@ -17370,6 +17409,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message=message_text,
                 context_prompt=context_prompt,
                 history=history,
+                history_revision=history_revision,
                 source=source,
                 session_id=_run_start_session_id,
                 session_key=session_key,
@@ -23848,6 +23888,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         message_type: Optional[str] = None,
+        history_revision: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -23867,6 +23908,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=message_type,
+                history_revision=history_revision,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -23879,6 +23921,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
                 message_type=message_type,
+                history_revision=history_revision,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -24001,6 +24044,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         message_type: Optional[str] = None,
+        history_revision: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -24275,6 +24319,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _voice_ack_guild=_voice_ack_guild,
             _voice_ack_loop=_voice_ack_loop,
             history=history,
+            history_revision=history_revision,
             context_prompt=context_prompt,
             channel_prompt=channel_prompt,
             session_id=session_id,

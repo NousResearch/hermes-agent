@@ -589,31 +589,29 @@ def test_durable_message_committed_before_lease_is_adopted(
     parent_sid = "PRE_LEASE_DURABLE_RACE"
     db.create_session(parent_sid, source="webui")
     db.append_message(parent_sid, "user", "old durable")
+    expected_revision = db.get_active_message_revision(parent_sid)
 
     # Frontend takes its snapshot, then another producer commits before this
     # compressor acquires the lease.
     stale_snapshot = [{"role": "user", "content": "old durable"}]
     db.append_message(parent_sid, "assistant", "late committed before lease")
     agent = _build_agent_with_db(db, parent_sid)
+    agent._durable_transcript_revision = expected_revision
 
-    returned, _system_prompt = agent._compress_context(
-        stale_snapshot, "sys", approx_tokens=120_000
-    )
+    from agent.conversation_compression import CompressionSnapshotStaleError
 
-    agent.context_compressor.compress.assert_called_once()
-    compressed_arg = agent.context_compressor.compress.call_args.args[0]
-    assert [m["content"] for m in compressed_arg] == [
+    with pytest.raises(CompressionSnapshotStaleError):
+        agent._compress_context(stale_snapshot, "sys", approx_tokens=120_000)
+
+    assert agent.session_id == parent_sid
+    assert db.find_live_compression_child(parent_sid) is None
+    assert [m["content"] for m in db.get_messages_as_conversation(parent_sid)] == [
         "old durable",
         "late committed before lease",
     ]
-    # Must not echo the stale snapshot — compression proceeded on the
-    # adopted durable transcript (rotation publishes a child session).
-    assert returned is not stale_snapshot
-    assert returned[0]["content"] == "[CONTEXT COMPACTION] summary"
-    assert agent.session_id != parent_sid
-    child_id = _live_child_id(db, parent_sid)
-    assert child_id is not None
-    assert child_id == agent.session_id
+    agent.context_compressor.compress.assert_not_called()
+    assert db.get_compression_lock_holder(parent_sid) is None
+
 
 
 

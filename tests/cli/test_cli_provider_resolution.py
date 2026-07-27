@@ -13,7 +13,7 @@ from hermes_cli import main as hermes_main
 # ---------------------------------------------------------------------------
 # Module isolation: _import_cli() wipes tools.* / cli / run_agent from
 # sys.modules so it can re-import cli fresh.  Without cleanup the wiped
-# modules leak into subsequent tests on the same xdist worker, breaking
+# modules leak into subsequent tests, breaking
 # mock patches that target "tools.file_tools._get_file_ops" etc.
 # ---------------------------------------------------------------------------
 
@@ -230,6 +230,47 @@ def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     assert shell.requested_provider == "custom"
 
 
+def test_cli_init_wires_moa_preset_model_to_moa_provider(monkeypatch):
+    # #56828: constructing the CLI with `-m moa:<preset>` (the -Q one-shot
+    # path) must strip the prefix off self.model AND force
+    # requested_provider="moa", so the existing resolve_runtime_provider /
+    # agent_init MoA route runs non-interactively. The unit tests cover
+    # _normalize_moa_model() in isolation; this asserts the __init__ wiring
+    # the sweeper flagged as untested.
+    cli = _import_cli()
+
+    # Neutralize any config/env provider so a failure here can only come from
+    # the moa override, not an ambient default.
+    config_copy = dict(cli.CLI_CONFIG)
+    model_copy = dict(config_copy.get("model", {}))
+    model_copy["provider"] = None
+    config_copy["model"] = model_copy
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    shell = cli.HermesCLI(model="moa:strategy", compact=True, max_turns=1)
+
+    assert shell.requested_provider == "moa"
+    assert shell.model == "strategy"
+
+
+def test_cli_init_moa_prefix_overrides_explicit_provider(monkeypatch):
+    # The #56828 regression case: `--provider deepseek -m moa:strategy`
+    # silently dropped MoA because the explicit provider won. __init__ resolves
+    # requested_provider as `_moa_provider_override or provider or ...`, so the
+    # moa: prefix must win over the explicit --provider.
+    cli = _import_cli()
+
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    shell = cli.HermesCLI(
+        model="moa:strategy", provider="deepseek", compact=True, max_turns=1
+    )
+
+    assert shell.requested_provider == "moa"
+    assert shell.model == "strategy"
+
+
 def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     """When provider resolves to openai-codex and no model was explicitly
     chosen, the global config default (e.g. anthropic/claude-opus-4.6) must
@@ -306,6 +347,169 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
     assert "Default model set to:" in out
     assert config["tts"]["provider"] == "elevenlabs"
     assert config["browser"]["cloud_provider"] == "browser-use"
+
+
+def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
+    import yaml
+
+    config_home = tmp_path / "hermes"
+    config_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(config_home))
+
+    config_path = config_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "custom",
+                    "default": "glm-5.2",
+                    "base_url": "https://api.neuralwatt.com/v1",
+                    "api_key": "${NEURALWATT_API_KEY}",
+                    "api_mode": "chat_completions",
+                }
+            },
+            sort_keys=False,
+        )
+    )
+
+    stale_config = yaml.safe_load(config_path.read_text()) or {}
+    selected_model = "deepseek/deepseek-v4-flash"
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_provider_auth_state",
+        lambda provider: {
+            "access_token": "nous-token",
+            "portal_base_url": "https://portal.example.com",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda *args, **kwargs: {
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-key",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.get_curated_nous_model_ids",
+        lambda: [selected_model],
+    )
+    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda provider: {})
+    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda **kwargs: False)
+    monkeypatch.setattr(
+        "hermes_cli.models.union_with_portal_paid_recommendations",
+        lambda model_ids, pricing, portal_url: (model_ids, pricing),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: selected_model,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.prompt_enable_tool_gateway",
+        lambda config: None,
+    )
+
+    hermes_main._model_flow_nous(stale_config, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config.get("model")
+    assert model["provider"] == "nous"
+    assert model["default"] == selected_model
+    assert model["base_url"] == "https://inference-api.nousresearch.com/v1"
+    assert "api_key" not in model
+    assert "api_mode" not in model
+
+
+def _seed_stale_custom_model(tmp_path, monkeypatch):
+    import yaml
+
+    config_home = tmp_path / "hermes"
+    config_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(config_home))
+    config_path = config_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "custom",
+                    "default": "glm-5.2",
+                    "base_url": "https://api.neuralwatt.com/v1",
+                    "api_key": "${NEURALWATT_API_KEY}",
+                    "api": "legacy-stale-key",
+                    "api_mode": "anthropic_messages",
+                }
+            },
+            sort_keys=False,
+        )
+    )
+    (config_home / ".env").write_text("")
+    return config_path
+
+
+def test_model_flow_openrouter_clears_stale_custom_key(tmp_path, monkeypatch):
+    import yaml
+
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_api_key",
+        lambda *args, **kwargs: ("sk-openrouter", False),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.model_ids",
+        lambda **kwargs: ["anthropic/claude-sonnet-4.6"],
+    )
+    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: "anthropic/claude-sonnet-4.6",
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    hermes_main._model_flow_openrouter({}, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config["model"]
+    assert model["provider"] == "openrouter"
+    assert model["default"] == "anthropic/claude-sonnet-4.6"
+    assert model["api_mode"] == "chat_completions"
+    assert "api_key" not in model
+    assert "api" not in model
+
+
+def test_model_flow_anthropic_clears_stale_custom_key_and_mode(tmp_path, monkeypatch):
+    import yaml
+
+    config_path = _seed_stale_custom_model(tmp_path, monkeypatch)
+
+    monkeypatch.setattr("hermes_cli.auth.get_anthropic_key", lambda: "sk-ant-api03-test")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.is_claude_code_token_valid",
+        lambda creds: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_setup_flows._prompt_auth_credentials_choice",
+        lambda title: "use",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda *args, **kwargs: "claude-sonnet-4-6",
+    )
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    hermes_main._model_flow_anthropic({}, current_model="glm-5.2")
+
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config["model"]
+    assert model["provider"] == "anthropic"
+    assert model["default"] == "claude-sonnet-4-6"
+    assert "base_url" not in model
+    assert "api_key" not in model
+    assert "api" not in model
+    assert "api_mode" not in model
 
 
 def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
@@ -589,11 +793,16 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
             "used_fallback": False,
         },
     )
+    saved_env = {}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved_cfg)
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
     monkeypatch.setattr(
+        "hermes_cli.config.save_env_value",
+        lambda key, value: saved_env.__setitem__(key, value),
+    )
+    monkeypatch.setattr(
         "hermes_cli.main._save_custom_provider",
-        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None: captured_provider.update(
+        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None, key_env="": captured_provider.update(
             {
                 "base_url": base_url,
                 "api_key": api_key,
@@ -601,6 +810,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
                 "context_length": context_length,
                 "name": name,
                 "api_mode": api_mode,
+                "key_env": key_env,
             }
         ),
     )
@@ -621,9 +831,13 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
 
     assert saved_cfg["model"]["provider"] == "custom"
     assert saved_cfg["model"]["base_url"] == "https://codex.example.com/v1"
-    assert saved_cfg["model"]["api_key"] == "test-key"
     assert saved_cfg["model"]["api_mode"] == "codex_responses"
     assert captured_provider["api_mode"] == "codex_responses"
+
+    # The key itself goes to .env; config.yaml only references it (#69449).
+    key_env = captured_provider["key_env"]
+    assert saved_cfg["model"]["api_key"] == f"${{{key_env}}}"
+    assert saved_env[key_env] == "test-key"
 
 
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
@@ -719,3 +933,81 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypatch, tmp_path):
+    """With key_env set the entry must not carry the secret (#69449)."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({}))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    _save_custom_provider(
+        "http://localhost:11434/v1",
+        api_key="sk-secret",
+        name="Ollama",
+        key_env="HERMES_CUSTOM_LOCALHOST_11434_API_KEY",
+    )
+
+    entry = saved["custom_providers"][0]
+    assert entry["key_env"] == "HERMES_CUSTOM_LOCALHOST_11434_API_KEY"
+    assert "api_key" not in entry
+    assert "sk-secret" not in yaml.safe_dump(saved)
+
+
+def test_save_custom_provider_migrates_an_existing_plaintext_entry(monkeypatch, tmp_path):
+    """Re-saving a known URL swaps its inline key for the .env reference."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    existing = {
+        "custom_providers": [
+            {
+                "name": "Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "sk-legacy",
+            }
+        ]
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: existing)
+    saved = {}
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    _save_custom_provider(
+        "http://localhost:11434/v1",
+        key_env="HERMES_CUSTOM_LOCALHOST_11434_API_KEY",
+    )
+
+    entry = saved["custom_providers"][0]
+    assert entry["key_env"] == "HERMES_CUSTOM_LOCALHOST_11434_API_KEY"
+    assert "api_key" not in entry
+
+
+def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
+    """Every IP-based local endpoint slugs to a digit-leading name.
+
+    ``save_env_value`` rejects names that don't match
+    ``[A-Za-z_][A-Za-z0-9_]*``, so deriving ``127_0_0_1_8080_API_KEY`` would
+    raise on exactly the local-proxy setups this is meant to protect. The
+    fixed prefix makes the result valid by construction.
+    """
+    import re
+
+    from hermes_cli.config import _ENV_VAR_NAME_RE, custom_endpoint_key_env
+
+    for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
+        assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
+
+
+def test_custom_endpoint_key_env_separates_ports_on_one_host():
+    """Two servers on one machine must not collapse onto one .env slot."""
+    from hermes_cli.config import custom_endpoint_key_env
+
+    assert custom_endpoint_key_env("127.0.0.1_8000") != custom_endpoint_key_env("127.0.0.1_8001")
+    assert custom_endpoint_key_env("acme") == custom_endpoint_key_env("ACME")

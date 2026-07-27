@@ -14,7 +14,7 @@ If you want a practical setup walkthrough with recommended configurations and re
 
 Before using voice features, make sure you have:
 
-1. **Hermes Agent installed** — `pip install hermes-agent` (see [Installation](/getting-started/installation))
+1. **Hermes Agent installed** — via the install script (see [Installation](/getting-started/installation))
 2. **An LLM provider configured** — run `hermes model` or set your preferred provider credentials in `~/.hermes/.env`
 3. **A working base setup** — run `hermes` to verify the agent responds to text before enabling voice
 
@@ -40,19 +40,19 @@ A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies th
 
 ```bash
 # CLI voice mode (microphone + audio playback)
-pip install "hermes-agent[voice]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
 
 # Discord + Telegram messaging (includes discord.py[voice] for VC support)
-pip install "hermes-agent[messaging]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
 
 # Premium TTS (ElevenLabs)
-pip install "hermes-agent[tts-premium]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
 
 # Local TTS (NeuTTS, optional)
 python -m pip install -U neutts[all]
 
 # Everything at once
-pip install "hermes-agent[all]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
 ```
 
 | Extra | Packages | Required For |
@@ -159,11 +159,22 @@ Both `silence_threshold` and `silence_duration` are configurable in `config.yaml
 
 ### Streaming TTS
 
-When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response:
+When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response. This works with **every TTS provider**:
 
 1. Buffers text deltas into complete sentences (min 20 chars)
-2. Strips markdown formatting and `<think>` blocks
-3. Generates and plays audio per sentence in real-time
+2. Strips markdown formatting, emoji, and `<think>` blocks
+3. Plays audio per sentence in real-time — providers with a chunked PCM API (ElevenLabs, OpenAI) stream raw audio for the lowest time-to-first-word; every other provider (including the default Edge) synthesizes and plays each sentence as it completes
+
+The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a desktop voice conversation the reply text is fed **live** into a per-reply speech WebSocket as the model generates it, so speech overlaps generation — one socket and one audio clock per reply, no per-sentence connection gaps.
+
+### Barge-in
+
+You can interrupt the agent mid-speech:
+
+- **Talk over it** — in continuous voice mode, a voice-activity monitor listens while the agent speaks and cuts playback the moment you start talking, then goes straight back to recording. The detector calibrates its noise floor against the playback itself, so speaker bleed doesn't self-trigger. Disable with `voice.barge_in: false` in `config.yaml`.
+- **Type or press the record key** — sending a new message or hitting the push-to-talk key stops playback instantly on every surface.
+
+The agent **knows** it was interrupted: the next message carries a short note telling the model its spoken reply was cut off, so it can react naturally ("rude!") or pick up where it left off instead of being oblivious.
 
 ### Hallucination Filter
 
@@ -263,13 +274,13 @@ Go to the [Discord Developer Portal](https://discord.com/developers/applications
 
 | Level | Integer | What's Included |
 |-------|---------|----------------|
-| Text only | `274878286912` | View Channels, Send Messages, Read History, Embeds, Attachments, Threads, Reactions |
-| Text + Voice | `274881432640` | All above + Connect, Speak |
+| Text only | `309237763136` | View Channels, Send Messages, Read History, Embeds, Attachments, Threads, Reactions, Create Public Threads |
+| Text + Voice | `309240908864` | All above + Connect, Speak |
 
 **Re-invite the bot** with the updated permissions URL:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274881432640
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309240908864
 ```
 
 Replace `YOUR_APP_ID` with your Application ID from the Developer Portal.

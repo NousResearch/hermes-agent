@@ -4,14 +4,31 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
   - _sanitize_api_messages()    — Phase 1: orphaned tool pair repair
   - _cap_delegate_task_calls()  — Phase 2a: subagent concurrency limit
   - _deduplicate_tool_calls()   — Phase 2b: identical call deduplication
+  - _uniquify_tool_call_ids()   — Phase 2c: duplicate-id repair (lossless pairing)
 """
 
 import types
 
-from run_agent import AIAgent
-from tools.delegate_tool import _get_max_concurrent_children
+import pytest
 
-MAX_CONCURRENT_CHILDREN = _get_max_concurrent_children()
+from run_agent import AIAgent
+
+# Pin the concurrency limit instead of reading the runtime config.
+# _cap_delegate_task_calls() resolves _get_max_concurrent_children() at CALL
+# time (inside a per-test hermetic HERMES_HOME), but this module previously
+# froze the value at IMPORT time — before the hermetic fixture ran — so a
+# developer machine with delegation.max_concurrent_children in the real
+# ~/.hermes/config.yaml saw a different limit at import vs call and the
+# truncation tests failed locally while passing on CI.
+MAX_CONCURRENT_CHILDREN = 3
+
+
+@pytest.fixture(autouse=True)
+def _pin_max_concurrent_children(monkeypatch):
+    monkeypatch.setattr(
+        "tools.delegate_tool._get_max_concurrent_children",
+        lambda: MAX_CONCURRENT_CHILDREN,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +124,30 @@ class TestSanitizeApiMessages:
         out = AIAgent._sanitize_api_messages(msgs)
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
+
+    def test_tool_result_with_leading_whitespace_preserved(self):
+        """Tool result IDs with leading/trailing whitespace should match assistant call IDs."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("functions.cronjob:24")]},
+            tool_result(" functions.cronjob:24"),  # leading whitespace
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Should NOT inject a stub — the tool result is valid after stripping
+        assert len(out) == 2
+        assert out[1]["role"] == "tool"
+        assert out[1]["content"] == "ok"
+
+    def test_truly_orphaned_with_whitespace_still_removed(self):
+        """Truly orphaned tool results with whitespace should still be removed."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("c_valid")]},
+            tool_result(" c_ORPHAN "),  # whitespace + no matching call
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 2  # assistant + stub for c_valid, orphan removed
+        tool_msgs = [m for m in out if m["role"] == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "c_valid"
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +276,93 @@ class TestDeduplicateToolCalls:
         original_len = len(tcs)
         AIAgent._deduplicate_tool_calls(tcs)
         assert len(tcs) == original_len
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c — _uniquify_tool_call_ids
+# ---------------------------------------------------------------------------
+
+def make_tc_id(id_: str, name: str, arguments: str = "{}", call_id=None) -> types.SimpleNamespace:
+    tc = types.SimpleNamespace()
+    tc.id = id_
+    if call_id is not None:
+        tc.call_id = call_id
+    tc.function = types.SimpleNamespace(name=name, arguments=arguments)
+    return tc
+
+
+class TestUniquifyToolCallIds:
+
+    def test_distinct_calls_sharing_id_get_unique_ids(self):
+        tcs = [
+            make_tc_id("call_1", "read_file", '{"path":"a.txt"}'),
+            make_tc_id("call_1", "read_file", '{"path":"b.txt"}'),
+        ]
+        out = AIAgent._uniquify_tool_call_ids(tcs)
+        assert out is tcs
+        assert tcs[0].id == "call_1"          # first occurrence untouched
+        assert tcs[1].id == "call_1_d2"       # deterministic suffix
+        assert len({tc.id for tc in tcs}) == 2
+
+    def test_three_way_collision(self):
+        tcs = [make_tc_id("x", "t", '{"a":1}'),
+               make_tc_id("x", "t", '{"a":2}'),
+               make_tc_id("x", "t", '{"a":3}')]
+        AIAgent._uniquify_tool_call_ids(tcs)
+        assert [tc.id for tc in tcs] == ["x", "x_d2", "x_d3"]
+
+    def test_suffix_collision_with_existing_id_avoided(self):
+        # A real id "x_d2" already exists — the rename must skip past it.
+        tcs = [make_tc_id("x", "t", '{"a":1}'),
+               make_tc_id("x_d2", "t", '{"a":2}'),
+               make_tc_id("x", "t", '{"a":3}')]
+        AIAgent._uniquify_tool_call_ids(tcs)
+        assert [tc.id for tc in tcs] == ["x", "x_d2", "x_d3"]
+
+    def test_unique_ids_untouched(self):
+        tcs = [make_tc_id("a", "t1"), make_tc_id("b", "t2")]
+        AIAgent._uniquify_tool_call_ids(tcs)
+        assert [tc.id for tc in tcs] == ["a", "b"]
+
+    def test_blank_and_missing_ids_left_for_fallback(self):
+        tc_blank = make_tc_id("", "t1")
+        tc_none = make_tc_id(None, "t2")
+        tc_noattr = make_tc("t3")  # no .id attribute at all
+        AIAgent._uniquify_tool_call_ids([tc_blank, tc_none, tc_noattr])
+        assert tc_blank.id == ""
+        assert tc_none.id is None
+        assert not hasattr(tc_noattr, "id")
+
+    def test_call_id_sibling_kept_consistent(self):
+        # Responses-path objects carry call_id; build_assistant_message
+        # prefers it, so the rename must update both.
+        tcs = [make_tc_id("call_1", "t", '{"a":1}', call_id="call_1"),
+               make_tc_id("call_1", "t", '{"a":2}', call_id="call_1")]
+        AIAgent._uniquify_tool_call_ids(tcs)
+        assert tcs[1].id == "call_1_d2"
+        assert tcs[1].call_id == "call_1_d2"
+        assert tcs[0].call_id == "call_1"
+
+    def test_dict_entries_supported(self):
+        tcs = [{"id": "c", "function": {"name": "t", "arguments": '{"a":1}'}},
+               {"id": "c", "call_id": "c", "function": {"name": "t", "arguments": '{"a":2}'}}]
+        AIAgent._uniquify_tool_call_ids(tcs)
+        assert tcs[0]["id"] == "c"
+        assert tcs[1]["id"] == "c_d2"
+        assert tcs[1]["call_id"] == "c_d2"
+
+    def test_empty_and_none_safe(self):
+        assert AIAgent._uniquify_tool_call_ids([]) == []
+        assert AIAgent._uniquify_tool_call_ids(None) is None
+
+    def test_composite_responses_ids_collide_on_call_half(self):
+        # "call_x|fc_y" composites pair on the call half; the rename must
+        # keep the provider's response-item half intact.
+        tcs = [make_tc_id("call_x|fc_1", "t", '{"a":1}'),
+               make_tc_id("call_x|fc_2", "t", '{"a":2}')]
+        AIAgent._uniquify_tool_call_ids(tcs)
+        assert tcs[0].id == "call_x|fc_1"
+        assert tcs[1].id == "call_x_d2|fc_2"
 
 
 # ---------------------------------------------------------------------------

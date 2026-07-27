@@ -27,7 +27,7 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.model import build_model_parser
-from hermes_cli.subcommands.postinstall import build_postinstall_parser
+
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.setup import build_setup_parser
@@ -51,7 +51,7 @@ def _h(name):
 SINGLE_HANDLER_CASES = [
     ("model", build_model_parser, "cmd_model", ["model"]),
     ("setup", build_setup_parser, "cmd_setup", ["setup"]),
-    ("postinstall", build_postinstall_parser, "cmd_postinstall", ["postinstall"]),
+
     ("whatsapp", build_whatsapp_parser, "cmd_whatsapp", ["whatsapp"]),
     ("slack", build_slack_parser, "cmd_slack", ["slack"]),
     ("login", build_login_parser, "cmd_login", ["login"]),
@@ -86,6 +86,25 @@ def test_single_handler_builders(name, builder, kw, argv):
     assert ns.func is handler
 
 
+def test_config_get_unset_subcommands_parse():
+    """`hermes config get/unset` parse key args (and --json for get)."""
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("config")
+    build_config_parser(sub, cmd_config=handler)
+
+    ns = parser.parse_args(["config", "get", "terminal.backend", "--json"])
+    assert ns.func is handler
+    assert ns.config_command == "get"
+    assert ns.key == "terminal.backend"
+    assert ns.json is True
+
+    ns = parser.parse_args(["config", "unset", "terminal.backend"])
+    assert ns.func is handler
+    assert ns.config_command == "unset"
+    assert ns.key == "terminal.backend"
+
+
 def test_dashboard_builder_two_handlers():
     parser = argparse.ArgumentParser(prog="hermes")
     sub = parser.add_subparsers(dest="command")
@@ -95,3 +114,52 @@ def test_dashboard_builder_two_handlers():
     assert parser.parse_args(["dashboard"]).func is dash
     # dashboard register -> register handler
     assert parser.parse_args(["dashboard", "register"]).func is reg
+
+
+# ── deprecated `hermes login` fails gracefully, not with argparse error ────
+#
+# `hermes login` is a removed command; its handler (`login_command` in
+# `hermes_cli/auth.py`) prints a deprecation notice pointing at `hermes auth` /
+# `hermes model` and exits 0.  Two behavior contracts guard the UX:
+#   1. ANY `--provider <value>` (including ones the user actually wants, like
+#      `anthropic`) must parse and reach the handler — never crash in argparse
+#      with `invalid choice` before the friendly redirect is printed (#24756).
+#   2. The subcommand must not advertise itself in the parser help row.
+
+
+def _login_parser():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_login_parser(sub, cmd_login=_h("login"))
+    return parser
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "nous", "openai-codex", "totally-made-up"])
+def test_login_accepts_any_provider_value(provider):
+    """Deprecated `login` must route every `--provider` to the handler.
+
+    A restrictive `choices=` list (the pre-fix behavior) rejected providers
+    like `anthropic` with an argparse error *before* the deprecation message
+    could run, so the user just saw `invalid choice: 'anthropic'` and assumed
+    the feature was broken rather than relocated.
+    """
+    ns = _login_parser().parse_args(["login", "--provider", provider])
+    assert ns.func.__name__ == "cmd_login"
+    assert ns.provider == provider
+
+
+def test_login_subparser_help_is_suppressed():
+    """The deprecated `login` row must not appear in `hermes --help`.
+
+    Must hold without leaking argparse's literal `==SUPPRESS==` placeholder,
+    which `help=argparse.SUPPRESS` emits for a top-level subparser on 3.12+.
+    The fix omits the `help=` kwarg entirely instead.
+    """
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_login_parser(sub, cmd_login=_h("login"))
+    help_text = parser.format_help()
+    # The misleading old help string must be gone from the top-level usage.
+    assert "Authenticate with an inference provider" not in help_text
+    # And no leaked SUPPRESS placeholder row.
+    assert "==SUPPRESS==" not in help_text

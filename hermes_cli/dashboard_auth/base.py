@@ -26,6 +26,34 @@ class Session:
 
 
 @dataclass(frozen=True)
+class TokenPrincipal:
+    """A verified non-interactive (service-to-service) caller.
+
+    The token analog of :class:`Session`. Where a ``Session`` represents an
+    interactive human identity behind a session cookie, a ``TokenPrincipal``
+    represents a machine/service caller that authenticated by presenting a
+    bearer token in the ``Authorization`` request header on a single
+    request — no login, no cookie, no refresh.
+
+    Returned by :meth:`DashboardAuthProvider.verify_token` and attached to
+    ``request.state.token_principal`` by the token-auth middleware seam so a
+    route handler can see *who* called it.
+
+    Fields:
+      * ``principal`` — stable identifier for the caller (e.g. the provider
+        name, a service account id, or an agent id). Opaque to the seam.
+      * ``provider`` — the ``name`` of the provider that verified the token.
+      * ``scopes`` — capability strings this principal is authorised for.
+        Empty tuple means "unscoped" (the provider vouches for the caller but
+        attaches no capability list); a route MAY enforce a required scope.
+    """
+
+    principal: str
+    provider: str
+    scopes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class LoginStart:
     """First leg of the OAuth round trip.
 
@@ -66,9 +94,11 @@ class InvalidCredentialsError(Exception):
 
 
 class RefreshExpiredError(Exception):
-    """The refresh token is dead.
+    """This provider rejects the refresh token as dead or invalid.
 
-    Middleware clears cookies and forces re-login (302 → ``/login``).
+    In a multi-provider deployment this does not prove token ownership, so
+    middleware may try remaining providers. It clears cookies and forces
+    re-login only after every reachable provider rejects the token.
     """
 
 
@@ -97,9 +127,13 @@ class DashboardAuthProvider(ABC):
         raises ``ProviderError`` if the IDP is unreachable. Middleware
         treats expiry and unreachable differently (expiry → refresh;
         unreachable → 503).
-      * ``refresh_session`` raises ``RefreshExpiredError`` when the
-        refresh token is also invalid; middleware then forces re-login.
-        Raises ``ProviderError`` on network failure.
+      * ``refresh_session`` raises ``RefreshExpiredError`` when the refresh
+        token is invalid for that provider. Middleware tries the remaining
+        providers because an opaque foreign token can be indistinguishable
+        from an expired one; it forces re-login only after every reachable
+        provider rejects the token. Raises ``ProviderError`` on network
+        failure; middleware still tries remaining providers, but returns 503
+        without clearing cookies if none succeeds and any was unavailable.
       * ``revoke_session`` is best-effort and must not raise.
 
     Subclasses MUST set ``name`` (lowercase identifier, stable forever)
@@ -130,6 +164,25 @@ class DashboardAuthProvider(ABC):
     # ``complete_password_login``. OAuth-only providers leave this False
     # and are completely unaffected.
     supports_password: bool = False
+
+    # When True, this provider can verify a non-interactive bearer token
+    # (``verify_token``) presented on a single request by a service-to-service
+    # caller — no login, no cookie, no refresh. This is the generic
+    # API-token capability flag, mirroring ``supports_password``: a route
+    # opts into token auth (see ``token_auth`` middleware seam) and the
+    # gate consults every ``supports_token`` provider in turn until one
+    # recognises the token. OAuth/password providers leave this False and
+    # are completely unaffected. The drain bearer-secret plugin is the
+    # first consumer, but the capability is deliberately generic so any
+    # future machine-credential provider drops in without core changes.
+    supports_token: bool = False
+
+    # When True, this provider does the interactive cookie-session flow (login,
+    # verify, refresh). The login page, /auth/login, and the gate's
+    # verify/refresh loops consult only supports_session providers, so a
+    # token-only credential (e.g. drain) is never offered a login. Mirrors
+    # supports_token.
+    supports_session: bool = True
 
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
@@ -181,6 +234,39 @@ class DashboardAuthProvider(ABC):
             f"{type(self).__name__} does not support password login "
             "(set supports_password = True and override "
             "complete_password_login)"
+        )
+
+    def verify_token(self, *, token: str) -> "Optional[TokenPrincipal]":
+        """Verify a non-interactive bearer token; return its principal.
+
+        The token analog of ``verify_session``. Only consulted when
+        ``supports_token`` is True. Called by the ``token_auth`` middleware
+        seam for every request to a token-authable route, in registration
+        order, until one provider returns a non-None principal.
+
+        Contract (mirrors ``verify_session`` stacking semantics):
+          * Return a :class:`TokenPrincipal` if this provider recognises and
+            accepts the token.
+          * Return ``None`` for a token this provider does NOT recognise —
+            never raise, so the seam can fall through to the next provider.
+            A malformed/expired/wrong token is "not recognised" → ``None``.
+          * Raise ``ProviderError`` ONLY for a genuine backing-store outage
+            (the provider can neither confirm nor deny). The seam treats this
+            like ``verify_session``: remember it, keep trying other providers,
+            and surface 503 only if NO provider accepts the token AND at least
+            one was unreachable.
+
+        Implementations MUST use a constant-time comparison
+        (``hmac.compare_digest``) when matching a shared secret so the
+        endpoint isn't a timing oracle.
+
+        The default raises ``NotImplementedError`` so a provider that sets
+        ``supports_token`` but forgets to implement this fails loudly rather
+        than silently accepting every caller.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support token auth "
+            "(set supports_token = True and override verify_token)"
         )
 
 

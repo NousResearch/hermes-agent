@@ -75,6 +75,57 @@ class TestOpenRouter:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestKimiMoonshotOnOpenRouter:
+    """Kimi/Moonshot on OpenRouter honour envelope-layout cache_control (#25970)."""
+
+    def test_kimi_k26_on_openrouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="moonshotai/kimi-k2.6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_moonshot_v1_on_openrouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="moonshotai/moonshot-v1-8k",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_kimi_on_nous_portal_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="moonshotai/kimi-k2.6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_kimi_bare_release_slug_on_openrouter_caches(self):
+        """Bare release slugs (k2-thinking) lack the 'kimi'/'moonshot' substring;
+        the canonical family matcher must still catch them."""
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="k2-thinking",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_kimi_on_non_openrouter_host_does_not_cache(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.moonshot.cn/v1",
+            api_mode="chat_completions",
+            model="moonshotai/kimi-k2.6",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestThirdPartyAnthropicGateway:
     """Third-party gateways speaking the Anthropic protocol (MiniMax, Zhipu GLM, LiteLLM)."""
 
@@ -290,6 +341,28 @@ class TestQwenAlibabaFamily:
             model="openai/gpt-5.4",
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
+class TestNousPortalAnthropicWire:
+    def test_portal_claude_on_the_messages_wire_uses_the_native_layout(self):
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="anthropic_messages",
+            model="anthropic/claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_portal_claude_on_chat_completions_keeps_the_envelope_layout(self):
+        """The wire, not the provider, picks the layout — Portal models still on
+        /chat/completions must not be flipped to inner-block markers."""
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+            api_mode="chat_completions",
+            model="anthropic/claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
 
 class TestExplicitOverrides:

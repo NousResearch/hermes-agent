@@ -1,14 +1,14 @@
 ---
-title: "Telephony — Give Hermes phone capabilities without core tool changes"
+title: "Telephony — Provision Twilio numbers, SMS/MMS, and AI outbound calls"
 sidebar_label: "Telephony"
-description: "Give Hermes phone capabilities without core tool changes"
+description: "Provision Twilio numbers, SMS/MMS, and AI outbound calls"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Telephony
 
-Give Hermes phone capabilities without core tool changes. Provision and persist a Twilio number, send and receive SMS/MMS, make direct calls, and place AI-driven outbound calls through Bland.ai or Vapi.
+Provision Twilio numbers, SMS/MMS, and AI outbound calls.
 
 ## Skill metadata
 
@@ -34,7 +34,7 @@ The following is the complete skill definition that Hermes loads when this skill
 This optional skill gives Hermes practical phone capabilities while keeping telephony out of the core tool list.
 
 It ships with a helper script, `scripts/telephony.py`, that can:
-- save provider credentials into `~/.hermes/.env`
+- save provider credentials into `${HERMES_HOME:-~/.hermes}/.env`
 - search for and buy a Twilio phone number
 - remember that owned number for later sessions
 - send SMS / MMS from the owned number
@@ -121,7 +121,7 @@ Why:
 
 The skill persists telephony state in two places:
 
-### `~/.hermes/.env`
+### `${HERMES_HOME:-~/.hermes}/.env`
 Used for long-lived provider credentials and owned-number IDs, for example:
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
@@ -258,7 +258,7 @@ python3 "$SCRIPT" save-twilio AC... auth_token_here
 python3 "$SCRIPT" twilio-search --country US --area-code 702 --limit 10
 ```
 
-3. Buy it and save it into `~/.hermes/.env` + state:
+3. Buy it and save it into `${HERMES_HOME:-~/.hermes}/.env` + state:
 ```bash
 python3 "$SCRIPT" twilio-buy "+17025551234" --save-env
 ```
@@ -420,7 +420,7 @@ After setup, you should be able to do all of the following with just this skill:
 
 1. `diagnose` shows provider readiness and remembered state
 2. search and buy a Twilio number
-3. persist that number to `~/.hermes/.env`
+3. persist that number to `${HERMES_HOME:-~/.hermes}/.env`
 4. send an SMS from the owned number
 5. poll inbound texts for the owned number later
 6. place a direct Twilio call

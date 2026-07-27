@@ -44,7 +44,7 @@ This guide walks you through the full setup process — from creating your DingT
 Install the required Python packages:
 
 ```bash
-pip install "hermes-agent[dingtalk]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[dingtalk]"
 ```
 
 Or individually:
@@ -154,7 +154,7 @@ gateway:
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared group chats
 - `require_mention: true` prevents the bot from responding to every group message — it only answers when someone @-mentions it
-- `allowed_users` under `dingtalk.extra` is an alternative to `DINGTALK_ALLOWED_USERS`; if both are set, they're merged
+- `allowed_users` under `dingtalk.extra` is an alternative to `DINGTALK_ALLOWED_USERS`; set one or the other (if both are set, only users present in both lists are authorized)
 
 ### Start the Gateway
 

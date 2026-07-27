@@ -82,7 +82,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 class TestTelegramSendImageFile:
@@ -242,7 +242,11 @@ class TestDiscordSendImageFile:
 
         assert result.success
         assert result.message_id == "100"
-        assert "file" in mock_channel.send.call_args.kwargs
+        # #66797: path-based File sent via plural files=[...] (matches the
+        # image-batch path; the singular file= handle form could race the
+        # multipart encoder and silently drop the attachment).
+        sent_files = mock_channel.send.call_args.kwargs.get("files")
+        assert sent_files and len(sent_files) == 1
         assert file_cls.call_args.kwargs["filename"] == "renamed.pdf"
 
     def test_send_video_uploads_file_attachment(self, adapter, tmp_path):
@@ -267,7 +271,9 @@ class TestDiscordSendImageFile:
 
         assert result.success
         assert result.message_id == "101"
-        assert "file" in mock_channel.send.call_args.kwargs
+        # #66797: path-based File sent via plural files=[...] (see above).
+        sent_files = mock_channel.send.call_args.kwargs.get("files")
+        assert sent_files and len(sent_files) == 1
         assert file_cls.call_args.kwargs["filename"] == "clip.mp4"
 
     def test_returns_error_when_file_missing(self, adapter):
@@ -313,7 +319,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 class TestSlackSendImageFile:

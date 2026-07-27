@@ -86,11 +86,34 @@ agent sees a syntax-clean file with semantic problems as
 | Prisma | `prisma language-server` | manual |
 | Kotlin | `kotlin-language-server` | manual |
 | Java | `jdtls` | manual |
+| PowerShell | `PowerShellEditorServices` (`pwsh` host) | manual (release zip) |
 
 For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,
 …). Hermes auto-detects the binary on PATH or in
 `<HERMES_HOME>/lsp/bin/`.
+
+### PowerShell
+
+PowerShellEditorServices isn't a single binary — it's a PowerShell
+module bundle launched by a `pwsh` (PowerShell 7+) or `powershell`
+host. Setup:
+
+1. Install [PowerShell](https://github.com/PowerShell/PowerShell) so
+   `pwsh` (or Windows `powershell`) is on PATH.
+2. Download the latest release zip from
+   [PowerShellEditorServices releases](https://github.com/PowerShell/PowerShellEditorServices/releases)
+   and extract it.
+3. Point Hermes at the extracted bundle — the directory that contains
+   `PowerShellEditorServices/Start-EditorServices.ps1`. Either:
+   - set `lsp.servers.powershell.command: ["/path/to/bundle"]` in
+     `config.yaml`, or
+   - extract it to `<HERMES_HOME>/lsp/PowerShellEditorServices`, or
+   - export `PSES_BUNDLE_PATH=/path/to/bundle`.
+
+`hermes lsp status` reports `installed` once `pwsh` is found; if the
+bundle is missing you'll see a one-time warning in the logs with the
+download link.
 
 A few servers are installed alongside a peer dependency that npm
 won't auto-pull. The current case is `typescript-language-server`,
@@ -128,6 +151,12 @@ lsp:
 
   # How long to wait for diagnostics after each write.
   wait_mode: document      # "document" or "full"
+  # Max seconds to wait for the server to re-check the file after an
+  # edit. Only *fresh* diagnostics (produced for the post-edit
+  # content) are ever reported; if the server doesn't finish within
+  # this budget, the edit reports "no LSP data" rather than stale
+  # errors from before the edit. Raise this for slow servers on big
+  # projects (tsserver, rust-analyzer mid-indexing).
   wait_timeout: 5.0
 
   # How to handle missing server binaries.
@@ -185,6 +214,13 @@ diagnostics are emitted. When diagnostics are emitted, the wait
 budget is `wait_timeout` seconds — typically the server responds in
 tens of milliseconds for pyright/tsserver and a few seconds for
 rust-analyzer mid-indexing.
+
+Diagnostics are **freshness-gated**: a result only counts when the
+server produced it for the content of the current edit (a
+`publishDiagnostics` push at/after the change, or a pull request
+answered after it). Slow servers that haven't re-checked yet result
+in "no data" for that edit — never in yesterday's errors being
+re-reported as current.
 
 Servers are kept alive for the life of the Hermes process. There's
 no idle-timeout reaper — the cost of restarting the server's index

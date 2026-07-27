@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
@@ -10,8 +11,8 @@ import {
   getSessionPreviewRecord,
   progressPreviewServerRestart,
   requestPreviewReload,
-  setPreviewTarget,
-  setSessionPreviewTarget
+  setCurrentSessionPreviewTarget,
+  setPreviewTarget
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
@@ -40,53 +41,6 @@ function activePreviewSessionId(
   return selectedStoredSessionId || routedSessionId || activeSessionIdRef.current || ''
 }
 
-function looksLikePreviewTarget(value: string): boolean {
-  return /^https?:\/\//i.test(value) || /^file:\/\//i.test(value) || /^(?:\/|\.{1,2}\/|~\/).+/.test(value)
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
-}
-
-function htmlPathFromInlineDiff(value: string): string {
-  const cleaned = stripAnsi(value).replace(/^\s*┊\s*review diff\s*\n/i, '')
-
-  for (const match of cleaned.matchAll(/(?:^|\s)(?:[ab]\/)?([^\s]+\.html?)(?=\s|$)/gi)) {
-    const candidate = match[1]?.trim()
-
-    if (candidate) {
-      return candidate
-    }
-  }
-
-  return ''
-}
-
-function structuredPreviewCandidate(payload: unknown): string {
-  const record = asRecord(payload)
-  const fields = ['url', 'target', 'path', 'file', 'filepath', 'preview']
-
-  for (const field of fields) {
-    const value = record[field]
-
-    if (typeof value === 'string') {
-      const target = value.trim()
-
-      if (target && looksLikePreviewTarget(target)) {
-        return target
-      }
-    }
-  }
-
-  const inlineDiff = record.inline_diff
-
-  if (typeof inlineDiff === 'string') {
-    return htmlPathFromInlineDiff(inlineDiff)
-  }
-
-  return ''
-}
-
 export function usePreviewRouting({
   activeSessionIdRef,
   baseHandleGatewayEvent,
@@ -99,6 +53,10 @@ export function usePreviewRouting({
   const previewRegistry = useStore($sessionPreviewRegistry)
   const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
 
+  // Restore a *user-opened* preview when its session becomes active. Tool
+  // results no longer auto-register/open a preview — the inline preview card in
+  // the tool row is the only entry point, so HTML artifacts never pop the rail
+  // open on their own.
   useEffect(() => {
     if (currentView !== 'chat' || !previewSessionId) {
       setPreviewTarget(null)
@@ -110,53 +68,6 @@ export function usePreviewRouting({
 
     setPreviewTarget(record?.normalized ?? null)
   }, [currentView, previewRegistry, previewSessionId])
-
-  const registerStructuredPreview = useCallback(
-    async (event: RpcEvent) => {
-      if (
-        event.session_id &&
-        event.session_id !== activeSessionIdRef.current &&
-        event.session_id !== previewSessionId
-      ) {
-        return
-      }
-
-      if (!event.type.startsWith('tool.')) {
-        return
-      }
-
-      if (!previewSessionId) {
-        return
-      }
-
-      const candidate = structuredPreviewCandidate(event.payload)
-
-      if (!candidate) {
-        return
-      }
-
-      const desktop = window.hermesDesktop
-
-      if (!desktop?.normalizePreviewTarget) {
-        return
-      }
-
-      const sessionId = previewSessionId
-      const cwd = currentCwd || ''
-      const target = await desktop.normalizePreviewTarget(candidate, cwd || undefined).catch(() => null)
-
-      if (
-        !target ||
-        sessionId !== activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId) ||
-        $currentCwd.get() !== cwd
-      ) {
-        return
-      }
-
-      setSessionPreviewTarget(sessionId, target, 'tool-result', candidate)
-    },
-    [activeSessionIdRef, currentCwd, previewSessionId, routedSessionId, selectedStoredSessionId]
-  )
 
   const restartPreviewServer = useCallback(
     async (url: string, context?: string) => {
@@ -192,6 +103,30 @@ export function usePreviewRouting({
     event => {
       baseHandleGatewayEvent(event)
 
+      if (event.type === 'preview.open') {
+        // Agent-driven open in response to an explicit user request ("show
+        // cnn.com in the preview pane"). Honor it only for the active session —
+        // a background turn must not yank the pane open (see desktop AGENTS.md:
+        // offer, don't hijack). Routes through the same normalizer as the file
+        // browser so URLs, localhost, and file paths all resolve correctly.
+        const { url, label } = asRecord(event.payload)
+        const target = typeof url === 'string' ? url.trim() : ''
+
+        if (target && (!event.session_id || event.session_id === activeSessionIdRef.current)) {
+          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(resolved => {
+            if (resolved) {
+              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
+              setCurrentSessionPreviewTarget(
+                trimmedLabel ? { ...resolved, label: trimmedLabel } : resolved,
+                'tool-result'
+              )
+            }
+          })
+        }
+
+        return
+      }
+
       if (event.type === 'preview.restart.complete') {
         const { task_id, text } = asRecord(event.payload)
 
@@ -210,13 +145,14 @@ export function usePreviewRouting({
         return
       }
 
-      void registerStructuredPreview(event)
-
+      // Only refresh an already-open live preview when a file changes; never
+      // open one unprompted. (Preview links are surfaced from the tool row into
+      // the status stack — see tool-fallback.tsx.)
       if ($previewTarget.get()?.kind === 'url' && gatewayEventCompletedFileDiff(event)) {
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent, registerStructuredPreview]
+    [activeSessionIdRef, baseHandleGatewayEvent, currentCwd]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

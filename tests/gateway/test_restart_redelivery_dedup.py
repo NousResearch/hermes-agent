@@ -149,6 +149,43 @@ async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_slow_service_restart_still_ignores_same_update(tmp_path, monkeypatch):
+    """A slow drain must not outlive dedup when this boot came from /restart.
+
+    Service-managed shutdown can take more than five minutes while in-flight
+    gateway work drains. The replacement process still knows it booted from
+    the recorded chat restart, so the first same update must be suppressed
+    instead of requesting exit 75 again and entering a supervisor loop.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("INVOCATION_ID", "systemd-test")
+
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "platform": "telegram",
+                "update_id": 12345,
+                "requested_at": time.time() - 1200,
+            }
+        )
+    )
+
+    runner, _adapter = make_restart_runner()
+    request_restart = MagicMock()
+    monkeypatch.setattr(runner, "request_restart", request_restart)
+    runner._booted_from_restart = True
+
+    result = await runner._handle_restart_command(
+        _make_restart_event(update_id=12345)
+    )
+
+    assert result == ""
+    request_restart.assert_not_called()
+    assert runner._booted_from_restart is False
+
+
+@pytest.mark.asyncio
 async def test_no_marker_file_allows_restart(tmp_path, monkeypatch):
     """Clean gateway start (no prior marker) processes /restart normally."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -240,6 +277,77 @@ async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
         message_id="m1",
         platform_update_id=12345,
     )
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_path, monkeypatch):
+    """Missing marker + just booted from a /restart + young process → treat as stale.
+
+    Reproduces the infinite-loop scenario (issue #18528): the dedup marker went
+    missing, so the update_id comparison can't run. Because this process booted
+    from a chat-originated /restart and is still within the post-boot window,
+    the redelivered /restart is suppressed instead of re-restarting the gateway.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._booted_from_restart = True
+    runner._startup_time = time.time()
+
+    event = _make_restart_event(update_id=100)
+    result = await runner._handle_restart_command(event)
+
+    assert result == ""  # silently ignored
+    runner.request_restart.assert_not_called()
+    # One-shot: the flag is consumed so a later legitimate /restart is honored.
+    assert runner._booted_from_restart is False
+
+
+@pytest.mark.asyncio
+async def test_marker_missing_fresh_boot_allows_restart(tmp_path, monkeypatch):
+    """Missing marker on a genuine fresh boot (not from /restart) → /restart proceeds.
+
+    The guard must NOT swallow the first /restart a user sends shortly after a
+    normal (non-restart) startup: _booted_from_restart stays False, so the
+    fallback returns False and the restart goes through.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._booted_from_restart = False
+    runner._startup_time = time.time()
+
+    event = _make_restart_event(update_id=100)
+    result = await runner._handle_restart_command(event)
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_marker_missing_booted_from_restart_but_old_process_allows(tmp_path, monkeypatch):
+    """Missing marker + booted from /restart but past the window → /restart proceeds.
+
+    A /restart arriving long after boot is a genuine user action, not a boot-time
+    redelivery, so the uptime bound stops the guard from suppressing it forever.
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._booted_from_restart = True
+    runner._startup_time = time.time() - 120  # well past the 60s window
+
+    event = _make_restart_event(update_id=100)
     result = await runner._handle_restart_command(event)
 
     assert "Restarting gateway" in result

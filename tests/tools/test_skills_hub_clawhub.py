@@ -212,8 +212,9 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.identifier, "self-improving-agent")
         self.assertEqual(meta.tags, ["automation"])
 
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get):
+    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get, mock_safe_get):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -233,11 +234,10 @@ class TestClawHubSource(unittest.TestCase):
                         ]
                     },
                 )
-            if url == "https://files.example/skill-md":
-                return _MockResponse(status_code=200, text="# Skill")
             return _MockResponse(status_code=404, json_data={})
 
         mock_get.side_effect = side_effect
+        mock_safe_get.return_value = _MockResponse(status_code=200, text="# Skill")
 
         bundle = self.src.fetch("caldav-calendar")
 
@@ -246,6 +246,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
+        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20)
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_versions_list(self, mock_get):
@@ -267,7 +268,8 @@ class TestClawHubSource(unittest.TestCase):
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_blocks_private_raw_url(self, mock_get, mock_safe, _mock_policy):
+    @patch("tools.skills_hub._ssrf_safe_http_get")
+    def test_fetch_blocks_private_raw_url(self, mock_safe_get, mock_get, mock_safe, _mock_policy):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -297,6 +299,7 @@ class TestClawHubSource(unittest.TestCase):
 
         self.assertIsNone(bundle)
         self.assertEqual(mock_get.call_count, 3)
+        mock_safe_get.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -381,9 +384,10 @@ class TestClawHubSource(unittest.TestCase):
 
         mock_get.side_effect = side_effect
 
-        # Force the deadline to be in the past immediately.
+        # Force the deadline to be in the past immediately. Budget only applies
+        # to bounded browse walks (max_items > 0), not the index builder path.
         with patch.object(ClawHubSource, "CATALOG_WALK_BUDGET_SECONDS", -1):
-            results = self.src._load_catalog_index()
+            results = self.src._load_catalog_index(max_items=10)
 
         # Walk broke well before the 750-page cap.
         self.assertLess(page_calls["n"], 750)
@@ -479,6 +483,23 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         self.assertLess(page_calls["n"], 20, "should stop within a few pages of the bound")
         # Partial (bounded) walk must not be cached.
         mock_write_cache.assert_not_called()
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_max_items_zero_ignores_wall_clock_budget(
+        self, mock_get, _mock_read_cache, _mock_write_cache
+    ):
+        """Index builder path (max_items=0) must not truncate on the browse budget."""
+        page_calls = {"n": 0}
+        mock_get.side_effect = self._infinite_pages(page_calls)
+
+        with patch.object(ClawHubSource, "CATALOG_WALK_BUDGET_SECONDS", -1):
+            results = self.src._load_catalog_index(max_items=0)
+
+        # No budget -> walks until the 750-page safety cap, not ~14 pages in 12s.
+        self.assertEqual(page_calls["n"], 750)
+        self.assertEqual(len(results), 750)
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)

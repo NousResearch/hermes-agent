@@ -103,7 +103,7 @@ class _CountingAdapter(BasePlatformAdapter):
         self._fatal_retryable = fatal_retryable
         self._raise_during_connect = raise_during_connect
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if self._raise_during_connect:
             raise RuntimeError("simulated connect exception")
         if self._fatal_error:
@@ -254,7 +254,7 @@ class TestReconnectFDLeakRegression:
                     Platform.TELEGRAM,
                 )
 
-            async def connect(self) -> bool:
+            async def connect(self, *, is_reconnect: bool = False) -> bool:
                 return True
 
             async def disconnect(self) -> None:

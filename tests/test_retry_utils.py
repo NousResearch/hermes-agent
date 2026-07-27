@@ -3,7 +3,9 @@
 import threading
 
 import agent.retry_utils as retry_utils
-from agent.retry_utils import jittered_backoff
+from types import SimpleNamespace
+
+from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
 
 
 def test_backoff_is_exponential():
@@ -115,3 +117,144 @@ def test_backoff_uses_locked_tick_for_seed(monkeypatch):
 
     assert len(recorded_seeds) == 2
     assert len(set(recorded_seeds)) == 2, f"Expected unique seeds, got {recorded_seeds}"
+
+
+def _zai_overload_error():
+    return SimpleNamespace(
+        status_code=429,
+        body={
+            "error": {
+                "code": "1305",
+                "message": "The service may be temporarily overloaded, please try again later",
+            }
+        },
+    )
+
+
+def test_zai_coding_overload_classifier_is_narrow():
+    err = _zai_overload_error()
+    assert is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.2",
+        error=err,
+    )
+
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4",
+        model="glm-5.2",
+        error=err,
+    )
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.1",
+        error=err,
+    )
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.2",
+        error=SimpleNamespace(status_code=429, body={"error": {"code": "1113", "message": "Insufficient balance"}}),
+    )
+
+
+def test_zai_coding_overload_backoff_keeps_first_retries_short(monkeypatch):
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    err = _zai_overload_error()
+
+    wait, policy = adaptive_rate_limit_backoff(
+        1,
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.2",
+        error=err,
+        default_wait=2.5,
+    )
+    assert wait == 2.5
+    assert policy == "zai_coding_overload_short"
+
+    wait, policy = adaptive_rate_limit_backoff(
+        3,
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.2",
+        error=err,
+        default_wait=9.0,
+    )
+    assert wait == 9.0
+    assert policy == "zai_coding_overload_short"
+
+
+def test_zai_coding_overload_backoff_grows_after_short_retries(monkeypatch):
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    err = _zai_overload_error()
+
+    waits = []
+    for attempt in range(4, 10):
+        wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            model="glm-5.2",
+            error=err,
+            default_wait=10.0,
+        )
+        waits.append(wait)
+        assert policy == "zai_coding_overload_long"
+
+    assert waits == [30.0, 60.0, 90.0, 120.0, 120.0, 120.0]
+
+
+def test_non_zai_backoff_returns_default_wait():
+    wait, policy = adaptive_rate_limit_backoff(
+        10,
+        base_url="https://openrouter.ai/api/v1",
+        model="glm-5.2",
+        error=_zai_overload_error(),
+        default_wait=12.0,
+    )
+    assert wait == 12.0
+    assert policy is None
+
+
+def test_zai_overload_retry_ceiling_exceeds_short_attempts():
+    """Invariant: the ceiling must sit above the short-retry threshold, or the
+    long-backoff tier is unreachable and the whole schedule is dead code
+    (the original bug: default api_max_retries == short_attempts == 3)."""
+    from agent.retry_utils import (
+        zai_coding_overload_retry_ceiling,
+        _ZAI_CODING_OVERLOAD_LONG_BACKOFF,
+    )
+
+    short_attempts = 3
+    ceiling = zai_coding_overload_retry_ceiling(short_attempts)
+    assert ceiling > short_attempts
+    # Invariant (not a formula mirror): the loop's give-up check
+    # (retry_count >= ceiling) runs *before* the attempt's backoff, so the
+    # ceiling must leave headroom for every long-backoff entry to execute —
+    # i.e. the largest attempt the loop still computes backoff for
+    # (ceiling - 1) must reach the final long-tier index.
+    last_attempt_with_backoff = ceiling - 1
+    assert last_attempt_with_backoff - short_attempts >= len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF)
+
+
+def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
+    """End-to-end over the attempt range the retry loop actually walks: with the
+    extended ceiling, at least one attempt reaches the long-backoff tier and the
+    full 30/60/90/120s schedule is exercised."""
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    from agent.retry_utils import zai_coding_overload_retry_ceiling
+
+    err = _zai_overload_error()
+    ceiling = zai_coding_overload_retry_ceiling()
+
+    long_waits = []
+    # The loop computes backoff for attempts 1..ceiling-1 (it gives up at ceiling).
+    for attempt in range(1, ceiling):
+        _wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            model="glm-5.2",
+            error=err,
+            default_wait=1.0,
+        )
+        if policy == "zai_coding_overload_long":
+            long_waits.append(_wait)
+
+    assert long_waits, "long-backoff tier never reached within the retry ceiling"
+    assert long_waits == [30.0, 60.0, 90.0, 120.0]

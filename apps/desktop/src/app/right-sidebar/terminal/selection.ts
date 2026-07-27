@@ -99,8 +99,6 @@ export function resolveSurfaceColor(fallback: string): string {
 
 export const isMacPlatform = () => navigator.platform.toLowerCase().includes('mac')
 
-export const addSelectionShortcutLabel = () => (isMacPlatform() ? '⌘L' : 'Ctrl+L')
-
 export function isAddSelectionShortcut(event: KeyboardEvent) {
   const mod = isMacPlatform() ? event.metaKey : event.ctrlKey
 

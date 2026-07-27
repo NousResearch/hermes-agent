@@ -23,6 +23,50 @@ def test_main_enables_unstable_protocol(monkeypatch):
     assert calls["kwargs"]["use_unstable_protocol"] is True
 
 
+def test_main_skips_configured_mcp_discovery_when_requested(monkeypatch):
+    discovery_calls = []
+
+    async def fake_run_agent(agent, **kwargs):
+        pass
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", "1")
+    monkeypatch.setattr(
+        "tools.mcp_tool.discover_mcp_tools",
+        lambda: discovery_calls.append(True),
+    )
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main([])
+
+    assert discovery_calls == []
+
+
+@pytest.mark.parametrize("skip_value", [None, "", "0", "false"])
+def test_main_discovers_configured_mcp_when_skip_is_not_enabled(monkeypatch, skip_value):
+    discovery_calls = []
+
+    async def fake_run_agent(agent, **kwargs):
+        pass
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    if skip_value is None:
+        monkeypatch.delenv("HERMES_ACP_SKIP_CONFIGURED_MCP", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_ACP_SKIP_CONFIGURED_MCP", skip_value)
+    monkeypatch.setattr(
+        "tools.mcp_tool.discover_mcp_tools",
+        lambda: discovery_calls.append(True),
+    )
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main([])
+
+    assert discovery_calls == [True]
+
+
 def test_main_version_prints_without_starting_server(monkeypatch, capsys):
     monkeypatch.setattr(entry, "_setup_logging", lambda: (_ for _ in ()).throw(AssertionError("started server")))
 

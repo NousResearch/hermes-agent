@@ -80,6 +80,65 @@ def test_nullable_type_array_collapsed_to_single_string():
     assert prop.get("nullable") is True
 
 
+def test_multitype_array_becomes_anyof_no_branch_dropped():
+    # Ported from anomalyco/opencode#31877: a genuine multi-type array such as
+    # ["number", "string"] (common in MCP tool schemas) must keep BOTH branches
+    # as an anyOf, not silently drop all but the first. Several backends
+    # (llama.cpp, Gemini via OpenAI-compatible transports) reject the array form.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "status": {"type": ["number", "string"], "description": "status filter"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["status"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [{"type": "number"}, {"type": "string"}]
+    assert prop.get("nullable") is None
+    # Sibling keywords survive alongside the generated anyOf.
+    assert prop["description"] == "status filter"
+
+
+def test_multitype_array_with_null_lifts_nullable():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "v": {"type": ["integer", "boolean", "null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["v"]
+    assert "type" not in prop
+    assert prop["anyOf"] == [{"type": "integer"}, {"type": "boolean"}]
+    assert prop.get("nullable") is True
+
+
+def test_all_null_type_array_becomes_null_type():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "n": {"type": ["null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["n"]
+    assert prop["type"] == "null"
+
+
+def test_single_element_type_array_unwrapped():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "s": {"type": ["string"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["s"]
+    assert prop["type"] == "string"
+    assert prop.get("nullable") is None
+
+
 def test_anyof_nested_objects_sanitized():
     tools = [_tool("t", {
         "type": "object",
@@ -199,6 +258,72 @@ def test_items_sanitized_in_array_schema():
     out = sanitize_tool_schemas(tools)
     items = out[0]["function"]["parameters"]["properties"]["bag"]["items"]
     assert items == {"type": "object", "properties": {}}
+
+
+def test_ref_with_default_sibling_stripped():
+    """Strict backends reject ``default`` alongside ``$ref``."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {"$ref": "#/$defs/Payload", "default": None},
+        },
+        "$defs": {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload == {"$ref": "#/$defs/Payload"}
+
+
+def test_nullable_union_collapse_does_not_leave_default_on_ref():
+    """Nullable anyOf collapse must not attach ``default`` to a ``$ref`` branch."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "input": {
+                "anyOf": [
+                    {"$ref": "#/$defs/Payload"},
+                    {"type": "null"},
+                ],
+                "default": None,
+            },
+        },
+        "$defs": {
+            "Payload": {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["input"]
+    assert prop["$ref"] == "#/$defs/Payload"
+    assert "default" not in prop
+    assert prop.get("nullable") is True
+
+
+def test_ref_description_preserved():
+    """Annotation siblings that strict backends allow should survive."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "payload": {
+                "$ref": "#/$defs/Payload",
+                "description": "The payload",
+            },
+        },
+        "$defs": {
+            "Payload": {"type": "object", "properties": {}},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    payload = out[0]["function"]["parameters"]["properties"]["payload"]
+    assert payload["description"] == "The payload"
+    assert payload["$ref"] == "#/$defs/Payload"
 
 
 def test_empty_tools_list_returns_empty():
@@ -634,3 +759,111 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# Property-key renaming (provider ^[a-zA-Z0-9_.-]{1,64}$ pattern compat)
+# Real-world source: Cloudflare flat API MCP ships keys like
+# ``issue_class~neq`` and ``meta.<field>[<operator>]`` — one bad key anywhere
+# in the tools array 400s the whole request on Anthropic/Bedrock/Vertex/Azure.
+# ---------------------------------------------------------------------------
+
+from tools.schema_sanitizer import sanitize_property_key, unrename_tool_args
+
+
+def test_bad_property_keys_renamed_to_conforming():
+    tools = [_tool("cf_issues", {
+        "type": "object",
+        "properties": {
+            "issue_class~neq": {"type": "string"},
+            "meta.<field>[<operator>]": {"type": "string"},
+            "normal_key": {"type": "string"},
+        },
+        "required": ["issue_class~neq"],
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    import re
+    pat = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+    assert all(pat.match(k) for k in props), list(props)
+    assert "normal_key" in props
+    assert "issue_class_neq" in props
+    # required remapped alongside
+    assert out[0]["function"]["parameters"]["required"] == ["issue_class_neq"]
+
+
+def test_property_key_over_64_chars_truncated():
+    long_key = "k" * 80
+    tools = [_tool("t", {"type": "object", "properties": {long_key: {"type": "string"}}})]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert list(props) == ["k" * 64]
+
+
+def test_rename_collision_deduped_deterministically():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "a~b": {"type": "string"},
+            "a b": {"type": "integer"},
+            "a_b": {"type": "boolean"},  # already owns the sanitized name
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["a_b"]["type"] == "boolean"       # original conforming key untouched
+    assert set(props) == {"a_b", "a_b_2", "a_b_3"}
+    # deterministic across repeated runs
+    out2 = sanitize_tool_schemas(tools)
+    assert out2[0]["function"]["parameters"]["properties"].keys() == props.keys()
+
+
+def test_nested_bad_property_keys_renamed():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "body": {
+                "type": "object",
+                "properties": {"filter~gte": {"type": "number"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    body = out[0]["function"]["parameters"]["properties"]["body"]
+    assert "filter_gte" in body["properties"]
+    assert "filter~gte" not in body["properties"]
+
+
+def test_unrename_tool_args_maps_back_to_wire_names():
+    original_params = {
+        "type": "object",
+        "properties": {
+            "issue_class~neq": {"type": "string"},
+            "normal": {"type": "string"},
+            "body": {
+                "type": "object",
+                "properties": {"filter~gte": {"type": "number"}},
+            },
+        },
+    }
+    model_args = {
+        "issue_class_neq": "spoofed_dns",
+        "normal": "x",
+        "body": {"filter_gte": 5},
+    }
+    restored = unrename_tool_args(original_params, model_args)
+    assert restored == {
+        "issue_class~neq": "spoofed_dns",
+        "normal": "x",
+        "body": {"filter~gte": 5},
+    }
+
+
+def test_unrename_passes_unknown_keys_through():
+    params = {"type": "object", "properties": {"a": {"type": "string"}}}
+    assert unrename_tool_args(params, {"a": 1, "mystery": 2}) == {"a": 1, "mystery": 2}
+
+
+def test_sanitize_property_key_empty_falls_back():
+    assert sanitize_property_key("~~~") == "___"
+    assert sanitize_property_key("") == "param"

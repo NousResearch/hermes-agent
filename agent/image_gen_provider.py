@@ -11,6 +11,18 @@ Providers live in ``<repo>/plugins/image_gen/<name>/`` (built-in, auto-loaded
 as ``kind: backend``) or ``~/.hermes/plugins/image_gen/<name>/`` (user, opt-in
 via ``plugins.enabled``).
 
+Unified surface
+---------------
+One tool — ``image_generate`` — covers **text-to-image** and
+**image-to-image / image editing**. The router is the presence of
+``image_url`` (and/or ``reference_image_urls``): if any source image is
+provided, the provider routes to its image-to-image / edit endpoint; if
+omitted, the provider routes to text-to-image. Users pick one **model**
+(e.g. nano-banana-pro, gpt-image-2, grok-imagine-image); the provider
+handles which underlying endpoint to hit. This mirrors the ``video_gen``
+provider design (``agent/video_gen_provider.py``) so the two surfaces
+stay learnable together.
+
 Response shape
 --------------
 All providers return a dict that :func:`success_response` / :func:`error_response`
@@ -21,6 +33,7 @@ produce. The tool wrapper JSON-serializes it. Keys:
     model          str              provider-specific model identifier
     prompt         str              echoed prompt
     aspect_ratio   str              "landscape" | "square" | "portrait"
+    modality       str              "text" | "image" (which mode was used)
     provider       str              provider name (for diagnostics)
     error          str              only when success=False
     error_type     str              only when success=False
@@ -127,19 +140,51 @@ class ImageGenProvider(abc.ABC):
             return models[0].get("id")
         return None
 
+    def capabilities(self) -> Dict[str, Any]:
+        """Return what this provider supports.
+
+        Returned dict (all keys optional)::
+
+            {
+                "modalities": ["text", "image"],   # which inputs the backend accepts
+                "max_reference_images": 9,          # cap for reference_image_urls
+            }
+
+        ``modalities`` declares whether the active backend/model supports
+        text-to-image (``"text"``), image-to-image / editing (``"image"``),
+        or both. The tool layer surfaces this in the dynamic schema so the
+        model knows when ``image_url`` is honored. Used by ``hermes tools``
+        for the picker too. Default: text-only (backward compatible — a
+        provider that doesn't override this advertises text-to-image only).
+        """
+        return {
+            "modalities": ["text"],
+            "max_reference_images": 0,
+        }
+
     @abc.abstractmethod
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Generate an image.
+        """Generate an image from a text prompt, or edit/transform a source image.
+
+        Routing: if ``image_url`` (or any ``reference_image_urls``) is
+        provided, the provider should route to its image-to-image / edit
+        endpoint; otherwise text-to-image. ``image_url`` is the primary
+        source image to edit; ``reference_image_urls`` are additional
+        style/composition references (provider clamps to its declared
+        ``max_reference_images``).
 
         Implementations should return the dict from :func:`success_response`
         or :func:`error_response`. ``kwargs`` may contain forward-compat
-        parameters future versions of the schema will expose — implementations
-        should ignore unknown keys.
+        parameters future versions of the schema will expose —
+        implementations MUST ignore unknown keys (no TypeError).
         """
 
 
@@ -160,6 +205,26 @@ def resolve_aspect_ratio(value: Optional[str]) -> str:
     if v in VALID_ASPECT_RATIOS:
         return v
     return DEFAULT_ASPECT_RATIO
+
+
+def normalize_reference_images(value: Any) -> Optional[List[str]]:
+    """Coerce a reference-image argument into a clean list of URL/path strings.
+
+    Accepts a single string or a list; strips blanks and whitespace. Returns
+    ``None`` when nothing usable remains so providers can treat "no refs" as a
+    single sentinel.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: List[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out or None
 
 
 def _images_cache_dir() -> Path:
@@ -280,13 +345,16 @@ def success_response(
     prompt: str,
     aspect_ratio: str,
     provider: str,
+    modality: str = "text",
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a uniform success response dict.
 
     ``image`` may be an HTTP URL or an absolute filesystem path (for b64
-    providers like OpenAI). Callers that need to pass through additional
-    backend-specific fields can supply ``extra``.
+    providers like OpenAI). ``modality`` is ``"text"`` (text-to-image) or
+    ``"image"`` (image-to-image / editing) — indicates which endpoint was
+    actually hit, useful for diagnostics. Callers that need to pass through
+    additional backend-specific fields can supply ``extra``.
     """
     payload: Dict[str, Any] = {
         "success": True,
@@ -294,6 +362,7 @@ def success_response(
         "model": model,
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
+        "modality": modality,
         "provider": provider,
     }
     if extra:

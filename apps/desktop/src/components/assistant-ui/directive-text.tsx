@@ -7,7 +7,11 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
+import { useSessionLinkTitle } from '@/lib/session-link-title'
+import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
+import { cn } from '@/lib/utils'
 
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -40,11 +44,7 @@ const ICON_PATHS: Record<HermesRefType, string[]> = {
   tool: ['M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5'],
   line: ['M5 9l14 0', 'M5 15l14 0', 'M11 4l-4 16', 'M17 4l-4 16'],
   terminal: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
-  session: [
-    'M8 9h8',
-    'M8 13h6',
-    'M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3z'
-  ]
+  session: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227']
 }
 
 const ICON_FALLBACK = ['M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0', 'M16 12v1.5a2.5 2.5 0 0 0 5 0v-1.5a9 9 0 1 0 -5.5 8.28']
@@ -63,7 +63,7 @@ export function directiveIconSvg(type: string) {
   return `<svg ${SVG_ATTRS} class="size-3 shrink-0 opacity-80">${inner}</svg>`
 }
 
-export function directiveIconElement(type: string) {
+function iconElementFromPaths(paths: string[]) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('class', 'size-3 shrink-0 opacity-80')
   svg.setAttribute('fill', 'none')
@@ -74,7 +74,7 @@ export function directiveIconElement(type: string) {
   svg.setAttribute('viewBox', '0 0 24 24')
   svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
 
-  for (const d of iconPathsFor(type)) {
+  for (const d of paths) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
     path.setAttribute('d', d)
     svg.append(path)
@@ -83,9 +83,52 @@ export function directiveIconElement(type: string) {
   return svg
 }
 
-const DirectiveIcon: FC<{ type: string }> = ({ type }) => (
+export function directiveIconElement(type: string) {
+  return iconElementFromPaths(iconPathsFor(type))
+}
+
+/** Per-type slash-command pill styling. The composer inserts these chips when a
+ *  command is picked; the kind drives a theme-aware accent so commands, skills,
+ *  and themes read distinctly (Cursor-style). */
+export type SlashChipKind = 'command' | 'skill' | 'theme'
+
+const SLASH_ICON_PATHS: Record<SlashChipKind, string[]> = {
+  command: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
+  skill: ['M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11'],
+  theme: [
+    'M3 21v-4a4 4 0 1 1 4 4h-4',
+    'M21 3a16 16 0 0 0 -12.8 10.2',
+    'M21 3a16 16 0 0 1 -10.2 12.8',
+    'M10.6 9a9 9 0 0 1 4.4 4.4'
+  ]
+}
+
+const SLASH_CHIP_VARIANT: Record<SlashChipKind, string> = {
+  command:
+    'bg-[color-mix(in_srgb,var(--ui-accent)_14%,transparent)] text-[color-mix(in_srgb,var(--ui-accent)_82%,var(--foreground))]',
+  skill:
+    'bg-[color-mix(in_srgb,var(--ui-warm)_18%,transparent)] text-[color-mix(in_srgb,var(--ui-warm)_82%,var(--foreground))]',
+  theme:
+    'bg-[color-mix(in_srgb,var(--ui-accent-secondary)_16%,transparent)] text-[color-mix(in_srgb,var(--ui-accent-secondary)_82%,var(--foreground))]'
+}
+
+export const SLASH_CHIP_BASE_CLASS =
+  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-middle text-[0.86em] font-medium leading-none'
+
+export function slashChipClass(kind: SlashChipKind): string {
+  return `${SLASH_CHIP_BASE_CLASS} ${SLASH_CHIP_VARIANT[kind]}`
+}
+
+export function slashIconElement(kind: SlashChipKind) {
+  return iconElementFromPaths(SLASH_ICON_PATHS[kind])
+}
+
+const DirectiveIcon: FC<{ type: string; className?: string }> = ({
+  type,
+  className = 'size-3 shrink-0 opacity-80'
+}) => (
   <svg
-    className="size-3 shrink-0 opacity-80"
+    className={className}
     fill="none"
     stroke="currentColor"
     strokeLinecap="round"
@@ -119,9 +162,25 @@ export const DIRECTIVE_CHIP_CLASS =
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
 const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal|session):(' + '`[^`\\n]+`' + '|"[^"\\n]+"' + "|'[^'\\n]+'" + '|\\S+' + ')',
+  '@(file|folder|url|image|tool|line|terminal|session):(' +
+    '`[^`\\n]+`' +
+    '|"[^"\\n]+"' +
+    "|'[^'\\n]+'" +
+    '|\\S+' +
+    ')',
   'g'
 )
+
+// A skill referenced mid-prose (`clean this up with /clean`). The composer
+// inserts it as a pill, so the sent message renders it as one too rather than
+// flattening back to raw text. Only matches after whitespace — a leading `/`
+// is a command invocation, which never reaches a rendered message as text.
+//
+// Unlike the composer's caret-anchored trigger, this scans finished text, so
+// it must reject a token that continues into a path: `/usr/local/bin` would
+// otherwise chip as `/usr`. `(?![\w-]*\/)` requires the token to end at
+// something other than another slash.
+const SLASH_SKILL_RE = /(?<=\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
 
 const TRAILING_PUNCTUATION_RE = /[,.;!?]+$/
 
@@ -218,10 +277,17 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
         start: match.index ?? 0,
         end: (match.index ?? 0) + match[0].length,
         type: match[1] || 'file',
-        label: shortLabel(match[1] as HermesRefType, id),
+        label: refChipLabel(match[1] || 'file', id),
         id
       }
-    })
+    }),
+    ...Array.from(text.matchAll(SLASH_SKILL_RE)).map(match => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      type: 'skill',
+      label: match[1],
+      id: `/${match[1]}`
+    }))
   ]
     .filter(match => match.id)
     .sort((a, b) => a.start - b.start)
@@ -254,27 +320,28 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
   return segments
 }
 
-function shortLabel(type: HermesRefType, id: string): string {
+/** Display text for a `@kind:value` chip. Shared with the composer's
+ *  contenteditable chips so a link reads the same before and after send: the
+ *  host leads (scheme and `www.` are noise) and the path rides along for the
+ *  chip's `truncate` to cut — a bare hostname can't tell two links apart. */
+export function refChipLabel(type: string, id: string): string {
   if (type === 'terminal') {
     return id || 'terminal'
   }
 
+  if (type === 'session') {
+    return sessionRefFallbackLabel(id)
+  }
+
   if (type === 'url') {
     try {
-      const parsed = new URL(id)
+      const { hostname, pathname, search } = new URL(id)
+      const path = `${pathname}${search}`.replace(/\/$/, '')
 
-      return parsed.hostname || id
+      return `${hostname.replace(/^www\./i, '')}${path}` || id
     } catch {
       return id
     }
-  }
-
-  // `@session:<profile>/<id>` — show a short id; the composer chip carries the
-  // friendly title, but once sent the wire form only has the id.
-  if (type === 'session') {
-    const sid = id.split('/').filter(Boolean).pop() || id
-
-    return sid.length > 10 ? `${sid.slice(0, 8)}…` : sid
   }
 
   const tail = id.split(/[\\/]/).filter(Boolean).pop()
@@ -282,27 +349,60 @@ function shortLabel(type: HermesRefType, id: string): string {
   return tail || id
 }
 
+function safeEmbeddedImages(text: string) {
+  try {
+    return extractEmbeddedImages(text)
+  } catch {
+    return { cleanedText: text, images: [] as string[] }
+  }
+}
+
+function safeDirectiveSegments(text: string): Unstable_DirectiveSegment[] {
+  try {
+    return [...hermesDirectiveFormatter.parse(text)]
+  } catch {
+    return [{ kind: 'text', text }]
+  }
+}
+
 /**
  * Renders text containing Hermes directives (`@file:...`, `@image:...`) as
  * inline chips. Embedded MEDIA images render below as a thumbnail row.
  */
 export function DirectiveContent({ text }: { text: string }) {
-  const { cleanedText, images } = useMemo(() => extractEmbeddedImages(text ?? ''), [text])
-  const segments = useMemo(() => hermesDirectiveFormatter.parse(cleanedText), [cleanedText])
+  const { cleanedText, images } = useMemo(() => safeEmbeddedImages(text ?? ''), [text])
+  const segments = useMemo(() => safeDirectiveSegments(cleanedText), [cleanedText])
+
+  // `@image:<path>` directives render as a block-level thumbnail row (like
+  // embedded base64 images below), not inline mid-text — otherwise a large
+  // thumbnail gets wedged between words and breaks the text's line flow.
+  const imageSegments = useMemo(
+    () =>
+      segments.filter(
+        (segment): segment is Extract<Unstable_DirectiveSegment, { kind: 'mention' }> =>
+          segment.kind === 'mention' && segment.type === 'image'
+      ),
+    [segments]
+  )
 
   return (
     <span className="whitespace-pre-line" data-slot="aui_directive-text">
       {segments.map((segment, index) =>
         segment.kind === 'text' ? (
           <Fragment key={`t-${index}`}>{segment.text}</Fragment>
-        ) : segment.type === 'image' ? (
-          <DirectiveImage id={segment.id} key={`img-${index}-${segment.id}`} label={segment.label} />
+        ) : segment.type === 'image' ? null : segment.type === 'session' ? (
+          <SessionRefChip key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
+        ) : segment.type === 'skill' ? (
+          <SlashChip key={`m-${index}-${segment.id}`} kind="skill" label={segment.label} value={segment.id} />
         ) : (
           <DirectiveChip id={segment.id} key={`m-${index}-${segment.id}`} label={segment.label} type={segment.type} />
         )
       )}
-      {images.length > 0 && (
+      {(imageSegments.length > 0 || images.length > 0) && (
         <span className="mt-2 flex flex-wrap gap-2" data-slot="aui_embedded-images">
+          {imageSegments.map((segment, index) => (
+            <DirectiveImage id={segment.id} key={`img-ref-${index}-${segment.id}`} label={segment.label} />
+          ))}
           {images.map((src, index) => (
             <ZoomableImage
               alt=""
@@ -342,9 +442,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
     // Remote gateway: the image lives on the gateway's disk, not ours — fetch
     // it over the authenticated API. Local: read it straight off this disk.
     const load =
-      window.hermesDesktop && isRemoteGateway()
-        ? gatewayMediaDataUrl(id)
-        : window.hermesDesktop?.readFileDataUrl(id)
+      window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
       .then(url => alive && url && setSrc(url))
@@ -371,7 +469,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   return (
     <ZoomableImage
       alt={label}
-      className="max-h-32 max-w-48 rounded-md border border-border/40 object-contain"
+      className="max-h-48 max-w-full rounded-lg border border-border/60 object-contain"
       draggable={false}
       slot="aui_directive-image"
       src={src}
@@ -379,19 +477,109 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   )
 }
 
+/** Opens the referenced session as a tab — same as middle-clicking its sidebar
+ *  row. The tile store loads on click, not at import: the composer's rich
+ *  editor pulls this module in, and a static import would boot the profile
+ *  store (and its REST routing) along with it. */
+function openSessionRef(value: string) {
+  const { sessionId } = parseSessionRefValue(value)
+
+  if (!sessionId) {
+    return
+  }
+
+  triggerHaptic('selection')
+  void import('@/store/session-states').then(({ openSessionTile }) => openSessionTile(sessionId, 'center'))
+}
+
+/** A `@session:<profile>/<id>` reference in the user transcript (directive
+ *  segments), rendered as a chip like the other composer refs. Clicking it
+ *  opens the session as a tab. */
+export const SessionRefChip: FC<{
+  label?: string
+  value: string
+}> = ({ label, value }) => {
+  const resolved = useSessionLinkTitle(value, label)
+
+  return <DirectiveChip id={value} label={resolved} onClick={() => openSessionRef(value)} type="session" />
+}
+
+/** A `@session:` reference in assistant markdown (`#session/` links rewritten
+ *  in `preprocessMarkdown`). Reads as an ordinary inline link — the agent wrote
+ *  it mid-sentence — with the funnel icon leading the resolved title. */
+export const SessionRefLink: FC<{
+  label?: string
+  value: string
+}> = ({ label, value }) => {
+  const resolved = useSessionLinkTitle(value, label)
+
+  return (
+    <a
+      className="link-chip font-semibold wrap-anywhere"
+      href="#"
+      onClick={event => {
+        event.preventDefault()
+        event.stopPropagation()
+        openSessionRef(value)
+      }}
+      title={value}
+    >
+      <DirectiveIcon className="mr-1 inline size-[0.82em] align-[-0.08em] opacity-70" type="session" />
+      {resolved}
+    </a>
+  )
+}
+
+/** A skill referenced inside a sent message — the rendered twin of the
+ *  composer's slash pill, so a picked skill stays a chip after send. */
+const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ kind, label, value }) => (
+  <span className={slashChipClass(kind)} data-slot="aui_slash-chip" title={value}>
+    <svg
+      className="size-3 shrink-0 opacity-80"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      {SLASH_ICON_PATHS[kind].map(d => (
+        <path d={d} key={d} />
+      ))}
+    </svg>
+    <span className="truncate">{label}</span>
+  </span>
+)
+
+/** Inert by default; `onClick` promotes the chip to a real button (session
+ *  refs, which open the session they name). */
 const DirectiveChip: FC<{
   type: string
   label: string
   id: string
-}> = ({ type, label, id }) => (
-  <span
-    className={DIRECTIVE_CHIP_CLASS}
-    data-directive-id={id}
-    data-directive-type={type}
-    data-slot="aui_directive-chip"
-    title={id}
-  >
-    <DirectiveIcon type={type} />
-    <span className="truncate">{label}</span>
-  </span>
-)
+  onClick?: () => void
+}> = ({ type, label, id, onClick }) => {
+  const body = (
+    <>
+      <DirectiveIcon type={type} />
+      <span className="truncate">{label}</span>
+    </>
+  )
+
+  const props = {
+    className: cn(DIRECTIVE_CHIP_CLASS, onClick && 'cursor-pointer transition-colors hover:text-foreground'),
+    'data-directive-id': id,
+    'data-directive-type': type,
+    'data-slot': 'aui_directive-chip',
+    title: id
+  }
+
+  return onClick ? (
+    <button {...props} onClick={onClick} type="button">
+      {body}
+    </button>
+  ) : (
+    <span {...props}>{body}</span>
+  )
+}

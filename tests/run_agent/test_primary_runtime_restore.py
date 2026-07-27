@@ -201,6 +201,211 @@ class TestRestorePrimaryRuntime:
 
         assert agent._use_prompt_caching == original_caching
 
+    def test_restore_skips_cross_provider_pool_entry(self):
+        """Restore must not swap in a fallback provider credential for the primary runtime."""
+
+        class _Entry:
+            provider = "openrouter"
+            id = "fallback-entry"
+            label = "fallback"
+            runtime_api_key = "fallback-key"
+            runtime_base_url = "https://openrouter.ai/api/v1"
+            access_token = "fallback-key"
+
+        class _Pool:
+            provider = "openrouter"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://primary.example.com/v1",
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+        original_base_url = agent.base_url
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "custom"
+        assert agent.base_url == original_base_url
+        agent._swap_credential.assert_not_called()
+
+    def test_restore_keeps_primary_base_url_when_fallback_pool_attached(self):
+        """Issue #56885: plain-provider primary must not inherit a fallback
+        provider's base_url via the restore-path pool reselect.
+
+        Repro: primary is openai-api/gpt-5.5, a transient failure falls back to
+        deepseek and attaches deepseek's credential pool. On the next turn the
+        restore reselect must NOT swap in the deepseek entry — otherwise the
+        request goes out as model=gpt-5.5 to base_url=api.deepseek.com → 404.
+        """
+
+        class _DeepseekEntry:
+            provider = "deepseek"
+            id = "dsk-1"
+            label = "deepseek-key"
+            runtime_api_key = "sk-deepseek-xxx"
+            runtime_base_url = "https://api.deepseek.com/v1"
+            base_url = "https://api.deepseek.com/v1"
+            access_token = "sk-deepseek-xxx"
+
+        class _DeepseekPool:
+            provider = "deepseek"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _DeepseekEntry()
+
+        agent = _make_agent(
+            provider="openai-api",
+            base_url="https://api.openai.com/v1",
+            fallback_model={"provider": "deepseek", "model": "deepseek-v4-flash"},
+        )
+        primary_base_url = agent.base_url
+        primary_provider = agent.provider
+        mock_client = _mock_resolve(base_url="https://api.deepseek.com/v1")
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            agent._try_activate_fallback()
+        # Fallback attached deepseek's pool; simulate it surviving into the next turn.
+        agent._credential_pool = _DeepseekPool()
+        agent._swap_credential = MagicMock()
+
+        primary_pool = MagicMock()
+        primary_pool.provider = primary_provider
+        primary_pool.has_available.return_value = False
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == primary_provider
+        assert agent.base_url == primary_base_url
+        assert "deepseek" not in str(agent.base_url)
+        assert agent._credential_pool is primary_pool
+        load_pool.assert_called_once_with(primary_provider)
+        agent._swap_credential.assert_not_called()
+
+    def test_restore_clears_fallback_pool_when_primary_pool_reload_fails(self):
+        """A fallback pool must never remain attached to the restored primary."""
+        agent = _make_agent(
+            provider="openai-api",
+            base_url="https://api.openai.com/v1",
+        )
+        agent._fallback_activated = True
+        fallback_pool = MagicMock()
+        fallback_pool.provider = "deepseek"
+        agent._credential_pool = fallback_pool
+
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch(
+                "agent.credential_pool.load_pool",
+                side_effect=RuntimeError("auth store unavailable"),
+            ),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "openai-api"
+        assert agent._credential_pool is None
+
+    def test_restore_swaps_matching_custom_pool_entry(self):
+        """Custom primary + custom:<name> entry whose base_url resolves to the
+        SAME custom key must swap (legitimate same-endpoint rotation)."""
+
+        class _Entry:
+            provider = "custom:myllm"
+            id = "custom-entry"
+            label = "myllm"
+            runtime_api_key = "custom-key"
+            runtime_base_url = "https://my-llm.example.com/v1"
+            access_token = "custom-key"
+
+        class _Pool:
+            provider = "custom:myllm"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        agent = _make_agent(provider="custom", base_url="https://my-llm.example.com/v1")
+        agent._fallback_activated = True
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        with (
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                return_value="custom:myllm",
+            ),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        agent._swap_credential.assert_called_once()
+
+    def test_restore_skips_cross_endpoint_custom_pool_entry(self):
+        """Custom primary + custom:<name> entry whose base_url resolves to a
+        DIFFERENT custom key must skip — two named custom providers sharing a
+        gateway must not cross-contaminate."""
+
+        class _Entry:
+            provider = "custom:otherllm"
+            id = "other-entry"
+            label = "otherllm"
+            runtime_api_key = "other-key"
+            runtime_base_url = "https://my-llm.example.com/v1"
+            access_token = "other-key"
+
+        class _Pool:
+            provider = "custom:otherllm"
+
+            def has_available(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        agent = _make_agent(provider="custom", base_url="https://my-llm.example.com/v1")
+        agent._fallback_activated = True
+        original_base_url = agent.base_url
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        with (
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                return_value="custom:myllm",  # primary resolves to a DIFFERENT key
+            ),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.base_url == original_base_url
+        agent._swap_credential.assert_not_called()
+
     def test_restore_survives_exception(self):
         """If client rebuild fails, the method returns False gracefully."""
         agent = _make_agent()
@@ -313,14 +518,52 @@ class TestTryRecoverPrimaryTransport:
         )
         assert result is False
 
-    def test_skipped_for_nous_provider(self):
-        agent = _make_agent(provider="nous", base_url="https://inference.nous.nousresearch.com/v1")
+    def test_skipped_for_nous_chat_completions(self):
+        """OpenAI-wire Portal traffic still rides aggregator retry infra."""
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        agent.api_mode = "chat_completions"
         error = _make_transport_error("ReadTimeout")
 
         result = agent._try_recover_primary_transport(
             error, retry_count=3, max_retries=3,
         )
         assert result is False
+
+    def test_allowed_for_nous_anthropic_messages(self):
+        """Portal Claude holds a local Anthropic SDK client — rebuild it."""
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        agent.api_mode = "anthropic_messages"
+        agent.model = "anthropic/claude-opus-4.8"
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "model": "anthropic/claude-opus-4.8",
+            "provider": "nous",
+            "anthropic_api_key": "portal-jwt",
+            "anthropic_base_url": "https://inference-api.nousresearch.com/v1",
+            "is_anthropic_oauth": False,
+        })
+        error = _make_transport_error("ReadTimeout")
+        rebuilt = MagicMock(name="anthropic-client")
+
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=rebuilt,
+            ),
+            patch("time.sleep"),
+        ):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        assert agent._anthropic_client is rebuilt
 
     def test_allowed_for_anthropic_direct(self):
         """Direct Anthropic endpoint should get recovery."""
@@ -372,20 +615,26 @@ class TestTryRecoverPrimaryTransport:
             # wait_time = min(3 + 10, 8) = 8
             mock_sleep.assert_called_once_with(8)
 
-    def test_closes_existing_client_before_rebuild(self):
+    def test_retires_existing_client_before_rebuild(self):
+        """#70773: the old shared client is retired (sockets shutdown, FD
+        release deferred to GC), never hard-closed — this path runs on the
+        conversation-loop thread while stale-killed workers may still be
+        unwinding on the old pool."""
         agent = _make_agent(provider="custom")
         old_client = agent.client
         error = _make_transport_error("ReadTimeout")
 
         with patch("run_agent.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"), \
-             patch.object(agent, "_close_openai_client") as mock_close:
+             patch.object(agent, "_close_openai_client") as mock_close, \
+             patch.object(agent, "_retire_shared_openai_client") as mock_retire:
             agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
             )
-            mock_close.assert_called_once_with(
-                old_client, reason="primary_recovery", shared=True,
+            mock_retire.assert_called_once_with(
+                old_client, reason="primary_recovery",
             )
+            mock_close.assert_not_called()
 
     def test_survives_rebuild_failure(self):
         """If client rebuild fails, returns False gracefully."""

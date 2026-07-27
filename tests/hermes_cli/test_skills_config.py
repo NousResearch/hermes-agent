@@ -22,7 +22,19 @@ class TestGetDisabledSkills:
             "disabled": ["skill-a"],
             "platform_disabled": {"telegram": ["skill-b"]}
         }}
-        assert get_disabled_skills(config, platform="telegram") == {"skill-b"}
+        # Union of global + platform: a globally-disabled skill stays disabled
+        # on every platform, and the platform list adds to it.
+        assert get_disabled_skills(config, platform="telegram") == {"skill-a", "skill-b"}
+
+    def test_platform_list_unions_with_global(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {
+            "disabled": ["global-skill"],
+            "platform_disabled": {"telegram": []}
+        }}
+        # An explicit empty platform list does NOT re-enable a globally-disabled
+        # skill (matches issue #46201 — global disables hold everywhere).
+        assert get_disabled_skills(config, platform="telegram") == {"global-skill"}
 
     def test_platform_falls_back_to_global(self):
         from hermes_cli.skills_config import get_disabled_skills
@@ -33,6 +45,34 @@ class TestGetDisabledSkills:
     def test_missing_skills_key(self):
         from hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"other": "value"}) == set()
+
+    def test_null_skills_section(self):
+        """``skills:`` with no value (YAML null) must not crash (#13026)."""
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": None}) == set()
+        assert get_disabled_skills({"skills": None}, platform="telegram") == set()
+
+    def test_null_disabled_key(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": {"disabled": None}}) == set()
+
+    def test_scalar_disabled_is_single_skill_not_characters(self):
+        """``disabled: my-skill`` (bare scalar) is one skill name, not a
+        set of its characters (#13026)."""
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": {"disabled": "my-skill"}}) == {"my-skill"}
+
+    def test_scalar_platform_disabled(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {
+            "disabled": ["global-skill"],
+            "platform_disabled": {"telegram": "tg-skill"},
+        }}
+        assert get_disabled_skills(config, platform="telegram") == {"global-skill", "tg-skill"}
+
+    def test_non_dict_skills_section(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": "oops"}) == set()
 
     def test_empty_disabled_list(self):
         from hermes_cli.skills_config import get_disabled_skills
@@ -102,14 +142,27 @@ class TestIsSkillDisabled:
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
 
     @patch("hermes_cli.config.load_config")
-    def test_platform_enabled_overrides_global(self, mock_load):
+    def test_globally_disabled_stays_disabled_on_platform(self, mock_load):
+        mock_load.return_value = {"skills": {
+            "disabled": ["skill-a"],
+            "platform_disabled": {"telegram": ["tg-skill"]}
+        }}
+        from tools.skills_tool import _is_skill_disabled
+        # Union: a globally-disabled skill stays disabled on a platform that
+        # has its own platform_disabled list (matches issue #46201).
+        assert _is_skill_disabled("skill-a", platform="telegram") is True
+        assert _is_skill_disabled("tg-skill", platform="telegram") is True
+
+    @patch("hermes_cli.config.load_config")
+    def test_empty_platform_list_keeps_global_disabled(self, mock_load):
         mock_load.return_value = {"skills": {
             "disabled": ["skill-a"],
             "platform_disabled": {"telegram": []}
         }}
         from tools.skills_tool import _is_skill_disabled
-        # telegram has explicit empty list -> skill-a is NOT disabled for telegram
-        assert _is_skill_disabled("skill-a", platform="telegram") is False
+        # An explicit empty platform list does NOT re-enable a globally-disabled
+        # skill — global disables hold on every platform.
+        assert _is_skill_disabled("skill-a", platform="telegram") is True
 
     @patch("hermes_cli.config.load_config")
     def test_platform_falls_back_to_global(self, mock_load):
@@ -164,7 +217,7 @@ class TestGetDisabledSkillNames:
 
         from agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names(platform="telegram")
-        assert result == {"tg-only-skill"}
+        assert result == {"tg-only-skill", "global-skill"}
 
     def test_session_platform_env_var(self, tmp_path, monkeypatch):
         """HERMES_SESSION_PLATFORM should be used when HERMES_PLATFORM is unset."""
@@ -183,7 +236,7 @@ class TestGetDisabledSkillNames:
 
         from agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names()
-        assert result == {"discord-skill"}
+        assert result == {"discord-skill", "global-skill"}
 
     def test_hermes_platform_takes_precedence(self, tmp_path, monkeypatch):
         """HERMES_PLATFORM should win over HERMES_SESSION_PLATFORM."""

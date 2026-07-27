@@ -10,7 +10,11 @@ import {
   DIRECTIVE_CHIP_CLASS,
   directiveIconElement,
   directiveIconSvg,
-  formatRefValue
+  formatRefValue,
+  refChipLabel,
+  slashChipClass,
+  type SlashChipKind,
+  slashIconElement
 } from '@/components/assistant-ui/directive-text'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
@@ -29,10 +33,6 @@ export function unquoteRef(raw: string) {
   const quoted = (head === '`' && tail === '`') || (head === '"' && tail === '"') || (head === "'" && tail === "'")
 
   return quoted ? raw.slice(1, -1) : raw.replace(/[,.;!?]+$/, '')
-}
-
-export function refLabel(id: string) {
-  return id.split(/[\\/]/).filter(Boolean).pop() || id
 }
 
 /** Always-quote variant of formatRefValue — chips need a fence even for safe values. */
@@ -56,7 +56,9 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
 
-  return `<span contenteditable="false" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(displayLabel || refLabel(id))}</span></span>`
+  const label = displayLabel || refChipLabel(kind, id)
+
+  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -66,13 +68,32 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   const label = document.createElement('span')
 
   chip.contentEditable = 'false'
+  chip.title = id
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
   chip.className = DIRECTIVE_CHIP_CLASS
   label.className = 'truncate'
-  label.textContent = displayLabel || refLabel(id)
+  label.textContent = displayLabel || refChipLabel(kind, id)
   chip.append(directiveIconElement(kind), label)
+
+  return chip
+}
+
+/** A non-editable pill for a picked slash command (`/skin nous`, `/tropes`).
+ *  `data-ref-text` carries the literal command so `composerPlainText` round-trips
+ *  it back to the exact text that gets submitted. */
+export function slashChipElement(command: string, kind: SlashChipKind, label?: string) {
+  const chip = document.createElement('span')
+  const text = document.createElement('span')
+
+  chip.contentEditable = 'false'
+  chip.dataset.refText = command
+  chip.dataset.slashKind = kind
+  chip.className = slashChipClass(kind)
+  text.className = 'truncate'
+  text.textContent = label || command
+  chip.append(slashIconElement(kind), text)
 
   return chip
 }
@@ -109,6 +130,153 @@ export function appendComposerContents(target: DocumentFragment | HTMLElement, t
 export function renderComposerContents(target: HTMLElement, text: string) {
   target.replaceChildren()
   appendComposerContents(target, text)
+}
+
+/** Caret range when the selection lives inside `editor`; else null. */
+function composerSelectionRange(editor: HTMLElement) {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  if (!selection || !range || !editor.contains(range.commonAncestorContainer)) {
+    return null
+  }
+
+  return { range, selection }
+}
+
+/** Insert text at the caret (replacing any selection), with any `@kind:value`
+ *  directives in it landing as chips. Pastes use this instead of
+ *  `execCommand('insertText')` — Chromium's editing pipeline is ~O(n²) on large
+ *  multiline blobs. */
+export function insertComposerContentsAtCaret(editor: HTMLElement, text: string) {
+  const hit = composerSelectionRange(editor)
+  const fragment = document.createDocumentFragment()
+
+  appendComposerContents(fragment, text)
+
+  const tail = fragment.lastChild
+
+  if (hit) {
+    hit.range.deleteContents()
+    hit.range.insertNode(fragment)
+  } else {
+    editor.append(fragment)
+  }
+
+  if (tail) {
+    const caret = document.createRange()
+    caret.setStartAfter(tail)
+    caret.collapse(true)
+    const selection = hit?.selection ?? window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(caret)
+  }
+}
+
+/** Swap the `length` characters immediately before a collapsed caret for
+ *  `fragment`, leaving the caret after it. Returns whether it ran — a caret that
+ *  isn't inside a text node holding the whole token is left alone. */
+export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment: DocumentFragment) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit?.range.collapsed) {
+    return false
+  }
+
+  const { startContainer, startOffset } = hit.range
+
+  if (startContainer.nodeType !== Node.TEXT_NODE || startOffset < length) {
+    return false
+  }
+
+  const range = document.createRange()
+  const tail = fragment.lastChild
+
+  range.setStart(startContainer, startOffset - length)
+  range.setEnd(startContainer, startOffset)
+  range.deleteContents()
+  range.insertNode(fragment)
+
+  if (tail) {
+    range.setStartAfter(tail)
+  }
+
+  range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(range)
+
+  return true
+}
+
+/** Backspace at a collapsed caret immediately after a chip: delete the chip AND
+ *  the single trailing space we auto-insert after it, atomically — so removing a
+ *  directive never strands an orphaned space (the contenteditable-driven cleanup
+ *  was unreliable). Returns whether it ran. */
+export function deleteChipBeforeCaret(editor: HTMLElement): boolean {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit || !hit.range.collapsed) {
+    return false
+  }
+
+  const { startContainer, startOffset } = hit.range
+  let chip: ChildNode | null = null
+
+  if (startContainer === editor) {
+    chip = startOffset > 0 ? editor.childNodes[startOffset - 1] : null
+  } else if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
+    chip = startContainer.previousSibling
+  }
+
+  if (chip?.nodeType !== Node.ELEMENT_NODE || !(chip as HTMLElement).dataset.refText) {
+    return false
+  }
+
+  const after = chip.nextSibling
+  chip.remove()
+
+  // Drop the auto-inserted trailing space; keep any real following text.
+  if (after?.nodeType === Node.TEXT_NODE) {
+    const text = after.textContent ?? ''
+
+    if (text === ' ') {
+      after.remove()
+    } else if (text.startsWith(' ')) {
+      after.textContent = text.slice(1)
+    }
+  }
+
+  const caret = document.createRange()
+
+  if (after?.isConnected) {
+    caret.setStartBefore(after)
+  } else {
+    caret.selectNodeContents(editor)
+    caret.collapse(false)
+  }
+
+  caret.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(caret)
+
+  return true
+}
+
+/** Remove a non-collapsed selection in-editor. Skips collapsed carets so word/
+ *  line delete (Opt/Cmd+Backspace) stays native. Returns whether anything ran. */
+export function deleteSelectionInEditor(editor: HTMLElement) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit || hit.range.collapsed) {
+    return false
+  }
+
+  hit.range.deleteContents()
+  hit.range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(hit.range)
+
+  return true
 }
 
 /** Serialize a draft string into chip-HTML for the contenteditable surface. */
@@ -162,4 +330,179 @@ export function placeCaretEnd(element: HTMLElement) {
   range.collapse(false)
   selection?.removeAllRanges()
   selection?.addRange(range)
+}
+
+/** The caret's offset in `composerPlainText` coordinates, so it can be restored
+ *  after the editor is re-rendered from text (undo/redo). A chip counts as its
+ *  whole `@kind:value` text — the same units the snapshot measures. */
+export function caretOffsetInEditor(editor: HTMLElement): number {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  if (!range || !editor.contains(range.commonAncestorContainer)) {
+    return composerPlainText(editor).length
+  }
+
+  const before = range.cloneRange()
+  before.selectNodeContents(editor)
+  before.setEnd(range.startContainer, range.startOffset)
+
+  // The scratch container must carry the editor's slot marker: composerPlainText
+  // appends a trailing "\n" to any other block element, which would inflate
+  // every offset by one and land the restored caret a character late.
+  const container = document.createElement('div')
+  container.dataset.slot = RICH_INPUT_SLOT
+  container.append(before.cloneContents())
+
+  return composerPlainText(container).length
+}
+
+/** Place the caret `offset` characters into the editor, in the same
+ *  `composerPlainText` coordinates `caretOffsetInEditor` reports. Lands after a
+ *  chip it would otherwise split, since a chip is a single atomic unit. */
+export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
+  const selection = window.getSelection()
+
+  if (!selection) {
+    return
+  }
+
+  let remaining = offset
+
+  const walk = (node: Node): Range | null => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const length = (child.textContent || '').length
+
+        if (remaining <= length) {
+          const range = document.createRange()
+          range.setStart(child, remaining)
+          range.collapse(true)
+
+          return range
+        }
+
+        remaining -= length
+
+        continue
+      }
+
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        continue
+      }
+
+      const el = child as HTMLElement
+
+      // Chips and <br> are atomic: consume their serialized length whole.
+      if (el.dataset.refText || el.tagName === 'BR') {
+        const length = el.dataset.refText ? el.dataset.refText.length : 1
+
+        if (remaining < length) {
+          const range = document.createRange()
+          range.setStartBefore(el)
+          range.collapse(true)
+
+          return range
+        }
+
+        remaining -= length
+
+        continue
+      }
+
+      const hit = walk(el)
+
+      if (hit) {
+        return hit
+      }
+    }
+
+    return null
+  }
+
+  const range = walk(editor)
+
+  if (range) {
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    return
+  }
+
+  placeCaretEnd(editor)
+}
+
+/** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */
+function isBlankNode(node: ChildNode | null): boolean {
+  if (!node) {
+    return false
+  }
+
+  if (node.nodeName === 'BR') {
+    return true
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return !(node.textContent || '').trim()
+  }
+
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const el = node as HTMLElement
+
+    return !el.dataset.refText && Array.from(el.childNodes).every(isBlankNode)
+  }
+
+  return false
+}
+
+/** Drop contenteditable junk that serializes as `\n` and falsely expands the
+ *  composer. Editing around a contenteditable=false chip makes Chromium wrap the
+ *  remainder in stray block <div>s / trailing <br>s — none of which our own
+ *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
+ *  (Shift+Enter, which sit after actual text) are preserved. */
+export function normalizeComposerEditorDom(editor: HTMLElement) {
+  // A trailing block wrapper holding only a break/whitespace is the phantom
+  // "new line" Chromium adds after a chip on backspace — drop it.
+  const tailBlock = editor.lastChild as HTMLElement | null
+
+  if (
+    tailBlock?.nodeType === Node.ELEMENT_NODE &&
+    (tailBlock.tagName === 'DIV' || tailBlock.tagName === 'P') &&
+    isBlankNode(tailBlock)
+  ) {
+    editor.removeChild(tailBlock)
+  }
+
+  // Unwrap a lone block wrapper back to inline content.
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeType === Node.ELEMENT_NODE) {
+    const wrapper = editor.firstChild as HTMLElement
+
+    if ((wrapper.tagName === 'DIV' || wrapper.tagName === 'P') && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+      editor.replaceChildren(...Array.from(wrapper.childNodes))
+    }
+  }
+
+  // A trailing <br> right after a chip / only whitespace is a phantom line.
+  const last = editor.lastChild
+
+  if (last?.nodeName === 'BR') {
+    let prev: ChildNode | null = last.previousSibling
+
+    while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {
+      prev = prev.previousSibling
+    }
+
+    if (!prev || (prev as HTMLElement).dataset?.refText) {
+      editor.removeChild(last)
+    }
+  }
+
+  // ContentEditable elements with no children can visually collapse to
+  // near-zero height in some browsers (especially Chromium), causing the
+  // composer to appear as a tiny dot/pixel. Ensure there's always at least
+  // one <br> so the element maintains intrinsic height. The CSS min-height
+  // is a belt; the <br> is suspenders — together they prevent the shrink.
+  if (editor.childNodes.length === 0) {
+    editor.appendChild(document.createElement('br'))
+  }
 }

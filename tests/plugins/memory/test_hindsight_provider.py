@@ -15,13 +15,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hermes_cli.memory_setup import _CANCELLED
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
     _load_config,
+    _load_simple_env,
     _build_embedded_profile_env,
+    _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -40,7 +43,8 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
-        "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
+        "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_OBSERVATION_SCOPES",
+        "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -78,6 +82,66 @@ def _make_mock_client():
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
     return client
+
+
+def _provider_for_mode(tmp_path, monkeypatch, mode: str):
+    """Create an initialized provider without pre-seeding its client."""
+    config = {
+        "mode": mode,
+        "apiKey": "test-key",
+        "api_url": "http://localhost:9999",
+        "bank_id": "test-bank",
+        "budget": "mid",
+        "memory_mode": "hybrid",
+    }
+    config_path = tmp_path / "hindsight" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config))
+
+    monkeypatch.setattr(
+        "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+    )
+
+    provider = HindsightMemoryProvider()
+    provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+    return provider
+
+
+def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mode: str):
+    """Cloud/local-external clients must ensure lazy deps before importing."""
+    import builtins
+
+    provider = _provider_for_mode(tmp_path, monkeypatch, mode)
+    ensure_calls = []
+
+    def fake_ensure(feature, prompt=True):
+        ensure_calls.append((feature, prompt))
+
+    class FakeHindsight:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "hindsight_client":
+            if ensure_calls != [("memory.hindsight", False)]:
+                raise ModuleNotFoundError("No module named 'hindsight_client'")
+            return SimpleNamespace(Hindsight=FakeHindsight)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    client = provider._get_client()
+
+    assert ensure_calls == [("memory.hindsight", False)]
+    assert isinstance(client, FakeHindsight)
+    assert client.kwargs == {
+        "base_url": "http://localhost:9999",
+        "timeout": 120.0,
+        "api_key": "test-key",
+    }
 
 
 class _FakeSessionDB:
@@ -153,6 +217,44 @@ def test_normalize_retain_tags_accepts_json_array_string():
     assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
 
 
+def test_normalize_observation_scopes_empty_is_none():
+    assert _normalize_observation_scopes("") is None
+    assert _normalize_observation_scopes(None) is None
+    assert _normalize_observation_scopes("   ") is None
+
+
+def test_normalize_observation_scopes_keywords_pass_through():
+    assert _normalize_observation_scopes("per_tag") == "per_tag"
+    assert _normalize_observation_scopes("combined") == "combined"
+    assert _normalize_observation_scopes(" all_combinations ") == "all_combinations"
+
+
+def test_normalize_observation_scopes_unknown_keyword_is_none():
+    assert _normalize_observation_scopes("nonsense") is None
+
+
+def test_normalize_observation_scopes_json_list_of_lists():
+    value = json.dumps([["user:alice"], ["team:eng"], ["user:alice", "team:eng"]])
+    assert _normalize_observation_scopes(value) == [
+        ["user:alice"],
+        ["team:eng"],
+        ["user:alice", "team:eng"],
+    ]
+
+
+def test_normalize_observation_scopes_flat_list_is_single_scope():
+    assert _normalize_observation_scopes(["user:alice", "team:eng"]) == [
+        ["user:alice", "team:eng"]
+    ]
+
+
+def test_normalize_observation_scopes_list_of_lists():
+    assert _normalize_observation_scopes([["user:alice"], ["team:eng"]]) == [
+        ["user:alice"],
+        ["team:eng"],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------
@@ -191,6 +293,14 @@ class TestSchemas:
 
 
 class TestConfig:
+    def test_cloud_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
+        _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, "cloud")
+
+    def test_local_external_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
+        _assert_cloud_client_lazy_installed_before_import(
+            tmp_path, monkeypatch, "local_external"
+        )
+
     def test_default_values(self, provider):
         assert provider._auto_retain is True
         assert provider._auto_recall is True
@@ -198,6 +308,7 @@ class TestConfig:
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
         assert provider._tags is None
+        assert provider._observation_scopes is None
         assert provider._recall_tags is None
         # Default recall narrowed to observation-only; world/experience are
         # aggregate facts that often crowd out concrete-event signal during
@@ -224,6 +335,16 @@ class TestConfig:
         """An empty list shouldn't disable the filter (would be wider than default)."""
         p = provider_with_config(recall_types=[])
         assert p._recall_types == ["observation"]
+
+    def test_observation_scopes_keyword_config(self, provider_with_config):
+        p = provider_with_config(observation_scopes="per_tag")
+        assert p._observation_scopes == "per_tag"
+
+    def test_observation_scopes_custom_list_config(self, provider_with_config):
+        p = provider_with_config(
+            observation_scopes=[["user:alice"], ["team:eng"]]
+        )
+        assert p._observation_scopes == [["user:alice"], ["team:eng"]]
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
@@ -325,6 +446,61 @@ class TestConfig:
 
 
 class TestPostSetup:
+    def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        save_config = MagicMock()
+        which = MagicMock(return_value="/usr/bin/uv")
+        run = MagicMock()
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: _CANCELLED)
+        monkeypatch.setattr("shutil.which", which)
+        monkeypatch.setattr("subprocess.run", run)
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("getpass.getpass", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {"provider": "builtin"}})
+
+        save_config.assert_not_called()
+        which.assert_not_called()
+        run.assert_not_called()
+        assert not (hermes_home / ".env").exists()
+        assert not (hermes_home / "hindsight" / "config.json").exists()
+        assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
+
+    def test_local_embedded_setup_cancel_at_llm_picker_writes_nothing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        selections = iter([1, _CANCELLED])  # local_embedded, then cancel LLM picker
+        save_config = MagicMock()
+        which = MagicMock(return_value="/usr/bin/uv")
+        run = MagicMock()
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
+        monkeypatch.setattr("shutil.which", which)
+        monkeypatch.setattr("subprocess.run", run)
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("getpass.getpass", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {"provider": "builtin"}})
+
+        save_config.assert_not_called()
+        which.assert_not_called()
+        run.assert_not_called()
+        assert not (hermes_home / ".env").exists()
+        assert not (hermes_home / "hindsight" / "config.json").exists()
+        assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
+
     def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
         user_home = tmp_path / "user-home"
@@ -468,16 +644,20 @@ class TestToolHandlers:
             "hindsight_retain", {"content": "user likes dark mode"}
         ))
         assert result["result"] == "Memory stored successfully."
-        provider._client.aretain.assert_called_once()
-        call_kwargs = provider._client.aretain.call_args.kwargs
+        provider._client.aretain_batch.assert_called_once()
+        call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
-        assert call_kwargs["content"] == "user likes dark mode"
+        item = call_kwargs["items"][0]
+        assert item["content"] == "user likes dark mode"
+        # bank_id/retain_async are call-level args, never item keys.
+        assert "bank_id" not in item
+        assert "retain_async" not in item
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
-        call_kwargs = p._client.aretain.call_args.kwargs
-        assert call_kwargs["tags"] == ["pref", "ui"]
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["pref", "ui"]
 
     def test_retain_merges_per_call_tags_with_config_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
@@ -485,13 +665,24 @@ class TestToolHandlers:
             "hindsight_retain",
             {"content": "likes dark mode", "tags": ["client:x", "ui"]},
         )
-        call_kwargs = p._client.aretain.call_args.kwargs
-        assert call_kwargs["tags"] == ["pref", "ui", "client:x"]
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["tags"] == ["pref", "ui", "client:x"]
 
     def test_retain_without_tags(self, provider):
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
-        call_kwargs = provider._client.aretain.call_args.kwargs
-        assert "tags" not in call_kwargs
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "tags" not in item
+
+    def test_retain_passes_observation_scopes(self, provider_with_config):
+        p = provider_with_config(observation_scopes="per_tag")
+        p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["observation_scopes"] == "per_tag"
+
+    def test_retain_omits_observation_scopes_by_default(self, provider):
+        provider.handle_tool_call("hindsight_retain", {"content": "hello"})
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "observation_scopes" not in item
 
     def test_retain_missing_content(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -557,7 +748,7 @@ class TestToolHandlers:
         assert "error" in result
 
     def test_retain_error_handling(self, provider):
-        provider._client.aretain.side_effect = RuntimeError("connection failed")
+        provider._client.aretain_batch.side_effect = RuntimeError("connection failed")
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "test"}
         ))
@@ -1629,3 +1820,62 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestLoadSimpleEnv:
+    def test_bom_first_key_is_recognized(self, tmp_path):
+        """A Notepad-edited .env carries a BOM; the first key must still parse
+        instead of becoming '\ufeffHINDSIGHT_LLM_API_KEY'."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿HINDSIGHT_LLM_API_KEY=sk-test\n".encode("utf-8"))
+        values = _load_simple_env(env_path)
+        assert values.get("HINDSIGHT_LLM_API_KEY") == "sk-test"
+
+    def test_non_ascii_values_read_intact(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("PROXY_NOTE=café-zürich-完了\n".encode("utf-8"))
+        values = _load_simple_env(env_path)
+        assert values["PROXY_NOTE"] == "café-zürich-完了"
+
+
+class TestPostSetupEnvEncoding:
+    def _run_cloud_post_setup(self, tmp_path, monkeypatch):
+        """Drive post_setup through the cloud path with piped stdin."""
+        import io
+        import shutil as shutil_mod
+
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select",
+                            lambda *a, **kw: 0)  # cloud mode
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda c: None)
+        monkeypatch.setattr(shutil_mod, "which", lambda *_: None)  # skip uv install
+        # First line: API key prompt (readline). Second line: API URL (input).
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-new\n\n"))
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(tmp_path), {"memory": {}})
+
+    def test_bom_first_key_updated_in_place(self, tmp_path, monkeypatch):
+        """The setup writer reads the existing .env BOM-tolerantly, so a
+        BOM'd first key is matched and rewritten, not duplicated."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿HINDSIGHT_API_KEY=old\n".encode("utf-8"))
+
+        self._run_cloud_post_setup(tmp_path, monkeypatch)
+
+        content = env_path.read_text(encoding="utf-8")
+        assert content.count("HINDSIGHT_API_KEY=") == 1
+        assert "HINDSIGHT_API_KEY=sk-new" in content
+        assert "old" not in content
+        assert "﻿" not in content
+
+    def test_non_ascii_lines_survive_round_trip(self, tmp_path, monkeypatch):
+        """Unrelated non-ASCII .env content must be copied through as UTF-8
+        (the locale codec would crash or mangle it on Windows)."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("PROXY_NOTE=café-zürich-完了\n".encode("utf-8"))
+
+        self._run_cloud_post_setup(tmp_path, monkeypatch)
+
+        content = env_path.read_text(encoding="utf-8")
+        assert "PROXY_NOTE=café-zürich-完了" in content
+        assert "HINDSIGHT_API_KEY=sk-new" in content

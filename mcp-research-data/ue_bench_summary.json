@@ -1,0 +1,50 @@
+{
+ "editor|eager": {
+  "succ": 12,
+  "n": 12,
+  "api": 2.2,
+  "itok": 116979,
+  "usd": 0.58,
+  "sec": 9.0
+ },
+ "editor|bridge": {
+  "succ": 12,
+  "n": 12,
+  "api": 4.7,
+  "itok": 146979,
+  "usd": 0.73,
+  "sec": 18.7
+ },
+ "editor|listing": {
+  "succ": 12,
+  "n": 12,
+  "api": 5,
+  "itok": 163663,
+  "usd": 0.82,
+  "sec": 21.5
+ },
+ "full|eager": {
+  "succ": 8,
+  "n": 8,
+  "api": 2.5,
+  "itok": 810578,
+  "usd": 4.05,
+  "sec": 18.9
+ },
+ "full|bridge": {
+  "succ": 16,
+  "n": 16,
+  "api": 5.2,
+  "itok": 160844,
+  "usd": 0.8,
+  "sec": 22.5
+ },
+ "full|listing": {
+  "succ": 16,
+  "n": 16,
+  "api": 4.6,
+  "itok": 257264,
+  "usd": 1.29,
+  "sec": 23.8
+ }
+}

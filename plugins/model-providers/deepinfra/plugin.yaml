@@ -1,0 +1,5 @@
+name: deepinfra-provider
+kind: model-provider
+version: 1.0.0
+description: DeepInfra — 100+ open models, pay-per-use
+author: Georgi Atsev

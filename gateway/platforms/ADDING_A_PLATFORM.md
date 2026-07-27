@@ -52,6 +52,22 @@ for the full pattern (Template Buttons postback at 45s, `RequestCache`
 state machine, `interrupt_session_activity` override for `/stop`
 orphans) and the developer-guide page for the prose walkthrough.
 
+**Sibling adapters that share behavior.** When a single platform has
+two transport modes the user picks between — unofficial vs official
+APIs, polling vs websocket, library A vs library B — the right
+structure is two adapters that share a behavior mixin. WhatsApp does
+this: `gateway/platforms/whatsapp.py` (Baileys bridge) and
+`gateway/platforms/whatsapp_cloud.py` (Meta Cloud API) both inherit
+from `WhatsAppBehaviorMixin` in `gateway/platforms/whatsapp_common.py`.
+The mixin owns gating, allow-lists, mention parsing, broadcast
+filters, and the WhatsApp-flavored markdown conversion — everything
+that's platform-protocol-agnostic. Each adapter owns its transport.
+Both register distinct `Platform.*` enum values so the gateway can run
+both simultaneously against different phone numbers. The mixin must
+come **first** in the bases list — `class WhatsAppAdapter(Mixin,
+BasePlatformAdapter)` — so the mixin's `format_message` overrides
+`BasePlatformAdapter`'s generic default.
+
 See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `plugins/platforms/google_chat/` for complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full
@@ -93,6 +109,20 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_video(chat_id, path, caption)` | Send a video |
 | `send_animation(chat_id, path, caption)` | Send a GIF/animation |
 | `send_image_file(chat_id, path, caption)` | Send image from local file |
+
+### Interactive UX (recommended if your platform supports tappable buttons)
+
+If your platform supports interactive button/menu messages, implement these for a more polished agent experience. They all degrade gracefully to plain text when not overridden:
+
+| Method | Purpose |
+|--------|---------|
+| `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `tools.clarify_gateway.resolve_gateway_clarify`. |
+| `send_exec_approval(chat_id, command, session_key, description, ...)` | Render dangerous-command approval as Approve/Deny buttons. Inbound dispatch routes to `tools.approval.resolve_gateway_approval`. |
+| `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `tools.slash_confirm.resolve`. |
+| `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram and Discord. |
+| `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
+
+See `gateway/platforms/telegram.py`, `discord.py`, and `whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 

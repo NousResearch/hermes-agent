@@ -69,6 +69,20 @@ def test_detect_service_manager_returns_known_value() -> None:
     assert result in ("systemd", "launchd", "windows", "s6", "none")
 
 
+def test_detect_service_manager_s6_keys_off_s6_running_not_is_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: Fly runs s6-overlay as PID 1 in a Firecracker microVM, which
+    is not a Docker/Podman container. Gating s6 detection on is_container() made
+    the dispatch path inert on Fly, so `hermes gateway restart` spawned a
+    foreground gateway that fought the supervised one. Detection must key off
+    s6 being PID 1 (`_s6_running`) alone."""
+    monkeypatch.setattr(
+        "hermes_cli.service_manager._s6_running", lambda: True,
+    )
+    assert detect_service_manager() == "s6"
+
+
 # ---------------------------------------------------------------------------
 # _s6_running — must work for unprivileged users, not just root
 # ---------------------------------------------------------------------------
@@ -572,6 +586,81 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     ), f"s6-svscanctl -a not invoked; saw: {fake_subprocess_run}"
 
 
+def test_s6_register_staging_dir_is_dotfile_hidden_from_svscan(
+    s6_scandir, fake_subprocess_run, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mid-build staging dir MUST be dot-prefixed so s6-svscan
+    ignores it while it is half-populated.
+
+    s6-svscan skips any scandir entry whose name begins with ``.``. If
+    the staging dir were a plain ``gateway-<p>.tmp`` (a non-dotfile),
+    a concurrent ``s6-svscanctl -a`` rescan would supervise it the
+    moment it has a valid ``type``/``run`` — spawning s6-supervise AS
+    ROOT, which mkdir's a root-owned ``supervise/`` and makes the
+    in-flight ``_seed_supervise_skeleton`` EACCES on
+    ``mkdir supervise/event``. That was the arm64-only CI flake on
+    ``test_s6_unregister_removes_service_dir_in_live_container``.
+
+    We capture the directory passed to ``_seed_supervise_skeleton``
+    (called mid-build, BEFORE the atomic rename to the live name) and
+    assert its basename starts with ``.`` and still lives in the
+    scandir as a sibling of the live slot.
+    """
+    import hermes_cli.service_manager as sm
+
+    seen: list[str] = []
+    real_seed = sm._seed_supervise_skeleton
+
+    def _capturing_seed(svc_dir, *a, **kw):
+        seen.append(str(svc_dir))
+        return real_seed(svc_dir, *a, **kw)
+
+    monkeypatch.setattr(sm, "_seed_supervise_skeleton", _capturing_seed)
+
+    S6ServiceManager(scandir=s6_scandir).register_profile_gateway("coder")
+
+    assert seen, "_seed_supervise_skeleton was never called during register"
+    staging = seen[0]
+    staging_name = staging.rsplit("/", 1)[-1]
+    assert staging_name.startswith("."), (
+        f"staging dir must be a dotfile so s6-svscan skips it mid-build; "
+        f"got {staging_name!r}"
+    )
+    # Sibling of the live slot, in the same scandir.
+    assert staging == str(s6_scandir / ".gateway-coder.tmp")
+    # And the published (renamed) live slot is the dotless canonical name.
+    assert (s6_scandir / "gateway-coder").is_dir()
+
+
+def test_s6_register_start_now_false_writes_down_marker(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """When start_now=False, a `down` marker must be written so
+    s6-supervise does not auto-start the service on rescan."""
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder", start_now=False)
+
+    svc_dir = s6_scandir / "gateway-coder"
+    assert svc_dir.is_dir()
+    assert (svc_dir / "down").is_file(), (
+        "start_now=False must write a `down` marker file"
+    )
+
+
+def test_s6_register_start_now_true_no_down_marker(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """When start_now=True (default), no `down` marker should exist."""
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder")
+
+    svc_dir = s6_scandir / "gateway-coder"
+    assert svc_dir.is_dir()
+    assert not (svc_dir / "down").exists(), (
+        "start_now=True must NOT write a `down` marker file"
+    )
+
+
 def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> None:
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway(
@@ -588,7 +677,70 @@ def test_render_run_script_resets_home_before_exec() -> None:
     run_text = S6ServiceManager._render_run_script("coder", {})
 
     assert "export HOME=/opt/data" in run_text
-    assert "exec s6-setuidgid hermes hermes -p coder gateway run" in run_text
+    assert "exec s6-setuidgid hermes hermes -p coder gateway run --replace" in run_text
+
+
+def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:
+    """NS-505: the supervised gateway must exec ``gateway run --replace``.
+
+    Without ``--replace`` a gateway started OUTSIDE s6 (a stray shell
+    ``hermes gateway run``, an agent action, the Open WebUI helper) holds
+    the per-HERMES_HOME PID lock; the supervised slot then execs a bare
+    ``gateway run``, hits the "Another gateway instance is already
+    running" guard, exits non-zero, and s6 restarts it — a restart loop
+    that never binds. ``--replace`` makes the supervised gateway reap the
+    stale holder and win, so s6 is authoritative for the slot.
+
+    Covers both the default (root HERMES_HOME, no ``-p``) and named-profile
+    render paths.
+    """
+    default_text = S6ServiceManager._render_run_script("default", {})
+    # Root profile: bare `hermes gateway run --replace` (no -p flag).
+    assert "hermes gateway run --replace" in default_text
+    assert "hermes -p default" not in default_text
+    # Every exec line that launches the gateway must carry --replace, so
+    # neither the non-root nor the privilege-drop branch can spin.
+    gateway_execs = [
+        line for line in default_text.splitlines()
+        if "gateway run" in line
+    ]
+    assert gateway_execs, "no gateway run exec line rendered"
+    assert all("--replace" in line for line in gateway_execs), (
+        f"a gateway run line is missing --replace: {gateway_execs}"
+    )
+
+    named_text = S6ServiceManager._render_run_script("coder", {})
+    named_execs = [
+        line for line in named_text.splitlines() if "gateway run" in line
+    ]
+    assert named_execs
+    assert all("--replace" in line for line in named_execs), (
+        f"a named-profile gateway run line is missing --replace: {named_execs}"
+    )
+
+
+def test_render_finish_script_exits_125_on_ex_config() -> None:
+    """The finish script must translate exit 78 (EX_CONFIG) into exit 125
+    (permanent failure) so s6 stops restarting on fatal config errors.
+    See #51228."""
+    text = S6ServiceManager._render_finish_script()
+    assert '[ "$1" = "78" ]' in text
+    assert "exit 125" in text
+    assert "exit 0" in text
+
+
+def test_s6_register_writes_finish_script(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """The finish script must be written alongside the run script."""
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder")
+
+    finish_path = s6_scandir / "gateway-coder" / "finish"
+    assert finish_path.is_file()
+    assert finish_path.stat().st_mode & 0o111  # executable
+    assert "78" in finish_path.read_text()
+    assert "125" in finish_path.read_text()
 
 
 def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:
@@ -681,6 +833,48 @@ def test_s6_lifecycle_dispatches_to_s6_svc(
 
     flags = [c[1] for c in fake_subprocess_run if c[0] == "s6-svc"]
     assert flags == ["-u", "-d", "-t"]
+
+
+def test_s6_lifecycle_persists_named_profile_desired_state(
+    s6_scandir,
+    fake_subprocess_run,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    hermes_home = tmp_path / "hermes-home"
+    profile_dir = hermes_home / "profiles" / "coder"
+    profile_dir.mkdir(parents=True)
+    (s6_scandir / "gateway-coder").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.start("gateway-coder")
+    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "running"
+    mgr.stop("gateway-coder")
+    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "stopped"
+    mgr.restart("gateway-coder")
+    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "running"
+
+
+def test_s6_lifecycle_persists_default_profile_desired_state(
+    s6_scandir,
+    fake_subprocess_run,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (s6_scandir / "gateway-default").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home / "profiles" / "coder"))
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.start("gateway-default")
+    state = json.loads((hermes_home / "gateway_state.json").read_text())
+    assert state["desired_state"] == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -907,3 +1101,254 @@ def test_s6_stop_tolerates_marker_write_failure(monkeypatch, s6_scandir):
     mgr.stop("gateway-coder")  # must not raise
 
     assert any(cmd[0] == "s6-svc" and "-d" in cmd for cmd in svc_calls)
+
+
+def _log_run_setup_fragment(rendered: str) -> str:
+    """Keep mkdir/rm setup from ``_render_log_run``; stop before ``s6-log``."""
+    keep: list[str] = []
+    for line in rendered.splitlines(keepends=True):
+        if line.startswith("#!/") or "shellcheck" in line:
+            continue
+        if "s6-log" in line:
+            break
+        keep.append(line)
+    return "#!/bin/sh\n" + "".join(keep)
+
+
+def test_s6_log_run_creates_leaf_as_hermes_without_chown(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """log/run must not root-chown/unlink volume paths; create leaf as hermes.
+
+    #45258 parent ownership is stage2's job (``logs/gateways`` seeded as
+    hermes). Restartable log/run must not pathname-chown or pathname-rm a
+    hermes-writable tree from root — that is a symlink TOCTOU hole.
+    """
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder")
+
+    log_text = (s6_scandir / "gateway-coder" / "log" / "run").read_text()
+
+    assert not any(line.lstrip().startswith("chown ") for line in log_text.splitlines()), (
+        "restartable log/run must not invoke chown on hermes-writable paths; "
+        f"saw: {log_text!r}"
+    )
+    assert 's6-setuidgid hermes mkdir -p "$log_dir"' in log_text
+    assert 's6-setuidgid hermes rm -f "$log_dir/lock"' in log_text
+    assert 'else\n  mkdir -p "$log_dir"\n  rm -f "$log_dir/lock"\nfi\n' in log_text
+    # Lock cleanup must not remain a bare root-context pathname op after fi.
+    after_fi = log_text.split("fi\n", 1)[-1]
+    assert 'rm -f "$log_dir/lock"' not in after_fi
+
+    mkdir_as_hermes_idx = log_text.index('s6-setuidgid hermes mkdir -p "$log_dir"')
+    rm_as_hermes_idx = log_text.index('s6-setuidgid hermes rm -f "$log_dir/lock"')
+    exec_idx = log_text.index("s6-log 1 ")
+    assert mkdir_as_hermes_idx < rm_as_hermes_idx < exec_idx
+
+    # Runtime path expansion, never a baked-in absolute path.
+    assert '/opt/data/logs/gateways"' not in log_text
+
+
+def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None:
+    """Symlinked ``$log_dir`` must not redirect root chown/rm to the referent."""
+    import os
+    import stat
+    import subprocess
+    import threading
+    import time
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("POSIX symlink + /bin/sh required")
+
+    hermes_home = tmp_path / "hermes"
+    gateways = hermes_home / "logs" / "gateways"
+    gateways.mkdir(parents=True)
+    leaf = gateways / "coder"
+    leaf.mkdir()
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "marker").write_text("keep", encoding="utf-8")
+    (victim / "lock").write_text("keep-lock", encoding="utf-8")
+    before = victim.stat()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    recorder = tmp_path / "chown_calls.txt"
+    (bin_dir / "chown").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{recorder.as_posix()}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    # Pretend we are root so the script takes the s6-setuidgid setup path.
+    # Mark the drop so fake rm can refuse unlink outside HERMES_HOME the way
+    # a real hermes uid cannot delete a foreign root-owned lock.
+    (bin_dir / "id").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-u" ]; then echo 0; exit 0; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "s6-setuidgid").write_text(
+        "#!/bin/sh\n"
+        "shift\n"
+        'HERMES_TEST_DROPPED=1 exec "$@"\n',
+        encoding="utf-8",
+    )
+    real_rm = "/bin/rm"
+    (bin_dir / "rm").write_text(
+        "#!/bin/sh\n"
+        # Privilege-dropped: no-op. Models that hermes cannot unlink a foreign
+        # root-owned lock outside the volume; avoids a realpath/rm TOCTOU in
+        # the test double itself. Root-context: real rm — a residual bare
+        # ``rm -f "$log_dir/lock"`` would delete victim/lock via the symlink.
+        'if [ -n "$HERMES_TEST_DROPPED" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        f'exec {real_rm} "$@"\n',
+        encoding="utf-8",
+    )
+    for name in ("chown", "id", "s6-setuidgid", "rm"):
+        p = bin_dir / name
+        p.chmod(p.stat().st_mode | stat.S_IXUSR)
+
+    script_path = tmp_path / "log_run_setup.sh"
+    script_path.write_text(
+        _log_run_setup_fragment(S6ServiceManager._render_log_run("coder")),
+        encoding="utf-8",
+    )
+    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
+
+    stop = threading.Event()
+
+    def _clear_leaf() -> None:
+        if leaf.is_symlink():
+            leaf.unlink()
+        elif leaf.is_dir():
+            leaf.rmdir()
+        elif leaf.exists():
+            leaf.unlink()
+
+    def _swap_race() -> None:
+        # Alternate leaf between a real dir and a symlink to the victim while
+        # the setup fragment runs — proves there is no privileged chown/rm
+        # window to win, unlike a check-then-use preflight.
+        while not stop.is_set():
+            try:
+                _clear_leaf()
+                leaf.symlink_to(victim)
+                time.sleep(0.001)
+                _clear_leaf()
+                leaf.mkdir()
+            except OSError:
+                pass
+            time.sleep(0.001)
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+    env["PATH"] = f"{bin_dir.as_posix()}{os.pathsep}{env.get('PATH', '')}"
+
+    racer = threading.Thread(target=_swap_race, daemon=True)
+    racer.start()
+    try:
+        for _ in range(40):
+            proc = subprocess.run(
+                ["/bin/sh", str(script_path)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert proc.returncode == 0, (proc.stdout, proc.stderr)
+            assert (victim / "lock").is_file(), "symlinked leaf must not let root unlink victim/lock"
+    finally:
+        stop.set()
+        racer.join(timeout=2)
+
+    assert not recorder.exists() or recorder.read_text(encoding="utf-8").strip() == ""
+    after = victim.stat()
+    assert after.st_uid == before.st_uid
+    assert after.st_gid == before.st_gid
+    assert (victim / "marker").read_text(encoding="utf-8") == "keep"
+    assert (victim / "lock").read_text(encoding="utf-8") == "keep-lock"
+
+
+def test_s6_log_run_mkdir_as_hermes_on_real_dirs(tmp_path) -> None:
+    """Root-context setup creates ``$log_dir`` via ``s6-setuidgid hermes mkdir``."""
+    import os
+    import stat
+    import subprocess
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("POSIX /bin/sh required")
+
+    hermes_home = tmp_path / "hermes"
+    (hermes_home / "logs" / "gateways").mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    setuid_recorder = tmp_path / "setuidgid_calls.txt"
+    chown_recorder = tmp_path / "chown_calls.txt"
+
+    (bin_dir / "id").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-u" ]; then echo 0; exit 0; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "s6-setuidgid").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{setuid_recorder.as_posix()}"\n'
+        "shift\n"
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "chown").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{chown_recorder.as_posix()}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    for name in ("id", "s6-setuidgid", "chown"):
+        p = bin_dir / name
+        p.chmod(p.stat().st_mode | stat.S_IXUSR)
+
+    script_path = tmp_path / "log_run_setup.sh"
+    script_path.write_text(
+        _log_run_setup_fragment(S6ServiceManager._render_log_run("coder")),
+        encoding="utf-8",
+    )
+    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+    env["PATH"] = f"{bin_dir.as_posix()}{os.pathsep}{env.get('PATH', '')}"
+
+    proc = subprocess.run(
+        ["/bin/sh", str(script_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+
+    setuid_calls = setuid_recorder.read_text(encoding="utf-8").strip().splitlines()
+    assert any(
+        c.split()[:3] == ["hermes", "mkdir", "-p"] and "gateways/coder" in c
+        for c in setuid_calls
+    ), setuid_calls
+    assert any(
+        c.split()[:3] == ["hermes", "rm", "-f"] and c.rstrip().endswith("/lock")
+        for c in setuid_calls
+    ), setuid_calls
+    assert (hermes_home / "logs" / "gateways" / "coder").is_dir()
+    assert (
+        not chown_recorder.exists()
+        or chown_recorder.read_text(encoding="utf-8").strip() == ""
+    )

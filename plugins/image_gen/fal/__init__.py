@@ -87,7 +87,7 @@ class FalImageGenProvider(ImageGenProvider):
         return {
             "name": "FAL.ai",
             "badge": "paid",
-            "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc.",
+            "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc. — text-to-image & image editing",
             "env_vars": [
                 {
                     "key": "FAL_KEY",
@@ -97,18 +97,40 @@ class FalImageGenProvider(ImageGenProvider):
             ],
         }
 
+    def capabilities(self) -> Dict[str, Any]:
+        # Whether image-to-image is available depends on the currently-
+        # selected FAL model (each model entry declares an edit_endpoint or
+        # not). Report the active model's actual surface so the dynamic tool
+        # schema is accurate.
+        import tools.image_generation_tool as _it
+
+        try:
+            _model_id, meta = _it._resolve_fal_model()
+        except Exception:  # noqa: BLE001
+            return {"modalities": ["text"], "max_reference_images": 0}
+        if meta.get("edit_endpoint"):
+            return {
+                "modalities": ["text", "image"],
+                "max_reference_images": int(meta.get("max_reference_images") or 1),
+            }
+        return {"modalities": ["text"], "max_reference_images": 0}
+
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Generate an image via the legacy FAL pipeline.
+        """Generate or edit an image via the legacy FAL pipeline.
 
-        Forwards prompt + aspect_ratio (and any forward-compat extras
-        the schema supports) into :func:`tools.image_generation_tool.image_generate_tool`,
-        then reshapes its JSON-string response into the provider-ABC
-        dict format consumed by ``_dispatch_to_plugin_provider``.
+        Forwards prompt + aspect_ratio + image_url/reference_image_urls (and
+        any forward-compat extras the schema supports) into
+        :func:`tools.image_generation_tool.image_generate_tool`, then reshapes
+        its JSON-string response into the provider-ABC dict format consumed by
+        ``_dispatch_to_plugin_provider``.
         """
         import tools.image_generation_tool as _it
 
@@ -124,6 +146,13 @@ class FalImageGenProvider(ImageGenProvider):
             )
             if key in kwargs and kwargs[key] is not None
         }
+        # Only forward the image-to-image inputs when actually supplied, so a
+        # plain text-to-image call delegates exactly as it did before (no
+        # noisy None kwargs).
+        if image_url is not None:
+            passthrough["image_url"] = image_url
+        if reference_image_urls is not None:
+            passthrough["reference_image_urls"] = reference_image_urls
 
         try:
             raw = _it.image_generate_tool(

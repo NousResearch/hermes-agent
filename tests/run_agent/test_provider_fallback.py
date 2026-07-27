@@ -182,6 +182,120 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_anthropic_host_custom_provider_uses_anthropic_messages(self):
+        """A custom provider on the native api.anthropic.com host (no
+        "/anthropic" path suffix, name != "anthropic") must resolve to the
+        anthropic_messages wire protocol — not default to chat_completions,
+        which POSTs /v1/chat/completions and 404s. Mirrors the primary-path
+        determine_api_mode() host check."""
+        fbs = [
+            {
+                "provider": "cron-anthropic",
+                "model": "claude-sonnet-4-6",
+                "base_url": "https://api.anthropic.com",
+                "key_env": "MY_FALLBACK_KEY",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch.dict("os.environ", {"MY_FALLBACK_KEY": "env-secret"}, clear=False),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://api.anthropic.com"),
+                    "claude-sonnet-4-6",
+                ),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "anthropic_messages"
+
+    def test_nous_anthropic_fallback_uses_the_messages_wire(self):
+        """Portal Claude fallbacks must not stay on chat_completions.
+
+        ``resolve_provider_client`` still returns an OpenAI client for Nous;
+        activation has to re-derive api_mode from the model and rebuild the
+        Anthropic client — otherwise the turn POSTs /chat/completions.
+        """
+        portal = "https://inference-api.nousresearch.com/v1"
+        fbs = [
+            {
+                "provider": "nous",
+                "model": "anthropic/claude-opus-4.8",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        rebuilt = {"count": 0}
+
+        def _fake_build(api_key, base_url, timeout=None, **kwargs):
+            rebuilt["count"] += 1
+            rebuilt["api_key"] = api_key
+            rebuilt["base_url"] = base_url
+            return MagicMock(name="anthropic-client")
+
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url=portal, api_key="portal-jwt"),
+                    "anthropic/claude-opus-4.8",
+                ),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=_fake_build,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.provider == "nous"
+        assert agent.model == "anthropic/claude-opus-4.8"
+        assert agent.client is None
+        assert rebuilt["count"] == 1
+        assert rebuilt["api_key"] == "portal-jwt"
+        assert rebuilt["base_url"] == portal
+        assert agent._anthropic_client is not None
+
+    def test_nous_non_anthropic_fallback_stays_on_chat_completions(self):
+        portal = "https://inference-api.nousresearch.com/v1"
+        fbs = [{"provider": "nous", "model": "hermes-4-405b"}]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url=portal, api_key="portal-jwt"),
+                    "hermes-4-405b",
+                ),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=AssertionError("must not build Anthropic client"),
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "chat_completions"
+        assert agent.client is not None
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 
@@ -305,3 +419,40 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+    def test_allows_xai_api_fallback_from_xai_oauth_same_host_model(self):
+        """xai-oauth and xai share api.x.ai but use different credentials.
+
+        A spending-limit 403 on OAuth must still be able to fall over to the
+        API-key provider even when both entries use the same model slug and
+        base URL.  Blind base_url+model dedup incorrectly skipped that path.
+        """
+        fbs = [
+            {
+                "provider": "xai",
+                "model": "grok-4.5",
+                "base_url": "https://api.x.ai/v1",
+            },
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "xai-oauth"
+        agent.model = "grok-4.5"
+        agent.base_url = "https://api.x.ai/v1"
+
+        called = []
+
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(base_url="https://api.x.ai/v1"), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        assert called == [("xai", "grok-4.5")]
+        assert agent.provider == "xai"
+        assert agent.model == "grok-4.5"

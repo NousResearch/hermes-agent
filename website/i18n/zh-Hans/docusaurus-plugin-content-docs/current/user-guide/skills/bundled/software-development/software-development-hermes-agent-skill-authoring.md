@@ -116,7 +116,7 @@ Named scenarios → concrete command sequences.
 skills/<category>/<skill-name>/SKILL.md
 ```
 
-仓库中现有的分类（通过 `ls skills/` 确认）：`autonomous-ai-agents`、`creative`、`data-science`、`devops`、`dogfood`、`email`、`gaming`、`github`、`leisure`、`mcp`、`media`、`mlops/*`、`note-taking`、`productivity`、`red-teaming`、`research`、`smart-home`、`social-media`、`software-development`。
+仓库中现有的分类（通过 `ls skills/` 确认）：`autonomous-ai-agents`、`creative`、`data-science`、`devops`、`email`、`gaming`、`github`、`leisure`、`mcp`、`media`、`mlops/*`、`note-taking`、`productivity`、`red-teaming`、`research`、`smart-home`、`social-media`、`software-development`。
 
 选择最接近的现有分类。不要随意创建新的顶级分类。
 

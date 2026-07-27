@@ -153,25 +153,27 @@ const autolinkUrl = (raw: string) =>
 const defaultLinkLabel = (url: string) =>
   url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
 
-const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
+// A label only counts as authored if it says something the URL doesn't:
+// `[https://example.com](https://example.com)` and `<https://example.com>`
+// are bare links wearing markdown syntax, so they still want a page title.
+const pickAuthoredLabel = (label: string | undefined, target: string): string | undefined => {
   const trimmed = label?.trim()
 
-  if (!trimmed) {
-    return undefined
-  }
-
-  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
+  return trimmed && normalizeExternalUrl(trimmed) !== target ? trimmed : undefined
 }
 
 interface ResolvedLinkProps {
-  fallbackLabel?: string
+  authoredLabel?: string
   t: Theme
   url: string
 }
 
-function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(url)
-  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+// Title resolution is a fallback for links with no text of their own, not an
+// override — replacing `[Read the RFC](url)` with the page title throws away
+// better wording than we can derive, and mangles labels like `#71706`.
+function ResolvedLink({ authoredLabel, t, url }: ResolvedLinkProps) {
+  const fetched = useLinkTitle(authoredLabel ? null : url)
+  const display = authoredLabel || fetched || defaultLinkLabel(url)
 
   return (
     <Link url={url}>
@@ -185,7 +187,7 @@ function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
 const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
   const target = normalizeExternalUrl(rawUrl)
 
-  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
+  return <ResolvedLink authoredLabel={pickAuthoredLabel(label, target)} key={k} t={t} url={target} />
 }
 
 export const stripInlineMarkup = (v: string) =>
@@ -213,7 +215,9 @@ const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
 
 const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // Guard: empty table
-  if (rows.length === 0 || rows[0]!.length === 0) return null
+  if (rows.length === 0 || rows[0]!.length === 0) {
+    return null
+  }
 
   const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
 
@@ -221,7 +225,11 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   const minCellWidth = (raw: string) => {
     const text = stripInlineMarkup(raw)
     const words = text.split(/\s+/).filter(w => w.length > 0)
-    if (words.length === 0) return MIN_COL_WIDTH
+
+    if (words.length === 0) {
+      return MIN_COL_WIDTH
+    }
+
     return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
   }
 
@@ -229,7 +237,10 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
   // Normalize ragged rows: ensure every row has exactly numCols cells
   const normalizedRows = rows.map(row => {
-    if (row.length >= numCols) return row.slice(0, numCols)
+    if (row.length >= numCols) {
+      return row.slice(0, numCols)
+    }
+
     return [...row, ...Array<string>(numCols - row.length).fill('')]
   })
 
@@ -247,6 +258,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // transcriptBodyWidth (source of cols) subtracts message gutter + scrollbar,
   // but NOT this table's paddingLeft — we subtract it here.
   const gapOverhead = (numCols - 1) * COL_GAP
+
   const availableWidth = cols
     ? Math.max(cols - TABLE_PADDING_LEFT - gapOverhead - SAFETY_MARGIN, numCols * MIN_COL_WIDTH)
     : Infinity
@@ -266,19 +278,23 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     const extraSpace = availableWidth - totalMin
     const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!)
     const totalOverflow = overflows.reduce((a, b) => a + b, 0)
+
     if (totalOverflow === 0) {
       columnWidths = [...minWidths]
     } else {
-      const rawAlloc = minWidths.map((min, i) =>
-        min + (overflows[i]! / totalOverflow) * extraSpace
-      )
+      const rawAlloc = minWidths.map((min, i) => min + (overflows[i]! / totalOverflow) * extraSpace)
+
       columnWidths = rawAlloc.map(v => Math.floor(v))
       // Distribute rounding remainders to columns with largest fractional part
       let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
-      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-        .sort((a, b) => b.frac - a.frac)
+
+      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
+
       for (const { i } of fracs) {
-        if (remainder <= 0) break
+        if (remainder <= 0) {
+          break
+        }
+
         columnWidths[i]!++
         remainder--
       }
@@ -292,31 +308,40 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     const rawAlloc = minWidths.map(w => w * scaleFactor)
     columnWidths = rawAlloc.map(v => Math.max(Math.floor(v), MIN_COL_WIDTH))
     let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
-    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-      .sort((a, b) => b.frac - a.frac)
+
+    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
+
     for (const { i } of fracs) {
-      if (remainder <= 0) break
+      if (remainder <= 0) {
+        break
+      }
+
       columnWidths[i]!++
       remainder--
     }
   }
 
   // Grapheme-safe hard-break: prefer Intl.Segmenter, fall back to code-point split
-  const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-    ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
-    : null
+  const segmenter =
+    typeof Intl !== 'undefined' && 'Segmenter' in Intl
+      ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
+      : null
 
   const graphemes = (s: string): string[] =>
-    segmenter
-      ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment)
-      : [...s]
+    segmenter ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment) : [...s]
 
   // Word-wrap plain text to fit within `width` display columns.
   // Operates on stripped text for correct width measurement.
   const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
     const text = stripInlineMarkup(raw)
-    if (width <= 0) return [text]
-    if (stringWidth(text) <= width) return [text]
+
+    if (width <= 0) {
+      return [text]
+    }
+
+    if (stringWidth(text) <= width) {
+      return [text]
+    }
 
     const words = text.split(/\s+/).filter(w => w.length > 0)
     const lines: string[] = []
@@ -325,15 +350,18 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
     for (const word of words) {
       const w = stringWidth(word)
+
       if (currentWidth === 0) {
         if (hard && w > width) {
           for (const ch of graphemes(word)) {
             const cw = stringWidth(ch)
+
             if (currentWidth + cw > width && current) {
               lines.push(current)
               current = ''
               currentWidth = 0
             }
+
             current += ch
             currentWidth += cw
           }
@@ -350,7 +378,11 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         currentWidth = w
       }
     }
-    if (current) lines.push(current)
+
+    if (current) {
+      lines.push(current)
+    }
+
     return lines.length > 0 ? lines : ['']
   }
 
@@ -363,26 +395,27 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
   if (!needsWrap) {
     const buildRowString = (row: string[]): string =>
-      row.map((cell, ci) => {
-        const text = stripInlineMarkup(cell)
-        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
-        const gap = ci < numCols - 1 ? '  ' : ''
-        return text + pad + gap
-      }).join('')
+      row
+        .map((cell, ci) => {
+          const text = stripInlineMarkup(cell)
+          const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
+          const gap = ci < numCols - 1 ? '  ' : ''
+
+          return text + pad + gap
+        })
+        .join('')
 
     return (
       <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
         {normalizedRows.map((row, ri) => (
           <Fragment key={ri}>
-            <Text
-              bold={ri === 0}
-              color={ri === 0 ? t.color.accent : undefined}
-              wrap="truncate-end"
-            >
+            <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} wrap="truncate-end">
               {buildRowString(row)}
             </Text>
             {ri === 0 && normalizedRows.length > 1 ? (
-              <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>
+              <Text color={t.color.muted} dimColor wrap="truncate-end">
+                {sep}
+              </Text>
             ) : null}
           </Fragment>
         ))}
@@ -394,23 +427,29 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   type LineEntry = { text: string; kind: 'header' | 'separator' | 'body' }
 
   const buildRowLines = (row: string[]): string[] => {
-    const cellLines = row.map((cell, ci) =>
-      wrapCell(cell, columnWidths[ci]!, isHard)
-    )
+    const cellLines = row.map((cell, ci) => wrapCell(cell, columnWidths[ci]!, isHard))
+
     const maxLines = Math.max(...cellLines.map(l => l.length), 1)
 
     const result: string[] = []
+
     for (let li = 0; li < maxLines; li++) {
       let line = ''
+
       for (let ci = 0; ci < numCols; ci++) {
         const cl = cellLines[ci] ?? ['']
         const cellText = li < cl.length ? cl[li]! : ''
         const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(cellText)))
         line += cellText + pad
-        if (ci < numCols - 1) line += '  '
+
+        if (ci < numCols - 1) {
+          line += '  '
+        }
       }
+
       result.push(line)
     }
+
     return result
   }
 
@@ -418,10 +457,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   const allEntries: LineEntry[] = []
   let tallestBodyRow = 0
   normalizedRows.forEach((row, ri) => {
-    const kind = ri === 0 ? 'header' as const : 'body' as const
+    const kind = ri === 0 ? ('header' as const) : ('body' as const)
     const rowLines = buildRowLines(row)
     rowLines.forEach(text => allEntries.push({ text, kind }))
-    if (ri > 0) tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+
+    if (ri > 0) {
+      tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+    }
+
     if (ri === 0 && normalizedRows.length > 1) {
       allEntries.push({ text: sep, kind: 'separator' })
     }
@@ -457,15 +500,20 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         {dataRows.map((row, ri) => (
           <Fragment key={ri}>
             {ri > 0 ? (
-              <Text color={t.color.muted} dimColor>{'─'.repeat(sepWidth)}</Text>
+              <Text color={t.color.muted} dimColor>
+                {'─'.repeat(sepWidth)}
+              </Text>
             ) : null}
             {headers.map((header, ci) => {
               const cell = row[ci] ?? ''
               const label = stripInlineMarkup(header) || `Col ${ci + 1}`
+
               return (
                 <Text key={ci} wrap="wrap-trim">
-                  <Text bold color={t.color.accent}>{label}:</Text>
-                  {' '}{stripInlineMarkup(cell)}
+                  <Text bold color={t.color.accent}>
+                    {label}:
+                  </Text>{' '}
+                  {stripInlineMarkup(cell)}
                 </Text>
               )
             })}
@@ -493,7 +541,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   )
 }
 
-function MdInline({ t, text }: { t: Theme; text: string }) {
+// `color` anchors the prose runs to a palette tone. Block callers that
+// already wrap MdInline in a colored <Text> (headings, quotes, footnotes)
+// leave it unset and inherit that parent; body-prose callers pass
+// `t.color.text` so plain words are themed instead of falling through to
+// the terminal's default foreground. Without it a single line mixes
+// themed spans (code, links, math) with unthemed prose — and because an
+// inline token can match mid-word, so can a single word.
+function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }) {
   const parts: ReactNode[] = []
 
   let last = 0
@@ -604,7 +659,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
   }
 
-  return <Text wrap="wrap-trim">{parts.length ? parts : text}</Text>
+  return (
+    <Text {...(color ? { color } : {})} wrap="wrap-trim">
+      {parts.length ? parts : text}
+    </Text>
+  )
 }
 
 // Cross-instance parsed-children cache: useMemo's per-instance cache dies
@@ -835,7 +894,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         if (closeIdx < 0) {
           start('paragraph')
-          nodes.push(<MdInline key={key} t={t} text={line} />)
+          nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
           i++
 
           continue
@@ -952,7 +1011,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           nodes.push(
             <Text key={`${key}-def-${i}`} wrap="wrap-trim">
               <Text color={t.color.muted}> · </Text>
-              <MdInline t={t} text={def} />
+              <MdInline color={t.color.text} t={t} text={def} />
             </Text>
           )
           i++
@@ -973,7 +1032,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{marker} </Text>
-              <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
+              <MdInline color={t.color.text} t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
           </Box>
         )
@@ -990,7 +1049,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{numbered[2]}. </Text>
-              <MdInline t={t} text={numbered[3]!} />
+              <MdInline color={t.color.text} t={t} text={numbered[3]!} />
             </Text>
           </Box>
         )
@@ -1095,7 +1154,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       }
 
       start('paragraph')
-      nodes.push(<MdInline key={key} t={t} text={line} />)
+      nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
       i++
     }
 

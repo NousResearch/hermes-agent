@@ -169,14 +169,39 @@ class TestToolProgressScrollback:
 
         assert mock_print.call_count == 2
 
-    def test_verbose_mode_no_duplicate_scrollback(self):
-        """In 'verbose' mode, scrollback lines are NOT printed (run_agent handles verbose output)."""
+    def test_verbose_mode_commits_scrollback_line(self):
+        """In 'verbose' mode, tool.completed commits a persistent scrollback line.
+
+        Regression: 'verbose' used to be omitted from the scrollback gate on
+        the premise that run_agent renders verbose output. That premise is
+        false in the interactive CLI — run_agent's verbose prints are gated on
+        ``not quiet_mode`` and the interactive CLI runs quiet_mode=True. So a
+        non-streaming model call (MoA aggregator, copilot-acp) under 'verbose'
+        rendered each tool only into the self-overwriting spinner, building no
+        scrollable history. 'verbose' is strictly more than 'all', so it must
+        commit at least the same line.
+        """
         cli = _make_cli(tool_progress="verbose")
         with patch.object(_cli_mod, "_cprint") as mock_print:
             cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
             cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
 
-        mock_print.assert_not_called()
+        mock_print.assert_called_once()
+
+    def test_verbose_mode_commits_every_call(self):
+        """In 'verbose' mode, consecutive same-tool calls each commit a line.
+
+        Mirrors 'all' (no consecutive-repeat suppression — that is 'new'-only),
+        so a multi-step turn builds a full scrollable tool history.
+        """
+        cli = _make_cli(tool_progress="verbose")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "echo one", {"command": "echo one"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+            cli._on_tool_progress("tool.started", "terminal", "echo two", {"command": "echo two"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+
+        assert mock_print.call_count == 2
 
     def test_verbose_mode_config_does_not_enable_global_debug_logging(self):
         """display.tool_progress=verbose controls TOOL-CALL DISPLAY ONLY.
@@ -226,3 +251,45 @@ class TestToolProgressScrollback:
         # First entry consumed, second remains
         assert len(cli._pending_tool_info.get("terminal", [])) == 1
         assert cli._pending_tool_info["terminal"][0] == {"command": "pwd"}
+
+
+class TestMoAReferenceBlocks:
+    """moa.reference renders a labelled thinking-style block; moa.aggregating
+    updates the spinner. Both are display-only and must commit regardless of
+    tool_progress_mode (MoA is non-streaming)."""
+
+    def test_reference_event_prints_labelled_block(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "moa.reference",
+                "openrouter:openai/gpt-5.5",
+                "Paris is the capital.",
+                None,
+                moa_index=1,
+                moa_count=2,
+            )
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        # Header names the source model + index/count; body carries the text.
+        assert "openrouter:openai/gpt-5.5" in printed
+        assert "Reference 1/2" in printed
+        assert "Paris is the capital." in printed
+
+    def test_reference_event_prints_even_when_progress_off(self):
+        """Reference blocks are the MoA process view, not tool progress — they
+        must show even with tool_progress: off."""
+        cli = _make_cli(tool_progress="off")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "moa.reference", "openrouter:anthropic/claude-opus-4.8", "Four.", None,
+                moa_index=2, moa_count=2,
+            )
+        assert mock_print.called
+
+    def test_aggregating_event_updates_spinner_only(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("moa.aggregating", "openrouter:anthropic/claude-opus-4.8", None, None)
+        assert "aggregating" in cli._spinner_text
+        # aggregating is a spinner-only transition; no committed scrollback line.
+        mock_print.assert_not_called()

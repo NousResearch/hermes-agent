@@ -106,6 +106,16 @@ def test_explanation_for_all_retries_exhausted():
     assert "retries" in out.lower()
 
 
+def test_explanation_for_session_persistence_failed():
+    """Fail-closed persistence exits (#72425) must explain themselves."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed"
+    )
+    assert out  # non-empty
+    assert "session storage" in out.lower()
+    assert "disk space" in out.lower()
+
+
 # --------------------------------------------------------------------------
 # 2. Enable/disable seam
 # --------------------------------------------------------------------------
@@ -160,6 +170,37 @@ def test_run_conversation_empty_exhausted_surfaces_explanation():
     assert result["final_response"] != "(empty)"
     assert result["final_response"].strip() != ""
     assert "No reply:" in result["final_response"]
+
+
+def test_run_conversation_partial_stream_recovery_surfaces_explanation():
+    """A long recovered partial stream still needs the visible footer.
+
+    Without this, the gateway marks the turn as previewed and suppresses
+    the final send, leaving messaging users with a fragment and no reason.
+    """
+    agent = _make_agent(max_iterations=10)
+    empty_stub = _mock_response(content=None, finish_reason="stop")
+    recovered = (
+        "I inspected the running gateway and found that the current turn "
+        "stopped after the provider stream timed out."
+    )
+
+    def _fake_api_call(_api_kwargs):
+        agent._current_streamed_assistant_text = recovered
+        return empty_stub
+
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("do something")
+
+    assert result["turn_exit_reason"] == "partial_stream_recovery"
+    assert result["final_response"].startswith(recovered)
+    assert "No reply:" in result["final_response"]
+    assert result["response_previewed"] is False
 
 
 def test_run_conversation_normal_reply_stays_quiet():

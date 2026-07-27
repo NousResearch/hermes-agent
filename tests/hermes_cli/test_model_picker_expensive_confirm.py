@@ -55,10 +55,13 @@ def test_prompt_toolkit_model_picker_defers_confirmation_off_key_handler(monkeyp
         lambda *_args: captured.setdefault("ran_inline", True)
     )
 
-    _bound(cli_mod.HermesCLI._handle_model_picker_selection, self_)()
+    # The key handler now resolves persistence via resolve_persist_behavior,
+    # which defaults to True (persist-by-default). Simulate that call.
+    _bound(cli_mod.HermesCLI._handle_model_picker_selection, self_)(persist_global=True)
 
     assert self_._model_picker_state is None
     assert captured["started"] is True
     assert captured["daemon"] is True
-    assert captured["args"] == (result, False)
+    # Third arg is the fresh picker custom_providers snapshot (None here).
+    assert captured["args"] == (result, True, None)
     assert "ran_inline" not in captured

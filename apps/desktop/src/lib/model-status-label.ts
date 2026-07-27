@@ -1,20 +1,36 @@
-const REASONING_LABELS: Record<string, string> = {
-  none: 'Off',
-  minimal: 'Min',
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'Max'
-}
+import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 
-export function reasoningEffortLabel(effort: string): string {
-  const key = effort.trim().toLowerCase()
-
-  if (!key) {
-    return ''
+/** Which model/provider pair a picker should mark "current". SessionView state
+ *  also drives the composer label, so a complete pair there wins over an older
+ *  `model.options` response. During initial hydration (or pre-session startup),
+ *  options remain the fallback. Pick one complete pair before mixing fields so
+ *  a model is never shown under a different provider. */
+export function currentPickerSelection(
+  store: { model: string; provider: string },
+  options?: { model?: string; provider?: string }
+): { model: string; provider: string } {
+  const storeSelection = {
+    model: String(store.model || ''),
+    provider: String(store.provider || '')
   }
 
-  return REASONING_LABELS[key] ?? effort
+  const optionsSelection = {
+    model: String(options?.model || ''),
+    provider: String(options?.provider || '')
+  }
+
+  if (storeSelection.model && storeSelection.provider) {
+    return storeSelection
+  }
+
+  if (optionsSelection.model && optionsSelection.provider) {
+    return optionsSelection
+  }
+
+  return {
+    model: storeSelection.model || optionsSelection.model,
+    provider: storeSelection.provider || optionsSelection.provider
+  }
 }
 
 /** Strip provider prefix and normalize for display. */
@@ -68,6 +84,9 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
     }
   }
 
+  // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
+  base = base.replace(/-\d{8}$/, '')
+
   return { name: prettifyBase(base) || model.trim() || 'No model', tag }
 }
 
@@ -76,10 +95,12 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast). */
+/** Status bar trigger label — model name plus the live session state (effort/fast).
+ *  `defaultEffort` is the profile's configured level, used when the surface has
+ *  no explicit effort so the label never advertises a default the agent won't use. */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
   const name = displayModelName(model)
 
@@ -95,9 +116,9 @@ export function formatModelStatusLabel(
     parts.push('Fast')
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  // Always surface the effort so the current reasoning level is visible at a
+  // glance, not just when non-default.
+  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
 
   return `${name} · ${parts.join(' ')}`
 }

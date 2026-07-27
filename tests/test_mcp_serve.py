@@ -1232,6 +1232,69 @@ class TestEventBridgePollE2E:
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
 
+    def test_poll_picks_up_new_conversation_on_db_change(
+        self, tmp_path, monkeypatch
+    ):
+        """A brand-new conversation must be picked up on the tick where
+        state.db changes.
+
+        Since #9006 the routing index lives IN state.db (session rows carry
+        session_key/origin metadata), so a new conversation's registration and
+        its first message land in the same file — a single mtime check covers
+        both and the old dual-file (sessions.json + state.db) race (#8925) is
+        structurally impossible. This test asserts the index is refreshed on a
+        db-mtime bump, so a conversation the bridge has never seen before is
+        emitted on the same tick.
+        """
+        import mcp_serve
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        # _poll_once reads <HERMES_HOME>/state.db for its mtime gate; the autouse
+        # fixture points HERMES_HOME at tmp_path.
+        db_path = tmp_path / "state.db"
+        db_path.write_text("placeholder")
+
+        session_id = "20260329_150000_late_register"
+        # The routing index now comes from _load_sessions_index() (state.db
+        # primary, sessions.json fallback). Stub it to return the new
+        # conversation, simulating the gateway having just written the
+        # session row + first message in one state.db transaction.
+        monkeypatch.setattr(
+            mcp_serve, "_load_sessions_index",
+            lambda: {
+                "agent:main:telegram:dm:late": {
+                    "session_id": session_id,
+                    "platform": "telegram",
+                    "origin": {"platform": "telegram", "chat_id": "late"},
+                }
+            },
+        )
+
+        class DB:
+            def get_messages(self, sid):
+                return [{
+                    "id": 1, "role": "user",
+                    "content": "Hello from a freshly-registered conversation",
+                    "timestamp": "2026-03-29T15:00:00",
+                }]
+
+        bridge = mcp_serve.EventBridge()
+        # Bridge has never seen this db state (mtime differs) and has an
+        # empty cached index — exactly the state after a new conversation's
+        # first write.
+        bridge._state_db_mtime = 0.0
+        assert bridge._cached_sessions_index == {}
+
+        bridge._poll_once(DB())
+
+        result = bridge.poll_events(after_cursor=0)
+        assert len(result["events"]) == 1
+        assert result["events"][0]["session_key"] == "agent:main:telegram:dm:late"
+        assert result["events"][0]["content"].startswith("Hello from a freshly")
+
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL

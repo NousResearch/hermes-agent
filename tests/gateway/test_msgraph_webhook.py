@@ -1,6 +1,7 @@
 """Tests for the Microsoft Graph webhook adapter."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -19,15 +20,30 @@ def _make_adapter(**extra_overrides) -> MSGraphWebhookAdapter:
 
 
 class _FakeRequest:
-    def __init__(self, *, query=None, json_payload=None, remote="127.0.0.1"):
+    def __init__(
+        self,
+        *,
+        query=None,
+        json_payload=None,
+        raw_body: bytes | None = None,
+        content_length: int | None = None,
+        remote="127.0.0.1",
+    ):
         self.query = query or {}
         self._json_payload = json_payload
+        self._raw_body = raw_body
+        self.content_length = content_length
         self.remote = remote
 
     async def json(self):
         if isinstance(self._json_payload, Exception):
             raise self._json_payload
         return self._json_payload
+
+    async def read(self):
+        if self._raw_body is not None:
+            return self._raw_body
+        return json.dumps(self._json_payload or {}).encode("utf-8")
 
 
 class TestMSGraphWebhookConfig:
@@ -184,6 +200,62 @@ class TestMSGraphNotifications:
         assert event.message_id == "id:notif-1"
 
     @pytest.mark.anyio
+    async def test_oversized_notification_rejected_by_content_length(self):
+        adapter = _make_adapter(max_body_bytes=100)
+        payload = {
+            "value": [
+                {
+                    "id": "notif-oversized",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-1",
+                    "clientState": "expected-client-state",
+                }
+            ]
+        }
+
+        resp = await adapter._handle_notification(
+            _FakeRequest(json_payload=payload, content_length=101)
+        )
+
+        assert resp.status == 413
+
+    @pytest.mark.anyio
+    async def test_chunked_oversized_notification_rejected_after_read(self):
+        adapter = _make_adapter(max_body_bytes=100)
+        payload = {
+            "value": [
+                {
+                    "id": "notif-chunked-oversized",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-1",
+                    "clientState": "expected-client-state",
+                }
+            ]
+        }
+
+        resp = await adapter._handle_notification(
+            _FakeRequest(
+                json_payload=payload,
+                raw_body=b"x" * 101,
+                content_length=None,
+            )
+        )
+
+        assert resp.status == 413
+
+    @pytest.mark.anyio
+    async def test_non_object_notification_body_rejected(self):
+        adapter = _make_adapter()
+
+        resp = await adapter._handle_notification(
+            _FakeRequest(json_payload=[], raw_body=b"[]")
+        )
+
+        assert resp.status == 400
+
+    @pytest.mark.anyio
     async def test_bad_client_state_rejected_as_auth_failure(self):
         """Every-item-bad-clientState batches return 403 so forged POSTs stop retrying."""
         adapter = _make_adapter()
@@ -244,8 +316,30 @@ class TestMSGraphNotifications:
 
         assert calls, "hmac.compare_digest was never called; clientState check is not timing-safe"
         provided, expected = calls[0]
-        assert provided == "expected-client-state"
-        assert expected == "expected-client-state"
+        assert provided == b"expected-client-state"
+        assert expected == b"expected-client-state"
+
+    @pytest.mark.anyio
+    async def test_non_ascii_client_state_rejected_without_raising(self):
+        """A non-ASCII clientState (attacker-controlled request body) must be
+        rejected with 403, not crash the handler: hmac.compare_digest raises
+        TypeError on a str containing non-ASCII characters."""
+        adapter = _make_adapter()
+        payload = {
+            "value": [
+                {
+                    "id": "notif-nonascii",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-x",
+                    "clientState": "ské-not-the-secret",
+                }
+            ]
+        }
+        response = await adapter._handle_notification(
+            _FakeRequest(json_payload=payload)
+        )
+        assert response.status == 403
 
     @pytest.mark.anyio
     async def test_duplicate_notification_deduped(self):

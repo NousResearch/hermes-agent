@@ -1,14 +1,14 @@
 ---
-title: "Adversarial Ux Test — Roleplay the most difficult, tech-resistant user for your product"
+title: "Adversarial Ux Test — Roleplay a hostile user to find and triage UX pain points"
 sidebar_label: "Adversarial Ux Test"
-description: "Roleplay the most difficult, tech-resistant user for your product"
+description: "Roleplay a hostile user to find and triage UX pain points"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Adversarial Ux Test
 
-Roleplay the most difficult, tech-resistant user for your product. Browse the app as that persona, find every UX pain point, then filter complaints through a pragmatism layer to separate real problems from noise. Creates actionable tickets from genuine issues only.
+Roleplay a hostile user to find and triage UX pain points.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Roleplay the most difficult, tech-resistant user for your product. Browse the ap
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `qa`, `ux`, `testing`, `adversarial`, `dogfood`, `personas`, `user-testing` |
-| Related skills | [`dogfood`](/docs/user-guide/skills/bundled/dogfood/dogfood-dogfood) |
+| Related skills | [`dogfood`](/docs/user-guide/skills/bundled/software-development/software-development-dogfood) |
 
 ## Reference: full SKILL.md
 

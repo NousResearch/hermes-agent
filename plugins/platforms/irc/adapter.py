@@ -152,7 +152,7 @@ class IRCAdapter(BasePlatformAdapter):
 
     # ── Connection lifecycle ──────────────────────────────────────────────
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IRC server, register, and join the channel."""
         if not self.server or not self.channel:
             logger.error("IRC: server and channel must be configured")

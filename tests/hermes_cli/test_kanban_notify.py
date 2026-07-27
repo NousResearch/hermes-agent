@@ -26,6 +26,109 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _assert_inherited_notify_sub(subs: list[dict]) -> None:
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "topic1"
+    assert subs[0]["user_id"] == "user1"
+    assert subs[0]["notifier_profile"] == "default"
+
+
+def test_create_task_inherits_parent_notify_subscriptions(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker1")
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+
+        child = kb.create_task(conn, title="child", parents=[parent], assignee="worker1")
+
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    _assert_inherited_notify_sub(subs)
+
+
+def test_link_tasks_inherits_parent_notify_subscriptions_without_replaying_old_child_events(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker1")
+        child = kb.create_task(conn, title="child", assignee="worker1")
+        with kb.write_txn(conn):
+            kb._append_event(conn, child, kind="blocked", payload={"reason": "old"})
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+
+        kb.link_tasks(conn, parent, child)
+
+        subs = kb.list_notify_subs(conn, child)
+        _, old_events = kb.unseen_events_for_sub(
+            conn,
+            task_id=child,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            kinds=["blocked"],
+        )
+    finally:
+        conn.close()
+
+    _assert_inherited_notify_sub(subs)
+    assert old_events == []
+
+
+def test_decompose_triage_task_inherits_root_notify_subscriptions(kanban_home):
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="triage root", triage=True, assignee="orchestrator")
+        kb.add_notify_sub(
+            conn,
+            task_id=root,
+            platform="telegram",
+            chat_id="chat1",
+            thread_id="topic1",
+            user_id="user1",
+            notifier_profile="default",
+        )
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "first child", "assignee": "worker1"},
+                {"title": "second child", "assignee": "worker2", "parents": [0]},
+            ],
+            author="triager",
+            auto_promote=False,
+        )
+
+        assert child_ids is not None
+        child_subs = [kb.list_notify_subs(conn, child_id) for child_id in child_ids]
+    finally:
+        conn.close()
+
+    assert len(child_subs) == 2
+    for subs in child_subs:
+        _assert_inherited_notify_sub(subs)
+
+
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """
@@ -186,8 +289,8 @@ async def test_notifier_second_blocked_delivers(kanban_home):
         tid = kb.create_task(conn, title="test task", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
 
-        # Cycle 1: blocked
-        kb.block_task(conn, tid, reason="first block")
+        # Cycle 1: blocked for one reason
+        kb.block_task(conn, tid, reason="first block", kind="needs_input")
     finally:
         conn.close()
 
@@ -197,14 +300,18 @@ async def test_notifier_second_blocked_delivers(kanban_home):
             timeout=10.0,
         )
 
-    # Cycle 2: unblock → block run again
+    # Cycle 2: unblock → block again for a DIFFERENT reason. A distinct
+    # block cause must still notify. (A *same*-cause re-block instead trips
+    # the unblock-loop breaker and routes to triage — covered by
+    # test_kanban_block_kinds.py; here we exercise two genuinely different
+    # blocks, which is the case the user wants notified twice.)
     runner._running = True
     tick_count = 0
 
     conn = kb.connect()
     try:
         kb.unblock_task(conn, tid)
-        kb.block_task(conn, tid, reason="second block")
+        kb.block_task(conn, tid, reason="second block", kind="capability")
     finally:
         conn.close()
 
@@ -344,6 +451,9 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
             notifier_profile="default",
         )
         kb.complete_task(conn, tid, result="done")
+        # New subs start caught up at the creation-time MAX(task_events.id)
+        # (issue #29905); claiming the completion would advance past this.
+        pre_claim_cursor = int(kb.list_notify_subs(conn, tid)[0]["last_event_id"])
     finally:
         conn.close()
 
@@ -379,7 +489,9 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
     finally:
         conn.close()
     assert len(subs) == 1
-    assert int(subs[0]["last_event_id"]) == 0, "wrong profile must not claim the event"
+    assert int(subs[0]["last_event_id"]) == pre_claim_cursor, (
+        "wrong profile must not claim the event"
+    )
 
 
 @pytest.mark.asyncio
@@ -454,12 +566,15 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
-        thread_id="th1",
+        chat_type="dm",
+        thread_id="20197",
         user_id="u1",
     )
     event = SimpleNamespace(
         text='/kanban --board projx create "hello" --assignee alice',
         source=source,
+        message_id="462",
+        reply_to_message_id=None,
     )
 
     out = await GatewayRunner._handle_kanban_command(runner, event)
@@ -476,7 +591,14 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert [t.title for t in tasks] == ["hello"]
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
-    assert subs[0]["thread_id"] == "th1"
+    assert subs[0]["thread_id"] == "20197"
+    assert subs[0]["delivery_metadata"] == {
+        "chat_type": "dm",
+        "direct_messages_topic_id": "20197",
+        "telegram_dm_topic_reply_fallback": True,
+        "telegram_reply_to_message_id": "462",
+        "thread_id": "20197",
+    }
 
     conn = kb.connect(board="default")
     try:

@@ -1,14 +1,14 @@
 ---
-title: "Siyuan"
+title: "Siyuan — Query and edit a SiYuan knowledge base via its API"
 sidebar_label: "Siyuan"
-description: "SiYuan Note API for searching, reading, creating, and managing blocks and documents in a self-hosted knowledge base via curl"
+description: "Query and edit a SiYuan knowledge base via its API"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Siyuan
 
-SiYuan Note API for searching, reading, creating, and managing blocks and documents in a self-hosted knowledge base via curl.
+Query and edit a SiYuan knowledge base via its API.
 
 ## Skill metadata
 
@@ -37,7 +37,7 @@ Use the [SiYuan](https://github.com/siyuan-note/siyuan) kernel API via curl to s
 
 1. Install and run SiYuan (desktop or Docker)
 2. Get your API token: **Settings > About > API token**
-3. Store it in `~/.hermes/.env`:
+3. Store it in `${HERMES_HOME:-~/.hermes}/.env`:
    ```
    SIYUAN_TOKEN=your_token_here
    SIYUAN_URL=http://127.0.0.1:6806

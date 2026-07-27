@@ -1,0 +1,305 @@
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import hermes_cli.memory_setup as memory_setup
+from hermes_cli.memory_setup import _CANCELLED, _curses_select
+
+
+def test_curses_select_cancel_defaults_to_selected(monkeypatch):
+    captured = {}
+
+    def fake_radiolist(title, items, selected=0, *, cancel_returns=None):
+        captured.update({
+            "title": title,
+            "items": items,
+            "selected": selected,
+            "cancel_returns": cancel_returns,
+        })
+        return cancel_returns
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", fake_radiolist)
+
+    result = _curses_select("Pick one", [("first", "desc"), ("second", "")], default=1)
+
+    assert result == 1
+    assert captured == {
+        "title": "Pick one",
+        "items": ["first - desc", "second"],
+        "selected": 1,
+        "cancel_returns": 1,
+    }
+
+
+def test_curses_select_accepts_explicit_cancel_value(monkeypatch):
+    captured = {}
+
+    def fake_radiolist(title, items, selected=0, *, cancel_returns=None):
+        captured["cancel_returns"] = cancel_returns
+        return cancel_returns
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", fake_radiolist)
+
+    result = _curses_select("Pick one", [("first", "")], default=0, cancel_returns=_CANCELLED)
+
+    assert result == _CANCELLED
+    assert captured["cancel_returns"] == _CANCELLED
+
+
+def test_curses_select_clears_after_picker_returns(monkeypatch):
+    events = []
+
+    def fake_radiolist(title, items, selected=0, *, cancel_returns=None):
+        events.append("picker")
+        return selected
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", fake_radiolist)
+    monkeypatch.setattr(memory_setup, "_clear_interactive_transition", lambda: events.append("clear"))
+
+    result = _curses_select("Pick one", [("first", "")], default=0)
+
+    assert result == 0
+    assert events == ["picker", "clear"]
+
+
+def test_cmd_setup_top_level_cancel_writes_nothing(monkeypatch):
+    save_config = MagicMock()
+    load_config = MagicMock(side_effect=AssertionError("cancel should not load config"))
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("fake", "local", object())])
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: kwargs["cancel_returns"])
+    monkeypatch.setattr("hermes_cli.config.load_config", load_config)
+    monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    load_config.assert_not_called()
+    save_config.assert_not_called()
+
+
+def test_cmd_setup_builtin_selection_still_saves_builtin(monkeypatch):
+    save_config = MagicMock()
+    config = {"memory": {"provider": "openviking"}}
+    providers = [("fake", "local", object())]
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: providers)
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: len(providers))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    assert config["memory"]["provider"] == ""
+    save_config.assert_called_once_with(config)
+
+
+def test_cmd_setup_clears_interactive_picker_before_provider_post_setup(monkeypatch):
+    events = []
+
+    class PostSetupProvider:
+        def post_setup(self, hermes_home, config):
+            events.append("post_setup")
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("openviking", "local", PostSetupProvider())])
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: events.append("select") or 0)
+    monkeypatch.setattr(memory_setup, "_clear_interactive_transition", lambda: events.append("clear"), raising=False)
+    monkeypatch.setattr(memory_setup, "_install_dependencies", lambda name: events.append("install"))
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: "/tmp/hermes-test")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    assert events == ["select", "clear", "install", "post_setup"]
+
+
+def test_cmd_setup_provider_clears_before_provider_post_setup(monkeypatch):
+    events = []
+
+    class PostSetupProvider:
+        def post_setup(self, hermes_home, config):
+            events.append("post_setup")
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("openviking", "local", PostSetupProvider())])
+    monkeypatch.setattr(memory_setup, "_clear_interactive_transition", lambda: events.append("clear"), raising=False)
+    monkeypatch.setattr(memory_setup, "_install_dependencies", lambda name: events.append("install"))
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: "/tmp/hermes-test")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+
+    memory_setup.cmd_setup_provider("openviking")
+
+    assert events == ["clear", "install", "post_setup"]
+
+
+def test_cmd_status_prefers_provider_status_config(monkeypatch, capsys):
+    class StatusProvider:
+        def get_status_config(self, provider_config):
+            assert provider_config["endpoint"] == "http://stale.local"
+            return {
+                "use_ovcli_config": True,
+                "ovcli_config_path": "/tmp/ovcli.conf.VPS_ROOT",
+                "endpoint": "https://vps.example",
+                "account": "acct",
+                "user": "alice",
+                "agent": "hermes",
+            }
+
+        def is_available(self):
+            return True
+
+    config = {
+        "memory": {
+            "provider": "openviking",
+            "openviking": {
+                "use_ovcli_config": True,
+                "ovcli_config_path": "/tmp/ovcli.conf.VPS_ROOT",
+                "endpoint": "http://stale.local",
+            },
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("openviking", "API key / local", StatusProvider())])
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    output = capsys.readouterr().out
+    assert "endpoint: https://vps.example" in output
+    assert "http://stale.local" not in output
+
+
+def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
+    class ChoiceProvider:
+        def __init__(self):
+            self.save_config = MagicMock()
+
+        def get_config_schema(self):
+            return [{
+                "key": "mode",
+                "description": "Mode",
+                "default": "one",
+                "choices": ["one", "two"],
+            }]
+
+    provider = ChoiceProvider()
+    selections = iter([0, _CANCELLED])
+    save_config = MagicMock()
+    install_dependencies = MagicMock()
+
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("fake", "local", provider)])
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(selections))
+    monkeypatch.setattr(memory_setup, "_install_dependencies", install_dependencies)
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+    monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    install_dependencies.assert_called_once_with("fake")
+    save_config.assert_not_called()
+    provider.save_config.assert_not_called()
+    assert not (tmp_path / ".env").exists()
+
+
+def test_write_env_vars_strips_line_separators_and_nul(tmp_path):
+    """A pasted secret with embedded CR/LF/NUL must not inject an extra
+    KEY=VALUE line into .env (mirrors the openviking plugin's writer)."""
+    env_path = tmp_path / ".env"
+
+    memory_setup._write_env_vars(
+        env_path,
+        {"PROVIDER_API_KEY": "good\nINJECTED_KEY=attacker\r\u2028\x00tail"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["PROVIDER_API_KEY=goodINJECTED_KEY=attackertail"]
+    parsed = dict(line.split("=", 1) for line in lines if "=" in line)
+    assert set(parsed) == {"PROVIDER_API_KEY"}
+
+
+def test_write_env_vars_strips_newlines_when_updating_existing_key(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("PROVIDER_API_KEY=old\nKEEP=1\n", encoding="utf-8")
+
+    memory_setup._write_env_vars(env_path, {"PROVIDER_API_KEY": "new\r\nROGUE=1"})
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert "PROVIDER_API_KEY=newROGUE=1" in lines
+    assert "KEEP=1" in lines
+    assert all(not line.startswith("ROGUE=") for line in lines)
+
+
+def test_write_env_vars_plain_value_roundtrips(tmp_path):
+    env_path = tmp_path / ".env"
+    memory_setup._write_env_vars(env_path, {"PROVIDER_API_KEY": "sk-plain-1234"})
+    assert env_path.read_text(encoding="utf-8") == "PROVIDER_API_KEY=sk-plain-1234\n"
+
+
+# ---------------------------------------------------------------------------
+# _provider_pip_dependencies — mode-aware dep expansion (#70636)
+# ---------------------------------------------------------------------------
+
+def test_provider_pip_dependencies_passthrough_for_non_hindsight():
+    deps = memory_setup._provider_pip_dependencies("mem0", ["mem0ai>=2.0.10,<3"])
+    assert deps == ["mem0ai>=2.0.10,<3"]
+
+
+def test_provider_pip_dependencies_adds_hindsight_all_for_local_embedded(tmp_path, monkeypatch):
+    """local_embedded Hindsight needs hindsight-all (daemon + embedder), not
+    just the declared hindsight-client — a venv rebuild that stripped
+    hindsight-embed must be healed by the update-time refresh (#70636)."""
+    import json
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "hindsight").mkdir()
+    (tmp_path / "hindsight" / "config.json").write_text(
+        json.dumps({"mode": "local_embedded"}), encoding="utf-8"
+    )
+    deps = memory_setup._provider_pip_dependencies("hindsight", ["hindsight-client>=0.6.1"])
+    assert deps == ["hindsight-client>=0.6.1", "hindsight-all"]
+
+
+def test_provider_pip_dependencies_legacy_local_alias(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "hindsight").mkdir()
+    (tmp_path / "hindsight" / "config.json").write_text(
+        json.dumps({"mode": "local"}), encoding="utf-8"
+    )
+    deps = memory_setup._provider_pip_dependencies("hindsight", ["hindsight-client>=0.6.1"])
+    assert "hindsight-all" in deps
+
+
+def test_provider_pip_dependencies_cloud_hindsight_unchanged(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "hindsight").mkdir()
+    (tmp_path / "hindsight" / "config.json").write_text(
+        json.dumps({"mode": "cloud"}), encoding="utf-8"
+    )
+    deps = memory_setup._provider_pip_dependencies("hindsight", ["hindsight-client>=0.6.1"])
+    assert deps == ["hindsight-client>=0.6.1"]
+
+
+def test_install_dependencies_force_reinstalls_versioned_specs(tmp_path, monkeypatch):
+    """force=True hands every declared spec (version ranges intact) to pip,
+    so a downgraded/stripped bridge package is restored on hermes update."""
+    import yaml as _yaml
+
+    plugin_dir = tmp_path / "mem0"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.yaml").write_text(
+        _yaml.safe_dump({"pip_dependencies": ["mem0ai>=2.0.10,<3"]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "plugins.memory.find_provider_dir", lambda name: plugin_dir
+    )
+
+    installed = []
+
+    def fake_pip_install(args, timeout=120):
+        installed.append(args)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("hermes_cli.tools_config._pip_install", fake_pip_install)
+
+    memory_setup._install_dependencies("mem0", force=True)
+
+    assert installed, "force=True must reach the pip install step"
+    assert any("mem0ai>=2.0.10,<3" in args for args in installed)

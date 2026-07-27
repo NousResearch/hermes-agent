@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from contextlib import nullcontext
 import sys
 import threading
 import time
@@ -70,6 +71,16 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         "agent.shell_hooks",
         types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
     )
+    # Stub mcp_oauth so the background thread doesn't pay the real (cold,
+    # ~0.75s) ``tools.mcp_oauth`` import before calling discovery. This test
+    # asserts the *backgrounding contract* (main thread returns fast, discovery
+    # runs off-thread), not OAuth suppression — the unrelated import latency
+    # would otherwise blow the polling deadline on a loaded CI runner.
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
     monkeypatch.setitem(
         sys.modules,
         "tools.mcp_tool",
@@ -81,11 +92,58 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         main_mod._prepare_agent_startup(_agent_args())
         elapsed = time.monotonic() - start
         assert elapsed < 0.2
+        deadline = time.monotonic() + 3.0
+        while calls["mcp"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert calls["mcp"] == 1
         assert mcp_startup._mcp_discovery_thread is not None
         assert mcp_startup._mcp_discovery_thread.is_alive()
     finally:
         stop.set()
+
+
+def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
+    state = {"active": False, "during_discover": None}
+
+    class SuppressInteractiveOAuth:
+        def __enter__(self):
+            state["active"] = True
+
+        def __exit__(self, *_exc):
+            state["active"] = False
+
+    def _discover():
+        state["during_discover"] = state["active"]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(
+            suppress_interactive_oauth=lambda: SuppressInteractiveOAuth(),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=_discover),
+    )
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
+        thread_name="test-mcp-discovery",
+    )
+    assert mcp_startup._mcp_discovery_thread is not None
+    mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+
+    assert state["during_discover"] is True
+    assert state["active"] is False
 
 
 def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):
@@ -164,3 +222,76 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def _retry_logger():
+    return types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda *_a, **_k: None,
+    )
+
+
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
+            get_mcp_status=lambda: [{"connected": connected}],
+        ),
+    )
+
+
+def test_background_discovery_retries_after_dead_thread_with_zero_connected(monkeypatch):
+    """A finished discovery run that connected nothing must not pin the
+    process in a 'discovery already started' state: the next call should be
+    allowed to retry (e.g. after startup cancellation or an OOM restart)."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls)
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-retry-1"
+    )
+    thread = mcp_startup._mcp_discovery_thread
+    if thread is not None:
+        thread.join(timeout=1.0)
+    assert calls["mcp"] == 1
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-retry-2"
+    )
+    thread = mcp_startup._mcp_discovery_thread
+    if thread is not None:
+        thread.join(timeout=1.0)
+    assert calls["mcp"] == 2
+
+
+def test_background_discovery_does_not_retry_when_servers_connected(monkeypatch):
+    """Once at least one MCP server is connected, repeat calls stay no-ops."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=True, calls=calls)
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-noretry-1"
+    )
+    thread = mcp_startup._mcp_discovery_thread
+    if thread is not None:
+        thread.join(timeout=1.0)
+    assert calls["mcp"] == 1
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=_retry_logger(), thread_name="test-mcp-noretry-2"
+    )
+    assert calls["mcp"] == 1

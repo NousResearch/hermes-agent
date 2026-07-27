@@ -389,3 +389,48 @@ class TestIsGenuineNousRateLimit:
         assert is_genuine_nous_rate_limit(
             headers=None, last_known_state=None
         ) is False
+
+
+class TestRateGuardStateEncoding:
+    """Regression for #18637: the cross-session rate-limit state file was
+    opened without ``encoding="utf-8"`` on both the atomic write (os.fdopen)
+    and the read. On Windows Chinese locales the platform default decoder
+    raises on UTF-8 bytes written by a peer process, silently losing the
+    rate-limit guard and re-enabling the retry amplification the module was
+    built to prevent.
+    """
+
+    def test_read_uses_utf8_under_non_utf8_locale(self, rate_guard_env, monkeypatch):
+        import builtins
+
+        from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
+
+        path = _state_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # State JSON written with a UTF-8 provider label. Python's json
+        # module itself escapes non-ASCII by default, but a peer writer
+        # (or human) using ensure_ascii=False produces raw UTF-8 bytes,
+        # which is what this guards against.
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                '{"reset_at": %d, "provider": "中文", "recorded_at": 0}'
+                % (int(time.time()) + 3600)
+            )
+
+        real_open = builtins.open
+
+        def guarded_open(file, mode="r", *args, **kwargs):
+            try:
+                is_target = str(file) == str(path)
+            except Exception:
+                is_target = False
+            if is_target and "b" not in mode and kwargs.get("encoding") != "utf-8":
+                raise UnicodeDecodeError(
+                    "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
+                )
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", guarded_open)
+
+        remaining = nous_rate_limit_remaining()
+        assert remaining is not None and remaining > 0

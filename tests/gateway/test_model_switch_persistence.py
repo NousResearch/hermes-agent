@@ -15,6 +15,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -49,6 +50,7 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
+    runner._pending_one_turn_model_restores = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
     runner._running_agents = {}
@@ -242,3 +244,160 @@ class TestIsIntentionalModelSwitch:
         }
 
         assert runner._is_intentional_model_switch(sk, "gpt-5.4") is False
+
+
+class TestOneTurnModelOverrideRestore:
+    """Verify gateway one-turn overrides restore previous session state."""
+
+    def test_restores_previous_override(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        previous = {
+            "model": "old/model",
+            "provider": "openrouter",
+            "api_key": "old-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+        runner._session_model_overrides[sk] = previous
+
+        snapshot = runner._snapshot_session_model_override(sk)
+        runner._session_model_overrides[sk] = {
+            "model": "temp/model",
+            "provider": "anthropic",
+        }
+
+        runner._restore_session_model_override(sk, snapshot)
+
+        assert runner._session_model_overrides[sk] == previous
+
+    def test_restores_absent_override_by_clearing(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+
+        snapshot = runner._snapshot_session_model_override(sk)
+        runner._session_model_overrides[sk] = {
+            "model": "temp/model",
+            "provider": "anthropic",
+        }
+
+        runner._restore_session_model_override(sk, snapshot)
+
+        assert sk not in runner._session_model_overrides
+
+    def test_restore_pending_one_turn_pops_and_applies(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        runner._pending_one_turn_model_restores[sk] = {
+            "had_override": False,
+            "override": None,
+        }
+        runner._session_model_overrides[sk] = {"model": "temp/model"}
+
+        runner._restore_pending_one_turn_model_override(sk)
+
+        assert sk not in runner._session_model_overrides
+        assert sk not in runner._pending_one_turn_model_restores
+        # Second call is a no-op (snapshot already consumed).
+        runner._restore_pending_one_turn_model_override(sk)
+
+
+class TestOneTurnNeverPersisted:
+    """/model --once must never write through to the session store.
+
+    Regression guard for the #29923 review defect: the original
+    implementation wrote the once-override through set_model_override, so a
+    gateway restart before the finally-restore rehydrated a supposedly
+    one-turn model permanently. Drives the real _handle_model_command with
+    a mocked switch pipeline and asserts on the store boundary.
+    """
+
+    @staticmethod
+    def _runner_with_store(tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        import gateway.run as gateway_run
+        from gateway.run import GatewayRunner
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            _yaml.safe_dump(
+                {"model": {"default": "old-model", "provider": "openrouter"}}
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.switch_model",
+            lambda **kw: ModelSwitchResult(
+                success=True,
+                new_model="gpt-5.5",
+                target_provider="openrouter",
+                provider_changed=False,
+                api_key="sk-test",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="chat_completions",
+                provider_label="OpenRouter",
+            ),
+        )
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner._voice_mode = {}
+        runner._session_model_overrides = {}
+        runner._pending_one_turn_model_restores = {}
+        runner._running_agents = {}
+        # async_session_store is a property over session_store; install the
+        # mock behind the private cache attribute it reads.
+        _store = MagicMock()
+        _store.set_model_override = AsyncMock()
+        _store._store = None
+        runner.session_store = None
+        runner._async_session_store = _store
+        return runner
+
+    @staticmethod
+    def _event(text):
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=_make_source(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_once_skips_session_store_write_through(
+        self, tmp_path, monkeypatch
+    ):
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+
+        result = await runner._handle_model_command(
+            self._event("/model gpt-5.5 --once")
+        )
+
+        assert result is not None and "gpt-5.5" in result
+        # In-memory override installed for the next turn + restore queued...
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
+        assert sk in runner._pending_one_turn_model_restores
+        # ...but NEVER written through to the persistent session store.
+        runner.async_session_store.set_model_override.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_session_switch_still_writes_through(
+        self, tmp_path, monkeypatch
+    ):
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+
+        result = await runner._handle_model_command(
+            self._event("/model gpt-5.5 --session")
+        )
+
+        assert result is not None
+        runner.async_session_store.set_model_override.assert_awaited_once()

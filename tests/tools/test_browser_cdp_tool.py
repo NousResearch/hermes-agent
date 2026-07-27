@@ -228,6 +228,21 @@ def test_browser_level_success(cdp_server):
     assert "sessionId" not in calls[0]
 
 
+def test_browser_level_redacts_secret_result(cdp_server):
+    fake_key = "sk-" + "CDPSECRETRESULT1234567890"
+    cdp_server.on(
+        "Runtime.evaluate",
+        lambda params, sid: {"result": {"type": "string", "value": fake_key}},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Runtime.evaluate"))
+
+    assert result["success"] is True
+    serialized = json.dumps(result)
+    assert "CDPSECRETRESULT" not in serialized
+    assert result["result"]["result"]["value"].startswith("sk-")
+
+
 def test_empty_params_sends_empty_object(cdp_server):
     cdp_server.on("Browser.getVersion", lambda params, sid: {"product": "Mock/1.0"})
     json.loads(browser_cdp_tool.browser_cdp(method="Browser.getVersion"))
@@ -374,6 +389,168 @@ def test_dispatch_through_registry(cdp_server):
 
 
 # ---------------------------------------------------------------------------
+# Private-network guard
+# ---------------------------------------------------------------------------
+
+
+PRIVATE_URL = "http://169.254.169.254/latest/meta-data/"
+
+
+def test_runtime_evaluate_blocked_when_current_page_is_private(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        browser_cdp_tool,
+        "_resolve_cdp_endpoint",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
+    )
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+
+    async def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"result": {"value": "private data"}}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert "private or internal address" in result["error"]
+    assert calls == []
+
+
+def test_frame_id_route_blocked_when_current_page_is_private(monkeypatch):
+    """frame_id routing (OOPIF via supervisor) must not bypass the guard
+    applied to the stateless path — same private-page boundary either way."""
+    supervisor_calls = []
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "private data"}})
+
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.body.innerText"},
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert "private or internal address" in result["error"]
+    assert supervisor_calls == []
+
+
+def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
+    """Sanity check: the new guard call must not block ordinary frame_id
+    routing when the current page isn't private."""
+    supervisor_calls = []
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+
+    def fake_supervisor_route(**kwargs):
+        supervisor_calls.append(kwargs)
+        return json.dumps({"success": True, "result": {"value": "ok"}})
+
+    monkeypatch.setattr(
+        browser_cdp_tool, "_browser_cdp_via_supervisor", fake_supervisor_route
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.title"},
+            frame_id="frame-1",
+            task_id="task-1",
+        )
+    )
+
+    assert result.get("success") is True
+    assert len(supervisor_calls) == 1
+
+
+def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        browser_cdp_tool,
+        "_resolve_cdp_endpoint",
+        lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
+    )
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+
+    async def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"frameId": "f"}
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_call)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Page.navigate",
+            params={"url": PRIVATE_URL},
+            task_id="task-1",
+        )
+    )
+
+    assert "error" in result
+    assert PRIVATE_URL in result["error"]
+    assert calls == []
+
+
+def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
+    cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
+
+    import tools.browser_tool as bt
+
+    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: False)
+
+    def fail_probe(task_id):
+        raise AssertionError("_current_page_private_url must not be probed")
+
+    monkeypatch.setattr(bt, "_current_page_private_url", fail_probe)
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": "document.title"},
+            task_id="task-1",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["result"]["result"]["value"] == "ok"
+
+
+# ---------------------------------------------------------------------------
 # check_fn gating
 # ---------------------------------------------------------------------------
 
@@ -384,18 +561,33 @@ def test_check_fn_false_when_no_cdp_url(monkeypatch):
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt, "_get_cdp_override_raw", lambda: "")
     assert browser_cdp_tool._browser_cdp_check() is False
 
 
 def test_check_fn_true_when_cdp_url_set(monkeypatch):
-    """Gate opens as soon as a CDP URL is resolvable."""
+    """Gate opens as soon as a CDP URL is configured (no network resolution)."""
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
     monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
+        bt, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
     )
+    assert browser_cdp_tool._browser_cdp_check() is True
+
+
+def test_check_fn_does_not_probe_network(monkeypatch):
+    """The availability gate must never hit the network: a stale/unreachable
+    configured endpoint used to cost multiple blocking HTTP probes at every
+    CLI/Desktop startup (tool-schema assembly), stalling launch by 10+ s."""
+    import tools.browser_tool as bt
+
+    def _boom(*a, **k):  # pragma: no cover — the assertion is that it's unused
+        raise AssertionError("check_fn must not perform network I/O")
+
+    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
+    monkeypatch.setattr(bt.requests, "get", _boom)
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     assert browser_cdp_tool._browser_cdp_check() is True
 
 
@@ -406,6 +598,6 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: False)
     monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
+        bt, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is False

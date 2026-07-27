@@ -81,7 +81,7 @@ def _is_memory_provider_dir(path: Path) -> bool:
     if not init_file.exists():
         return False
     try:
-        source = init_file.read_text(errors="replace")[:8192]
+        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
     except Exception:
         return False
@@ -142,6 +142,17 @@ def find_provider_dir(name: str) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def list_memory_provider_names() -> List[str]:
+    """Cheap name-only listing of discoverable memory providers.
+
+    Unlike :func:`discover_memory_providers`, this does NOT import provider
+    modules or run availability checks — it's a directory scan only, safe to
+    call at module-import time (e.g. when building the dashboard config
+    schema).
+    """
+    return sorted({name for name, _ in _iter_provider_dirs()})
+
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     """Scan bundled and user-installed directories for available providers.

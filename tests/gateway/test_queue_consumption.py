@@ -27,7 +27,7 @@ class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -382,7 +382,9 @@ class TestBusyInputModeQueueFifo:
         return runner, adapter
 
     def _text_event(self, text: str) -> MessageEvent:
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM)
+        # profile=None: a MagicMock auto-attribute reads as a truthy stamped
+        # profile and trips fail-closed adapter resolution (AGENTS.md #17).
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
         return MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -433,7 +435,7 @@ class TestBusyInputModeQueueFifo:
         runner, adapter = self._make_runner_and_adapter()
         session_key = "telegram:user:burst"
 
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM)
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
         for i in range(3):
             runner._queue_or_replace_pending_event(
                 session_key,

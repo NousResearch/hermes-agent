@@ -1,5 +1,7 @@
 """Regression tests for cron approval state isolation in long-lived gateways."""
 
+import threading
+
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.approval import _is_cron_session, _is_gateway_approval_context
 
@@ -7,7 +9,7 @@ from tools.approval import _is_cron_session, _is_gateway_approval_context
 def test_gateway_context_masks_stale_process_cron_flag(monkeypatch):
     """A cron run must not make later Telegram turns look non-interactive."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     tokens = set_session_vars(platform="telegram", cron_session=False)
     try:
         assert _is_cron_session() is False
@@ -28,3 +30,37 @@ def test_cron_context_is_task_local_without_process_env(monkeypatch):
     finally:
         clear_session_vars(tokens)
         reset_session_vars()
+
+
+def test_concurrent_gateway_and_cron_contexts_do_not_bleed(monkeypatch):
+    """Overlapping gateway and cron turns keep independent approval policy."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def inspect(name, *, platform, cron_session):
+        tokens = set_session_vars(platform=platform, cron_session=cron_session)
+        try:
+            barrier.wait(timeout=5)
+            results[name] = (_is_cron_session(), _is_gateway_approval_context())
+        finally:
+            clear_session_vars(tokens)
+            reset_session_vars()
+
+    gateway = threading.Thread(
+        target=inspect,
+        kwargs={"name": "gateway", "platform": "telegram", "cron_session": False},
+    )
+    cron = threading.Thread(
+        target=inspect,
+        kwargs={"name": "cron", "platform": "", "cron_session": True},
+    )
+    gateway.start()
+    cron.start()
+    gateway.join(timeout=10)
+    cron.join(timeout=10)
+
+    assert not gateway.is_alive()
+    assert not cron.is_alive()
+    assert results == {"gateway": (False, True), "cron": (True, False)}

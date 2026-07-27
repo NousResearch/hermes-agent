@@ -279,65 +279,71 @@ def test_after_call_survives_lone_surrogates_in_result_and_args():
     assert controller.before_call("web_search", {"query": dirty}).action == "block"
 
 
-# ── Session-wide runaway-loop caps (Claude Code v2.1.212, Week 29) ──────────
+# ── Per-turn runaway-loop caps (Claude Code v2.1.212, Week 29) ──────────────
 
-from agent.tool_guardrails import SessionCapConfig  # noqa: E402
-
-
-def test_session_cap_defaults_match_claude_code():
-    caps = ToolCallGuardrailConfig().session_caps
-    assert caps.max_web_searches == 200
-    assert caps.max_subagents == 200
+from agent.tool_guardrails import LoopCapConfig  # noqa: E402
 
 
-def test_session_cap_config_parses_nested_section():
+def test_loop_cap_defaults():
+    caps = ToolCallGuardrailConfig().loop_caps
+    assert caps.max_web_searches == 50
+    assert caps.max_subagents == 50
+
+
+def test_loop_cap_config_parses_nested_section():
     cfg = ToolCallGuardrailConfig.from_mapping(
-        {"session_caps": {"max_web_searches": 3, "max_subagents": 0}}
+        {"loop_caps": {"max_web_searches": 3, "max_subagents": 0}}
     )
-    assert cfg.session_caps.max_web_searches == 3
-    assert cfg.session_caps.max_subagents == 0
+    assert cfg.loop_caps.max_web_searches == 3
+    assert cfg.loop_caps.max_subagents == 0
 
 
-def test_session_cap_zero_disables_and_junk_falls_back():
+def test_loop_cap_zero_disables_and_junk_falls_back():
     # 0 is a legitimate "unlimited" value; negatives / junk fall back to default.
-    assert SessionCapConfig.from_mapping({"max_web_searches": 0}).max_web_searches == 0
-    assert SessionCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == 200
-    assert SessionCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == 200
+    assert LoopCapConfig.from_mapping({"max_web_searches": 0}).max_web_searches == 0
+    assert LoopCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == 50
+    assert LoopCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == 50
 
 
 def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
-    # Session caps fire even with hard_stop_enabled=False (the per-turn loop
+    # Loop caps fire even with hard_stop_enabled=False (the per-turn loop
     # detector's flag). Each distinct query avoids the loop detector so we know
-    # the block came from the session cap, not exact-failure repetition.
+    # the block came from the loop cap, not exact-failure repetition.
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(
             hard_stop_enabled=False,
-            session_caps=SessionCapConfig(max_web_searches=3),
+            loop_caps=LoopCapConfig(max_web_searches=3),
         )
     )
     for i in range(3):
         assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
     decision = controller.before_call("web_search", {"query": "q4"})
     assert decision.action == "block"
-    assert decision.code == "session_web_search_cap"
+    assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
 
 
-def test_web_search_cap_persists_across_turn_resets():
+def test_web_search_cap_resets_each_turn():
+    # The cap bounds a single turn: reset_for_turn clears the counter so a
+    # legitimate multi-turn session is never starved.
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(session_caps=SessionCapConfig(max_web_searches=2))
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_web_searches=2))
     )
+    # Turn 1: two searches allowed, the third would block within the turn.
     assert controller.before_call("web_search", {"query": "a"}).action == "allow"
-    controller.reset_for_turn()  # a per-turn reset must NOT clear the session count
     assert controller.before_call("web_search", {"query": "b"}).action == "allow"
-    controller.reset_for_turn()
     assert controller.before_call("web_search", {"query": "c"}).action == "block"
+    # New turn: the counter resets, so the budget is fresh again.
+    controller.reset_for_turn()
+    assert controller.before_call("web_search", {"query": "d"}).action == "allow"
+    assert controller.before_call("web_search", {"query": "e"}).action == "allow"
+    assert controller.before_call("web_search", {"query": "f"}).action == "block"
 
 
 def test_subagent_cap_counts_batch_task_spawns():
     # A single delegate_task batch of N tasks spends N of the subagent budget.
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(session_caps=SessionCapConfig(max_subagents=5))
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=5))
     )
     # First call spawns 3 (batch) → count 3, allowed.
     assert controller.before_call(
@@ -350,23 +356,33 @@ def test_subagent_cap_counts_batch_task_spawns():
     # Now count is 5 (>= 5) so the next call is blocked.
     decision = controller.before_call("delegate_task", {"goal": "f"})
     assert decision.action == "block"
-    assert decision.code == "session_subagent_cap"
+    assert decision.code == "loop_subagent_cap"
 
 
-def test_session_caps_disabled_when_zero():
+def test_subagent_cap_resets_each_turn():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=1))
+    )
+    assert controller.before_call("delegate_task", {"goal": "a"}).action == "allow"
+    assert controller.before_call("delegate_task", {"goal": "b"}).action == "block"
+    controller.reset_for_turn()
+    assert controller.before_call("delegate_task", {"goal": "c"}).action == "allow"
+
+
+def test_loop_caps_disabled_when_zero():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(
-            session_caps=SessionCapConfig(max_web_searches=0, max_subagents=0)
+            loop_caps=LoopCapConfig(max_web_searches=0, max_subagents=0)
         )
     )
-    for i in range(50):
+    for i in range(60):
         assert controller.before_call("web_search", {"query": f"q{i}"}).action == "allow"
         assert controller.before_call("delegate_task", {"goal": f"g{i}"}).action == "allow"
 
 
-def test_other_tools_never_touched_by_session_caps():
+def test_other_tools_never_touched_by_loop_caps():
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(session_caps=SessionCapConfig(max_web_searches=1))
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_web_searches=1))
     )
     # read_file / terminal / etc. are unaffected regardless of the web cap.
     for _ in range(10):

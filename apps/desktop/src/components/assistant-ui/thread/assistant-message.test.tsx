@@ -23,6 +23,7 @@ vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
 )
 vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
 vi.stubGlobal('CSS', { escape: (str: string) => str })
+
 Element.prototype.scrollTo = function scrollTo() {}
 
 afterEach(() => {
@@ -63,6 +64,7 @@ function Harness({ onBranchInNewChat }: { onBranchInNewChat?: (messageId: string
     isRunning: false,
     onNew: async () => {}
   })
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread onBranchInNewChat={onBranchInNewChat} />

@@ -1097,9 +1097,11 @@ describe('branchStoredSession desktop source tagging', () => {
 
   it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
     let branchParams: Record<string, unknown> | undefined
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.branch') {
         branchParams = params
+
         return {
           session_id: 'branch-runtime',
           stored_session_id: 'branch-stored',
@@ -1109,6 +1111,7 @@ describe('branchStoredSession desktop source tagging', () => {
           info: {}
         } as never
       }
+
       return {} as never
     })
 
@@ -1130,7 +1133,7 @@ describe('branchStoredSession desktop source tagging', () => {
     )
     await waitFor(() => expect(branchCurrentSession).not.toBeNull())
 
-    // Branch from the FIRST assistant reply ("a1"), not the last message —
+    // Branch from the FIRST assistant reply ("a1"), not the last message ï¿½
     // this is exactly the scenario that used to drop the question (bug #1):
     // only the clicked message survived instead of everything up to it.
     await expect(branchCurrentSession!('a1')).resolves.toBe(true)

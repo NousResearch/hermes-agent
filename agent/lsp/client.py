@@ -80,7 +80,7 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
-SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
+SHUTDOWN_GRACE = 1.0  # protocol-exit and SIGTERM grace before stronger signals
 
 # Retry policy for transient ContentModified errors.
 MAX_CONTENT_MODIFIED_RETRIES = 3
@@ -471,9 +471,27 @@ class LSPClient:
                     pass
         finally:
             self._state = "stopped"
-            await self._cleanup_process()
+            await self._cleanup_process(wait_for_graceful_exit=True)
 
-    async def _cleanup_process(self) -> None:
+    async def _cleanup_process(
+        self, *, wait_for_graceful_exit: bool = False
+    ) -> None:
+        proc = self._proc
+        if (
+            wait_for_graceful_exit
+            and proc is not None
+            and proc.returncode is None
+        ):
+            # The LSP ``exit`` notification asks the server to terminate.
+            # Give it the advertised grace period before sending an OS signal.
+            # Besides avoiding needless SIGTERM, this closes a Darwin race where
+            # the child exits and its PID is reused before asyncio updates the
+            # Process.returncode field.
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+            except asyncio.TimeoutError:
+                pass
+
         if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
             try:
@@ -486,7 +504,6 @@ class LSPClient:
                 await self._stderr_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        proc = self._proc
         self._proc = None
         if proc is None:
             return

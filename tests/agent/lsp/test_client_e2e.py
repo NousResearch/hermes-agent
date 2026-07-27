@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -52,6 +53,43 @@ async def test_client_lifecycle_clean(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_shutdown_does_not_terminate_server_that_exits_during_grace(
+    tmp_path: Path, monkeypatch
+):
+    """Protocol-cooperative exit must complete before any OS signal is sent."""
+
+    class GracefulProcess:
+        def __init__(self):
+            self.returncode = None
+            self.wait_calls = 0
+            self.terminate = MagicMock()
+            self.kill = MagicMock()
+
+        async def wait(self):
+            self.wait_calls += 1
+            self.returncode = 0
+            return 0
+
+    client = _client(tmp_path)
+    process = GracefulProcess()
+    client._proc = process
+    client._state = "running"
+    send_request = AsyncMock(return_value=None)
+    send_notification = AsyncMock(return_value=None)
+    monkeypatch.setattr(client, "_send_request", send_request)
+    monkeypatch.setattr(client, "_send_notification", send_notification)
+
+    await client.shutdown()
+
+    assert process.wait_calls == 1
+    send_request.assert_awaited_once_with("shutdown", None)
+    send_notification.assert_awaited_once_with("exit", None)
+    process.terminate.assert_not_called()
+    process.kill.assert_not_called()
+    assert client._proc is None
+
+
+@pytest.mark.asyncio
 async def test_client_receives_published_errors(tmp_path: Path):
     f = tmp_path / "x.py"
     f.write_text("print('hi')\n")
@@ -70,8 +108,6 @@ async def test_client_receives_published_errors(tmp_path: Path):
         assert "synthetic error" in d["message"]
     finally:
         await client.shutdown()
-
-
 
 
 

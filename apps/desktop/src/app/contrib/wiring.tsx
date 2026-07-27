@@ -51,9 +51,6 @@ import {
   sessionPinId,
   setAwaitingResponse,
   setBusy,
-  setCurrentModel,
-  setCurrentModelSource,
-  setCurrentProvider,
   setMessages
 } from '@/store/session'
 import { focusedSessionNeedsRoute, focusOpenSession } from '@/store/session-states'
@@ -269,7 +266,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
 
-  const { refreshCurrentModel, selectModel, updateModelOptionsCache } = useModelControls({
+  const { applySavedMainModel, refreshCurrentModel, selectModel } = useModelControls({
     queryClient,
     requestGateway
   })
@@ -1000,10 +997,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
             onMainModelChanged={(provider, model) => {
-              setCurrentProvider(provider)
-              setCurrentModel(model)
-              setCurrentModelSource('default')
-              updateModelOptionsCache($activeSessionId.get(), provider, model, true)
+              applySavedMainModel(provider, model)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}

@@ -1425,6 +1425,73 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     return False
 
 
+def _maybe_emit_compression_auth_hint(agent, *, force_vprint: bool = False) -> None:
+    """Surface auxiliary compression model auth/permission errors (#72636).
+
+    When ``auxiliary.compression`` returns HTTP 401/403, the conversation
+    loop's error display sites use ``agent.provider`` / ``agent.base_url`` /
+    ``agent.model`` — which are always the *main* model. The user sees the
+    working main model reported as the broken endpoint and chases the wrong
+    fix.
+
+    The compressor correctly records the failure on
+    ``_last_summary_auth_failure``. This helper reads that flag and emits a
+    short block pointing at the actual compression provider/model/endpoint.
+
+    Called from both error display sites:
+      * retry buffer (~line 2964) → ``_buffer_vprint`` (deferred until
+        terminal abort, so users on the gateway don't see an explosion of
+        per-retry copy)
+      * terminal abort (~line 3783) → ``_vprint(..., force=True)`` (immediate,
+        with the agent's log prefix)
+
+    Silent when no compressor is attached or no auth failure is pending —
+    otherwise every successful compression would spam a phantom banner.
+    Tolerates a misbehaving compressor missing any of the three fields
+    (``getattr`` defaults).
+    """
+    _ctx_comp = getattr(agent, "context_compressor", None)
+    if _ctx_comp is None or not getattr(_ctx_comp, "_last_summary_auth_failure", False):
+        return
+
+    _comp_provider = getattr(_ctx_comp, "provider", "auto") or "auto"
+    _comp_model = getattr(_ctx_comp, "summary_model", "unknown") or "unknown"
+    _comp_base = getattr(_ctx_comp, "base_url", "unknown") or "unknown"
+
+    if force_vprint:
+        log_prefix = getattr(agent, "log_prefix", "") or ""
+        agent._vprint(
+            f"{log_prefix}   ⚠️  Auxiliary compression model also failed with auth error — "
+            f"check auxiliary.compression in config.yaml:",
+            force=True,
+        )
+        agent._vprint(
+            f"{log_prefix}      🔌 Compression provider: {_comp_provider}  "
+            f"Model: {_comp_model}",
+            force=True,
+        )
+        agent._vprint(
+            f"{log_prefix}      🌐 Compression endpoint: {_comp_base}",
+            force=True,
+        )
+    else:
+        agent._buffer_vprint(
+            "   ⚠️  Auxiliary compression model also failed with auth error:"
+        )
+        agent._buffer_vprint(
+            f"      🔌 Compression provider: {_comp_provider}  Model: {_comp_model}"
+        )
+        agent._buffer_vprint(
+            f"      🌐 Compression endpoint: {_comp_base}"
+        )
+        agent._buffer_vprint(
+            "      💡 Check auxiliary.compression in config.yaml or update "
+            "with: hermes config set auxiliary.compression.model <model>"
+        )
+
+
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -5022,32 +5089,7 @@ def run_conversation(
                 agent._buffer_vprint(f"   🔌 Provider: {_provider}  Model: {_model}")
                 agent._buffer_vprint(f"   🌐 Endpoint: {_base}")
                 agent._buffer_vprint(f"   📝 Error: {_error_summary}")
-
-                # If the context compressor has a pending auth/permission failure from
-                # the auxiliary compression model, surface it so the user knows the
-                # real source of the error — not the main model displayed above.
-                # Without this, a broken auxiliary.compression provider confuses users
-                # because the error endpoint shows the (working) main model instead of
-                # the (broken) compression model (e.g. HTTP 401 from an expired custom
-                # provider configured for compression).
-                _ctx_comp = getattr(agent, "context_compressor", None)
-                if _ctx_comp is not None and getattr(_ctx_comp, "_last_summary_auth_failure", False):
-                    _comp_provider = getattr(_ctx_comp, "provider", "auto") or "auto"
-                    _comp_model = getattr(_ctx_comp, "summary_model", "unknown") or "unknown"
-                    _comp_base = getattr(_ctx_comp, "base_url", "unknown") or "unknown"
-                    agent._buffer_vprint(
-                        f"   ⚠️  Auxiliary compression model also failed with auth error:"
-                    )
-                    agent._buffer_vprint(
-                        f"      🔌 Compression provider: {_comp_provider}  Model: {_comp_model}"
-                    )
-                    agent._buffer_vprint(
-                        f"      🌐 Compression endpoint: {_comp_base}"
-                    )
-                    agent._buffer_vprint(
-                        f"      💡 Check auxiliary.compression in config.yaml or update "
-                        f"with: hermes config set auxiliary.compression.model <model>"
-                    )
+                _maybe_emit_compression_auth_hint(agent)
                 if status_code and status_code < 500:
                     _err_body = getattr(api_error, "body", None)
                     _err_body_str = str(_err_body)[:300] if _err_body else None
@@ -6008,29 +6050,7 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
-
-                    # If the context compressor has a pending auth/permission failure from
-                    # the auxiliary compression model, surface it so the user knows the
-                    # real source of the error.
-                    _ctx_comp2 = getattr(agent, "context_compressor", None)
-                    if _ctx_comp2 is not None and getattr(_ctx_comp2, "_last_summary_auth_failure", False):
-                        _comp_provider2 = getattr(_ctx_comp2, "provider", "auto") or "auto"
-                        _comp_model2 = getattr(_ctx_comp2, "summary_model", "unknown") or "unknown"
-                        _comp_base2 = getattr(_ctx_comp2, "base_url", "unknown") or "unknown"
-                        agent._vprint(
-                            f"{agent.log_prefix}   ⚠️  Auxiliary compression model also failed with auth error — "
-                            f"check auxiliary.compression in config.yaml:",
-                            force=True,
-                        )
-                        agent._vprint(
-                            f"{agent.log_prefix}      🔌 Compression provider: {_comp_provider2}  "
-                            f"Model: {_comp_model2}",
-                            force=True,
-                        )
-                        agent._vprint(
-                            f"{agent.log_prefix}      🌐 Compression endpoint: {_comp_base2}",
-                            force=True,
-                        )
+                    _maybe_emit_compression_auth_hint(agent, force_vprint=True)
                     # Actionable guidance for common auth errors
                     if classified.is_auth or classified.reason == FailoverReason.billing:
                         if classified.reason == FailoverReason.billing and _print_billing_or_entitlement_guidance(

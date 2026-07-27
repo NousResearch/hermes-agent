@@ -1084,9 +1084,19 @@ def _discover_all_plugins() -> list:
     # same external plugins the runtime sees.
     from hermes_cli.plugins import PluginManager, _get_extra_plugin_paths
     external_scanner = PluginManager()
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
     for external_root in _get_extra_plugin_paths():
         for manifest in external_scanner._scan_external_path(external_root):
             key = manifest.key or manifest.name
+            selected = (
+                key in enabled
+                or manifest.name in enabled
+                or key in disabled
+                or manifest.name in disabled
+            )
+            if key in seen and not selected:
+                continue
             seen[key] = (
                 manifest.name,
                 manifest.version,

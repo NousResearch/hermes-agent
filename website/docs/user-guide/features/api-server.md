@@ -194,6 +194,95 @@ Retrieve a previously stored response by ID.
 
 Delete a stored response.
 
+### POST /v1/inference/structured
+
+Runs one authenticated, schema-bound model call without creating an `AIAgent`,
+session, toolset, web-access surface, or memory scope. This endpoint is for
+automation that needs schema-valid JSON and must be able to prove it did not
+enter the conversational agent loop.
+
+The request is intentionally strict: unknown fields are rejected, `model` must
+exactly match Hermes' active configured model, and prompt/schema/output-token
+sizes are bounded. `purpose` is audit metadata only and is never added to the
+model input.
+
+```json
+{
+  "model": "gpt-5.6-terra",
+  "prompt": "Classify this disclosure.",
+  "json_schema": {
+    "type": "object",
+    "properties": {
+      "eligible": {"type": "boolean"},
+      "confidence": {"type": "number"}
+    },
+    "required": ["eligible", "confidence"],
+    "additionalProperties": false
+  },
+  "schema_name": "disclosure_classification",
+  "purpose": "research.classify_disclosure",
+  "max_output_tokens": 512
+}
+```
+
+The response carries a versioned boundary attestation, resolved provider/model,
+token usage, and backend-revision metadata. If the provider exposes a
+`system_fingerprint`, Hermes returns it, binds it into `backend_revision`, and
+sets `revision_quality` to `provider_fingerprint`. Otherwise the revision is
+explicitly labeled `configuration_only`; it is a stable hash of the configured
+route (provider, model, API mode, base URL, and Hermes version), not a claim
+about an immutable upstream model revision. Credential values are never
+returned; URL userinfo, query, and fragment values are stripped before the
+route identity is hashed.
+
+```json
+{
+  "boundary": "hermes-structured-no-tools-no-memory-v1",
+  "capabilities": {
+    "agent_loop": false,
+    "memory_access": false,
+    "session_history": false,
+    "tool_execution": false
+  },
+  "enforcement": {
+    "json_schema": "posthoc_strict",
+    "max_output_tokens": "posthoc_usage_limit",
+    "temperature": "provider_default_uncontrolled"
+  },
+  "output": {"eligible": true, "confidence": 0.91},
+  "provider": "openai-codex",
+  "model": "gpt-5.6-terra",
+  "usage": {
+    "input_tokens": 120,
+    "output_tokens": 18,
+    "total_tokens": 138,
+    "cache_read_tokens": 40,
+    "cache_write_tokens": 0,
+    "cost_usd": null
+  },
+  "backend_revision": "configuration-sha256:...",
+  "revision_quality": "configuration_only"
+}
+```
+
+The response's `enforcement` object describes where each control was actually
+enforced. The ChatGPT-account `openai-codex` route, `xai-oauth`, and unknown
+Responses-compatible endpoints do not receive temperature or upstream
+output-token controls from Hermes. For those routes, omit `temperature`;
+sending it returns `422 temperature_not_supported`. `max_output_tokens` is
+enforced after the call from provider-reported usage, and the request fails
+closed if usage is absent or the limit was exceeded. The official
+`api.openai.com` Responses route receives supported temperature/output-token
+controls upstream and retains the same post-call checks.
+Schema output is always reparsed as strict JSON and validated locally: Markdown
+fences, duplicate keys, `NaN`, `Infinity`, and schema mismatches return `502`.
+Schemas use JSON Schema Draft 2020-12 (an explicit `$schema`, when present,
+must name that dialect), and references must remain document-local.
+Regex-bearing schema keywords (`pattern` and `patternProperties`) are rejected
+because Python's regex validator cannot enforce a safe evaluation deadline.
+Other providers receive supported controls upstream as well as the same
+post-call checks.
+
 ### GET /v1/models
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.

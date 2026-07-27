@@ -38,7 +38,13 @@ from agent.plugin_llm import (
 # ---------------------------------------------------------------------------
 
 
-def _fake_response(text: str, *, prompt: int = 4, completion: int = 6) -> SimpleNamespace:
+def _fake_response(
+    text: str,
+    *,
+    prompt: int = 4,
+    completion: int = 6,
+    system_fingerprint: str = "",
+) -> SimpleNamespace:
     """Build an OpenAI-shaped response with the given text + token usage."""
     return SimpleNamespace(
         choices=[
@@ -52,6 +58,7 @@ def _fake_response(text: str, *, prompt: int = 4, completion: int = 6) -> Simple
             completion_tokens=completion,
             total_tokens=prompt + completion,
         ),
+        system_fingerprint=system_fingerprint,
     )
 
 
@@ -639,10 +646,144 @@ class TestPluginLlmFacade:
             instructions="Test",
             input=[PluginLlmTextInput(text="x")],
             json_schema=schema,
+            schema_name="classification_result",
         )
         rf = captured["extra_body"]["response_format"]
         assert rf["type"] == "json_schema"
         assert rf["json_schema"]["schema"] == schema
+        assert rf["json_schema"]["name"] == "classification_result"
+
+    def test_complete_structured_preserves_provider_system_fingerprint(self):
+        def fake_caller(**_kwargs):
+            return "openai", "gpt-4o", _fake_response(
+                '{"a": 1}',
+                system_fingerprint="fp-provider-revision",
+            )
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_TrustPolicy(plugin_id="my-plugin"),
+            sync_caller=fake_caller,
+        )
+        result = llm.complete_structured(
+            instructions="Test",
+            input=[PluginLlmTextInput(text="x")],
+            json_schema={"type": "object"},
+        )
+
+        assert result.system_fingerprint == "fp-provider-revision"
+
+    @pytest.mark.parametrize(
+        "provider_text",
+        [
+            '{"value": 1, "value": 2}',
+            '{"value": NaN}',
+            '{"value": Infinity}',
+            '{"value": 1e999}',
+            '```json\n{"value": 1}\n```',
+        ],
+    )
+    def test_complete_structured_strict_json_rejects_noncanonical_output(
+        self,
+        provider_text,
+    ):
+        def fake_caller(**_kwargs):
+            return "openai", "gpt-4o", _fake_response(provider_text)
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_TrustPolicy(plugin_id="my-plugin"),
+            sync_caller=fake_caller,
+        )
+        result = llm.complete_structured(
+            instructions="Extract value",
+            input=[PluginLlmTextInput(text="value")],
+            json_schema={"type": "object"},
+            strict_json=True,
+        )
+
+        assert result.parsed is None
+        assert result.content_type == "text"
+
+    def test_complete_structured_strict_controls_reach_host_caller(self):
+        captured: dict = {}
+
+        def fake_caller(**kwargs):
+            captured.update(kwargs)
+            return "openai", "gpt-4o", _fake_response('{"value": 1}')
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_trusted_policy("my-plugin"),
+            sync_caller=fake_caller,
+        )
+        result = llm.complete_structured(
+            instructions="Extract value",
+            input=[PluginLlmTextInput(text="value")],
+            json_schema={"type": "object"},
+            provider="openai",
+            model="gpt-4o",
+            temperature=0.0,
+            max_tokens=256,
+            strict_json=True,
+            strict_route=True,
+        )
+
+        assert result.parsed == {"value": 1}
+        assert captured["provider_override"] == "openai"
+        assert captured["model_override"] == "gpt-4o"
+        assert captured["temperature"] == 0.0
+        assert captured["max_tokens"] == 256
+        assert captured["strict_route"] is True
+
+    @pytest.mark.asyncio
+    async def test_pinned_runtime_preserves_route_headers_and_callable_credentials(
+        self,
+        monkeypatch,
+    ):
+        captured: dict = {}
+
+        def token_provider():
+            return "fresh-token"
+
+        async def fake_async_call_llm(**kwargs):
+            captured.update(kwargs)
+            return _fake_response('{"value": 1}')
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            fake_async_call_llm,
+        )
+        runtime = {
+            "provider": "azure-foundry",
+            "model": "gpt-5.6-terra",
+            "base_url": "https://example.services.ai.azure.com/models",
+            "api_key": token_provider,
+            "api_mode": "codex_responses",
+            "extra_headers": {"X-Provider-Route": "primary"},
+        }
+        llm = PluginLlm(
+            plugin_id="my-plugin",
+            policy_loader=lambda _plugin_id: _trusted_policy("my-plugin"),
+            main_runtime=runtime,
+        )
+
+        result = await llm.acomplete_structured(
+            instructions="Extract value",
+            input=[PluginLlmTextInput(text="value")],
+            json_schema={"type": "object"},
+            provider="azure-foundry",
+            model="gpt-5.6-terra",
+            strict_json=True,
+            strict_route=True,
+        )
+
+        assert result.parsed == {"value": 1}
+        assert captured["base_url"] == runtime["base_url"]
+        assert captured["api_mode"] == runtime["api_mode"]
+        assert captured["api_key"] is None
+        assert captured["main_runtime"]["api_key"] is token_provider
+        assert captured["extra_headers"] == runtime["extra_headers"]
 
     def test_complete_structured_with_image_passes_image_url_part(self):
         captured: dict = {}

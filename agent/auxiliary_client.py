@@ -1015,8 +1015,28 @@ class _CodexCompletionsAdapter:
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
 
-        # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
-        # support max_output_tokens or temperature — omit to avoid 400 errors.
+        # The ChatGPT-account Codex endpoint does not support these controls,
+        # but the official api.openai.com Responses API does. Preserve them
+        # only for that exact host; unknown compatible endpoints remain
+        # fail-closed/post-hoc rather than receiving speculative parameters.
+        if base_url_host_matches(_host_for_input, "api.openai.com"):
+            max_output_tokens = (
+                kwargs.get("max_output_tokens")
+                or kwargs.get("max_completion_tokens")
+                or kwargs.get("max_tokens")
+            )
+            if (
+                isinstance(max_output_tokens, (int, float))
+                and not isinstance(max_output_tokens, bool)
+                and max_output_tokens > 0
+            ):
+                resp_kwargs["max_output_tokens"] = int(max_output_tokens)
+            temperature = kwargs.get("temperature")
+            if (
+                isinstance(temperature, (int, float))
+                and not isinstance(temperature, bool)
+            ):
+                resp_kwargs["temperature"] = float(temperature)
 
         # Translate extra_body.reasoning (chat.completions shape) into the
         # Responses API's top-level reasoning + include fields.  Mirrors
@@ -1258,6 +1278,11 @@ class _CodexCompletionsAdapter:
 
             resp_usage = getattr(final, "usage", None)
             if resp_usage:
+                input_details = _item_get(
+                    resp_usage,
+                    "input_tokens_details",
+                    {},
+                )
                 usage = SimpleNamespace(
                     prompt_tokens=getattr(resp_usage, "input_tokens", 0)
                         or (resp_usage.get("input_tokens", 0) if isinstance(resp_usage, dict) else 0),
@@ -1265,6 +1290,11 @@ class _CodexCompletionsAdapter:
                         or (resp_usage.get("output_tokens", 0) if isinstance(resp_usage, dict) else 0),
                     total_tokens=getattr(resp_usage, "total_tokens", 0)
                         or (resp_usage.get("total_tokens", 0) if isinstance(resp_usage, dict) else 0),
+                    cache_read_input_tokens=_item_get(
+                        input_details,
+                        "cached_tokens",
+                        0,
+                    ),
                 )
         except Exception as exc:
             if timed_out.is_set():
@@ -1288,10 +1318,14 @@ class _CodexCompletionsAdapter:
             message=message,
             finish_reason="stop" if not tool_calls_raw else "tool_calls",
         )
+        system_fingerprint = getattr(final, "system_fingerprint", None)
+        if system_fingerprint is None and isinstance(final, dict):
+            system_fingerprint = final.get("system_fingerprint")
         return SimpleNamespace(
             choices=[choice],
             model=model,
             usage=usage,
+            system_fingerprint=system_fingerprint,
         )
 
 
@@ -6880,6 +6914,8 @@ def _build_call_kwargs(
     reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
     task: Optional[str] = None,
+    strict_controls: bool = False,
+    api_mode: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -6889,6 +6925,18 @@ def _build_call_kwargs(
     }
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    if strict_controls and temperature is not None:
+        if fixed_temperature is OMIT_TEMPERATURE:
+            raise ValueError(
+                f"Model {model!r} does not support an explicit temperature"
+            )
+        if (
+            fixed_temperature is not None
+            and float(fixed_temperature) != float(temperature)
+        ):
+            raise ValueError(
+                f"Model {model!r} requires temperature={fixed_temperature}"
+            )
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
     elif fixed_temperature is not None:
@@ -6901,6 +6949,10 @@ def _build_call_kwargs(
     if temperature is not None:
         from agent.anthropic_adapter import _forbids_sampling_params
         if _forbids_sampling_params(model):
+            if strict_controls:
+                raise ValueError(
+                    f"Model {model!r} does not support an explicit temperature"
+                )
             temperature = None
 
     if temperature is not None:
@@ -6930,6 +6982,21 @@ def _build_call_kwargs(
             _current_custom_base_url() if provider == "custom" else ""
         )
         _provider_norm = str(provider or "").strip().lower()
+        _api_mode_norm = str(api_mode or "").strip().lower()
+        _direct_openai_responses = (
+            _api_mode_norm == "codex_responses"
+            and base_url_host_matches(_effective_base, "api.openai.com")
+        )
+        _lacks_upstream_output_limit = (
+            _provider_norm in {
+                "openai-codex",
+                "xai-oauth",
+            }
+            or (
+                _api_mode_norm == "codex_responses"
+                and not _direct_openai_responses
+            )
+        )
         _is_nvidia_nim = (
             _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
@@ -6951,7 +7018,8 @@ def _build_call_kwargs(
             except Exception:
                 pass
         if (
-            _is_anthropic_compat_endpoint(provider, _effective_base)
+            (strict_controls and not _lacks_upstream_output_limit)
+            or _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
             or _is_moa
             or _is_gemini_native
@@ -7517,24 +7585,25 @@ async def _acreate_with_stream(
 
 
 def call_llm(
-    task: str = None,
+    task: Optional[str] = None,
     *,
-    provider: str = None,
-    model: str = None,
-    base_url: str = None,
-    api_key: str = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: Optional[float] = None,
-    max_tokens: int = None,
-    tools: list = None,
-    timeout: float = None,
-    extra_body: dict = None,
+    max_tokens: Optional[int] = None,
+    tools: Optional[list] = None,
+    timeout: Optional[float] = None,
+    extra_body: Optional[dict] = None,
     reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None,
-    api_mode: str = None,
+    api_mode: Optional[str] = None,
     stream: bool = False,
-    stream_options: dict = None,
+    stream_options: Optional[dict] = None,
+    strict_route: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -7566,6 +7635,9 @@ def call_llm(
             output can stream to the user.
         stream_options: Passed through to the request when stream is True
             (e.g. {"include_usage": True}).
+        strict_route: Require the explicitly selected provider/model. When
+            true, unavailable clients and provider errors fail closed instead
+            of changing provider/model or retrying with relaxed controls.
 
     Returns:
         Response object with .choices[0].message.content, OR — when stream=True —
@@ -7579,8 +7651,27 @@ def call_llm(
     # concurrent /model switch produce a key for one runtime and a client for
     # another.
     main_runtime = _normalize_main_runtime(main_runtime)
+    if strict_route and (
+        not isinstance(provider, str)
+        or not provider.strip()
+        or provider.strip().lower() == "auto"
+        or not isinstance(model, str)
+        or not model.strip()
+    ):
+        raise ValueError(
+            "strict_route requires an explicit non-auto provider and model"
+        )
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if strict_route and (
+        (resolved_provider or "").strip().lower() != provider.strip().lower()
+        or (resolved_model or "").strip() != model.strip()
+    ):
+        raise RuntimeError(
+            "Strict provider route resolution changed the requested "
+            f"backend from {provider}/{model} to "
+            f"{resolved_provider}/{resolved_model}"
+        )
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7596,6 +7687,11 @@ def call_llm(
             main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
+            if strict_route:
+                raise RuntimeError(
+                    f"Strict provider route unavailable for provider={resolved_provider} "
+                    f"model={resolved_model}"
+                )
             logger.warning(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
@@ -7628,6 +7724,11 @@ def call_llm(
             # tasks because fallback entries may use OAuth / credential-pool
             # auth (for example openai-codex).
             _explicit = (resolved_provider or "").strip().lower()
+            if strict_route:
+                raise RuntimeError(
+                    f"Strict provider route unavailable for provider={resolved_provider} "
+                    f"model={resolved_model}"
+                )
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit,
@@ -7655,6 +7756,12 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    if strict_route and (final_model or "").strip() != model.strip():
+        raise RuntimeError(
+            "Strict provider route selected a different model: "
+            f"requested={model} resolved={final_model}"
+        )
+
     effective_timeout = _effective_aux_timeout(task, timeout)
 
     # Log what we're about to do — makes auxiliary operations visible
@@ -7672,7 +7779,8 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_base_info or resolved_base_url, task=task)
+        base_url=_base_info or resolved_base_url, task=task,
+        strict_controls=strict_route, api_mode=resolved_api_mode)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
 
@@ -7769,6 +7877,8 @@ def call_llm(
             # Retries exhausted — fall through to first_err fallback handling.
             raise _last_transient
     except Exception as first_err:
+        if strict_route:
+            raise
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)
@@ -8204,20 +8314,23 @@ def extract_content_or_reasoning(response) -> str:
 
 
 async def async_call_llm(
-    task: str = None,
+    task: Optional[str] = None,
     *,
-    provider: str = None,
-    model: str = None,
-    base_url: str = None,
-    api_key: str = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: Optional[float] = None,
-    max_tokens: int = None,
-    tools: list = None,
-    timeout: float = None,
-    extra_body: dict = None,
+    max_tokens: Optional[int] = None,
+    tools: Optional[list] = None,
+    timeout: Optional[float] = None,
+    extra_body: Optional[dict] = None,
     reasoning_config: Optional[dict] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    api_mode: Optional[str] = None,
+    strict_route: bool = False,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -8226,8 +8339,29 @@ async def async_call_llm(
     # Keep every async phase on the same runtime identity, even if another
     # session switches models while this task is awaiting network I/O.
     main_runtime = _normalize_main_runtime(main_runtime)
+    if strict_route and (
+        not isinstance(provider, str)
+        or not provider.strip()
+        or provider.strip().lower() == "auto"
+        or not isinstance(model, str)
+        or not model.strip()
+    ):
+        raise ValueError(
+            "strict_route requires an explicit non-auto provider and model"
+        )
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if api_mode:
+        resolved_api_mode = api_mode
+    if strict_route and (
+        (resolved_provider or "").strip().lower() != provider.strip().lower()
+        or (resolved_model or "").strip() != model.strip()
+    ):
+        raise RuntimeError(
+            "Strict provider route resolution changed the requested "
+            f"backend from {provider}/{model} to "
+            f"{resolved_provider}/{resolved_model}"
+        )
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -8241,6 +8375,11 @@ async def async_call_llm(
             main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
+            if strict_route:
+                raise RuntimeError(
+                    f"Strict provider route unavailable for provider={resolved_provider} "
+                    f"model={resolved_model}"
+                )
             logger.warning(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
@@ -8269,6 +8408,11 @@ async def async_call_llm(
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
+            if strict_route:
+                raise RuntimeError(
+                    f"Strict provider route unavailable for provider={resolved_provider} "
+                    f"model={resolved_model}"
+                )
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit,
@@ -8293,6 +8437,12 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    if strict_route and (final_model or "").strip() != model.strip():
+        raise RuntimeError(
+            "Strict provider route selected a different model: "
+            f"requested={model} resolved={final_model}"
+        )
+
     effective_timeout = _effective_aux_timeout(task, timeout)
 
     # Pass the client's actual base_url (not just resolved_base_url) so
@@ -8304,7 +8454,10 @@ async def async_call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_client_base or resolved_base_url, task=task)
+        base_url=_client_base or resolved_base_url, task=task,
+        strict_controls=strict_route, api_mode=resolved_api_mode)
+    if extra_headers:
+        kwargs["extra_headers"] = dict(extra_headers)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
@@ -8355,6 +8508,8 @@ async def async_call_llm(
             return _validate_llm_response(
                 await _acreate(kwargs), task)
     except Exception as first_err:
+        if strict_route:
+            raise
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)

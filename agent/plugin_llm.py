@@ -62,6 +62,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
@@ -143,7 +144,9 @@ class PluginLlmStructuredResult:
     ``parsed`` is set only when ``json_mode=True`` or ``json_schema`` is
     provided AND the response was valid JSON. ``content_type`` is
     ``"json"`` in that case, ``"text"`` otherwise (e.g. the model
-    refused or the response wasn't requested as JSON)."""
+    refused or the response wasn't requested as JSON).
+    ``system_fingerprint`` preserves the provider's backend revision
+    identifier when one is available."""
 
     text: str
     provider: str
@@ -153,6 +156,7 @@ class PluginLlmStructuredResult:
     parsed: Optional[Any] = None
     content_type: str = "text"
     audit: Dict[str, Any] = field(default_factory=dict)
+    system_fingerprint: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -453,8 +457,34 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _reject_nonfinite_json_constant(value: str) -> None:
+    raise ValueError(f"Non-finite JSON number is not allowed: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"JSON number is outside the finite float range: {value}")
+    return parsed
+
+
+def _reject_duplicate_json_keys(
+    pairs: List[tuple[str, Any]],
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
 def _parse_structured_text(
-    *, text: str, json_mode: bool, json_schema: Optional[Any]
+    *,
+    text: str,
+    json_mode: bool,
+    json_schema: Optional[Any],
+    strict_json: bool = False,
 ) -> tuple[Optional[Any], str]:
     """Return ``(parsed, content_type)``. ``content_type`` is ``"json"``
     when parsing succeeded and (when a schema was given) validation
@@ -465,21 +495,42 @@ def _parse_structured_text(
         return None, "text"
 
     try:
-        parsed = json.loads(_strip_code_fences(text))
+        candidate = text.strip() if strict_json else _strip_code_fences(text)
+        if strict_json:
+            parsed = json.loads(
+                candidate,
+                parse_constant=_reject_nonfinite_json_constant,
+                parse_float=_parse_finite_json_float,
+                object_pairs_hook=_reject_duplicate_json_keys,
+            )
+        else:
+            parsed = json.loads(candidate)
     except (json.JSONDecodeError, ValueError):
         return None, "text"
 
     if json_schema is not None:
         try:
-            import jsonschema  # type: ignore[import-untyped]
-            jsonschema.validate(parsed, json_schema)
+            from jsonschema import Draft202012Validator, ValidationError
         except ImportError:
-            # jsonschema is optional; skip strict validation when absent.
+            if strict_json:
+                raise RuntimeError(
+                    "jsonschema is required for strict PluginLlm output validation"
+                )
+            # jsonschema is optional for the general plugin surface.
             logger.debug("jsonschema unavailable; skipping schema validation")
-        except jsonschema.ValidationError as exc:  # type: ignore[attr-defined]
-            raise ValueError(
-                f"Plugin LLM structured output did not match schema: {exc.message}"
-            ) from exc
+        else:
+            try:
+                if strict_json:
+                    Draft202012Validator(json_schema).validate(parsed)
+                else:
+                    import jsonschema
+
+                    jsonschema.validate(parsed, json_schema)
+            except ValidationError as exc:
+                raise ValueError(
+                    "Plugin LLM structured output did not match schema: "
+                    f"{exc.message}"
+                ) from exc
 
     return parsed, "json"
 
@@ -538,6 +589,19 @@ def _extract_text(response: Any) -> str:
     except (AttributeError, IndexError, TypeError):
         pass
     return ""
+
+
+def _extract_system_fingerprint(response: Any) -> str:
+    """Extract a bounded provider revision identifier when one is exposed."""
+
+    raw = (
+        response.get("system_fingerprint")
+        if isinstance(response, dict)
+        else getattr(response, "system_fingerprint", None)
+    )
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()[:256]
 
 
 def _resolve_attribution(
@@ -611,11 +675,18 @@ class PluginLlm:
         policy_loader: Optional[Callable[[str], _TrustPolicy]] = None,
         sync_caller: Optional[Callable[..., Any]] = None,
         async_caller: Optional[Callable[..., Awaitable[Any]]] = None,
+        main_runtime: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._policy_loader = policy_loader or _resolve_trust_policy
         self._sync_caller = sync_caller
         self._async_caller = async_caller
+        # Host-owned callers may pin the already-resolved runtime so a direct
+        # completion cannot silently drop its base URL, API mode, or credential
+        # identity while retaining the same provider/model labels.
+        self._main_runtime = (
+            dict(main_runtime) if isinstance(main_runtime, dict) else None
+        )
 
     # -- public sync API ----------------------------------------------------
 
@@ -697,6 +768,8 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        strict_json: bool = False,
+        strict_route: bool = False,
     ) -> PluginLlmStructuredResult:
         """Run a bounded host-owned structured completion.
 
@@ -706,9 +779,12 @@ class PluginLlm:
         is parsed and (if a schema is given) validated; the parsed value
         is returned in :attr:`PluginLlmStructuredResult.parsed`.
 
-        Validation requires the optional ``jsonschema`` package. When it
-        isn't installed, JSON mode still works but schema enforcement is
-        skipped with a debug log.
+        Validation requires the optional ``jsonschema`` package. For ordinary
+        plugin calls, JSON mode still works without it and schema enforcement
+        is skipped with a debug log. ``strict_json=True`` instead fails
+        closed when validation is unavailable, rejects duplicate/non-finite
+        JSON and Markdown fences, and ``strict_route=True`` disables
+        provider/model fallback and control-relaxation retries.
         """
         if not instructions or not instructions.strip():
             raise ValueError("complete_structured requires non-empty instructions")
@@ -732,7 +808,11 @@ class PluginLlm:
             schema_name=schema_name,
             system_prompt=system_prompt,
         )
-        extra_body = self._json_response_format(json_mode=json_mode, json_schema=json_schema)
+        extra_body = self._json_response_format(
+            json_mode=json_mode,
+            json_schema=json_schema,
+            schema_name=schema_name,
+        )
 
         real_provider, real_model, response = self._invoke_sync(
             messages=messages,
@@ -743,11 +823,15 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=extra_body,
+            strict_route=strict_route,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
         parsed, content_type = _parse_structured_text(
-            text=text, json_mode=json_mode, json_schema=json_schema
+            text=text,
+            json_mode=json_mode,
+            json_schema=json_schema,
+            strict_json=strict_json,
         )
         result = PluginLlmStructuredResult(
             text=text,
@@ -763,6 +847,7 @@ class PluginLlm:
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
             },
+            system_fingerprint=_extract_system_fingerprint(response),
         )
         logger.info(
             "plugin_llm.complete_structured plugin=%s provider=%s model=%s "
@@ -837,6 +922,8 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        strict_json: bool = False,
+        strict_route: bool = False,
     ) -> PluginLlmStructuredResult:
         """Async sibling of :meth:`complete_structured`."""
         if not instructions or not instructions.strip():
@@ -860,7 +947,11 @@ class PluginLlm:
             schema_name=schema_name,
             system_prompt=system_prompt,
         )
-        extra_body = self._json_response_format(json_mode=json_mode, json_schema=json_schema)
+        extra_body = self._json_response_format(
+            json_mode=json_mode,
+            json_schema=json_schema,
+            schema_name=schema_name,
+        )
         real_provider, real_model, response = await self._invoke_async(
             messages=messages,
             provider_override=eff_provider,
@@ -870,11 +961,15 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=extra_body,
+            strict_route=strict_route,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
         parsed, content_type = _parse_structured_text(
-            text=text, json_mode=json_mode, json_schema=json_schema
+            text=text,
+            json_mode=json_mode,
+            json_schema=json_schema,
+            strict_json=strict_json,
         )
         return PluginLlmStructuredResult(
             text=text,
@@ -890,23 +985,33 @@ class PluginLlm:
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
             },
+            system_fingerprint=_extract_system_fingerprint(response),
         )
 
     # -- internals ---------------------------------------------------------
 
     @staticmethod
     def _json_response_format(
-        *, json_mode: bool, json_schema: Optional[Any]
+        *,
+        json_mode: bool,
+        json_schema: Optional[Any],
+        schema_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the ``extra_body.response_format`` payload for the
         provider request. Falls back to ``json_object`` when no schema
         is given so providers that ignore json_schema still get a hint."""
         if json_schema is not None:
+            response_schema_name = (
+                schema_name.strip()
+                if isinstance(schema_name, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", schema_name)
+                else "plugin_structured_output"
+            )
             return {
                 "response_format": {
                     "type": "json_schema",
                     "json_schema": {
-                        "name": "plugin_structured_output",
+                        "name": response_schema_name,
                         "schema": json_schema,
                         "strict": False,
                     },
@@ -927,6 +1032,7 @@ class PluginLlm:
         max_tokens: Optional[int],
         timeout: Optional[float],
         extra_body: Optional[Dict[str, Any]] = None,
+        strict_route: bool = False,
     ) -> tuple[str, str, Any]:
         """Invoke the host's ``call_llm``. Lazy-imports
         ``agent.auxiliary_client`` to avoid circular deps at plugin
@@ -941,20 +1047,35 @@ class PluginLlm:
                 max_tokens=max_tokens,
                 timeout=timeout,
                 extra_body=extra_body,
+                strict_route=strict_route,
             )
         from agent.auxiliary_client import call_llm
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+        runtime = self._main_runtime or {}
+        runtime_headers = runtime.get("extra_headers")
+        runtime_api_key = runtime.get("api_key")
         response = call_llm(
             task=None,
             provider=provider_override,
             model=model_override,
+            base_url=runtime.get("base_url"),
+            # Callable credentials (Azure Entra ID) must be rebuilt by the
+            # provider resolver; passing the callback through the legacy
+            # explicit-api-key slot coerces it to a static string.
+            api_key=runtime_api_key if isinstance(runtime_api_key, str) else None,
+            api_mode=runtime.get("api_mode"),
+            main_runtime=self._main_runtime,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
+            extra_headers=(
+                runtime_headers if isinstance(runtime_headers, dict) else None
+            ),
+            strict_route=strict_route,
         )
         provider, model = _resolve_attribution(
             provider_override=provider_override,
@@ -974,6 +1095,7 @@ class PluginLlm:
         max_tokens: Optional[int],
         timeout: Optional[float],
         extra_body: Optional[Dict[str, Any]] = None,
+        strict_route: bool = False,
     ) -> tuple[str, str, Any]:
         if self._async_caller is not None:
             return await self._async_caller(
@@ -985,20 +1107,32 @@ class PluginLlm:
                 max_tokens=max_tokens,
                 timeout=timeout,
                 extra_body=extra_body,
+                strict_route=strict_route,
             )
         from agent.auxiliary_client import async_call_llm
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
+        runtime = self._main_runtime or {}
+        runtime_headers = runtime.get("extra_headers")
+        runtime_api_key = runtime.get("api_key")
         response = await async_call_llm(
             task=None,
             provider=provider_override,
             model=model_override,
+            base_url=runtime.get("base_url"),
+            api_key=runtime_api_key if isinstance(runtime_api_key, str) else None,
+            api_mode=runtime.get("api_mode"),
+            main_runtime=self._main_runtime,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
+            extra_headers=(
+                runtime_headers if isinstance(runtime_headers, dict) else None
+            ),
+            strict_route=strict_route,
         )
         provider, model = _resolve_attribution(
             provider_override=provider_override,

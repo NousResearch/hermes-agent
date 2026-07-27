@@ -8,6 +8,7 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- POST /v1/inference/structured    — authenticated tool/memory-free structured inference
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
@@ -1271,6 +1272,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # (the /v1/runs path tracks its own in-flight set via
         # _active_run_tasks).
         self._inflight_agent_runs: int = 0
+        # Direct PluginLlm completions share the gateway concurrency/drain
+        # accounting but never instantiate AIAgent or a session.
+        self._inflight_structured_inference: int = 0
         # Back-reference to the owning GatewayRunner (set by gateway/run.py)
         # so /api/platforms/{platform}/events can resolve sibling adapters.
         # BasePlatformAdapter declares the class-level default of None.
@@ -1292,6 +1296,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return (
                 int(getattr(self, "_pending_agent_requests", 0))
                 + int(self._inflight_agent_runs)
+                + int(getattr(self, "_inflight_structured_inference", 0))
                 + sum(not task.done() for task in self._active_run_tasks.values())
             )
         except Exception:
@@ -1763,6 +1768,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/capabilities", self._handle_capabilities),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
+            ("POST", "/v1/inference/structured", self._handle_structured_inference),
             ("GET", "/api/sessions", self._handle_list_sessions),
             ("POST", "/api/sessions", self._handle_create_session),
             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
@@ -2786,6 +2792,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        from gateway.structured_inference import (
+            STRUCTURED_INFERENCE_BOUNDARY,
+            STRUCTURED_INFERENCE_CAPABILITIES,
+        )
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -2809,6 +2820,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
+                "structured_inference": True,
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
@@ -2839,6 +2851,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "model_options": {"method": "GET", "path": "/api/model/options"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
+                "structured_inference": {
+                    "method": "POST",
+                    "path": "/v1/inference/structured",
+                    "boundary": STRUCTURED_INFERENCE_BOUNDARY,
+                    "capabilities": dict(STRUCTURED_INFERENCE_CAPABILITIES),
+                },
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
@@ -2858,6 +2876,363 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
             },
         })
+
+    @_admit_api_agent_request
+    async def _handle_structured_inference(
+        self,
+        request: "web.Request",
+    ) -> "web.Response":
+        """Run one schema-bound completion without AIAgent or session state."""
+
+        # connect() refuses to start without a key, but keep direct/manual app
+        # wiring fail-closed too.  The decorator already validated the normal
+        # bearer token when a key is configured.
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Structured inference requires API_SERVER_KEY authentication",
+                    err_type="gateway_auth_error",
+                    code="gateway_auth_not_configured",
+                ),
+                status=503,
+            )
+
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
+        if request.content_type != "application/json":
+            return web.json_response(
+                _openai_error(
+                    "Content-Type must be application/json",
+                    code="invalid_content_type",
+                ),
+                status=415,
+            )
+
+        from gateway.structured_inference import (
+            MAX_STRUCTURED_INFERENCE_REQUEST_BYTES,
+            STRUCTURED_INFERENCE_BOUNDARY,
+            STRUCTURED_INFERENCE_CAPABILITIES,
+            StructuredInferenceValidationError,
+            parse_structured_inference_request,
+            structured_inference_backend_revision,
+            structured_inference_enforcement,
+            structured_inference_revision_quality,
+            validate_structured_inference_output,
+        )
+
+        if (
+            request.content_length is not None
+            and request.content_length > MAX_STRUCTURED_INFERENCE_REQUEST_BYTES
+        ):
+            return web.json_response(
+                _openai_error("Request body too large", code="body_too_large"),
+                status=413,
+            )
+        try:
+            raw_body = await request.read()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response(
+                _openai_error("Request body too large", code="body_too_large"),
+                status=413,
+            )
+
+        try:
+            from agent.auxiliary_client import (
+                _read_main_model,
+                _read_main_provider,
+            )
+
+            requested_provider = _read_main_provider()
+            active_model = _read_main_model()
+            if not requested_provider:
+                raise StructuredInferenceValidationError(
+                    "Hermes has no active provider configured",
+                    code="provider_not_configured",
+                    status=503,
+                )
+            inference_request = parse_structured_inference_request(
+                raw_body,
+                active_model=active_model,
+            )
+        except StructuredInferenceValidationError as exc:
+            return web.json_response(
+                _openai_error(
+                    str(exc),
+                    code=exc.code,
+                    param=exc.param,
+                ),
+                status=exc.status,
+            )
+        except RuntimeError as exc:
+            logger.error(
+                "Structured inference validation unavailable: %s",
+                exc,
+                exc_info=True,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Strict structured inference validation is unavailable",
+                    err_type="server_error",
+                    code="structured_validation_unavailable",
+                ),
+                status=503,
+            )
+
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            active_runtime = resolve_runtime_provider(
+                requested=requested_provider,
+                target_model=active_model,
+            )
+            active_provider = str(
+                active_runtime.get("provider") or ""
+            ).strip().lower()
+            if not active_provider or active_provider == "moa":
+                raise RuntimeError(
+                    "active provider is not a direct inference backend"
+                )
+            # Bind the model into the same immutable route snapshot consumed
+            # by auxiliary_client. Credentials remain host-owned; the response
+            # never includes them, and revision hashing strips URL credential
+            # fields before binding the non-secret route identity.
+            active_runtime = dict(active_runtime)
+            active_runtime["provider"] = active_provider
+            active_runtime["model"] = active_model
+            active_api_mode = str(
+                active_runtime.get("api_mode") or ""
+            ).strip().lower()
+            active_base_url = str(
+                active_runtime.get("base_url") or ""
+            ).strip()
+            enforcement = structured_inference_enforcement(
+                provider=active_provider,
+                api_mode=active_api_mode,
+                base_url=active_base_url,
+                temperature=inference_request.temperature,
+            )
+        except StructuredInferenceValidationError as exc:
+            return web.json_response(
+                _openai_error(
+                    str(exc),
+                    code=exc.code,
+                    param=exc.param,
+                ),
+                status=exc.status,
+            )
+        except Exception as exc:
+            logger.error(
+                "Structured inference route resolution failed: %s",
+                exc,
+                exc_info=True,
+            )
+            return web.json_response(
+                _openai_error(
+                    "The active Hermes inference route is unavailable",
+                    err_type="server_error",
+                    code="provider_route_unavailable",
+                ),
+                status=503,
+            )
+
+        # This is the entire execution path: PluginLlm talks directly to the
+        # host-owned provider adapter.  It receives no caller-supplied system
+        # prompt, history, tool schemas, agent/session id, or memory scope.
+        from agent.plugin_llm import (
+            PluginLlm,
+            PluginLlmTextInput,
+            _TrustPolicy,
+        )
+
+        plugin_id = "api-server-structured-inference"
+        pinned_policy = _TrustPolicy(
+            plugin_id=plugin_id,
+            allow_provider_override=True,
+            allowed_providers=frozenset({active_provider.lower()}),
+            allow_model_override=True,
+            allowed_models=frozenset({active_model.lower()}),
+        )
+        llm = PluginLlm(
+            plugin_id=plugin_id,
+            policy_loader=lambda _plugin_id: pinned_policy,
+            main_runtime=active_runtime,
+        )
+        self._activate_admitted_request()
+        self._inflight_structured_inference += 1
+        try:
+            result = await llm.acomplete_structured(
+                instructions=(
+                    "Execute the supplied task as a bounded structured inference "
+                    "request. Return only a JSON object matching the schema."
+                ),
+                input=[PluginLlmTextInput(text=inference_request.prompt)],
+                json_schema=inference_request.json_schema,
+                schema_name=inference_request.schema_name,
+                temperature=inference_request.temperature,
+                max_tokens=inference_request.max_output_tokens,
+                purpose=inference_request.purpose,
+                provider=active_provider,
+                model=active_model,
+                strict_json=True,
+                strict_route=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ValueError as exc:
+            logger.warning(
+                "Structured inference returned invalid output purpose=%r: %s",
+                inference_request.purpose,
+                exc,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Provider output did not satisfy the requested schema",
+                    err_type="server_error",
+                    code="invalid_structured_output",
+                ),
+                status=502,
+            )
+        except Exception as exc:
+            logger.error(
+                "Structured inference provider call failed purpose=%r: %s",
+                inference_request.purpose,
+                exc,
+                exc_info=True,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Structured inference provider call failed",
+                    err_type="server_error",
+                    code="structured_inference_failed",
+                ),
+                status=502,
+            )
+        finally:
+            self._inflight_structured_inference -= 1
+
+        result_provider = (
+            result.provider.strip()
+            if isinstance(result.provider, str)
+            else ""
+        )
+        result_model = (
+            result.model.strip()
+            if isinstance(result.model, str)
+            else ""
+        )
+        if (
+            result_provider.lower() != active_provider.strip().lower()
+            or result_model != active_model
+        ):
+            logger.error(
+                "Structured inference backend identity drifted "
+                "purpose=%r expected=%s/%s actual=%s/%s",
+                inference_request.purpose,
+                active_provider,
+                active_model,
+                result_provider,
+                result_model,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Provider response did not match the pinned backend",
+                    err_type="server_error",
+                    code="backend_identity_mismatch",
+                ),
+                status=502,
+            )
+
+        try:
+            if result.content_type != "json":
+                raise ValueError("provider did not return JSON")
+            output = validate_structured_inference_output(
+                result.text,
+                json_schema=inference_request.json_schema,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Structured inference output failed boundary validation "
+                "purpose=%r: %s",
+                inference_request.purpose,
+                exc,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Provider output did not satisfy the requested schema",
+                    err_type="server_error",
+                    code="invalid_structured_output",
+                ),
+                status=502,
+            )
+
+        usage = result.usage
+        token_counts = (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.total_tokens,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value <= 0
+            for value in token_counts
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Provider did not return auditable token usage",
+                    err_type="server_error",
+                    code="usage_unavailable",
+                ),
+                status=502,
+            )
+        if usage.output_tokens > inference_request.max_output_tokens:
+            return web.json_response(
+                _openai_error(
+                    "Provider output exceeded max_output_tokens",
+                    err_type="server_error",
+                    code="output_token_limit_exceeded",
+                ),
+                status=502,
+            )
+
+        system_fingerprint = (
+            result.system_fingerprint.strip()[:256]
+            if isinstance(result.system_fingerprint, str)
+            else ""
+        )
+        revision_quality = structured_inference_revision_quality(
+            system_fingerprint=system_fingerprint,
+        )
+        response_body: Dict[str, Any] = {
+            "boundary": STRUCTURED_INFERENCE_BOUNDARY,
+            "capabilities": dict(STRUCTURED_INFERENCE_CAPABILITIES),
+            "enforcement": enforcement,
+            "output": output,
+            "provider": result_provider,
+            "model": result_model,
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_write_tokens": usage.cache_write_tokens,
+                "cost_usd": usage.cost_usd,
+            },
+            "backend_revision": structured_inference_backend_revision(
+                provider=result_provider,
+                model=result_model,
+                gateway_version=_hermes_version(),
+                system_fingerprint=system_fingerprint,
+                api_mode=active_api_mode,
+                base_url=active_base_url,
+            ),
+            "revision_quality": revision_quality,
+        }
+        if system_fingerprint:
+            response_body["system_fingerprint"] = system_fingerprint
+        return web.json_response(response_body)
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.

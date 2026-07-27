@@ -110,6 +110,160 @@ class TestAuxiliaryMaxTokensParam:
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
 
 
+class TestStrictProviderRoute:
+    def test_responses_mode_does_not_claim_an_upstream_output_limit(self):
+        responses_kwargs = _build_call_kwargs(
+            "openai-api",
+            "gpt-4o",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=256,
+            strict_controls=True,
+            api_mode="codex_responses",
+        )
+        chat_kwargs = _build_call_kwargs(
+            "openai-api",
+            "gpt-4o",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=256,
+            strict_controls=True,
+            api_mode="chat_completions",
+        )
+        direct_openai_responses_kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-4o",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=256,
+            strict_controls=True,
+            api_mode="codex_responses",
+            base_url="https://api.openai.com/v1",
+        )
+
+        assert "max_tokens" not in responses_kwargs
+        assert "max_completion_tokens" not in responses_kwargs
+        assert (
+            chat_kwargs.get("max_tokens") == 256
+            or chat_kwargs.get("max_completion_tokens") == 256
+        )
+        assert (
+            direct_openai_responses_kwargs.get("max_tokens") == 256
+            or direct_openai_responses_kwargs.get("max_completion_tokens")
+            == 256
+        )
+
+    def test_resolution_drift_fails_before_client_lookup(self):
+        client_lookup = MagicMock()
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=(
+                    "custom",
+                    "gpt-5.6-terra",
+                    "https://api.openai.com/v1",
+                    "test-key",
+                    None,
+                ),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                client_lookup,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="resolution changed"):
+                call_llm(
+                    provider="openai",
+                    model="gpt-5.6-terra",
+                    messages=[{"role": "user", "content": "hi"}],
+                    strict_route=True,
+                )
+
+        client_lookup.assert_not_called()
+
+    def test_unavailable_sync_route_never_uses_configured_fallback(self):
+        fallback = MagicMock()
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openai", "gpt-5.6-terra", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(None, "gpt-5.6-terra"),
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_for_unavailable_client",
+                fallback,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="Strict provider route unavailable"):
+                call_llm(
+                    provider="openai",
+                    model="gpt-5.6-terra",
+                    messages=[{"role": "user", "content": "hi"}],
+                    strict_route=True,
+                )
+
+        fallback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_route_never_relaxes_controls_or_falls_back(self):
+        create = AsyncMock(
+            side_effect=RuntimeError("Unsupported parameter: temperature")
+        )
+        client = SimpleNamespace(
+            base_url="https://api.openai.com/v1",
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create),
+            ),
+        )
+        configured_fallback = MagicMock()
+        main_fallback = MagicMock()
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=(
+                    "openai",
+                    "gpt-5.6-terra",
+                    "https://api.openai.com/v1",
+                    "test-key",
+                    None,
+                ),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "gpt-5.6-terra"),
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                configured_fallback,
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                main_fallback,
+            ),
+        ):
+            with pytest.raises(
+                RuntimeError,
+                match="Unsupported parameter: temperature",
+            ):
+                await async_call_llm(
+                    provider="openai",
+                    model="gpt-5.6-terra",
+                    messages=[{"role": "user", "content": "hi"}],
+                    temperature=0,
+                    max_tokens=256,
+                    strict_route=True,
+                )
+
+        create.assert_awaited_once()
+        assert create.await_args.kwargs["temperature"] == 0
+        assert (
+            create.await_args.kwargs.get("max_tokens") == 256
+            or create.await_args.kwargs.get("max_completion_tokens") == 256
+        )
+        configured_fallback.assert_not_called()
+        main_fallback.assert_not_called()
+
+
 class TestResolveTaskProviderModel:
     @pytest.mark.parametrize(
         "provider",
@@ -4701,7 +4855,7 @@ class TestCodexAdapterReasoningTranslation:
     """
 
     @staticmethod
-    def _build_adapter():
+    def _build_adapter(*, base_url: str = ""):
         """Build a _CodexCompletionsAdapter with a mocked responses.create()."""
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
@@ -4724,7 +4878,13 @@ class TestCodexAdapterReasoningTranslation:
                 response=SimpleNamespace(
                     status="completed",
                     id="resp_test",
-                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                    system_fingerprint="fp-codex-provider",
+                    usage=SimpleNamespace(
+                        input_tokens=1,
+                        output_tokens=1,
+                        total_tokens=2,
+                        input_tokens_details=SimpleNamespace(cached_tokens=1),
+                    ),
                 ),
             ),
         ]
@@ -4740,6 +4900,7 @@ class TestCodexAdapterReasoningTranslation:
             return _FakeCreateStream()
 
         real_client = MagicMock()
+        real_client.base_url = base_url
         real_client.responses.create = _create
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
         return adapter, captured_kwargs
@@ -4778,6 +4939,53 @@ class TestCodexAdapterReasoningTranslation:
             extra_body={"reasoning": {"effort": "high"}},
         )
         assert captured.get("reasoning") == {"effort": "high", "summary": "auto"}
+
+    def test_codex_adapter_shape_omits_unsupported_scientific_controls(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0,
+            max_tokens=256,
+            extra_body={
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "classification",
+                        "schema": {"type": "object"},
+                        "strict": True,
+                    },
+                }
+            },
+        )
+
+        assert "temperature" not in captured
+        assert "max_tokens" not in captured
+        assert "max_output_tokens" not in captured
+        assert "response_format" not in captured
+
+    def test_direct_openai_responses_preserves_supported_scientific_controls(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.openai.com/v1",
+        )
+
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.25,
+            max_completion_tokens=256,
+        )
+
+        assert captured["temperature"] == 0.25
+        assert captured["max_output_tokens"] == 256
+
+    def test_codex_adapter_preserves_provider_fingerprint_when_exposed(self):
+        adapter, _captured = self._build_adapter()
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert response.system_fingerprint == "fp-codex-provider"
+        assert response.usage.cache_read_input_tokens == 1
 
     def test_reasoning_disabled_omits_reasoning_and_include(self):
         adapter, captured = self._build_adapter()

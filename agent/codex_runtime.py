@@ -982,6 +982,7 @@ def _consume_codex_event_stream(
     * ``id``: ``response.id`` when present.
     * ``incomplete_details``: passed through for ``response.incomplete`` frames.
     * ``error``: passed through for ``response.failed`` frames.
+    * ``system_fingerprint``: copied from the terminal response when exposed.
     * ``model``: from kwargs (the wire model name is not authoritative).
 
     Critically, we never read ``response.output`` from the terminal event for
@@ -1012,6 +1013,7 @@ def _consume_codex_event_stream(
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
+    terminal_system_fingerprint: str = None
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
@@ -1146,6 +1148,11 @@ def _consume_codex_event_stream(
                 if rid is None and isinstance(resp_obj, dict):
                     rid = resp_obj.get("id")
                 terminal_response_id = rid
+                fingerprint = getattr(resp_obj, "system_fingerprint", None)
+                if fingerprint is None and isinstance(resp_obj, dict):
+                    fingerprint = resp_obj.get("system_fingerprint")
+                if isinstance(fingerprint, str):
+                    terminal_system_fingerprint = fingerprint
                 rstatus = getattr(resp_obj, "status", None)
                 if rstatus is None and isinstance(resp_obj, dict):
                     rstatus = resp_obj.get("status")
@@ -1203,6 +1210,7 @@ def _consume_codex_event_stream(
         usage=terminal_usage,
         status=terminal_status,
         id=terminal_response_id,
+        system_fingerprint=terminal_system_fingerprint,
         model=model,
         incomplete_details=terminal_incomplete_details,
         error=terminal_error,

@@ -667,6 +667,10 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post(
+        "/v1/inference/structured",
+        adapter._handle_structured_inference,
+    )
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -1335,6 +1339,7 @@ class TestCapabilitiesEndpoint:
             assert data["runtime"]["split_runtime"] is False
             assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
+            assert data["features"]["structured_inference"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["model_options"] is True
@@ -1343,6 +1348,17 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            assert data["endpoints"]["structured_inference"] == {
+                "method": "POST",
+                "path": "/v1/inference/structured",
+                "boundary": "hermes-structured-no-tools-no-memory-v1",
+                "capabilities": {
+                    "agent_loop": False,
+                    "memory_access": False,
+                    "session_history": False,
+                    "tool_execution": False,
+                },
+            }
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

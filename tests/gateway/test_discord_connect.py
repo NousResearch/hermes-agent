@@ -179,6 +179,7 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
     assert ok is True
     assert created["bot"].intents.members is expected_members_intent
+    assert created["bot"].intents.voice_states is True
     # Safe-default AllowedMentions must be applied on every connect so the
     # bot cannot @everyone from LLM output.  Granular overrides live in the
     # dedicated test_discord_allowed_mentions.py module.
@@ -186,6 +187,61 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
     assert am is not None, "connect() must pass an AllowedMentions to commands.Bot"
     assert am.everyone is False
     assert am.roles is False
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("discord_config", "expected_voice_states"),
+    [
+        ({}, True),
+        ({"voice_fx": {}}, True),
+        ({"voice_fx": {"enabled": False}}, True),
+        ({"voice_channels": {"enabled": True}}, True),
+        ({"voice_channels": {"enabled": False}}, False),
+    ],
+)
+async def test_connect_requests_voice_states_for_voice_channel_capability(
+    monkeypatch, discord_config, expected_voice_states
+):
+    """The voice intent follows all channel behavior, not the optional mixer.
+
+    In particular, the default-mixer ``/voice channel`` path still needs
+    member.voice state. Only an explicit text-only capability opt-out should
+    suppress the intent.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.config.read_raw_config",
+        lambda: {"discord": discord_config},
+    )
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.delenv("DISCORD_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("DISCORD_ALLOWED_ROLES", raising=False)
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    assert await adapter.connect() is True
+    assert created["bot"].intents.voice_states is expected_voice_states
 
     await adapter.disconnect()
 

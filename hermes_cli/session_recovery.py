@@ -1094,13 +1094,33 @@ def _verify_recovered_database(
                 else:
                     verification["errors"].append(message)
 
+        cleanup = orphan_cleanup or {}
+        rebuilt_sessions = int(cleanup.get("sessions_reconstructed") or 0)
+        retained_messages = int(cleanup.get("messages_retained") or 0)
+        removed_messages = int(cleanup.get("messages_removed") or 0)
+        # A wholly unreadable sessions b-tree is recoverable when every output
+        # parent was rebuilt from the surviving messages and none were dropped.
+        # This is still data loss, but it is not structural verification failure.
+        sessions_fully_reconstructed = bool(
+            rebuilt_sessions > 0
+            and counts.get("sessions") == rebuilt_sessions
+            and counts.get("messages") == retained_messages
+            and removed_messages == 0
+        )
+
         for table, table_report in copy_report.items():
             status = table_report.get("status")
             if status not in {"failed", "partial"}:
                 continue
             message = f"{table} copy status is {status}"
             if allow_partial and (
-                status == "partial" or table not in {"sessions", "messages"}
+                status == "partial"
+                or table not in {"sessions", "messages"}
+                or (
+                    table == "sessions"
+                    and status == "failed"
+                    and sessions_fully_reconstructed
+                )
             ):
                 verification["warnings"].append(message)
                 verification["loss_detected"] = True

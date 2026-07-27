@@ -119,6 +119,41 @@ class TestDetectDangerousRm:
         assert key is not None
         assert "delete" in desc.lower()
 
+    def test_rm_flags_after_operands_detected(self):
+        # GNU rm permutes options: `rm build/ -rf` == `rm -rf build/`.
+        # Port of openai/codex#33464.
+        for cmd in (
+            "rm build/ -rf",
+            "rm build/ -r -f",
+            "rm build/ -fR",
+            "rm build/ --recursive --force",
+            "rm build/ --force --recursive",
+            "rm ~/projects -rf",
+            "sudo rm build/ -rf",
+            "rm -f build/ -r",
+            "rm one two three -rf",
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"{cmd!r} should require approval"
+            assert "delete" in desc.lower()
+
+    def test_rm_flags_after_operands_no_false_positives(self):
+        for cmd in (
+            # after a bare `--`, -rf-looking tokens are literal filenames
+            "rm -- -weird-r-file",
+            "rm -f -- -r-file",
+            # a later pipeline/command segment's flags don't belong to rm
+            "rm foo | grep -r bar",
+            "rm foo; ls -lart",
+            # long options whose `r` is not whitespace-anchored
+            "npm rm somepkg --registry=https://registry.npmjs.org",
+            "rm old.log --verbose",
+            # plain multi-operand deletes stay safe
+            "rm build/file.txt other.txt",
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"{cmd!r} should be safe, got: {desc}"
+
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):

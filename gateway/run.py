@@ -11975,6 +11975,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 
+        if canonical == "approvals":
+            return await self._handle_approvals_command(event)
+
         if canonical == "model":
             return await self._handle_model_command(event)
 
@@ -21018,6 +21021,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _raw_progress_limit = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
             except Exception:
                 _raw_progress_limit = 4000
+            # Per-chat resolution (relay adapter fronting N platforms): the cap
+            # and length unit follow the chat's underlying platform. Native
+            # adapters return their scalar/property unchanged.
+            if isinstance(adapter, BasePlatformAdapter):
+                try:
+                    _raw_progress_limit = int(
+                        adapter.max_message_length_for_chat(source.chat_id) or 4000
+                    )
+                    _progress_len_fn = adapter.message_len_fn_for_chat(source.chat_id)
+                except Exception:
+                    pass
             # Leave a little room for platform quirks / formatting.  For tiny
             # test adapters keep the limit usable instead of clamping to 500+.
             _PROGRESS_TEXT_LIMIT = max(

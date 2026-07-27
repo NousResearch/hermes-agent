@@ -2170,3 +2170,75 @@ class Test408RequestTimeout:
         assert result.should_fallback is True
         assert result.should_compress is False
 
+
+# ── Test: throttle vs overflow disambiguation + new overflow shapes ─────
+# Port of anomalyco/opencode#37848 (expand context overflow patterns +
+# rate-limit exclusion guard).
+
+class TestThrottleVsOverflowDisambiguation:
+    """Throttle messages that mention tokens must NOT route to compression."""
+
+    def test_bedrock_throttling_too_many_tokens_is_rate_limit(self):
+        # AWS Bedrock (and some proxies) surface throttling as
+        # "Throttling error: Too many tokens, please wait before trying
+        # again." — the "too many tokens" fragment sits in
+        # _CONTEXT_OVERFLOW_PATTERNS, so before the "throttling" rate-limit
+        # pattern this compressed a healthy session on every throttle.
+        e = Exception(
+            "Throttling error: Too many tokens, please wait before trying again."
+        )
+        result = classify_api_error(e, provider="bedrock", model="claude")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_compress is False
+
+    def test_plain_too_many_tokens_still_overflow(self):
+        # Without any throttle wording, "Too many tokens" remains a
+        # context-overflow signal (Z.AI / GLM family wording).
+        e = Exception("Too many tokens")
+        result = classify_api_error(e, provider="zai", model="glm-5")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+
+class TestExpandedOverflowPatterns:
+    """New provider overflow wordings route into compression recovery."""
+
+    def test_maximum_allowed_input_length_is_overflow(self):
+        # Together/Fireworks-style wording — matched no pattern before.
+        e = Exception(
+            "Input length 131393 exceeds the maximum allowed input length "
+            "of 131040 tokens."
+        )
+        result = classify_api_error(e, provider="together", model="m")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_request_too_large_message_only_is_payload_too_large(self):
+        # Anthropic's structured 413 type re-wrapped by a proxy with no
+        # status attribute — was falling through to `unknown`.
+        e = Exception(
+            '{"error":{"type":"request_too_large",'
+            '"message":"Request exceeds the maximum size"}}'
+        )
+        result = classify_api_error(e, provider="anthropic", model="m")
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
+    def test_longer_than_context_length_still_overflow(self):
+        # Regression guard for wordings that already matched.
+        e = Exception(
+            "The input (516368 tokens) is longer than the model's context "
+            "length (262144 tokens)."
+        )
+        result = classify_api_error(e, provider="openrouter", model="m")
+        assert result.reason == FailoverReason.context_overflow
+
+    def test_configured_context_size_still_overflow(self):
+        e = Exception(
+            "Prompt has 5,958,968 tokens, but the configured context size "
+            "is 256,000 tokens"
+        )
+        result = classify_api_error(e, provider="ollama", model="m")
+        assert result.reason == FailoverReason.context_overflow
+
+

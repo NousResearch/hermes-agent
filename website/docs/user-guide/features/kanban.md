@@ -420,8 +420,9 @@ streak. This default, independent streak only applies when the task has no
 explicit `max_retries` set. Once a task sets an explicit `max_retries=N`, that
 is a cap on the task's *total* retry budget: violations count into the same
 unified failure counter as crashes and timeouts, so the task blocks on its Nth
-non-successful attempt overall, regardless of how many of those attempts were
-violations versus other failure kinds.
+non-neutral failure overall, regardless of how many failures were violations
+versus other failure kinds. Rate-limited and stale/reclaimed requeues remain
+neutral and do not consume either retry budget.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
@@ -1003,7 +1004,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
 | `protocol_violation` | `{pid, claimer, exit_code, protocol_violation}` | Worker exited successfully while the task was still `running`, usually because it answered without calling `kanban_complete` or `kanban_block`. Emitted on every violation (the payload's `protocol_violation: true` marker is copied into the run metadata). Without an explicit per-task `max_retries`, the violation is checked against its own violation-only streak — up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` (default 3) *consecutive* violations — and the task simply returns to `ready` until the streak reaches the bound, at which point the dispatcher also emits `gave_up` and auto-blocks. With an explicit `max_retries=N` set, the violation instead counts into the same unified `consecutive_failures` total as any other failure kind, and blocks on the Nth total failure. |
-| `gave_up` | `{failures, effective_limit, limit_source, error}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. |
+| `gave_up` | `{failures, effective_limit, limit_source, error}` | Circuit breaker fired after N consecutive non-neutral failures. Task auto-blocks with the last error. Rate-limited and stale/reclaimed requeues do not increment this counter. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. |
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.
 

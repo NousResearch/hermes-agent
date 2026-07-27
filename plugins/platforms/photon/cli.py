@@ -127,10 +127,23 @@ def _run_device_login(args: argparse.Namespace) -> int:
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
-    # 1. Login (skip if we already have a token).
+    # 1. Login (skip if we already have a valid token).
     token = photon_auth.load_photon_token()
+    if token:
+        # Validate the existing token — the dashboard token has a short TTL
+        # and can go stale between runs (observed: ~3-4 days).  Reusing a
+        # stale token causes every management call to fail with 401 and
+        # leaves the operator confused about why setup "succeeds" but nothing
+        # works.  Check upfront so we fail fast and fall back to fresh login.
+        print("[1/5] Checking existing Photon token...")
+        if photon_auth.check_photon_token_valid(token):
+            print("  ✓ token is valid")
+        else:
+            print("  ✗ token is stale (dashboard rejected it) — re-authenticating")
+            photon_auth.clear_photon_token()
+            token = None
     if not token:
-        print("[1/5] No Photon token found — running device login...")
+        print("[1/5] No valid Photon token found — running device login...")
         rc = _run_device_login(args)
         if rc != 0:
             return rc
@@ -269,6 +282,17 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         rc = _install_sidecar()
         if rc != 0:
             return rc
+
+    # 7. Ensure the photon platform is enabled in config.yaml so the
+    #    gateway loads it on next start.  Without this the channel stays
+    #    disabled even after a successful provisioning run, silently
+    #    keeping iMessage offline.
+    try:
+        from hermes_cli.config import write_platform_config_field
+        write_platform_config_field("photon", "enabled", True, raw=True)
+        print("  ✓ photon platform enabled in config.yaml")
+    except Exception as e:
+        print(f"      (could not enable Photon in config: {e})", file=sys.stderr)
 
     print()
     print("✓ Photon setup complete.")

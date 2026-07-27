@@ -1301,17 +1301,23 @@ class RelayAdapter(BasePlatformAdapter):
         thread_id = metadata.get("thread_id")
         if not thread_id:
             return metadata
-        # A real thread carries a thread_id distinct from the triggering message
-        # ts (run.py stamps that ts as metadata["message_id"] on Slack). Only the
-        # synthetic self-anchor (thread_id == that ts, or no distinguishing anchor
-        # present) is stripped; a genuine thread is honoured.
-        anchor = metadata.get("message_id")
-        if anchor is not None and str(thread_id) != str(anchor):
-            return metadata
-        cleaned = dict(metadata)
-        cleaned.pop("thread_id", None)
-        cleaned.pop("thread_ts", None)
-        return cleaned
+        # Trust the run.py stamp (QA-5). The threading MODE is decided in ONE
+        # place — run.py's _resolve_progress_thread_id, which reads
+        # platforms.slack.extra.reply_in_thread:
+        #   * flat mode (reply_in_thread=false): the synthetic self-anchor is
+        #     suppressed THERE, so prompt metadata arrives with NO thread_id and
+        #     this helper is a no-op — the card posts flat at the DM root;
+        #   * thread-per-message mode (default): metadata.thread_id is stamped
+        #     for the whole turn, and on the FIRST turn it legitimately equals
+        #     the triggering message's ts (the synthetic root IS the thread).
+        # The previous unconditional thread_id == message_id strip re-derived
+        # the mode here and got it wrong for thread-per-message: the approval
+        # card (and its resolved-state swap) was exiled to the DM root while
+        # progress bubbles honoured the thread (2026-07-27 mixed-placement
+        # screenshot). Mirror native SlackAdapter._resolve_thread_ts, which
+        # only performs the self-anchor strip when reply_in_thread=false — a
+        # state this lane never sees with an anchor present, per the above.
+        return metadata
 
     async def _send_prompt(
         self,

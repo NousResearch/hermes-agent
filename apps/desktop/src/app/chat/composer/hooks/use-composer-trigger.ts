@@ -53,6 +53,11 @@ export function useComposerTrigger({
 }: UseComposerTriggerOptions) {
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
+  // The list highlights its first row on open, which is a suggestion rather
+  // than a choice. This records that the user moved the highlight themselves,
+  // which is what lets Enter accept a completion in a free-text argument stage
+  // without stealing prose from everyone who never touched the arrows.
+  const [triggerActiveExplicit, setTriggerActiveExplicit] = useState(false)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
   // Set synchronously in keydown when the open trigger popover consumes a
   // navigation/control key (Arrow/Enter/Tab/Escape). The subsequent keyup must
@@ -62,6 +67,11 @@ export function useComposerTrigger({
   // used instead of reading `trigger` in keyup because by keyup time React has
   // re-rendered and the handler closure sees the post-keydown state.
   const triggerKeyConsumedRef = useRef(false)
+
+  const resetTriggerActive = useCallback(() => {
+    setTriggerActive(0)
+    setTriggerActiveExplicit(false)
+  }, [])
 
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current
@@ -80,7 +90,7 @@ export function useComposerTrigger({
     if (!rawText.includes('@') && !rawText.includes('/')) {
       if (trigger) {
         setTrigger(null)
-        setTriggerActive(0)
+        resetTriggerActive()
       }
 
       return
@@ -109,9 +119,9 @@ export function useComposerTrigger({
     // caret move (mouseup) or a stray refresh — must preserve the user's
     // current selection instead of snapping back to the first item.
     if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
-      setTriggerActive(0)
+      resetTriggerActive()
     }
-  }, [editorRef, trigger])
+  }, [editorRef, resetTriggerActive, trigger])
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
     trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
@@ -147,7 +157,13 @@ export function useComposerTrigger({
   const closeTrigger = () => {
     setTrigger(null)
     setTriggerItems([])
-    setTriggerActive(0)
+    resetTriggerActive()
+  }
+
+  /** Step the highlight, marking it as the user's own deliberate pick. */
+  const moveTriggerActive = (delta: number) => {
+    setTriggerActiveExplicit(true)
+    setTriggerActive(idx => (idx + delta + triggerItems.length) % triggerItems.length)
   }
 
   useEffect(() => {
@@ -358,12 +374,14 @@ export function useComposerTrigger({
     ascendTriggerPath,
     closeTrigger,
     commitTypedSlashDirective,
+    moveTriggerActive,
     refreshTrigger,
     replaceTriggerWithChip,
     setTriggerActive,
     slashFreeTextArgStage,
     trigger,
     triggerActive,
+    triggerActiveExplicit,
     triggerItems,
     triggerKeyConsumedRef,
     triggerLoading

@@ -17648,14 +17648,36 @@ def _wake_resume_if_owner(owner: "Transport") -> bool:
         return False
 
 
+def _persist_wake_enabled(enabled: bool) -> bool:
+    """Write ``wake_word.enabled`` to config.yaml.
+
+    Only called for explicit user gestures (the desktop ear toggle, ``/wake
+    on|off``) — never from passive auto-arm paths, so a mic can't become
+    persistently enabled without a deliberate click.
+    """
+    try:
+        from cli import save_config_value
+
+        return bool(save_config_value("wake_word.enabled", enabled))
+    except Exception as e:
+        logger.warning("wake: failed to persist wake_word.enabled=%s: %s", enabled, e)
+        return False
+
+
 @method("wake.start")
 def _(rid, params: dict) -> dict:
     """Arm the wake-word listener for the calling surface ("tui" | "gui").
 
     Idempotent and gated: returns ``{started: False, reason}`` when the wake
     word is disabled, scoped to another surface, or its deps/mic aren't ready.
+
+    ``persist: true`` marks an explicit user gesture (toggle click, /wake on):
+    when the feature is disabled in config, it flips ``wake_word.enabled`` on
+    and saves it before arming, so the choice sticks for future sessions.
+    Passive auto-arm callers omit it and keep getting the config-gated refusal.
     """
     surface = str(params.get("surface") or "auto").strip().lower()
+    persist = bool(params.get("persist"))
     transport = current_transport() or _stdio_transport
     try:
         from tools.wake_word import (
@@ -17671,10 +17693,21 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, f"wake module unavailable: {e}")
 
     cfg = load_wake_word_config()
+    enabled_persisted = False
+    if persist and not cfg.get("enabled"):
+        enabled_persisted = _persist_wake_enabled(True)
+        if enabled_persisted:
+            cfg = dict(cfg)
+            cfg["enabled"] = True
     if not wake_surface_enabled(surface, cfg):
-        logger.info("wake.start(%s): disabled for surface (enabled=%s, surface=%s)",
-                    surface, cfg.get("enabled"), cfg.get("surface"))
-        return _ok(rid, {"started": False, "reason": "disabled_for_surface"})
+        # Distinguish "feature off in config" (reason: disabled — a persist:true
+        # retry can turn it on) from "scoped to a different surface" (reason:
+        # disabled_for_surface — respects an explicit wake_word.surface choice,
+        # which persist does NOT override).
+        reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
+        logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
+                    surface, reason, cfg.get("enabled"), cfg.get("surface"))
+        return _ok(rid, {"started": False, "reason": reason})
     reqs = check_wake_word_requirements(cfg)
     if not reqs["available"]:
         logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
@@ -17750,16 +17783,34 @@ def _(rid, params: dict) -> dict:
         "phrase": reqs["phrase"],
         "provider": reqs["provider"],
         "owner_surface": surface,
+        "enabled_persisted": enabled_persisted,
     })
 
 
 @method("wake.stop")
 def _(rid, params: dict) -> dict:
+    """Stop this surface's listener.
+
+    ``persist: true`` (explicit user gesture) also writes
+    ``wake_word.enabled: false`` to config.yaml so auto-arm stays off in
+    future sessions — the toggle is the config, not just the live listener.
+    """
     transport = current_transport() or _stdio_transport
     stopped = _release_wake_for_transport(transport)
+    disabled_persisted = False
+    if bool(params.get("persist")):
+        try:
+            from tools.wake_word import load_wake_word_config
+
+            currently_enabled = bool(load_wake_word_config().get("enabled"))
+        except Exception:
+            currently_enabled = True
+        if currently_enabled:
+            disabled_persisted = _persist_wake_enabled(False)
     return _ok(rid, {
         "stopped": stopped,
         "reason": None if stopped else "not_owner",
+        "disabled_persisted": disabled_persisted,
     })
 
 

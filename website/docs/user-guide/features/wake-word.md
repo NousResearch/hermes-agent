@@ -56,7 +56,11 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"
 /wake off       # stop listening
 ```
 
-Or enable it permanently in `~/.hermes/config.yaml`:
+In the desktop app, click the ear icon in the composer.
+
+The toggle IS the setting: turning the wake word on or off — via `/wake` or the
+desktop ear button — also writes `wake_word.enabled` to `~/.hermes/config.yaml`,
+so your choice persists across sessions. You can also flip it by hand:
 
 ```yaml
 wake_word:

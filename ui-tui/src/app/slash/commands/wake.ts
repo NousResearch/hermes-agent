@@ -11,7 +11,8 @@ const isWakeSub = (value: string): value is WakeSub => (WAKE_SUBCOMMANDS as read
 // Friendly text for the gateway's wake.start refusal codes. Unknown codes
 // fall through to the raw reason so new server-side codes stay visible.
 const START_REASON_TEXT: Record<string, string> = {
-  disabled_for_surface: 'disabled for this surface (config wake_word.enabled / wake_word.surface)',
+  disabled: 'disabled (config wake_word.enabled)',
+  disabled_for_surface: 'scoped to another surface (config wake_word.surface)',
   not_owner: 'another surface owns the listener',
   owned: 'another surface owns the listener',
   unavailable: 'unavailable'
@@ -50,8 +51,11 @@ const statusLine = (r: WakeStatusResponse): string => {
 const runOn = (ctx: SlashRunCtx): void => {
   setWakeUserDisabled(false)
 
+  // persist: true — an explicit /wake on writes wake_word.enabled to config
+  // so the choice survives restarts (the backend only persists on gesture
+  // paths; reconnect auto-arm never does).
   ctx.gateway
-    .rpc<WakeStartResponse>('wake.start', { surface: 'tui' })
+    .rpc<WakeStartResponse>('wake.start', { persist: true, surface: 'tui' })
     .then(
       ctx.guarded<WakeStartResponse>(r => {
         if (!r.started) {
@@ -60,8 +64,9 @@ const runOn = (ctx: SlashRunCtx): void => {
 
         const phrase = r.phrase ? ` for “${r.phrase}”` : ''
         const provider = r.provider ? ` · ${r.provider}` : ''
+        const saved = r.enabled_persisted ? ' · enabled in config' : ''
 
-        ctx.transcript.sys(`wake: listening${phrase}${provider}`)
+        ctx.transcript.sys(`wake: listening${phrase}${provider}${saved}`)
       })
     )
     .catch(ctx.guardedErr)
@@ -73,16 +78,18 @@ const runOff = (ctx: SlashRunCtx): void => {
   setWakeUserDisabled(true)
 
   ctx.gateway
-    .rpc<WakeStopResponse>('wake.stop', {})
+    .rpc<WakeStopResponse>('wake.stop', { persist: true })
     .then(
       ctx.guarded<WakeStopResponse>(r => {
+        const saved = r.disabled_persisted ? ' · disabled in config' : ''
+
         if (r.stopped) {
-          return ctx.transcript.sys('wake: listener off (won’t re-arm this session)')
+          return ctx.transcript.sys(`wake: listener off${saved}`)
         }
 
         const reason = r.reason === 'not_owner' ? 'this surface doesn’t own the listener' : (r.reason ?? 'not running')
 
-        ctx.transcript.sys(`wake: nothing to stop — ${reason}`)
+        ctx.transcript.sys(`wake: nothing to stop — ${reason}${saved}`)
       })
     )
     .catch(ctx.guardedErr)

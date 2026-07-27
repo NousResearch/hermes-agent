@@ -1,8 +1,7 @@
 import { closeActiveTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { closeWorkspaceTab } from '@/components/pane-shell/tree/store'
 import { isFocusWithin } from '@/lib/keybinds/combo'
-import { $artifactTabs } from '@/store/artifacts'
-import { $filePreviewTabs, $previewTarget, closeActiveRightRailTab } from '@/store/preview'
+import { $previewTabs, closeActiveRightRailTab } from '@/store/preview'
 import { closeSessionTile, nextSessionTileForWorkspace } from '@/store/session-states'
 
 /**
@@ -28,12 +27,10 @@ export function closeActiveTab(loadSessionIntoWorkspace?: (storedSessionId: stri
     return true
   }
 
-  // Prefer tab *presence* over the derived active file target. After the live
-  // preview is cleared, `$rightRailActiveTabId` can stay on `preview` while
-  // file tabs remain (the rail UI falls back to tabs[0]). Gating only on
-  // `$filePreviewTarget` made ⌘W fall through to closeWorkspaceTab() and look
-  // broken with a file tab still on screen.
-  if ($previewTarget.get() || $filePreviewTabs.get().length > 0 || $artifactTabs.get().length > 0) {
+  // Gate on tab *presence*, not on the selection: a stale `$rightRailActiveTabId`
+  // would otherwise make ⌘W fall through to closeWorkspaceTab() and look broken
+  // with a tab still on screen. The store resolves which tab that is.
+  if ($previewTabs.get().length > 0) {
     return closeActiveRightRailTab()
   }
 

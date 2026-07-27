@@ -126,9 +126,9 @@ function TileChat({
   const scope = useMemo<ComposerScope>(
     () => ({
       $awaitingInput: sessionAwaitingInput(runtimeId),
+      $messages: view.$messages,
       attachments,
       popoutAllowed: false,
-      readMessages: () => view.$messages.get(),
       target: `tile:${storedSessionId}`
     }),
     [attachments, runtimeId, storedSessionId, view.$messages]

@@ -1473,10 +1473,7 @@ export interface Translations {
     open: string
   }
 
-  artifactPane: {
-    tabFallback: string
-    modePreview: string
-    modeSource: string
+  artifactPreview: {
     versionOf: (current: number, total: number) => string
     olderVersion: string
     newerVersion: string

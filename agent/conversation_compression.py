@@ -2040,14 +2040,13 @@ def compress_context(
             # (same startswith gate as the restore path); otherwise the
             # request layer falls back to the legacy single-breakpoint
             # layout with the prompt bytes untouched.
-            try:
-                from agent.system_prompt import build_system_prompt_parts as _build_parts
+            from agent.system_prompt import reconstruct_static_prefix
 
-                _static = _build_parts(agent, system_message=system_message)["stable"]
-                if _static and cached_system_prompt.startswith(_static):
-                    agent._cached_system_prompt_static = _static
-            except Exception:
-                pass
+            reconstruct_static_prefix(
+                agent,
+                system_message=system_message,
+                log_label="compression keep-prompt",
+            )
         else:
             new_system_prompt = agent._build_system_prompt(system_message)
             agent._cached_system_prompt = new_system_prompt

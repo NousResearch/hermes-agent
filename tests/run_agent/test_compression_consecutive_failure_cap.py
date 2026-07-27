@@ -1,12 +1,13 @@
 """Regression test: consecutive-failure compression cap is preserved.
 
-The fix for #72451 resets ``compression_attempts`` after every successful
-model response, but the consecutive-failure anti-thrash cap must still stop
-repeated no-progress compressions that never reach a model response.
+The fix for #72451 only resets ``compression_attempts`` when the most
+recent compression materially reduced context AND the model responded
+successfully.  Identity/no-progress compressions still count toward the
+consecutive-failure cap.
 
-This test simulates a pre-API compression loop where ``should_compress``
-always returns True and the model never gets a chance to respond between
-restart cycles — the shared counter must stop at ``max_compression_attempts``.
+Tests verify:
+- Identity preflight loop stops at ``max_compression_attempts``
+- Effective compressions reset the streak after a successful model response
 """
 
 from __future__ import annotations
@@ -70,15 +71,7 @@ def _make_tool_defs(*names: str) -> list:
 
 
 def _preflight_pressure_compressor() -> MagicMock:
-    """Compressor that always needs compression and never defers.
-
-    ``should_defer_preflight_to_real_usage`` returns False so the pre-API
-    pressure gate fires on every turn-start check.
-
-    To prevent the insufficient-progress blocker from stopping the preflight
-    loop before the counter cap kicks in, ``_compression_warrants_another_
-    preflight_pass`` must also return True on every call.
-    """
+    """Compressor that always needs compression and never defers."""
     compressor = MagicMock()
     compressor.protect_first_n = 3
     compressor.protect_last_n = 20
@@ -124,20 +117,12 @@ def agent():
 
 class TestConsecutiveFailureCompressionCap:
 
-    def test_preflight_compression_capped_during_restart_loop(self, agent):
-        """Pre-API compression → restart → pre-API again → … → cap stops loop.
+    def test_identity_preflight_stops_at_cap(self, agent):
+        """Identity preflight compression stops at max_compression_attempts.
 
-        When the preflight gate compresses and restarts repeatedly without
-        the model ever returning a valid response (because the compressed
-        request still triggers a compression restart), the shared counter
-        stops the loop at ``max_compression_attempts`` — the insufficient-
-        progress blocker arms as a secondary backstop, and no model response
-        reaches the ``compression_attempts = 0`` reset point.
-
-        The exact number of preflight compactions depends on internal
-        progress tracking.  This test verifies the cap is a genuine
-        upper bound: no more than ``max_compression_attempts`` preflight
-        passes can run.
+        When the compressor returns messages unchanged, the effectiveness
+        tracker never arms, so the counter keeps climbing.  The
+        insufficient-progress blocker arms as a secondary backstop.
         """
         assert agent.max_compression_attempts == 3
 
@@ -145,78 +130,55 @@ class TestConsecutiveFailureCompressionCap:
 
         def _fake_compress(messages, system_message, **_kwargs):
             compress_calls.append(len(messages))
-            # Return identity — no material progress, so the insufficient-
-            # progress guard arms after the second pass.
             return messages, "compressed prompt"
 
-        # Override the progress gate to prevent it from stopping early.
-        with patch(
-            "agent.conversation_loop._compression_warrants_another_preflight_pass",
-            return_value=True,
+        with (
+            patch("agent.conversation_loop._compression_warrants_another_preflight_pass", return_value=True),
+            patch.object(agent, "_compress_context", side_effect=_fake_compress),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.handle_function_call", lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True})),
         ):
-            with (
-                patch.object(agent, "_compress_context", side_effect=_fake_compress),
-                patch.object(agent, "_persist_session"),
-                patch.object(agent, "_save_trajectory"),
-                patch.object(agent, "_cleanup_task_resources"),
-                patch(
-                    "run_agent.handle_function_call",
-                    lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
-                ),
-            ):
-                # Model always returns a tool call so the loop continues,
-                # but the preflight fires before the model is ever called.
-                agent.client.chat.completions.create.side_effect = [
-                    _stop_response(),
-                ]
-                result = agent.run_conversation("do work")
+            agent.client.chat.completions.create.side_effect = [_stop_response()]
+            result = agent.run_conversation("do work")
 
-        # The cap caps at max_compression_attempts.  If it were higher,
-        # the insufficient-progress guard would still stop it — either way,
-        # ≤ 3 is the correct contract.
         assert len(compress_calls) <= agent.max_compression_attempts, (
-            f"preflight loop must stop at or before max_compression_attempts "
-            f"({agent.max_compression_attempts}), got {len(compress_calls)}"
+            f"identity preflight loop must stop at or before "
+            f"max_compression_attempts ({agent.max_compression_attempts}), "
+            f"got {len(compress_calls)}"
         )
         assert result.get("completed") is True
 
-    def test_failure_cap_preserved_after_reset_on_success(self, agent):
-        """Consecutive failures still capped even after a success cycle.
+    def test_effective_compression_resets_streak_on_success(self, agent):
+        """Effective compression + successful model response → streak reset.
 
-        A successful model response resets the counter, but if a subsequent
-        error-handler path triggers compression retries without reaching
-        another valid response, those retries are still capped at
-        ``max_compression_attempts``.
+        Post-tool compactions that return new message lists (material progress)
+        reset the counter after each successful model response.  Two tool
+        iterations → two effective compactions → both reset.
         """
         assert agent.max_compression_attempts == 3
 
         compress_calls = []
 
-        def _fake_compress(messages, system_message, **_kwargs):
+        def _fake_compress_effective(messages, system_message, **_kwargs):
             compress_calls.append(len(messages))
-            return messages, "compressed prompt"
+            return list(messages), "compressed prompt"
 
-        # First turn: defer preflight so only post-tool gate fires.
         agent.context_compressor.should_defer_preflight_to_real_usage.return_value = True
 
         responses = [_tool_response(0), _tool_response(1), _stop_response()]
 
         with (
-            patch.object(agent, "_compress_context", side_effect=_fake_compress),
+            patch.object(agent, "_compress_context", side_effect=_fake_compress_effective),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch(
-                "run_agent.handle_function_call",
-                lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
-            ),
+            patch("run_agent.handle_function_call", lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True})),
         ):
             agent.client.chat.completions.create.side_effect = responses
             result = agent.run_conversation("do work")
 
-        # 2 tool iterations → 2 post-tool compactions.  Both are followed
-        # by successful model responses, so the counter resets each time.
-        # The stop response also resets the counter.
-        # Total: 2 compactions, both reset before the turn ends.
+        # Both compactions are effective, so each resets after model response.
         assert len(compress_calls) == 2
         assert result.get("completed") is True

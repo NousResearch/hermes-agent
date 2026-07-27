@@ -2,19 +2,17 @@
 
 The pre-API pressure gate, the overflow/413 error handlers, and the post-tool
 compaction gate all share ``compression_attempts`` as a per-turn backstop,
-bounded by the resolved ``compression.max_attempts`` cap (default 3).  Before
-the fix the post-tool path neither checked nor incremented the counter, so a
-long tool loop could compact after every tool response for the lifetime of
-the turn.
+bounded by the resolved ``compression.max_attempts`` cap (default 3).
 
-These tests drive ``run_conversation()`` through real tool iterations with a
-compressor that always demands compression and assert ``_compress_context``
-fires at most ``max_compression_attempts`` times per turn — no source
-inspection, only observable behavior.
+Identity/no-progress compactions that return the same messages unchanged
+count toward the consecutive-failure cap — they stop at
+``max_compression_attempts``.  Materially-effective compactions that actually
+reduce context reset the streak after a successful model response (#72451).
 """
 
 from __future__ import annotations
 
+import copy
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -118,17 +116,30 @@ def agent():
     return a
 
 
-def _run_tool_loop(agent, n_tool_iterations: int):
-    """Drive one turn: ``n_tool_iterations`` tool calls, then a stop."""
+def _run_tool_loop(agent, n_tool_iterations: int, *, effective=False):
+    """Drive one turn: ``n_tool_iterations`` tool calls, then a stop.
+
+    When ``effective=True``, the compressor returns a shallow copy of
+    ``messages`` so the effectiveness tracker sees material progress
+    and resets the streak after each successful model response.
+    """
     responses = [_tool_response(i) for i in range(n_tool_iterations)]
     responses.append(_stop_response())
     agent.client.chat.completions.create.side_effect = responses
 
     compress_calls = []
 
-    def _fake_compress(messages, system_message, **_kwargs):
+    def _fake_compress_identity(messages, system_message, **_kwargs):
         compress_calls.append(len(messages))
         return messages, "compressed prompt"
+
+    def _fake_compress_effective(messages, system_message, **_kwargs):
+        compress_calls.append(len(messages))
+        # Return a shallow copy — a new list object, so the identity
+        # check ``messages is not _input`` detects material progress.
+        return list(messages), "compressed prompt"
+
+    _fake_compress = _fake_compress_effective if effective else _fake_compress_identity
 
     with (
         patch.object(agent, "_compress_context", side_effect=_fake_compress),
@@ -151,42 +162,40 @@ def _run_tool_loop(agent, n_tool_iterations: int):
 
 
 class TestPostToolCompressionAttemptCap:
-    def test_post_tool_compression_allowed_beyond_default_cap(self, agent):
-        """7 tool iterations under constant pressure → all 7 compactions run.
 
-        Each maintenance compaction is followed by a successful model
-        response, so the consecutive-failure counter resets.  The per-turn
-        anti-thrash budget no longer acts as a lifetime success quota
-        (#72451).
+    # ── Identity (no-progress) compressor — cap enforced ──────────────
+
+    def test_identity_compressor_capped_at_default_three(self, agent):
+        """7 tool iterations, identity compressor → exactly 3 compactions.
+
+        The compressor returns messages unchanged, so the effectiveness
+        tracker never resets the streak.  The per-turn cap of 3 acts as
+        the anti-thrash backstop for no-progress cycles.
         """
-        assert agent.max_compression_attempts == 3  # config default
+        assert agent.max_compression_attempts == 3
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=7)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 7, (
-            "effective maintenance compactions must run every time after "
-            f"a successful model response; got {len(compress_calls)}"
+        assert len(compress_calls) == 3, (
+            "identity/no-progress compactions must stop at the per-turn "
+            f"cap (3), got {len(compress_calls)}"
         )
 
-    def test_post_tool_compression_honors_configured_cap_for_failures(self, agent):
-        """A raised compression.max_attempts cap lets more consecutive-failure
-        rounds run, but successful cycles still reset."""
+    def test_identity_compressor_honors_configured_cap(self, agent):
+        """A raised cap allows more no-progress rounds before stopping."""
         agent.max_compression_attempts = 5
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=8)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 8
+        assert len(compress_calls) == 5
 
-    def test_post_tool_compression_shares_counter_with_pre_api_gate(self, agent):
-        """Pre-API and post-tool sites still share one counter.
+    def test_identity_compressor_shares_counter_with_pre_api_gate(self, agent):
+        """Pre-API and post-tool sites share the same failure streak.
 
-        Both sites increment ``compression_attempts`` and both benefit from
-        the reset after a successful model response.  The combined total is
-        not artificially capped at ``max_compression_attempts`` when each
-        cycle succeeds (#72451).
+        The pre-API gate fires once (defer disabled), then the post-tool
+        gate fires for the remaining budget.  Identity compressions mean
+        no reset — the combined total stays at ``max_compression_attempts``.
         """
-        # First pre-API check does not defer → pre-API gate fires once;
-        # afterwards defer again so only the post-tool gate keeps firing.
         defers = iter([False])
         agent.context_compressor.should_defer_preflight_to_real_usage.side_effect = (
             lambda _t: next(defers, True)
@@ -194,17 +203,69 @@ class TestPostToolCompressionAttemptCap:
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=7)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 8, (
-            "pre-API and post-tool share one counter but successful "
-            "model responses reset it; expected 1 pre-API + 7 post-tool "
-            f"= 8 compactions, got {len(compress_calls)}"
+        assert len(compress_calls) == 3, (
+            "pre-API and post-tool together must respect the shared "
+            f"cap for identity compressions; got {len(compress_calls)}"
         )
 
-    def test_cap_is_per_turn_not_per_session(self, agent):
+    def test_identity_cap_is_per_turn_not_per_session(self, agent):
         """A fresh turn gets a fresh attempt budget."""
         _result, first = _run_tool_loop(agent, n_tool_iterations=5)
         agent.client.chat.completions.create.side_effect = None
         _result, second = _run_tool_loop(agent, n_tool_iterations=5)
+
+        assert len(first) == 3
+        assert len(second) == 3
+
+    # ── Effective compressor — streak reset on success ────────────────
+
+    def test_effective_compressor_allows_more_than_three_cycles(self, agent):
+        """7 tool iterations, effective compressor → all 7 compactions run.
+
+        Each compaction returns a new messages list (material progress),
+        so the streak resets after every successful model response.
+        Long tool turns can sustain unlimited maintenance compactions (#72451).
+        """
+        assert agent.max_compression_attempts == 3
+        result, compress_calls = _run_tool_loop(
+            agent, n_tool_iterations=7, effective=True,
+        )
+
+        assert result["completed"] is True
+        assert len(compress_calls) == 7, (
+            "effective compactions must reset the streak after every "
+            f"successful model response; got {len(compress_calls)}"
+        )
+
+    def test_effective_compressor_shares_counter_with_pre_api_gate(self, agent):
+        """Effective compactions from both sites reset after success.
+
+        1 pre-API (effective) + 7 post-tool (effective) = 8 compactions
+        total, because each cycle resets the streak.
+        """
+        defers = iter([False])
+        agent.context_compressor.should_defer_preflight_to_real_usage.side_effect = (
+            lambda _t: next(defers, True)
+        )
+        result, compress_calls = _run_tool_loop(
+            agent, n_tool_iterations=7, effective=True,
+        )
+
+        assert result["completed"] is True
+        assert len(compress_calls) == 8, (
+            "effective pre-API + post-tool cycles must each reset; "
+            f"expected 8, got {len(compress_calls)}"
+        )
+
+    def test_effective_cap_per_turn_fresh_budget(self, agent):
+        """Effective compressions per-turn budget is independent across turns."""
+        _result, first = _run_tool_loop(
+            agent, n_tool_iterations=5, effective=True,
+        )
+        agent.client.chat.completions.create.side_effect = None
+        _result, second = _run_tool_loop(
+            agent, n_tool_iterations=5, effective=True,
+        )
 
         assert len(first) == 5
         assert len(second) == 5

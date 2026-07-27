@@ -24948,6 +24948,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
+    # Lifecycle ledger (NS-608): report if the previous gateway life died
+    # uncleanly (SIGKILL / OOM / VM death — no exit path ran), then claim
+    # the sentinel for this life. Placed after the PID-file/lock claim so
+    # only the authoritative gateway for this HERMES_HOME touches the
+    # sentinel — a --replace loser exiting above must not clobber it.
+    try:
+        from gateway.lifecycle_ledger import record_startup as _lifecycle_record_startup
+        _lifecycle_record_startup()
+    except Exception as _lc_exc:
+        logger.debug("Lifecycle ledger startup record failed: %s", _lc_exc)
+
     try:
         from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
 
@@ -25263,6 +25274,16 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from gateway.status import remove_pid_file, release_gateway_runtime_lock
         remove_pid_file()
         release_gateway_runtime_lock()
+    except Exception:
+        pass
+    # Mark this life cleanly exited in the lifecycle sentinel (NS-608). This
+    # is the single funnel every graceful exit passes through, so the next
+    # boot's unclean-death detector only fires for genuine SIGKILL/OOM/VM
+    # deaths. Ownership-guarded internally: a --replace old life won't
+    # clobber the replacement's freshly claimed "running" sentinel.
+    try:
+        from gateway.lifecycle_ledger import mark_exited
+        mark_exited(exit_code, reason="graceful_shutdown")
     except Exception:
         pass
     # Drain the async log queue: os._exit bypasses atexit, so the listener's

@@ -51,9 +51,15 @@ export type GatewayRequest = <T>(
 
 /** Profile-scoped pet RPC. Pets are per-profile, so every call carries the active
  *  profile (the gateway no-ops it for the launch profile). One chokepoint so no
- *  call site can forget it. */
-const petRpc = <T>(request: GatewayRequest, method: string, params: Record<string, unknown> = {}): Promise<T> =>
-  request<T>(method, { ...params, profile: petProfile() })
+ *  call site can forget it — forwards timeoutMs/signal so long-running calls
+ *  (pet-generate's drafting/hatching) can use it too. */
+export const petRpc = <T>(
+  request: GatewayRequest,
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<T> => request<T>(method, { ...params, profile: petProfile() }, timeoutMs, signal)
 
 /** A JSON-RPC "method not found" — the backend predates the pet RPCs. */
 function isMissingMethod(error: unknown): boolean {

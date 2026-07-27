@@ -9088,6 +9088,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("pet.generate.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Whether pet generation is possible right now.
 
@@ -9119,6 +9120,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("pet.generate")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Generate candidate base looks for a new pet (the draft/variant step).
 
@@ -9232,6 +9234,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("pet.hatch")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Turn a chosen base draft into a full pet — installed but NOT yet active.
 

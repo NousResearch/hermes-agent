@@ -69,6 +69,7 @@ import {
   savedProfileSsh,
   tokenPreview
 } from './connection-config'
+import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
@@ -1217,6 +1218,14 @@ function rememberLog(chunk) {
   }
 
   scheduleDesktopLogFlush()
+}
+
+installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
+
+// A rejected loadURL leaves a blank window and, unhandled, no trace anywhere
+// the user can send us. `label` names the surface so the log says which one.
+function loadWindowUrl(win, url, label) {
+  win.loadURL(url).catch(error => rememberLog(`${label} failed to load: ${describeCrashReason(error)}`))
 }
 
 function openExternalUrl(rawUrl) {
@@ -7780,6 +7789,7 @@ async function ensureBackend(profile) {
     lastActiveAt: Date.now(),
     remoteBaseUrl: null
   }
+
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
     backendPool.delete(key)
     throw error
@@ -8470,12 +8480,14 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
-  win.loadURL(
+  loadWindowUrl(
+    win,
     buildSessionWindowUrl(sessionId, {
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch
-    })
+    }),
+    'Session window'
   )
 
   return win
@@ -8555,11 +8567,7 @@ function createInstanceWindow() {
     instanceWindows.delete(win)
   })
 
-  if (DEV_SERVER) {
-    win.loadURL(DEV_SERVER)
-  } else {
-    win.loadURL(pathToFileURL(resolveRendererIndex()).toString())
-  }
+  loadWindowUrl(win, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Instance window')
 
   return win
 }
@@ -8671,7 +8679,7 @@ function spawnPetOverlayWindow(bounds) {
     }
   })
 
-  win.loadURL(petOverlayUrl())
+  loadWindowUrl(win, petOverlayUrl(), 'Pet overlay')
 
   return win
 }
@@ -8823,7 +8831,7 @@ function spawnQuickEntryWindow() {
     }
   })
 
-  win.loadURL(quickEntryUrl())
+  loadWindowUrl(win, quickEntryUrl(), 'Quick entry')
 
   return win
 }
@@ -9117,11 +9125,7 @@ function createWindow() {
     rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
   })
 
-  if (DEV_SERVER) {
-    mainWindow.loadURL(DEV_SERVER)
-  } else {
-    mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
-  }
+  loadWindowUrl(mainWindow, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Renderer')
 
   // Start the Python backend NOW, in parallel with the renderer load — not on
   // did-finish-load. The backend cold boot (spawn → port announce → /api/status)
@@ -9203,6 +9207,7 @@ function revalidatePool() {
     tracker: remoteLiveness
   })
 }
+
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
 

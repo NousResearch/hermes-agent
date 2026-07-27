@@ -1419,6 +1419,10 @@ function Install-Repository {
         if (Test-Path "$InstallDir\.git") {
             Push-Location $InstallDir
             try {
+                # Git for Windows keeps long-path support disabled unless the
+                # repository opts in. Enable it before status/checkout touches
+                # paths that can exceed MAX_PATH in a nested install location.
+                git -c windows.appendAtomically=false config core.longpaths true 2>$null
                 # Reset $LASTEXITCODE before the probe so we don't pick up
                 # a stale 0 from an earlier git call in this session.
                 $global:LASTEXITCODE = 0
@@ -1640,7 +1644,7 @@ function Install-Repository {
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
+            Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false -c core.longpaths=true clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
@@ -1649,7 +1653,7 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             try {
-                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir }
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false -c core.longpaths=true clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir }
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1694,6 +1698,7 @@ function Install-Repository {
                     Push-Location $InstallDir
                     git -c windows.appendAtomically=false init 2>$null
                     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+                    git -c windows.appendAtomically=false config core.longpaths true 2>$null
                     # Pin autocrlf=false BEFORE the checkout below. Git for Windows
                     # defaults to core.autocrlf=true, which would renormalize the
                     # repo's LF text files to CRLF in the working tree during
@@ -1756,6 +1761,7 @@ function Install-Repository {
     # Set per-repo config (harmless if it fails)
     Push-Location $InstallDir
     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+    git -c windows.appendAtomically=false config core.longpaths true 2>$null
     # Pin autocrlf=false on the managed clone so git never renormalizes the
     # repo's LF text files to CRLF in the working tree. Without this, the very
     # next `hermes update` checkout aborts on a "dirty" tree the user never
@@ -3827,4 +3833,5 @@ try {
     Write-Host "  Invoke-WebRequest -Uri 'https://hermes-agent.nousresearch.com/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
     Write-Host "  .\install.ps1" -ForegroundColor Yellow
     Write-Host ""
+    throw
 }

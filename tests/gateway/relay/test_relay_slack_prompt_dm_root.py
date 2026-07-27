@@ -277,13 +277,40 @@ async def test_typing_synthesizes_thread_anchor_in_thread_mode():
 
 
 @pytest.mark.asyncio
-async def test_typing_keeps_no_anchor_in_flat_mode():
-    """Flat mode: no synthetic thread for the status either (#18859)."""
+async def test_typing_flat_mode_status_anchors_to_trigger_ts_by_default():
+    """Flat-DM liveliness: the STATUS still anchors to the triggering ts
+    (renders in the footer space, no message artifact) while replies stay
+    flat — QA-6/7 strip send anchors, so placement cannot inherit this."""
     adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
     adapter.config.extra = {"reply_in_thread": False}
     await adapter.send_typing("D1", metadata=None)
     typing = [f for f in stub.sent if f["op"] == "typing"]
+    assert typing and typing[-1]["metadata"].get("thread_id") == "1700.0042"
+
+
+@pytest.mark.asyncio
+async def test_typing_flat_mode_opt_out_drops_anchor():
+    """flat_dm_status: false restores the fully-anchorless flat posture."""
+    adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
+    adapter.config.extra = {
+        "slack": {"reply_in_thread": False, "flat_dm_status": False}
+    }
+    await adapter.send_typing("D1", metadata=None)
+    typing = [f for f in stub.sent if f["op"] == "typing"]
     assert typing and "thread_id" not in typing[-1]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_flat_mode_sends_stay_flat_with_status_anchor_active():
+    """The liveliness anchor must NOT leak into reply placement: sends in
+    flat mode still strip the synthetic anchor (QA-6/7 contract)."""
+    adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
+    adapter.config.extra = {"reply_in_thread": False}
+    await adapter.send_typing("D1", metadata=None)
+    await adapter.send("D1", "the answer", reply_to="1700.0042")
+    frame = [f for f in stub.sent if f["op"] == "send"][-1]
+    assert frame["reply_to"] is None
+    assert "thread_id" not in (frame["metadata"] or {})
 
 
 @pytest.mark.asyncio

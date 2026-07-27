@@ -783,19 +783,20 @@ class S6ServiceManager:
             f"# shellcheck shell=sh\n"
             f': "${{HERMES_HOME:=/opt/data}}"\n'
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
-            # Create the leaf as hermes when this script starts as root.
-            # Never chown hermes-writable volume paths from this restartable
-            # root-context script: log/supervise/control is hermes-owned, so
-            # an unprivileged user can race a pathname check/chown through a
-            # symlink swap (CWE-59 / CWE-367). Parent logs/gateways is seeded
-            # hermes-owned at stage2 boot (#45258;
-            # tests/docker/test_log_dir_seed.py).
+            # Create the leaf and clear a stale s6-log lock as hermes when
+            # this script starts as root. Never chown or unlink hermes-writable
+            # volume paths from this restartable root-context script:
+            # log/supervise/control is hermes-owned, so an unprivileged user
+            # can race a pathname op through a symlink swap (CWE-59 /
+            # CWE-367). Parent logs/gateways is seeded hermes-owned at stage2
+            # boot (#45258; tests/docker/test_log_dir_seed.py).
             f'if [ "$(id -u)" = 0 ]; then\n'
             f'  s6-setuidgid hermes mkdir -p "$log_dir"\n'
+            f'  s6-setuidgid hermes rm -f "$log_dir/lock"\n'
             f'else\n'
             f'  mkdir -p "$log_dir"\n'
+            f'  rm -f "$log_dir/lock"\n'
             f'fi\n'
-            f'rm -f "$log_dir/lock"\n'
             # Skip the drop when already non-root (CAP_SETGID).
             f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
             f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'

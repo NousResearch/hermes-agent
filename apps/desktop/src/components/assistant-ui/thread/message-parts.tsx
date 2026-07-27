@@ -9,7 +9,7 @@ import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useSta
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
-import { formatElapsed, useElapsedSeconds } from '@/components/chat/activity-timer'
+import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -57,7 +57,9 @@ const ThinkingDisclosure: FC<{
   children: ReactNode
   messageRunning?: boolean
   pending?: boolean
-  timerKey?: string
+  // Required: the block's duration is remembered against this key, so a
+  // component that mounts after the block finished can still report it.
+  timerKey: string
 }> = ({ children, messageRunning = false, pending = false, timerKey }) => {
   const { t } = useI18n()
   // `null` = no explicit user toggle yet, defer to the streaming default.
@@ -66,6 +68,7 @@ const ThinkingDisclosure: FC<{
   // explicit toggle wins from then on.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const elapsed = useElapsedSeconds(pending, timerKey)
+  const thoughtFor = useMeasuredDuration(pending, timerKey)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
@@ -73,28 +76,11 @@ const ThinkingDisclosure: FC<{
   const open = userOpen ?? pending
   const isPreview = pending && userOpen === null
 
-  // How long the model thought is only knowable by having watched it happen —
-  // nothing in the persisted turn records it. So freeze the number the moment
-  // this block finishes in front of us, and stay quiet on a rehydrated turn
-  // rather than reporting whatever a timer that never ran would say.
-  const [watching, setWatching] = useState(false)
-  const [thoughtFor, setThoughtFor] = useState<null | number>(null)
-
-  useEffect(() => {
-    if (pending) {
-      setWatching(true)
-    } else if (watching) {
-      setWatching(false)
-      setThoughtFor(elapsed)
-    }
-  }, [elapsed, pending, watching])
-
   // Three ways a finished block can report itself. With a measured duration it
   // says so, unless the timer's whole seconds round it to "0s" — accurate and
   // useless — in which case it just says it was quick. With no duration at all
-  // (rehydrated history, or reasoning that arrived already complete so we never
-  // saw it run) it still has to read as finished; a turn that ended must not go
-  // on saying "Thinking".
+  // it still has to read as finished; a turn that ended must not go on saying
+  // "Thinking".
   let thoughtLabel = t.assistant.thread.thinking
 
   if (!pending) {
@@ -213,7 +199,15 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   }
 
   return (
-    <ThinkingDisclosure messageRunning={messageRunning} pending={pending} timerKey={`reasoning:${messageId}`}>
+    // Keyed per block, not per message: the timer registry hands every caller
+    // of a key the same origin, so a turn that thinks three separate times used
+    // to measure the second and third blocks from the first one's start and
+    // report the running total as each block's duration.
+    <ThinkingDisclosure
+      messageRunning={messageRunning}
+      pending={pending}
+      timerKey={`reasoning:${messageId}:${startIndex}`}
+    >
       {children}
     </ThinkingDisclosure>
   )

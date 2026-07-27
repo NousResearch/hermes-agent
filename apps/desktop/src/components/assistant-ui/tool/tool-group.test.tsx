@@ -184,8 +184,8 @@ function failedOnlyMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
-// Two settled tools in a row — an edit plus a read — so the run earns a
-// summary line and collapses.
+// Two settled activity calls in a row, so the run earns a summary line and
+// collapses behind it.
 function settledRunMessage(): ThreadMessage {
   return {
     id: 'assistant-settled-run',
@@ -193,7 +193,60 @@ function settledRunMessage(): ThreadMessage {
     content: [
       {
         type: 'tool-call',
-        toolCallId: 'patch-1',
+        toolCallId: 'read-2',
+        toolName: 'read_file',
+        args: { path: '/repo/src/wiring.tsx' },
+        argsText: JSON.stringify({ path: '/repo/src/wiring.tsx' }),
+        result: { content: 'export const Wiring = () => null' }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'term-3',
+        toolName: 'terminal',
+        args: { command: 'ls -la' },
+        argsText: JSON.stringify({ command: 'ls -la' }),
+        result: { exit_code: 0, stdout: 'wiring.tsx' }
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+// Activity, an edit, then more activity — all adjacent, so assistant-ui hands
+// the whole stretch over as one group. The edit is the deliverable and has to
+// survive that as its own card.
+function editBetweenRunsMessage(): ThreadMessage {
+  return {
+    id: 'assistant-edit-between-runs',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'read-5',
+        toolName: 'read_file',
+        args: { path: '/repo/src/a.ts' },
+        argsText: JSON.stringify({ path: '/repo/src/a.ts' }),
+        result: { content: 'a' }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'search-3',
+        toolName: 'search_files',
+        args: { query: 'toolRuns' },
+        argsText: JSON.stringify({ query: 'toolRuns' }),
+        result: { hits: [] }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'patch-2',
         toolName: 'patch',
         args: { path: '/repo/src/wiring.tsx' },
         argsText: JSON.stringify({ path: '/repo/src/wiring.tsx' }),
@@ -201,11 +254,19 @@ function settledRunMessage(): ThreadMessage {
       },
       {
         type: 'tool-call',
-        toolCallId: 'read-2',
+        toolCallId: 'read-6',
         toolName: 'read_file',
-        args: { path: '/repo/src/status.tsx' },
-        argsText: JSON.stringify({ path: '/repo/src/status.tsx' }),
-        result: { content: 'export const Status = () => null' }
+        args: { path: '/repo/src/b.ts' },
+        argsText: JSON.stringify({ path: '/repo/src/b.ts' }),
+        result: { content: 'b' }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'term-4',
+        toolName: 'terminal',
+        args: { command: 'ls' },
+        argsText: JSON.stringify({ command: 'ls' }),
+        result: { exit_code: 0 }
       }
     ],
     status: { type: 'complete', reason: 'stop' },
@@ -326,18 +387,17 @@ afterEach(() => {
 })
 
 describe('settled tool run', () => {
-  it('collapses to a summary line naming the work and its diff', async () => {
+  it('collapses to a summary line naming the work', async () => {
     const { container } = render(<GroupHarness message={settledRunMessage()} />)
 
-    expect(await screen.findByText('Edited wiring.tsx, explored status.tsx')).toBeTruthy()
+    expect(await screen.findByText('Explored wiring.tsx, ran 1 command')).toBeTruthy()
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
-    expect(screen.getByText('1', { selector: '.text-\\(--ui-green\\) *' })).toBeTruthy()
   })
 
   it('expands to the underlying rows when the summary is clicked', async () => {
     const { container } = render(<GroupHarness message={settledRunMessage()} />)
 
-    fireEvent.click(await screen.findByText('Edited wiring.tsx, explored status.tsx'))
+    fireEvent.click(await screen.findByText('Explored wiring.tsx, ran 1 command'))
 
     await waitFor(() => {
       expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
@@ -351,6 +411,31 @@ describe('settled tool run', () => {
       expect(container.querySelectorAll('[data-tool-row]').length).toBe(1)
     })
     expect(container.querySelector('[data-tool-summary]')).toBeNull()
+  })
+})
+
+// A diff is what the user reviews, so it is never what gets summarized away.
+// It stays on screen at the point in the turn where it happened, with the
+// activity either side of it collapsing around it.
+describe('a file edit among ordinary activity', () => {
+  it('stays visible between the two runs it interrupted', async () => {
+    const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
+
+    await screen.findByText('Explored 2 files')
+
+    const shape = [...container.querySelectorAll('[data-tool-summary],[data-tool-row]')].map(node =>
+      node.hasAttribute('data-tool-summary') ? 'summary' : 'row'
+    )
+
+    expect(shape).toEqual(['summary', 'row', 'summary'])
+  })
+
+  it('keeps the diff itself on screen rather than behind the summary', async () => {
+    const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-tool-row][data-file-edit]')).not.toBeNull()
+    })
   })
 })
 
@@ -425,7 +510,7 @@ describe('flat tool list approval surfacing', () => {
 
     const dismiss = await screen.findByLabelText('Dismiss')
 
-    expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(1)
+    expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(0)
 
     fireEvent.click(dismiss)
 
@@ -449,13 +534,13 @@ describe('flat tool list approval surfacing', () => {
 
     first.unmount()
 
-    const { container } = render(<GroupHarness message={completedOnlyMessage()} />)
+    render(<GroupHarness message={completedOnlyMessage()} />)
 
+    // The row is the only thing this message renders, so staying dismissed
+    // means nothing comes back — including its dismiss control.
     await waitFor(() => {
-      expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(0)
+      expect(screen.queryByLabelText('Dismiss')).toBeNull()
     })
-
-    expect(screen.queryByLabelText('Dismiss')).toBeNull()
   })
 
   it('lets failed tool rows be dismissed', async () => {

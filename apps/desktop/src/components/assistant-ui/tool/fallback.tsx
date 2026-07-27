@@ -30,7 +30,6 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
-import { DiffCount } from '@/components/ui/diff-count'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
@@ -68,7 +67,7 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
-import { isToolCallPart, type RunSummary, summarizeToolRun } from './run-summary'
+import { isToolCallPart, summarizeToolRun } from './run-summary'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -784,10 +783,9 @@ function ToolRunTicker({ children }: { children: ReactNode }) {
   )
 }
 
-// The one grey line that stands in for a run of tool calls once it has
-// settled — "Edited wiring.tsx, explored 3 files  +6 −4". While the run is
-// live the same line narrates it in the present tense and the rows stay
-// visible below, so nothing the user is waiting on hides behind a chevron.
+// The one grey line that stands in for a run of tool calls — "Explored 3
+// files, ran 5 commands". Live, it narrates in the present tense above the
+// ticker and offers no toggle, since there is nothing settled to unfold yet.
 function ToolRunHeader({
   live,
   onToggle,
@@ -797,15 +795,14 @@ function ToolRunHeader({
   live: boolean
   onToggle?: () => void
   open: boolean
-  summary: RunSummary
+  summary: string
 }) {
   return (
     <div data-tool-summary="">
       <ScaffoldRow onToggle={onToggle} open={open}>
         <FadeText className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>
-          {live ? <span className="shimmer">{summary.text}</span> : summary.text}
+          {live ? <span className="shimmer">{summary}</span> : summary}
         </FadeText>
-        <DiffCount added={summary.added} className="text-[0.625rem]" removed={summary.removed} />
       </ScaffoldRow>
     </div>
   )
@@ -817,7 +814,7 @@ interface ToolRunState {
   live: boolean
   /** A call still awaiting a result that could be the one blocking on approval. */
   pendingApprovalTool: boolean
-  summary: RunSummary
+  summary: string
 }
 
 // assistant-ui compares selector results with `Object.is` and calls the
@@ -830,6 +827,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
   return useAuiState(state => {
     const parts = state.message.parts
     const tools = parts.slice(Math.max(0, startIndex), endIndex + 1).filter(isToolCallPart)
+
     // A missing result only means "still working" while this run is the tail of
     // a running message — the same qualification ToolEntry puts on a row's
     // pending state. A turn that ends, or an agent that moves on to later
@@ -838,6 +836,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
     // live run deliberately withholds its toggle.
     const live =
       selectMessageRunning(state) && endIndex >= parts.length - 1 && tools.some(tool => tool.result === undefined)
+
     const signature = tools
       .map(tool => `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}`)
       .concat(String(live))

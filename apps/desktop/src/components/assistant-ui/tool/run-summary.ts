@@ -1,13 +1,6 @@
 import { summarizeShellCommand } from '@/lib/summarize-command'
 
-import {
-  countDiffLineStats,
-  fileEditBasename,
-  firstStringField,
-  inlineDiffFromResult,
-  isFileEditTool,
-  parseMaybeObject
-} from './fallback-model'
+import { fileEditBasename, firstStringField, isFileEditTool, parseMaybeObject } from './fallback-model'
 
 /**
  * The little a summary needs from a tool call, stated structurally so both
@@ -26,12 +19,6 @@ export function isToolCallPart<T extends { type: string }>(part: T): part is Ext
 }
 
 type RunCategory = 'delegate' | 'edit' | 'explore' | 'other' | 'run'
-
-export interface RunSummary {
-  added: number
-  removed: number
-  text: string
-}
 
 // Clause order is fixed so the same run always reads the same way, whichever
 // category happens to be live.
@@ -101,24 +88,6 @@ function toolTarget(tool: ToolCallLike): string {
   return path ? fileEditBasename(path) : firstStringField(args, ['query', 'url'])
 }
 
-function diffStats(tools: readonly ToolCallLike[]): { added: number; removed: number } {
-  let added = 0
-  let removed = 0
-
-  for (const tool of tools) {
-    if (!isFileEditTool(tool.toolName)) {
-      continue
-    }
-
-    const stats = countDiffLineStats(inlineDiffFromResult(tool.result))
-
-    added += stats.added
-    removed += stats.removed
-  }
-
-  return { added, removed }
-}
-
 /**
  * One clause per category. A category holding a single thing says what it was
  * ("Edited wiring.tsx"); anything else counts ("explored 3 files"). A settled
@@ -143,16 +112,20 @@ function lowerFirst(text: string): string {
 
 /**
  * Collapse a run of tool calls into the single grey line that stands in for it
- * — "Edited wiring.tsx, explored 3 files, ran 5 commands". The category holding
- * the still-running tool speaks in the present tense so a live run reads as
- * work in progress rather than work already done.
+ * — "Explored 3 files, ran 5 commands". The category holding the still-running
+ * tool speaks in the present tense so a live run reads as work in progress
+ * rather than work already done.
  *
  * Whether the run is `live` is the caller's to say, not something readable off
  * the calls: a call can be left without a result by a turn that ended or an
  * agent that moved on, and a run like that has to read as finished rather than
  * narrate work that stopped happening.
+ *
+ * A run only ever holds ephemeral activity — file edits and other cards are
+ * split out before this sees them (`splitRunItems`), so there is no aggregate
+ * diff to report here; each edit carries its own +N/−M on its card.
  */
-export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean): RunSummary {
+export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean): string {
   const running = live ? tools.find(isPending) : undefined
   const liveCategory = running ? toolCategory(running.toolName) : null
 
@@ -175,8 +148,5 @@ export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean):
     return group ? [clause(category, group, category === liveCategory)] : []
   })
 
-  return {
-    ...diffStats(tools),
-    text: clauses.map((text, index) => (index === 0 ? text : lowerFirst(text))).join(', ')
-  }
+  return clauses.map((text, index) => (index === 0 ? text : lowerFirst(text))).join(', ')
 }

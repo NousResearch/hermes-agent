@@ -377,9 +377,8 @@ def test_durable_message_committed_before_lease_is_adopted(
     assert returned is not stale_snapshot
     assert returned[0]["content"] == "[CONTEXT COMPACTION] summary"
     assert agent.session_id != parent_sid
-    child = db.find_live_compression_child(parent_sid)
-    assert child is not None
-    child_id = child["id"] if isinstance(child, dict) else child
+    child_id = _live_child_id(db, parent_sid)
+    assert child_id is not None
     assert child_id == agent.session_id
 
 def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:

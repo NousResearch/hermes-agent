@@ -706,23 +706,7 @@ class AnthropicStreamAccumulator:
     def response(self, base: Any = None) -> Any:
         """Return the attribute-shaped response consumed by Hermes."""
         assembled = self.finalize()
-        if base is not None and base.__class__.__module__ == "unittest.mock":
-            base_payload = {}
-            for key in (
-                "id",
-                "type",
-                "role",
-                "model",
-                "content",
-                "stop_reason",
-                "stop_sequence",
-                "usage",
-            ):
-                value = getattr(base, key, None)
-                if value is not None and value.__class__.__module__ != "unittest.mock":
-                    base_payload[key] = _jsonable(value)
-        else:
-            base_payload = _jsonable(base)
+        base_payload = _jsonable(base)
         if not isinstance(base_payload, dict):
             base_payload = {}
         content = assembled.pop("content", [])
@@ -1072,25 +1056,25 @@ def _codec(relay: Any, metadata: dict[str, Any] | None) -> Any:
 def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    # Test doubles synthesize arbitrary callable attributes such as
-    # ``model_dump``. Treat them as opaque instead of recursively invoking an
-    # endless chain of child mocks.
-    if value.__class__.__module__ == "unittest.mock":
-        return str(value)
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_jsonable(item) for item in value]
-    model_dump = getattr(value, "model_dump", None)
+    model_dump = getattr(type(value), "model_dump", None)
     if callable(model_dump):
         try:
-            return _jsonable(model_dump(mode="json"))
+            return _jsonable(value.model_dump(mode="json"))
         except Exception:
             pass
     try:
-        return _jsonable(vars(value))
+        attributes = {
+            str(key): item
+            for key, item in vars(value).items()
+            if not str(key).startswith("_")
+        }
     except (TypeError, AttributeError):
         return str(value)
+    return _jsonable(attributes) if attributes else str(value)
 
 
 def _namespace(value: Any) -> Any:

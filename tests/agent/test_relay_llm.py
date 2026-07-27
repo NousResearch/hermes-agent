@@ -281,6 +281,52 @@ def test_anthropic_stream_accumulator_merges_terminal_usage():
     }
 
 
+def test_anthropic_stream_accumulator_merges_plain_provider_object():
+    accumulator = relay_llm.AnthropicStreamAccumulator()
+    accumulator.observe({
+        "type": "message_start",
+        "message": {
+            "id": "message-1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-test",
+            "usage": {"input_tokens": 10},
+        },
+    })
+    accumulator.observe({
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": "hello"},
+    })
+
+    response = accumulator.response(
+        SimpleNamespace(
+            id="message-1",
+            type="message",
+            role="assistant",
+            model="claude-test",
+            content=[],
+            stop_reason=None,
+            usage={"input_tokens": 10},
+        )
+    )
+
+    assert response.id == "message-1"
+    assert response.content[0].text == "hello"
+    assert response.usage.input_tokens == 10
+
+
+def test_jsonable_does_not_probe_dynamic_attributes():
+    class DynamicProviderObject:
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected dynamic attribute lookup: {name}")
+
+        def __str__(self):
+            return "opaque-provider-object"
+
+    assert relay_llm._jsonable(DynamicProviderObject()) == "opaque-provider-object"
+
+
 def test_non_stream_preserves_raw_provider_response_identity(relay_turn):
     _relay, _turn = relay_turn
     raw_response = SimpleNamespace(model="test-model", content="raw")

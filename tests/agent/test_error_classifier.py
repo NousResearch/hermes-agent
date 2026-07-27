@@ -875,6 +875,26 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_thinking_signature_invalid_uses_encrypted_replay_recovery(self):
+        e = MockAPIError(
+            "Error code: 400 - "
+            "{'error': {'code': 'thinking_signature_invalid', "
+            "'message': 'The reasoning signature is no longer valid.'}}",
+            status_code=400,
+            body={
+                "error": {
+                    "code": "thinking_signature_invalid",
+                    "message": "The reasoning signature is no longer valid.",
+                },
+            },
+        )
+
+        result = classify_api_error(e, provider="openai", model="gpt-5.5")
+
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     def test_xai_invalid_encrypted_content_wording_uses_replay_recovery(self):
         e = MockAPIError(
             "Error code: 400 - Could not decrypt the provided encrypted_content. "
@@ -2169,4 +2189,3 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
-

@@ -663,6 +663,19 @@ def classify_api_error(
             should_fallback=True,
         )
 
+    # OpenAI Responses may reject stale encrypted reasoning with this newer
+    # code. Match it before the generic "thinking" + "signature" heuristic
+    # below, which belongs to Anthropic-style signed thinking blocks.
+    if (
+        (error_code or "").lower() == "thinking_signature_invalid"
+        or "thinking_signature_invalid" in error_msg
+    ):
+        return _result(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
+        )
+
     # Anthropic thinking block recovery (400).  Two distinct failure modes,
     # same recovery (strip all reasoning_details and retry without thinking
     # blocks — see the thinking_signature handler in conversation_loop.py):

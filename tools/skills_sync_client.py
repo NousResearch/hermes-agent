@@ -57,16 +57,16 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# HSP/1 protocol constants (contract §1, §3.1)
+# Sync protocol constants
 HSP_VERSION = "1"
 DEFAULT_MAX_OBJECT_BYTES = 26214400  # 25 MiB, mirrors capabilities default
 
-# Object kinds (contract §2)
+# Object kinds (sync contract)
 KIND_BLOB = "blob"
 KIND_TREE = "tree"
 KIND_COMMIT = "commit"
 
-# Tree entry modes (contract §2.3)
+# Tree entry modes (sync contract)
 MODE_FILE = "file"
 MODE_EXEC = "exec"
 MODE_DIR = "dir"
@@ -74,9 +74,9 @@ MODE_DIR = "dir"
 ARTIFACT_TYPE_SKILL = "skill"
 
 # ---------------------------------------------------------------------------
-# `sync-manifest` object convention (design.md §2.8).
+# `sync-manifest` object convention (design notes).
 #
-# Per-skill sync opt-in ("this skill syncs / this one does not" — the M1-D
+# Per-skill sync opt-in ("this skill syncs / this one does not"
 # opt-in state) is CONTENT inside the HSP object model, NOT a device-local flag
 # or a mutable preference table. An owner's synced set is a small committed blob
 # named ``sync-manifest`` at the ROOT of the tree referenced by
@@ -156,7 +156,7 @@ def parse_sync_manifest(data: bytes) -> Optional[Dict[str, bool]]:
 
 
 # ---------------------------------------------------------------------------
-# Content addressing (contract §2.1 / OI-5)
+# Content addressing
 #
 # HSP uses the FULL 64-hex sha256 digest on the wire. This is a DIFFERENT
 # namespace from hermes-agent's local ``content_hash`` (skills_guard.py:846),
@@ -165,12 +165,12 @@ def parse_sync_manifest(data: bytes) -> Optional[Dict[str, bool]]:
 # ---------------------------------------------------------------------------
 
 def hsp_address(data: bytes) -> str:
-    """Return ``sha256:<64-hex>`` -- the HSP wire address of ``data`` (contract §2.1)."""
+    """Return ``sha256:<64-hex>`` -- the HSP wire address of ``data`` (sync contract)."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def canonical_json_bytes(obj: Dict[str, Any]) -> bytes:
-    """Canonical JSON serialization for tree/commit hashing (contract §2.5).
+    """Canonical JSON serialization for tree/commit hashing (sync contract).
 
     UTF-8, keys sorted lexicographically, no insignificant whitespace
     (``separators=(",", ":")``), no trailing newline. Arrays must already be
@@ -187,7 +187,7 @@ def canonical_json_bytes(obj: Dict[str, Any]) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Identity & DEV-PHASE gate
+# Identity & access gate
 #
 # We reuse resolve_nous_runtime_credentials() for the bearer (it honors the
 # cross-process file lock + portal host allowlist and refreshes as needed --
@@ -266,7 +266,7 @@ def resolve_identity() -> Dict[str, Any]:
 
 
 def dev_gate_open() -> bool:
-    """Whether the DEV-PHASE gate permits sync. Never raises."""
+    """Whether the access gate permits sync. Never raises."""
     try:
         return bool(resolve_identity().get("dev_gate_ok"))
     except SyncInertError:
@@ -279,7 +279,7 @@ def dev_gate_open() -> bool:
 # ---------------------------------------------------------------------------
 # Sync-plane endpoint resolution
 #
-# The HSP routes are mounted under /v1/sync/ (contract §1). The base URL is
+# The HSP routes are mounted under /v1/sync/ (sync contract). The base URL is
 # configurable (config.yaml sync.base_url or HERMES_SYNC_BASE_URL bridge env);
 # it is NOT the inference base_url. When unset, sync is inert -- there is no
 # server to talk to yet (the server is being built in parallel).
@@ -320,7 +320,7 @@ def resolve_sync_base_url() -> Optional[str]:
 #
 #   HERMES_SYNC_BASE_URL        -> sync.base_url        (the HSP plane URL)
 #   HERMES_SYNC_ENABLED         -> sync.enabled         (master on/off; default off)
-#   HERMES_SYNC_DEFAULT_OPT_IN  -> sync.default_opt_in  (M1-D policy; default false
+#   HERMES_SYNC_DEFAULT_OPT_IN  -> sync.default_opt_in  (personal sync policy; default false
 #                                                        = opt-in. Set true to make
 #                                                        every eligible skill sync
 #                                                        without per-skill enable —
@@ -378,7 +378,7 @@ def sync_feature_enabled() -> bool:
 
 
 def sync_default_opt_in() -> bool:
-    """The M1-D default opt-in policy (env-first).
+    """The personal sync default opt-in policy (env-first).
 
     ``HERMES_SYNC_DEFAULT_OPT_IN`` -> ``sync.default_opt_in`` -> False.
 
@@ -386,7 +386,7 @@ def sync_default_opt_in() -> bool:
     ``hermes sync enable`` (or a plane manifest that opted it in). True: opt-OUT
     — every sync-eligible skill is treated as opted in unless explicitly
     disabled, which is the "your skills follow you with no setup" default a
-    Hermes Cloud deployment wants. Per design.md §3.0 M1-D this default is
+    Hermes Cloud deployment wants. Per the design notes, this default is
     provisional and expected to flip; exposing it as env config lets the
     operator choose per deployment without a protocol change.
     """
@@ -394,7 +394,7 @@ def sync_default_opt_in() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Local skill eligibility + the M1-D opt-in "sync" flag
+# Local skill eligibility + the personal sync opt-in "sync" flag
 #
 # Only agent-created + user-authored skills under ~/.hermes/skills/ sync.
 # Bundled (.bundled_manifest) and hub-installed skills are excluded. Sync is
@@ -413,7 +413,7 @@ def is_sync_eligible(skill_name: str) -> bool:
     Eligible = present locally under ~/.hermes/skills/, NOT bundled, NOT
     hub-installed, NOT an external-dir skill, and NOT under the org mirror
     (``_org/`` — enterprise-managed content pulls from the org HEAD and must
-    never ride a personal push; contract §11.11 / design.md §7.1). Mirrors the
+    never ride a personal push; the sync contract / the design notes). Mirrors the
     exclusion logic used by the curator (tools/skill_usage.py).
     """
     try:
@@ -508,8 +508,8 @@ def _all_local_skill_names() -> List[str]:
 # ---------------------------------------------------------------------------
 # Object building -- turn a skill directory into HSP blob/tree/commit objects
 #
-# A skill dir becomes one tree (contract §2.3). Each file is a blob; each
-# subdir a nested tree. The profile-root tree (contract §2.3: "a tree whose
+# A skill dir becomes one tree (sync contract). Each file is a blob; each
+# subdir a nested tree. The profile-root tree (the sync contract: "a tree whose
 # entries are category trees") is built from the set of synced skill trees.
 # ---------------------------------------------------------------------------
 
@@ -565,7 +565,7 @@ def build_tree(dir_path: Path, objects: ObjectSet, *, max_object_bytes: int) -> 
             if len(data) > max_object_bytes:
                 raise ValueError(
                     f"file {child} is {len(data)} bytes > max_object_bytes "
-                    f"{max_object_bytes} (contract §4.3)"
+                    f"{max_object_bytes}"
                 )
             blob_hash = objects.add(KIND_BLOB, data)
             entries.append(
@@ -577,7 +577,7 @@ def build_tree(dir_path: Path, objects: ObjectSet, *, max_object_bytes: int) -> 
                 }
             )
         # else: skip special files
-    # Entries sorted by name (byte order) for canonicalization (contract §2.3).
+    # Entries sorted by name (byte order) for canonicalization (sync contract).
     entries.sort(key=lambda e: e["name"])
     tree_obj = {"type": KIND_TREE, "entries": entries}
     return objects.add(KIND_TREE, canonical_json_bytes(tree_obj))
@@ -593,7 +593,7 @@ def build_commit(
     objects: ObjectSet,
     ts: Optional[str] = None,
 ) -> str:
-    """Build a commit object (contract §2.4) and return its address.
+    """Build a commit object (sync contract) and return its address.
 
     ``parents``: 0 for first commit, 1 for a normal edit, 2 for a merge commit
     (order significant: parents[0] = base fast-forwarded from, parents[1] =
@@ -632,7 +632,7 @@ def _default_device_label() -> str:
 
 def stable_device_id() -> str:
     """Return a stable per-device label for commit ``author.device`` (contract
-    §2.4 -- advisory, never an auth input). Persisted under
+     -- advisory, never an auth input). Persisted under
     ~/.hermes/skills/.sync_device_id.
 
     New devices are seeded with a HUMAN-FRIENDLY default (short hostname + a
@@ -688,7 +688,7 @@ def set_device_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 # HSP/1 wire client
 #
-# Thin requests-based client for the endpoints in contract §3-§4. Uploads all
+# Thin requests-based client for the endpoints in the sync contract- Uploads all
 # new objects (batch), then CAS-es the ref. A 409 returns the actual head for
 # the caller's three-way merge. Auth is the Nous bearer resolved above.
 # ---------------------------------------------------------------------------
@@ -711,7 +711,7 @@ class HSPConflict(RuntimeError):
 
 
 class HSPClient:
-    """HSP/1 client bound to a base URL + bearer (contract §1, routes under
+    """Sync client bound to a base URL + bearer (routes under
     ``/v1/sync/``)."""
 
     def __init__(self, base_url: str, api_key: str, *, timeout: float = 30.0):
@@ -729,14 +729,14 @@ class HSPClient:
     # -- capability & read -------------------------------------------------
 
     def capabilities(self) -> Dict[str, Any]:
-        """GET /v1/sync/capabilities (contract §3.1). No auth required."""
+        """GET /v1/sync/capabilities (sync contract). No auth required."""
         r = self._session.get(self._url("capabilities"), timeout=self.timeout)
         if r.status_code != 200:
             raise HSPError(f"capabilities failed: {r.status_code}", status=r.status_code)
         return r.json()
 
     def get_refs(self, prefix: str) -> List[Dict[str, str]]:
-        """GET /v1/sync/refs?prefix=... (contract §3.2)."""
+        """GET /v1/sync/refs?prefix=... (sync contract)."""
         r = self._session.get(
             self._url("refs"), params={"prefix": prefix}, timeout=self.timeout
         )
@@ -745,7 +745,7 @@ class HSPClient:
         return (r.json() or {}).get("refs", [])
 
     def get_object(self, obj_hash: str) -> Tuple[str, bytes]:
-        """GET /v1/sync/objects/:hash (contract §3.3). Returns (kind, bytes).
+        """GET /v1/sync/objects/:hash (sync contract). Returns (kind, bytes).
 
         Kind comes from ``X-HSP-Object-Type`` for tree/commit; a blob response
         (application/octet-stream) is returned as ``blob``.
@@ -782,10 +782,10 @@ class HSPClient:
         *,
         org_scope: bool = False,
     ) -> Dict[str, Any]:
-        """POST /v1/sync/objects (contract §4.2). Batch multi-object upload.
+        """POST /v1/sync/objects (sync contract). Batch multi-object upload.
 
         Contract §1 requires raw object bytes on the wire (NOT base64-in-JSON),
-        and §4.2 specifies "a length-prefixed or multipart stream of
+        and  specifies "a length-prefixed or multipart stream of
         {hash, type, bytes}". We use multipart/form-data: one part per object,
         the part's field name = the claimed ``sha256:<hex>`` hash, its
         ``filename`` carries the object ``type`` (blob|tree|commit), and the
@@ -822,7 +822,7 @@ class HSPClient:
         return r.json() if r.content else {}
 
     def cas_ref(self, name: str, from_hash: Optional[str], to_hash: str) -> Dict[str, Any]:
-        """POST /v1/sync/refs/:name -- atomic compare-and-swap (contract §4.4).
+        """POST /v1/sync/refs/:name -- atomic compare-and-swap (sync contract).
 
         Raises :class:`HSPConflict` (carrying the actual head) on 409.
 
@@ -856,13 +856,13 @@ class HSPClient:
 #
 # Records the last commit HEAD we pushed/pulled and, per synced skill, the tree
 # hash of the on-disk content at that point. Distinct from the bundled manifest
-# (skills_sync.py, truncated local content_hash namespace) AND from the §2.8
+# (skills_sync.py, truncated local content_hash namespace) AND from the
 # `sync-manifest` OBJECT in the sync plane (the per-skill opt-in content). This
 # is purely local reconciliation bookkeeping. Lives at
 # ~/.hermes/skills/.sync_state as JSON.
 #
 # NOTE: renamed from `.sync_manifest` -> `.sync_state` to remove the collision
-# with the §2.8 plane `sync-manifest`. `read_sync_state` migrates an existing
+# with the  plane `sync-manifest`. `read_sync_state` migrates an existing
 # `.sync_manifest` on first read so no local head record is lost.
 # ---------------------------------------------------------------------------
 
@@ -974,9 +974,9 @@ def materialize_tree(client: HSPClient, tree_hash: str, dest: Path) -> None:
 # Profile snapshot -- build the objects + per-skill tree map for a push
 #
 # The profile root is a tree whose entries mirror each synced skill's relative
-# path under ~/.hermes/skills/ (contract §2.3: "the profile root is a tree
+# path under ~/.hermes/skills/ (the sync contract: "the profile root is a tree
 # whose entries are category trees"). Only opted-in, eligible skills are
-# included (M1-D opt-in + eligibility).
+# included (personal sync opt-in + eligibility).
 # ---------------------------------------------------------------------------
 
 def _skill_rel_path(skill_name: str) -> Optional[PurePosixPath]:
@@ -1039,7 +1039,7 @@ def snapshot_profile(
             node = node.setdefault(part, {})
         node[parts[-1]] = {"__tree__": tree_hash}
 
-    # §2.8 sync-manifest: record the opt-in state (the pushed set = enabled).
+    #  sync-manifest: record the opt-in state (the pushed set = enabled).
     # Only skills that actually made it into the tree are recorded, keyed by the
     # skill NAME (matching gateway-gateway's manifest shape + the read walk that
     # enumerates skill subtrees by name).
@@ -1087,7 +1087,7 @@ def _build_root_tree(
 
 
 # ---------------------------------------------------------------------------
-# Ref naming (contract §2.6)
+# Ref naming (sync contract)
 # ---------------------------------------------------------------------------
 
 def user_head_ref(owner: str) -> str:
@@ -1158,7 +1158,7 @@ def read_manifest_of_root(
 
 
 def _check_version(caps: Dict[str, Any]) -> None:
-    """Reject an incompatible server major version (contract §1)."""
+    """Reject an incompatible server major version (sync contract)."""
     ver = str(caps.get("hsp_version") or "")
     major = ver.split(".", 1)[0]
     if major != HSP_VERSION:
@@ -1176,7 +1176,7 @@ def push_skills(
     identity: Optional[Dict[str, Any]] = None,
     message: str = "hermes skill sync",
 ) -> Dict[str, Any]:
-    """Push opted-in skills to the owner's HEAD (contract §4).
+    """Push opted-in skills to the owner's HEAD (sync contract).
 
     Uploads all new objects, then CAS-es ``refs/user/<owner>/HEAD``. On a 409,
     fetches the actual head, three-way merges, and retries once (§4.4 / M1-C).
@@ -1234,7 +1234,7 @@ def push_skills(
 
 
 # ---------------------------------------------------------------------------
-# Conflict resolution / three-way merge (contract §4.4, M1-C)
+# Conflict resolution / three-way merge
 #
 # On a 409 the server hands back the actual head. We fetch it, three-way merge
 # per skill against the base we forked from, reusing the origin/user/incoming
@@ -1297,7 +1297,7 @@ def _resolve_push_conflict(
         # decision == "none": skill deleted on the winning side -> drop
 
     if overlaps:
-        # TRUE OVERLAP -> write a conflict head and surface it (M1-C).
+        # TRUE OVERLAP -> write a conflict head and surface it (personal sync).
         n = _next_conflict_index(client, owner)
         conflict_ref = user_conflict_ref(owner, n)
         try:
@@ -1447,7 +1447,7 @@ def pull_skills(
     root_tree = _root_tree_of_commit(client, head)
     remote_trees = _skill_trees_of_root(client, root_tree)
 
-    # §2.8: reconcile local opt-in intent FROM the plane manifest, so a skill the
+    # : reconcile local opt-in intent FROM the plane manifest, so a skill the
     # user opted in on another device becomes opted in here too (opt-in is
     # cross-device content, not a device-local flag). We only ADOPT enables from
     # the manifest for skills present in the remote tree; we never silently
@@ -1506,7 +1506,7 @@ def _opted_in_rel_paths() -> List[str]:
 #
 # maybe_pull_skills / maybe_push_skills clone the shape of the curator's
 # maybe_run_curator (agent/curator.py:1998): best-effort, never raise, return
-# a result dict or None. The DEV-PHASE gate is checked first -- sync is inert
+# a result dict or None. The access gate is checked first -- sync is inert
 # (no push, no pull, no-op) unless tool_gateway_admin === true on the token.
 # ---------------------------------------------------------------------------
 
@@ -1516,7 +1516,7 @@ def maybe_push_skills(*, message: str = "hermes skill sync") -> Optional[Dict[st
     try:
         identity = resolve_identity()
         if not identity.get("dev_gate_ok"):
-            return None  # DEV-PHASE gate: inert without tool_gateway_admin
+            return None  # access gate: inert without tool_gateway_admin
         if not sync_feature_enabled():
             return None  # feature off for this instance (HERMES_SYNC_ENABLED)
         if not resolve_sync_base_url():
@@ -1536,7 +1536,7 @@ def maybe_pull_skills() -> Optional[Dict[str, Any]]:
     try:
         identity = resolve_identity()
         if not identity.get("dev_gate_ok"):
-            return None  # DEV-PHASE gate: inert without tool_gateway_admin
+            return None  # access gate: inert without tool_gateway_admin
         if not sync_feature_enabled():
             return None  # feature off for this instance (HERMES_SYNC_ENABLED)
         if not resolve_sync_base_url():
@@ -1558,6 +1558,13 @@ def sync_status() -> Dict[str, Any]:
         "opted_in_skills": [],
         "local_head": None,
         "owner": None,
+        # Org-shared skills. `org_available` is False for an account that
+        # isn't in a shared organisation — the org workflow does not apply,
+        # which is different from it being broken or misconfigured.
+        "org_available": False,
+        "org_id": None,
+        "org_role": None,
+        "org_skills": [],
     }
     try:
         identity = resolve_identity()
@@ -1573,24 +1580,55 @@ def sync_status() -> Dict[str, Any]:
         status["local_head"] = read_sync_state().get("head")
     except Exception:
         pass
+    try:
+        org_identity = resolve_org_identity()
+        status["org_available"] = True
+        status["org_id"] = org_identity.get("org_id")
+        status["org_role"] = org_identity.get("org_role")
+        status["org_skills"] = list_org_skill_names()
+    except SyncInertError:
+        pass
+    except Exception as e:
+        logger.debug("skills_sync_client: sync_status org lookup failed: %s", e)
     return status
 
 
+def list_org_skill_names() -> List[str]:
+    """Skill names present in the local org mirror (empty when none pulled)."""
+    names: List[str] = []
+    try:
+        from agent.skill_utils import read_active_org_id
+
+        org_id = read_active_org_id(_skills_dir())
+        if not org_id:
+            return names
+        root = _org_dir() / org_id
+        if not root.is_dir():
+            return names
+        for skill_md in root.rglob("SKILL.md"):
+            rel = skill_md.parent.relative_to(root)
+            if rel.parts:
+                names.append(str(rel).replace("\\", "/"))
+    except Exception as e:
+        logger.debug("skills_sync_client: org skill listing failed: %s", e)
+    return sorted(names)
+
+
 # ---------------------------------------------------------------------------
-# M2 org-shared skills (hsp-1-contract.md §11) — org pull + propose.
+# Org-shared skills (sync contract) — org pull + propose.
 #
 # Org skills live under a DISTINCT local namespace, ~/.hermes/skills/_org/
-# (design.md §7.1: enterprise-managed skills are read-only to the runtime; a
+# (the design notes: enterprise-managed skills are read-only to the runtime; a
 # local edit is a personal fork of record until proposed). The org canonical
 # set is `refs/org/<org_id>/HEAD` — the SAME object model as personal sync.
 #
-# PERSONAL-ORG GATE (contract §11.1 REFINED, Ben 2026-07-23): a personal org
+# PERSONAL-ORG GATE (the sync contract REFINED, Ben 2026-07-23): a personal org
 # has NO org workflow. The discriminator travels in the token: NAS stamps the
 # `org_role` claim ONLY for multi-member orgs. No claim ⇒ every org helper
 # here is inert (org_sync_available() False; pull/propose raise SyncInertError)
-# and the personal M1 experience is untouched.
+# and the personal personal sync experience is untouched.
 #
-# TRAJECTORY (Ben): `hermes skills propose` is the M2 MVP surface; proposal is
+# TRAJECTORY (Ben): `hermes skills propose` is the org sharing MVP surface; proposal is
 # intended to become largely automated later (curator/background hooks driving
 # the same propose_skill() path). Keep this callable non-interactive.
 # ---------------------------------------------------------------------------
@@ -1611,11 +1649,10 @@ def resolve_org_identity() -> Dict[str, Any]:
     org_id = claims.get("org_id")
     org_role = claims.get("org_role")
     if not org_id:
-        raise SyncInertError("token carries no org_id")
+        raise SyncInertError("no organisation associated with this account")
     if not isinstance(org_role, str) or not org_role:
         raise SyncInertError(
-            "no org_role claim (personal org keeps the simple personal sync; "
-            "org workflow is multi-member-org only)"
+            "this account isn't a member of a shared organisation"
         )
     identity["org_id"] = str(org_id)
     identity["org_role"] = org_role
@@ -1636,7 +1673,7 @@ def org_head_ref(org_id: str) -> str:
 
 
 def _org_dir() -> Path:
-    """Local mirror root for org skills (read-only by convention §7.1)."""
+    """Local mirror root for org skills (read-only by convention )."""
     return _skills_dir() / ORG_DIR_NAME
 
 
@@ -1655,7 +1692,7 @@ def pull_org_skills(
     """
     identity = identity or resolve_org_identity()
     if "org_id" not in identity:
-        raise SyncInertError("identity lacks org context; use resolve_org_identity()")
+        raise SyncInertError("no organisation context available")
     org_id = identity["org_id"]
     base_url = resolve_sync_base_url()
     if not base_url:
@@ -1665,7 +1702,7 @@ def pull_org_skills(
     caps = client.capabilities()
     _check_version(caps)
     if "org" not in (caps.get("features") or []):
-        raise SyncInertError("server does not advertise the 'org' feature")
+        raise SyncInertError("this server does not support org-shared skills")
 
     refs = client.get_refs(f"refs/org/{org_id}/")
     head = next(
@@ -1704,7 +1741,7 @@ def pull_org_skills(
             )
     # Provenance sidecar for the load-time header (skill_view): the HEAD
     # commit's author is TOKEN-VERIFIED at push time by the plane
-    # (author_mismatch guard, gateway-gateway #166) — trustworthy to display.
+    # (author_mismatch guard, the sync plane) — trustworthy to display.
     _write_org_provenance(
         org_id,
         {
@@ -1777,7 +1814,7 @@ def propose_skill(
     caps = client.capabilities()
     _check_version(caps)
     if "org" not in (caps.get("features") or []):
-        raise SyncInertError("server does not advertise the 'org' feature")
+        raise SyncInertError("this server does not support org-shared skills")
     max_bytes = int(caps.get("max_object_bytes") or DEFAULT_MAX_OBJECT_BYTES)
 
     # Locate the local skill directory (personal namespace, NOT _org/).

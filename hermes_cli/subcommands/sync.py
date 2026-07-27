@@ -26,7 +26,7 @@ def build_sync_parser(subparsers, *, cmd_sync: Callable) -> None:
     """Attach the ``sync`` subcommand (and its sub-actions) to ``subparsers``."""
     sync_parser = subparsers.add_parser(
         "sync",
-        help="Personal skill sync (HSP/1)",
+        help="Personal skill sync across your devices",
         description="Sync agent-created and user-authored skills across devices.",
     )
     sync_sub = sync_parser.add_subparsers(dest="sync_command")

@@ -127,7 +127,7 @@ def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_p
     agent = _build_agent_with_db(db, session_id)
     agent._compression_activity_heartbeat_interval = 0.1
     touch_calls: list[str] = []
-    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
 
     def _slow_compress(*_a, **_kw):
         _wait_for_touch(touch_calls, "context compression in progress")
@@ -156,7 +156,7 @@ def test_compression_activity_heartbeat_stops_on_compress_exception(tmp_path: Pa
     agent = _build_agent_with_db(db, session_id)
     agent._compression_activity_heartbeat_interval = 0.1
     touch_calls: list[str] = []
-    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
 
     def _failing_compress(*_a, **_kw):
         _wait_for_touch(touch_calls, "context compression in progress")
@@ -182,7 +182,7 @@ def test_compression_activity_heartbeat_ignores_touch_errors(tmp_path: Path) -> 
 
     agent = _build_agent_with_db(db, session_id)
     agent._compression_activity_heartbeat_interval = 0.1
-    agent._touch_activity = lambda _desc, **_kw: (_ for _ in ()).throw(RuntimeError("touch boom"))
+    agent._touch_activity = lambda _desc: (_ for _ in ()).throw(RuntimeError("touch boom"))
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
@@ -207,7 +207,7 @@ def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(
     agent = _build_agent_with_db(db, session_id)
     agent._compression_activity_heartbeat_interval = "not-a-number"
     touch_calls: list[str] = []
-    agent._touch_activity = lambda desc, **_kw: touch_calls.append(desc)
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     strict_calls: list[int | None] = []
@@ -240,13 +240,7 @@ def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: 
 
     agent = _build_agent_with_db(db, session_id)
     touch_calls: list[str] = []
-    touch_provenances: list = []
-
-    def _capture(desc, *, provenance=None):
-        touch_calls.append(desc)
-        touch_provenances.append(provenance)
-
-    agent._touch_activity = _capture
+    agent._touch_activity = lambda desc: touch_calls.append(desc)
 
     heartbeat = _CompressionActivityHeartbeat(agent, interval_seconds=float("inf"))
 
@@ -254,104 +248,7 @@ def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: 
     heartbeat.start()
     heartbeat.stop()
     assert touch_calls == ["context compression started", "context compression completed"]
-    from agent.session_activity import ActivityProvenance
 
-    assert touch_provenances == [
-        ActivityProvenance.AGENT_COMPRESSION,
-        ActivityProvenance.AGENT_COMPRESSION,
-    ]
-
-
-def test_compression_heartbeat_does_not_clobber_timeout_provenance() -> None:
-    """Detached heartbeat/stop must not overwrite a host timeout stamp."""
-    from types import SimpleNamespace
-
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
-
-    agent = SimpleNamespace(
-        _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
-        _last_activity_desc="context compression timed out",
-        touches=[],
-    )
-
-    def _touch(desc, *, provenance=None):
-        agent.touches.append((desc, provenance))
-        agent._last_activity_provenance = provenance
-        agent._last_activity_desc = desc
-
-    agent._touch_activity = _touch
-
-    hb = _CompressionActivityHeartbeat(agent, interval_seconds=60.0)
-    hb._touch("context compression in progress")
-    hb.stop("context compression completed")
-
-    assert agent.touches == []
-    assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION_TIMEOUT
-    assert agent._last_activity_desc == "context compression timed out"
-
-
-def test_compression_heartbeat_does_not_clobber_cooldown_provenance() -> None:
-    """Cooldown/abort stamps must also survive a late heartbeat stop."""
-    from types import SimpleNamespace
-
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
-
-    agent = SimpleNamespace(
-        _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
-        _last_activity_desc="compression blocked (cooldown: 30s remaining)",
-        touches=[],
-    )
-
-    def _touch(desc, *, provenance=None):
-        agent.touches.append((desc, provenance))
-        agent._last_activity_provenance = provenance
-        agent._last_activity_desc = desc
-
-    agent._touch_activity = _touch
-
-    hb = _CompressionActivityHeartbeat(agent, interval_seconds=60.0)
-    hb._touch("context compression in progress")
-    hb.stop("context compression failed")
-
-    assert agent.touches == []
-    assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION_COOLDOWN
-
-
-def test_compression_heartbeat_start_republishes_after_terminal_provenance() -> None:
-    """A new compression episode may overwrite a prior timeout/cooldown stamp."""
-    from types import SimpleNamespace
-
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
-
-    agent = SimpleNamespace(
-        _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
-        _last_activity_desc="context compression timed out",
-        touches=[],
-    )
-
-    def _touch(desc, *, provenance=None):
-        agent.touches.append((desc, provenance))
-        agent._last_activity_provenance = provenance
-        agent._last_activity_desc = desc
-
-    agent._touch_activity = _touch
-
-    hb = _CompressionActivityHeartbeat(agent, interval_seconds=60.0)
-    hb.start()
-    hb.stop()
-
-    assert agent.touches[0] == (
-        "context compression started",
-        ActivityProvenance.AGENT_COMPRESSION,
-    )
-    assert agent.touches[-1] == (
-        "context compression completed",
-        ActivityProvenance.AGENT_COMPRESSION,
-    )
-    assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
 
 def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:

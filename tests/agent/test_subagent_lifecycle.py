@@ -202,6 +202,10 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
         child_role="leaf",
         child_summary="aggregated",
         child_status="completed",
+        # Redacted tool history rides the shared finalization pipeline
+        # (#62011/#72403); empty here because the fabricated result carries
+        # no tool_trace.
+        tool_call_history=[],
         duration_ms=250,
     )
     assert parent.session_estimated_cost_usd == 3.5

@@ -621,8 +621,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     def _resolve_length_budget(self) -> "tuple[Callable[[str], int], int]":
         """Per-chat length function (relay adapters differ per chat, e.g. utf16) + budget.
         isinstance gate: MagicMock auto-attributes aren't callables; test doubles use len."""
-        len_fn = (self.adapter.message_len_fn_for_chat(self.chat_id)
-                  if isinstance(self.adapter, _BasePlatformAdapter) else len)
+        len_fn: "Callable[[str], int]" = len
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            # Guarded: the consumer is lazy-imported per turn, so a git pull while
+            # the gateway runs can pair new consumer code with an old in-memory
+            # adapter lacking message_len_fn_for_chat (#72628).
+            try:
+                len_fn = self.adapter.message_len_fn_for_chat(self.chat_id)
+            except Exception:
+                len_fn = len
         return len_fn, max(500, self._raw_message_limit() - len_fn(self.cfg.cursor) - 100)
 
     async def _start_transports(self) -> None:

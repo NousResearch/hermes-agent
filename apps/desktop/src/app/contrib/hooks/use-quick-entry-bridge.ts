@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   initQuickEntryBridge,
   QUICK_TARGET_CURRENT,
@@ -10,7 +11,6 @@ import {
 import { $gatewayState, $sessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { isSecondaryWindow } from '@/store/windows'
-import { sessionTitle } from '@/lib/chat-runtime'
 
 interface QuickEntryBridgeParams {
   startFreshSessionDraft: () => void
@@ -30,6 +30,7 @@ function sessionOptions(): QuickEntrySessionOption[] {
       id: session.id,
       title: (() => {
         const t = sessionTitle(session)
+
         return t === 'Untitled session' ? session.id : t
       })()
     }))

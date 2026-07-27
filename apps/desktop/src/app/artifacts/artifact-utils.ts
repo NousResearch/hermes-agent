@@ -1,6 +1,6 @@
+import { sessionTitle } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { filePathFromMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
-import { sessionTitle } from '@/lib/chat-runtime'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'

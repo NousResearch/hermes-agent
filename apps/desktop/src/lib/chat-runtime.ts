@@ -70,15 +70,20 @@ const COMPACTION_TITLE_PREFIXES = [
 
 export function isCompactionEnvelopePreview(preview: string | null | undefined): boolean {
   const text = (preview ?? '').trim()
-  if (!text) return false
+
+  if (!text) {return false}
+
   return COMPACTION_TITLE_PREFIXES.some(prefix => text.startsWith(prefix))
 }
 
 export function sessionTitle(session: SessionInfo): string {
   const explicit = session.title?.trim()
-  if (explicit) return explicit
+
+  if (explicit) {return explicit}
   const preview = session.preview?.trim()
-  if (preview && !isCompactionEnvelopePreview(preview)) return preview
+
+  if (preview && !isCompactionEnvelopePreview(preview)) {return preview}
+
   return 'Untitled session'
 }
 

@@ -9,9 +9,9 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { getSession } from '@/hermes'
+import { isCompactionEnvelopePreview } from '@/lib/chat-runtime'
 import { parseSessionRefValue, sessionRefCacheKey, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { $sessions, sessionMatchesStoredId } from '@/store/session'
-import { isCompactionEnvelopePreview } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 const titleCache = new Map<string, string>()
@@ -23,9 +23,12 @@ const titleSubs = new Map<string, Set<(value: string) => void>>()
  *  resolves to empty and the caller's fallback wins. */
 function sessionRowTitle(row: SessionInfo): string {
   const explicit = row.title?.trim()
-  if (explicit) return explicit
+
+  if (explicit) {return explicit}
   const preview = row.preview?.trim()
-  if (preview && !isCompactionEnvelopePreview(preview)) return preview
+
+  if (preview && !isCompactionEnvelopePreview(preview)) {return preview}
+
   return ''
 }
 

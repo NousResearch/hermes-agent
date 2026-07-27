@@ -10,7 +10,11 @@ export interface TriggerState {
 }
 
 // `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
-// single tokens. Restricting the slash command name to `[a-zA-Z][\w-]*` avoids
+// single tokens, and a path is part of that token: `@./src/`, `@~/Desktop/`,
+// and `@file:src/foo` all have to keep the popover live while the user walks
+// into subdirectories. Excluding `/` from the query class would end the token
+// at the first separator, which is exactly the "can't browse into a folder"
+// bug. Restricting the slash command name to `[a-zA-Z][\w-]*` avoids
 // matching file paths like `src/foo/bar`.
 //
 // `/` triggers fire in two shapes, because a slash means two different things
@@ -27,7 +31,7 @@ export interface TriggerState {
 // The inline shape is what makes skills reachable anywhere in a prompt. Both
 // shapes need the trailing `$`: detection runs against the text BEFORE the
 // caret, so the match must end where the user is typing.
-const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@/]*)$/
+const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@]*)$/
 const SLASH_COMMAND_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
 const SLASH_INLINE_TRIGGER_RE = /[\s](\/)([a-zA-Z][\w-]*)?$/
 

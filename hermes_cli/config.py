@@ -296,7 +296,7 @@ _SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-m
 def _install_method_stamp(path: Path) -> Optional[str]:
     try:
         method = path.read_text(encoding="utf-8").strip().lower()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     return method if method in _SUPPORTED_INSTALL_METHODS else None
 

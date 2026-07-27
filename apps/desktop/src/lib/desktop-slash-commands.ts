@@ -188,7 +188,13 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Resume a saved session',
     aliases: ['/sessions', '/switch'],
     surface: picker('session'),
-    argumentMode: 'options'
+    // `mixed`, not `options`: the argument is a free-text search the picker
+    // fuzzy-matches against titles and previews, so multi-word queries have to
+    // stay typeable. Its completion list also always carries a trailing
+    // "Browse all sessions…" action row, which meant Space-to-accept could
+    // never fall through — the first space wiped the composer and threw the
+    // user into the overlay.
+    argumentMode: 'mixed'
   },
 
   // Backend-executed commands that render useful inline output.

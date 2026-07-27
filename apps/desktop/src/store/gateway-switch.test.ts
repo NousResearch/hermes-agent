@@ -11,9 +11,9 @@ import {
   setCronSessions,
   setFreshDraftReady,
   setMessagingSessions,
+  setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading,
-  setSessionProfilesTruncated
+  setSessionsLoading
 } from '@/store/session'
 import { $stalledSessionIds } from '@/store/session-states'
 

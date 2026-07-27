@@ -245,8 +245,12 @@ export function useStatusbarItems({
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
       label,
+      // Update state is not a preference: hiding it is how a user misses that
+      // their client is behind. Listed in the menu, but locked on.
+      lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('client'),
       title: tooltip || undefined,
+      toggleLabel: copy.toggleVersion,
       variant: 'action'
     }
   }, [
@@ -295,8 +299,10 @@ export function useStatusbarItems({
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-backend',
       label,
+      lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('backend'),
       title: tooltip || undefined,
+      toggleLabel: copy.toggleBackendVersion,
       variant: 'action'
     }
   }, [
@@ -346,8 +352,12 @@ export function useStatusbarItems({
         className: `w-7 justify-center px-0${commandCenterOpen ? ' bg-accent/55 text-foreground' : ''}`,
         icon: <Command className="size-3.5" />,
         id: 'command-center',
+        // The system icon: the way into every other surface, including the
+        // settings that would bring a hidden item back. Never hideable.
+        lockedVisible: true,
         onSelect: toggleCommandCenter,
         title: commandCenterOpen ? copy.closeCommandCenter : copy.openCommandCenter,
+        toggleLabel: copy.toggleCommandCenter,
         variant: 'action'
       },
       {
@@ -365,6 +375,7 @@ export function useStatusbarItems({
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
         title: inferenceStatus?.reason || copy.gatewayTitle,
+        toggleLabel: copy.gateway,
         variant: 'menu'
       },
       {
@@ -398,6 +409,7 @@ export function useStatusbarItems({
             ]
           : undefined,
         title: currentCwd || undefined,
+        toggleLabel: copy.toggleWorkspace,
         variant: 'menu'
       },
       {
@@ -423,6 +435,7 @@ export function useStatusbarItems({
         label: copy.agents,
         onSelect: openAgents,
         title: agentsOpen ? copy.closeAgents : copy.openAgents,
+        toggleLabel: copy.agents,
         variant: 'action'
       },
       {
@@ -431,6 +444,7 @@ export function useStatusbarItems({
         label: copy.cron,
         title: copy.openCron,
         to: CRON_ROUTE,
+        toggleLabel: copy.cron,
         variant: 'action'
       },
       {
@@ -439,6 +453,7 @@ export function useStatusbarItems({
         label: copy.webhooks,
         title: copy.openWebhooks,
         to: WEBHOOKS_ROUTE,
+        toggleLabel: copy.webhooks,
         variant: 'action'
       }
     ],
@@ -504,7 +519,8 @@ export function useStatusbarItems({
       },
       {
         ...approvalModeItem,
-        hidden: gatewayState !== 'open'
+        hidden: gatewayState !== 'open',
+        toggleLabel: copy.toggleApprovalMode
       },
       {
         actionId: 'view.showTerminal',
@@ -514,6 +530,7 @@ export function useStatusbarItems({
         id: 'terminal',
         onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
         title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        toggleLabel: copy.toggleTerminal,
         variant: 'action'
       },
       clientVersionItem,

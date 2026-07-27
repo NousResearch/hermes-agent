@@ -1990,6 +1990,13 @@ export interface Translations {
       gatewayOffline: string
       gatewayRestarting: string
       gatewayTitle: string
+      customizeTitle: string
+      toggleApprovalMode: string
+      toggleBackendVersion: string
+      toggleCommandCenter: string
+      toggleTerminal: string
+      toggleVersion: string
+      toggleWorkspace: string
       agents: string
       closeAgents: string
       openAgents: string

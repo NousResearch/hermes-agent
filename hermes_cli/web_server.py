@@ -2953,6 +2953,20 @@ def _collect_profile_gateway_topology_cached() -> Dict[str, Any]:
         return data
 
 
+def _load_configured_gateway_platforms() -> set[str]:
+    """Load connected platform names away from the asyncio event loop.
+
+    The first ``load_gateway_config()`` call performs platform discovery and
+    can take longer than Desktop's WebSocket connect timeout on Windows.  This
+    helper is synchronous by design; ``get_status`` runs it in Starlette's
+    worker pool so a concurrent ``/api/ws`` handshake can still complete.
+    """
+    from gateway.config import load_gateway_config
+
+    gateway_config = load_gateway_config()
+    return {platform.value for platform in gateway_config.get_connected_platforms()}
+
+
 @app.get("/api/ssh/ownership")
 async def get_ssh_ownership(request: Request):
     _require_token(request)
@@ -3054,12 +3068,9 @@ async def get_status(profile: Optional[str] = None):
         gateway_updated_at = None
         configured_gateway_platforms: set[str] | None = None
         try:
-            from gateway.config import load_gateway_config
-
-            gateway_config = load_gateway_config()
-            configured_gateway_platforms = {
-                platform.value for platform in gateway_config.get_connected_platforms()
-            }
+            configured_gateway_platforms = await run_in_threadpool(
+                _load_configured_gateway_platforms
+            )
         except Exception:
             configured_gateway_platforms = None
 

@@ -507,20 +507,28 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     else:
         feature = "wake.openwakeword"
     deps_ok = lazy_deps.is_available(feature)
-    audio_ok = _audio_available()
+    lazy_ok = lazy_deps._allow_lazy_installs()
+    # The audio probe imports sounddevice + numpy — two of the very packages
+    # the lazy installer would fetch — so it can only be trusted once the
+    # feature's deps are installed. On a fresh install (deps missing, lazy
+    # installs allowed) we defer the mic check: the engine constructors call
+    # ``lazy_deps.ensure()`` and the stream-open surfaces any real audio
+    # problem. Gating ``available`` on the probe here made the lazy-install
+    # path unreachable (the probe always failed before ensure() could run).
+    audio_ok = _audio_available() if deps_ok else False
     key_ok = True
     hint = ""
 
     if provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
         key_ok = False
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
-    elif not deps_ok:
+    elif not deps_ok and not lazy_ok:
         hint = lazy_deps.feature_install_command(feature) or ""
-    elif not audio_ok:
+    elif deps_ok and not audio_ok:
         hint = "Microphone capture needs sounddevice + numpy and a working audio device."
 
     return {
-        "available": audio_ok and (deps_ok or lazy_deps._allow_lazy_installs()) and key_ok,
+        "available": key_ok and ((deps_ok and audio_ok) or (not deps_ok and lazy_ok)),
         "provider": provider,
         "deps_available": deps_ok,
         "audio_available": audio_ok,

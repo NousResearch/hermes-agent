@@ -521,6 +521,47 @@ def test_tool_intercept_bypass_does_not_create_relay_host(monkeypatch):
     assert imports == []
 
 
+def test_execution_adapters_do_not_create_relay_host_without_a_consumer(
+    monkeypatch,
+):
+    from agent import relay_llm, relay_tools
+
+    relay_runtime._reset_for_tests()
+    imports = []
+
+    def load_relay():
+        imports.append("nemo_relay")
+        raise AssertionError("disabled execution adapter created Relay host")
+
+    monkeypatch.setattr(relay_runtime, "_load_nemo_relay", load_relay)
+    request = {"model": "test-model", "messages": []}
+    response = object()
+    tool_args = {"command": "true"}
+    tool_result = object()
+
+    assert (
+        relay_llm.execute(
+            request,
+            lambda observed: response if observed is request else None,
+            session_id="llm-session",
+            name="test-provider",
+            model_name="test-model",
+        )
+        is response
+    )
+    result, observed_args = relay_tools.execute(
+        "terminal",
+        tool_args,
+        lambda observed: tool_result if observed is tool_args else None,
+        session_id="tool-session",
+    )
+
+    assert result is tool_result
+    assert observed_args is tool_args
+    assert relay_runtime.get_host(create=False) is None
+    assert imports == []
+
+
 def test_profile_key_caches_absolute_path_resolution(monkeypatch):
     relay_runtime._reset_for_tests()
 

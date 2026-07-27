@@ -82,7 +82,7 @@ import {
   routeSessionId,
   sessionRoute,
   SETTINGS_ROUTE,
-  syncWorkspaceIsPage
+  syncWorkspaceRoute
 } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
@@ -187,11 +187,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     routedSessionIdRef.current = null
   }, [])
 
-  // Mirror "the workspace is showing a full page" into its atom — the
-  // workspace pane contribution re-registers headerVeto from it, so the main
-  // zone's tab bar stands down on pages (and returns with the chat).
+  // Point the workspace at the route: the pane contribution re-registers
+  // headerVeto from $workspaceIsPage (so the main zone's tab bar stands down
+  // on pages), and a page route fronts the pane so it can't stay stuck behind
+  // a focused session tile.
   useEffect(() => {
-    syncWorkspaceIsPage(location.pathname)
+    syncWorkspaceRoute(location.pathname)
   }, [location.pathname])
 
   const {

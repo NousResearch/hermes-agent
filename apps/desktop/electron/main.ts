@@ -63,6 +63,7 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  profileUsesPrimaryBackend,
   resolveAuthMode,
   resolveTestWsUrl,
   savedProfileSsh,
@@ -7727,15 +7728,33 @@ function primaryProfileKey() {
   return readActiveDesktopProfile() || 'default'
 }
 
-// Resolve a backend connection for the given profile. Routes the primary
-// profile to startHermes() (the window backend: boot UI, bootstrap, remote
-// mode), and any OTHER profile to a lazily-spawned pool backend. An empty /
-// unknown profile resolves to the primary, so all legacy callers are unchanged.
+// Resolve a backend connection for the given profile. The primary profile uses
+// startHermes() (the window backend: boot UI, bootstrap, remote mode). Profiles
+// inheriting an app-global remote share that same connection because the remote
+// backend scopes their requests by profile. Other profiles use lazily-spawned
+// pool backends. An empty / unknown profile resolves to the primary.
 async function ensureBackend(profile) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const primaryProfile = primaryProfileKey()
+  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfile
 
-  if (key === primaryProfileKey()) {
+  if (key === primaryProfile) {
     return startHermes()
+  }
+
+  if (
+    globalRemoteActive() &&
+    profileUsesPrimaryBackend(key, {
+      primaryProfile,
+      globalRemote: true,
+      profileRemoteOverride: profileHasRemoteOverride(key)
+    })
+  ) {
+    const connection = await startHermes()
+
+    // Non-primary global-remote profiles still need their scope on the
+    // descriptor so renderer-side WebSocket, filesystem, and cache routing use
+    // the selected profile while sharing the one underlying backend.
+    return { ...connection, profile: key }
   }
 
   const existing = backendPool.get(key)

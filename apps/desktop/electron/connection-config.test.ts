@@ -35,6 +35,7 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  profileUsesPrimaryBackend,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
@@ -185,6 +186,44 @@ test('saved SSH drafts are inactive and explicit overrides take precedence', () 
   config.profiles.coder = { mode: 'ssh', host: 'active' }
   assert.deepEqual(profileSshOverride(config, 'coder'), { mode: 'ssh', host: 'active' })
   assert.equal(profileHasRemoteConnection(config, 'coder'), true)
+})
+
+// --- profileUsesPrimaryBackend ---
+
+test('profileUsesPrimaryBackend keeps primary and empty scopes on the window backend', () => {
+  assert.equal(profileUsesPrimaryBackend('default', { primaryProfile: 'default' }), true)
+  assert.equal(profileUsesPrimaryBackend(' coder ', { primaryProfile: 'coder' }), true)
+  assert.equal(profileUsesPrimaryBackend('', { primaryProfile: 'default' }), true)
+})
+
+test('profileUsesPrimaryBackend shares one app-global remote across profiles', () => {
+  assert.equal(
+    profileUsesPrimaryBackend('coder', {
+      primaryProfile: 'default',
+      globalRemote: true,
+      profileRemoteOverride: false
+    }),
+    true
+  )
+})
+
+test('profileUsesPrimaryBackend preserves profile overrides and local profile backends', () => {
+  assert.equal(
+    profileUsesPrimaryBackend('coder', {
+      primaryProfile: 'default',
+      globalRemote: true,
+      profileRemoteOverride: true
+    }),
+    false
+  )
+  assert.equal(
+    profileUsesPrimaryBackend('coder', {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false
+    }),
+    false
+  )
 })
 
 // --- pathWithGlobalRemoteProfile ---

@@ -1,4 +1,4 @@
-import { type FC, useCallback, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useMemo, useRef, useState } from 'react'
 
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
@@ -16,7 +16,7 @@ import { notifyError } from '@/store/notifications'
 
 type ThreadLoadingState = 'response' | 'session'
 
-export const Thread: FC<{
+interface ThreadProps {
   clampToComposer?: boolean
   cwd?: string | null
   gateway?: HermesGateway | null
@@ -28,7 +28,16 @@ export const Thread: FC<{
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
-}> = ({
+}
+
+// memo'd on purpose, and load-bearing for session-switch cost. ChatView
+// re-renders on every route change (it reads `location`), and this subtree is
+// the entire transcript — without a bail-out here the router's context update
+// rebuilds every message of the OUTGOING thread before it is replaced. The
+// props above are all stable across a plain re-render (see the component-map
+// and loadingIndicator memos below), so the only thing that gets through is a
+// genuine change.
+export const Thread = memo(function Thread({
   clampToComposer = false,
   cwd = null,
   gateway = null,
@@ -40,7 +49,7 @@ export const Thread: FC<{
   onRestoreToMessage,
   sessionId = null,
   sessionKey
-}) => {
+}: ThreadProps) {
   const { t } = useI18n()
   const copy = t.assistant.thread
 
@@ -129,13 +138,20 @@ export const Thread: FC<{
     </div>
   ) : undefined
 
+  // Stable element identity, for the same reason the component map above is
+  // memoized: this is a prop of the memo'd ThreadMessageList, so a fresh
+  // element every render defeats the bail-out and drags the whole transcript
+  // into the switch's render pass. It takes no props, so one element is
+  // always correct.
+  const loadingIndicator = useMemo(() => <BackgroundResumeNotice />, [])
+
   return (
     <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
       <ThreadMessageList
         clampToComposer={clampToComposer}
         components={messageComponents}
         emptyPlaceholder={emptyPlaceholder}
-        loadingIndicator={<BackgroundResumeNotice />}
+        loadingIndicator={loadingIndicator}
         sessionKey={sessionKey}
       />
       {loading === 'session' && <CenteredThreadSpinner />}
@@ -151,4 +167,4 @@ export const Thread: FC<{
       />
     </div>
   )
-}
+})

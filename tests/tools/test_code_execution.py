@@ -47,6 +47,7 @@ from tools.code_execution_tool import (
     _TOOL_DOC_LINES,
     _execute_remote,
 )
+from tools.registry import registry
 
 
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
@@ -563,6 +564,31 @@ class TestEnvVarFiltering(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestExecuteCodeEdgeCases(unittest.TestCase):
+
+    def test_command_argument_points_to_terminal(self):
+        result = json.loads(registry.dispatch(
+            "execute_code",
+            {"command": "git status"},
+            task_id="test",
+            enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+        ))
+        self.assertIn("error", result)
+        self.assertIn("'command' parameter", result["error"])
+        self.assertIn("terminal(command=...)", result["error"])
+        self.assertIn("execute_code(code=...)", result["error"])
+
+    def test_empty_code_explains_required_parameter(self):
+        for code in ("", None):
+            with self.subTest(code=code):
+                result = json.loads(registry.dispatch(
+                    "execute_code",
+                    {"code": code},
+                    task_id="test",
+                ))
+                self.assertIn("error", result)
+                self.assertIn("non-empty 'code' parameter", result["error"])
+                self.assertIn("Python source", result["error"])
+                self.assertIn("terminal(command=...)", result["error"])
 
     def test_windows_returns_error(self):
         """When SANDBOX_AVAILABLE is False (e.g. when the backend deems

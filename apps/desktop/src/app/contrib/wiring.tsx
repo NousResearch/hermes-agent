@@ -16,6 +16,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
+import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
@@ -107,6 +108,7 @@ import { ContribWiringContext } from './context'
 import { useBackgroundSync } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { usePetBridge } from './hooks/use-pet-bridge'
+import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -607,6 +609,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({ requestGateway, resumeSession, submitText })
 
+  // The global-hotkey Quick Entry window's bridge: its captured text rides the
+  // SAME submit machinery the normal composer uses (current chat / picked
+  // session / new session), and it hears gateway truth from this window.
+  useQuickEntryBridge({ startFreshSessionDraft, submitText })
+
   // Clear a failed turn's red error banner. Errors are renderer-local (never
   // persisted): a bare error placeholder is dropped entirely; a partial-output
   // failure keeps its content and sheds the error. Both the runtime cache AND
@@ -978,6 +985,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <SessionSwitcher />
       <FileActionDialogs />
       <RemoteFolderPicker />
+      <FindBar />
 
       {settingsOpen && (
         <Suspense fallback={null}>

@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useCallback, useRef, useSyncExternalStore } from 'react'
 
 interface SliceStore<T> {
   get(): Record<string, T[] | undefined>
@@ -28,4 +28,36 @@ export function useSessionSlice<T>(store: SliceStore<T>, key: string | null): T[
     onChange => store.listen(onChange),
     () => (key ? (store.get()[key] ?? (EMPTY as unknown as T[])) : (EMPTY as unknown as T[]))
   )
+}
+
+interface ReadableStore<T> {
+  get(): T
+  listen(listener: () => void): () => void
+}
+
+/**
+ * Subscribe to a SCALAR derived from a hot store, re-rendering only when that
+ * scalar changes by `Object.is` — not on every write to the store it came from.
+ *
+ * `useStore($someHotStore)` bails out on reference equality alone, so a store
+ * republished per streaming token re-renders every consumer even when the two
+ * or three fields they actually read are identical. `$sessionStates` is the
+ * canonical case: it is republished on every message delta, so a component
+ * reading only `busy` or `turnStartedAt` off it pays for the whole transcript's
+ * churn.
+ *
+ * `select` must return a PRIMITIVE (or a referentially stable value). Returning
+ * a fresh object or array defeats the bail-out and reintroduces the churn this
+ * exists to remove — derive one scalar per call instead.
+ */
+export function useStoreSelector<T, S>(store: ReadableStore<T>, select: (value: T) => S): S {
+  // `select` is read through a ref so an inline arrow at the call site doesn't
+  // resubscribe on every render; useSyncExternalStore re-reads the snapshot on
+  // each render anyway, so the latest selector is always applied.
+  const selectRef = useRef(select)
+  selectRef.current = select
+
+  const subscribe = useCallback((onChange: () => void) => store.listen(onChange), [store])
+
+  return useSyncExternalStore(subscribe, () => selectRef.current(store.get()))
 }

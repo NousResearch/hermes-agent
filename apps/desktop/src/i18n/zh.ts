@@ -258,6 +258,9 @@ export const zh: Translations = {
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',
       'view.flipPanes': '交换侧边栏位置',
+      'view.findInPage': '页面内查找',
+      'view.findNext': '查找下一个',
+      'view.findPrevious': '查找上一个',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
       'profile.switch.1': '切换到配置 1',
@@ -293,6 +296,11 @@ export const zh: Translations = {
       'composer.history': '切换弹窗/历史',
       'composer.cancel': '关闭弹窗·取消运行'
     }
+  },
+
+  findInPage: {
+    next: '下一个匹配',
+    previous: '上一个匹配'
   },
 
   language: {
@@ -749,6 +757,15 @@ export const zh: Translations = {
       invalidJson: '配置 JSON 无效',
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。'
+    },
+    quickEntry: {
+      enabledTitle: '快速输入',
+      enabledDesc: '用全局快捷键在任何地方唤出一个小输入框，无需打开 Hermes 即可发送提示。',
+      shortcutTitle: '快速输入快捷键',
+      shortcutDesc: '至少需要一个修饰键，例如 CommandOrControl+Shift+Space。',
+      active: '快捷键已生效。',
+      takenBy: '此快捷键已被其他应用占用，请换一个。',
+      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。'
     },
     credentials: {
       pasteKey: '粘贴密钥',
@@ -2202,6 +2219,10 @@ export const zh: Translations = {
   statusStack: {
     agents: '代理',
     background: count => `${count} 个后台任务`,
+    goalActive: '目标进行中',
+    goalDone: '目标已完成',
+    goalPaused: '目标已暂停',
+    goalWaiting: '目标等待中',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
     running: '运行中',
@@ -2558,6 +2579,13 @@ export const zh: Translations = {
       gatewayOffline: '离线',
       gatewayRestarting: '重启中…',
       gatewayTitle: 'Hermes 推理网关状态',
+      customizeTitle: '在状态栏中显示',
+      toggleApprovalMode: '审批',
+      toggleBackendVersion: '后端版本',
+      toggleCommandCenter: '命令中心',
+      toggleTerminal: '终端',
+      toggleVersion: '版本与更新',
+      toggleWorkspace: '工作区',
       agents: '代理',
       closeAgents: '关闭代理',
       openAgents: '打开代理',

@@ -922,7 +922,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "options": ["stash", "discard"],
     },
     "updates.refresh_cua_driver": {
-        "type": "bool",
+        "type": "boolean",
         "description": (
             "Refresh an already-installed cua-driver during hermes update. "
             "Disable this on non-admin macOS accounts where /Applications is "
@@ -5076,8 +5076,7 @@ def get_profiles_sessions_sidebar(
     recents_rows: List[Dict[str, Any]] = []
     cron_rows: List[Dict[str, Any]] = []
     messaging_rows: List[Dict[str, Any]] = []
-    recents_total = 0
-    recents_profile_totals: Dict[str, int] = {}
+    recents_truncated: Dict[str, bool] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
 
@@ -5116,18 +5115,13 @@ def get_profiles_sessions_sidebar(
             continue
         try:
             if recents_scope == "all" or name == recents_scope:
-                recents_rows.extend(
-                    _tag(_slice(db, exclude=recents_exclude_list, cap=recents_cap), name)
-                )
-                rtotal = db.session_count(
-                    exclude_sources=recents_exclude_list or None,
-                    min_message_count=1,
-                    include_archived=False,
-                    archived_only=False,
-                    exclude_children=True,
-                )
-                recents_total += rtotal
-                recents_profile_totals[name] = rtotal
+                profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
+                # A full window means more rows remain on disk. That is all the
+                # sidebar's "load more" needs, and unlike an exact COUNT(*) per
+                # profile per refresh it costs nothing beyond the rows already
+                # read.
+                recents_truncated[name] = len(profile_rows) >= recents_cap
+                recents_rows.extend(_tag(profile_rows, name))
             cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
             messaging_rows.extend(
                 _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
@@ -5146,8 +5140,7 @@ def get_profiles_sessions_sidebar(
     return {
         "recents": {
             "sessions": _window(recents_rows, recents_cap),
-            "total": recents_total,
-            "profile_totals": recents_profile_totals,
+            "profiles_truncated": recents_truncated,
         },
         "cron": {"sessions": _window(cron_rows, cron_cap)},
         "messaging": {
@@ -8202,7 +8195,35 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     # plugin registry. Only the docs link needs an override here so the
     # Channels page can point at the Microsoft Teams setup guide.
     "teams": {
+        "description": "Connect Hermes to Microsoft Teams chats via the Bot Framework.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+    },
+    # Bundled platform plugins: name comes from the plugin registry label;
+    # give each a human description (the registry's install_hint is a
+    # dependency note, not a description) and a docs link.
+    "irc": {
+        "description": "Relay messages between an IRC channel (or DMs) and Hermes.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
+    },
+    "line": {
+        "description": "Use Hermes from LINE via the LINE Messaging API webhook.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
+    },
+    "ntfy": {
+        "description": "Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
+    },
+    "photon": {
+        "description": "Use Hermes through iMessage via Photon's managed Spectrum platform.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
+    },
+    "raft": {
+        "description": "Join a Raft workspace as an external agent.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",
+    },
+    "simplex": {
+        "description": "Talk to Hermes over SimpleX Chat via a local simplex-chat daemon.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/simplex",
     },
     "yuanbao": {
         "name": "Yuanbao (元宝)",
@@ -8228,6 +8249,23 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "description": "Receive events from GitHub, GitLab, and other webhook sources.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/",
         "env_vars": ("WEBHOOK_ENABLED", "WEBHOOK_PORT", "WEBHOOK_SECRET"),
+        "required_env": (),
+    },
+    "msgraph_webhook": {
+        "name": "Microsoft Graph Webhook",
+        "description": "Receive Microsoft Graph change notifications (Teams meetings, Outlook, …).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/msgraph-webhook",
+        "required_env": (),
+    },
+    "whatsapp_cloud": {
+        "name": "WhatsApp Cloud API",
+        "description": "Use Hermes via Meta's hosted WhatsApp Cloud API (no local bridge).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp-cloud",
+    },
+    "relay": {
+        "name": "Relay (experimental)",
+        "description": "Generic relay adapter fronted by the Hermes Relay connector.",
+        "docs_url": "",
         "required_env": (),
     },
 }
@@ -8411,6 +8449,28 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """
     from gateway.config import Platform
 
+    # Resolve plugin entries FIRST. Plugin platforms (irc, ntfy, photon, …)
+    # leak into ``Platform.__members__`` as pseudo-members the moment any
+    # earlier code path calls ``Platform("<plugin id>")`` — and iterating the
+    # enum first would then claim them with no plugin metadata, rendering
+    # nameless "Irc"/"Ntfy" cards with empty descriptions on the Channels
+    # page while the real label/install-hint sat unused in the registry.
+    plugin_map: dict[str, Any] = {}
+    try:
+        # Plugin discovery only runs as a side effect of importing
+        # model_tools; this server process doesn't do that, so trigger it
+        # explicitly (idempotent) or plugin_entries() is empty here and
+        # every plugin platform renders nameless.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        from gateway.platform_registry import platform_registry
+
+        for plugin_entry in platform_registry.plugin_entries():
+            plugin_map[plugin_entry.name] = plugin_entry
+    except Exception:
+        _log.debug("plugin platform registry unavailable", exc_info=True)
+
     seen: set[str] = set()
     entries: list[dict[str, Any]] = []
 
@@ -8420,18 +8480,15 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         if member.value in seen:
             continue
         seen.add(member.value)
-        entries.append(_build_catalog_entry(member.value))
+        entries.append(
+            _build_catalog_entry(member.value, plugin_map.get(member.value))
+        )
 
-    try:
-        from gateway.platform_registry import platform_registry
-
-        for plugin_entry in platform_registry.plugin_entries():
-            if plugin_entry.name in seen:
-                continue
-            seen.add(plugin_entry.name)
-            entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
-    except Exception:
-        _log.debug("plugin platform registry unavailable", exc_info=True)
+    for name, plugin_entry in plugin_map.items():
+        if name in seen:
+            continue
+        seen.add(name)
+        entries.append(_build_catalog_entry(name, plugin_entry))
 
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(
@@ -11965,9 +12022,15 @@ def _prune_sessions(body: SessionPrune):
                 "ok": True,
                 "removed": 0,
                 "matched": len(rows),
-                # Rows are ordered oldest-first.
-                "oldest_started_at": rows[0]["started_at"] if rows else None,
-                "newest_started_at": rows[-1]["started_at"] if rows else None,
+                # Rows are ordered by last activity, not creation time.
+                "oldest_last_active": rows[0]["last_active"] if rows else None,
+                "newest_last_active": rows[-1]["last_active"] if rows else None,
+                "oldest_started_at": (
+                    min(r["started_at"] for r in rows) if rows else None
+                ),
+                "newest_started_at": (
+                    max(r["started_at"] for r in rows) if rows else None
+                ),
                 "sessions": [
                     {
                         "id": r["id"],
@@ -11975,6 +12038,7 @@ def _prune_sessions(body: SessionPrune):
                         "title": r.get("title"),
                         "model": r.get("model"),
                         "started_at": r["started_at"],
+                        "last_active": r["last_active"],
                         "message_count": r["message_count"],
                     }
                     for r in rows

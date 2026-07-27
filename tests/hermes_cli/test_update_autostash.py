@@ -480,6 +480,94 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
+def test_refresh_active_memory_provider_dependencies_reinstalls_active_provider(monkeypatch):
+    """#53272/#70636: update must re-run the active provider's dep install."""
+    recorded = []
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"provider": "mem0"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.memory_setup._install_dependencies",
+        lambda provider_name, force=False: recorded.append((provider_name, force)),
+    )
+
+    hermes_main._refresh_active_memory_provider_dependencies()
+
+    assert recorded == [("mem0", True)]
+
+
+@pytest.mark.parametrize(
+    "memory_cfg",
+    [
+        {},                                          # no provider configured
+        {"provider": ""},                            # empty provider
+        {"provider": "default"},                     # built-in store
+        {"provider": "mem0", "enabled": False},      # memory disabled
+    ],
+)
+def test_refresh_active_memory_provider_dependencies_skips_inactive(monkeypatch, memory_cfg):
+    recorded = []
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": memory_cfg},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.memory_setup._install_dependencies",
+        lambda provider_name, force=False: recorded.append((provider_name, force)),
+    )
+
+    hermes_main._refresh_active_memory_provider_dependencies()
+
+    assert recorded == []
+
+
+def test_refresh_active_memory_provider_dependencies_never_raises(monkeypatch):
+    """A provider install failure must not block the rest of the update."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"provider": "hindsight"}},
+    )
+
+    def boom(provider_name, force=False):
+        raise RuntimeError("pip exploded")
+
+    monkeypatch.setattr("hermes_cli.memory_setup._install_dependencies", boom)
+
+    hermes_main._refresh_active_memory_provider_dependencies()  # must not raise
+
+
+def test_cmd_update_refreshes_active_memory_provider_dependencies(monkeypatch, tmp_path):
+    """The git-pull update path must invoke the memory-provider refresh."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+
+    refresh_calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_refresh_active_memory_provider_dependencies",
+        lambda: refresh_calls.append(True),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert refresh_calls == [True]
+
+
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     """Termux update path should target .[termux-all] when requested."""
     calls = []

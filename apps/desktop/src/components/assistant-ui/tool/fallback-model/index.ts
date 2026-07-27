@@ -128,9 +128,14 @@ function readFileDisplayTarget(args: Record<string, unknown>, result: Record<str
   return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
 }
 
+// The real command, preferring the actual argument over the backend's
+// display preview. `context` is a *summarized* preview ("sleep 70 + 2
+// commands") the gateway sends on tool.start before real args arrive — fine
+// as a placeholder for the live title, wrong for the `$` transcript, which
+// must show what actually ran.
 function shellCommand(args: Record<string, unknown>): string {
   return (
-    firstStringField(args, ['context', 'preview']) || firstStringField(args, ['command', 'code']) || contextValue(args)
+    firstStringField(args, ['command', 'code']) || firstStringField(args, ['context', 'preview']) || contextValue(args)
   )
 }
 
@@ -1078,6 +1083,13 @@ function toolDetailText(
 
     if (output || lines) {
       return [output, lines].filter(Boolean).join('\n')
+    }
+
+    // A terminal row with no output already shows its command in the `$`
+    // transcript above; the generic fallback would print the same string a
+    // second time. `execute_code` has no transcript, so it keeps the fallback.
+    if (part.toolName === 'terminal') {
+      return ''
     }
   }
 

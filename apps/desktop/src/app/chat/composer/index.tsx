@@ -40,6 +40,7 @@ import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
 import { useComposerTrigger } from './hooks/use-composer-trigger'
+import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useSlashCompletions } from './hooks/use-slash-completions'
@@ -49,7 +50,7 @@ import {
   composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
-  insertPlainTextAtCaret,
+  insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
   RICH_INPUT_SLOT
 } from './rich-editor'
@@ -59,7 +60,9 @@ import { CodingStatusRow } from './status-stack/coding-row'
 import { extractClipboardImageBlobs } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
+import { isRedoShortcut, isUndoShortcut } from './undo-history'
 import { UrlDialog } from './url-dialog'
+import { chipTypedUrlOnSpace, linkifyUrls } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
@@ -172,8 +175,23 @@ export function ChatBar({
     requestMainFocus,
     sessionIdRef,
     setComposerText,
-    stashAt
+    stashAt,
+    syncDraftFromEditor
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+
+  // Undo/redo. The rich editor bypasses Chromium's editing pipeline for speed,
+  // which also bypasses its undo stack — so we own the stack and every edit
+  // path below banks its pre-edit state through `recordUndoPoint`.
+  const { recordUndoPoint, redo, resetUndoHistory, undo, withUndoPoint } = useComposerUndo({
+    editorRef,
+    syncDraftFromEditor
+  })
+
+  // Prior history belongs to the draft that just left — undoing into another
+  // conversation's text is worse than having none.
+  useEffect(() => {
+    resetUndoHistory()
+  }, [activeQueueSessionKey, resetUndoHistory])
 
   // "Add URL" dialog — open/value state, autofocus, and submit (host onAddUrl or
   // an @url: directive into the draft).
@@ -356,6 +374,23 @@ export function ChatBar({
     scheduleFlushEditorToDraft(event.currentTarget)
   }
 
+  // Native typing/deleting mutates the DOM through Chromium's editing pipeline,
+  // whose undo stack we've taken over — so bank the pre-edit state here, before
+  // the change lands. `beforeinput` is the only hook that still sees the old
+  // text. Consecutive keystrokes coalesce into one entry, so ⌘Z steps back by a
+  // burst rather than a character.
+  const handleEditorBeforeInput = (event: FormEvent<HTMLDivElement>) => {
+    const inputType = (event.nativeEvent as InputEvent).inputType
+
+    // Undo/redo are ours (handled in useComposerUndo + keydown), and IME preedit
+    // is not a committed edit — compositionend is where that text becomes real.
+    if (inputType === 'historyUndo' || inputType === 'historyRedo' || composingRef.current) {
+      return
+    }
+
+    recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+  }
+
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
@@ -402,7 +437,12 @@ export function ChatBar({
     }
 
     event.preventDefault()
-    insertPlainTextAtCaret(event.currentTarget, pastedText)
+
+    // Links in the paste land as `@url:` chips rather than a wall of URL text —
+    // the same reference the "Add URL" dialog inserts, parsed in place so a link
+    // mid-sentence keeps its position.
+    recordUndoPoint()
+    insertComposerContentsAtCaret(event.currentTarget, linkifyUrls(pastedText))
     scheduleFlushEditorToDraft(event.currentTarget)
   }
 
@@ -416,6 +456,23 @@ export function ChatBar({
       return
     }
 
+    // Undo/redo before anything else — we own the stack (see useComposerUndo),
+    // so these never reach Chromium's native history, which has no record of
+    // the Range-based edits the rich editor makes.
+    if (isUndoShortcut(event.nativeEvent)) {
+      event.preventDefault()
+      undo()
+
+      return
+    }
+
+    if (isRedoShortcut(event.nativeEvent)) {
+      event.preventDefault()
+      redo()
+
+      return
+    }
+
     // Plain Backspace right after a directive chip: remove the chip + its
     // auto-inserted trailing space as one unit, so deleting a directive never
     // leaves an orphaned space. (Modified backspaces stay native.)
@@ -424,7 +481,7 @@ export function ChatBar({
       !event.metaKey &&
       !event.ctrlKey &&
       !event.altKey &&
-      deleteChipBeforeCaret(event.currentTarget)
+      withUndoPoint(() => deleteChipBeforeCaret(event.currentTarget))
     ) {
       event.preventDefault()
       flushEditorToDraft(event.currentTarget)
@@ -434,7 +491,19 @@ export function ChatBar({
 
     // Non-collapsed Backspace/Delete: native selection-delete is ~O(n²) on large
     // drafts (Ctrl+A → Delete froze ~1.3s). Collapsed carets fall through.
-    if ((event.key === 'Backspace' || event.key === 'Delete') && deleteSelectionInEditor(event.currentTarget)) {
+    if (
+      (event.key === 'Backspace' || event.key === 'Delete') &&
+      withUndoPoint(() => deleteSelectionInEditor(event.currentTarget))
+    ) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
+    // A typed link finished with a space chips like a pasted one — the space
+    // itself rides along inside the insert.
+    if (withUndoPoint(() => chipTypedUrlOnSpace(event))) {
       event.preventDefault()
       flushEditorToDraft(event.currentTarget)
 
@@ -777,6 +846,7 @@ export function ChatBar({
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
+        onBeforeInput={handleEditorBeforeInput}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={event => {
           composingRef.current = false

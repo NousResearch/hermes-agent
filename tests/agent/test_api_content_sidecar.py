@@ -776,6 +776,67 @@ class TestFlushCompressedSummaryOverrideGuard:
         finally:
             db.close()
 
+    def test_live_override_skipped_for_compression_merged_row(self, tmp_path):
+        """Same invariant as the test above, for the in-memory path.
+
+        ``finalize_turn`` calls ``_apply_persist_user_message_override`` and
+        only then ``_persist_session``, so the live dict is rewritten BEFORE
+        the DB-write guard above ever sees it. A compaction-merged row must
+        survive: the summary is the whole pre-compaction history, and this
+        list is the continuation history the next turn is built from.
+        """
+        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-merged-live"
+        db.create_session(session_id=sid, source="cli")
+        try:
+            agent = self._make_agent(db, sid)
+            merged = "[prior context]\ncompaction summary\n\nactual question"
+            messages = [
+                {
+                    "role": "user",
+                    "content": merged,
+                    COMPRESSED_SUMMARY_METADATA_KEY: True,
+                }
+            ]
+            agent._persist_user_message_idx = 0
+            agent._persist_user_message_override = "actual question"
+            agent._persist_user_message_timestamp = 1730000000
+
+            agent._apply_persist_user_message_override(messages)
+
+            assert messages[0]["content"] == merged, (
+                "the compaction summary was erased from the continuation history"
+            )
+            # The paired timestamp override is unrelated and still applies.
+            assert messages[0]["timestamp"] == 1730000000
+        finally:
+            db.close()
+
+    def test_live_override_still_applies_without_merge_marker(self, tmp_path):
+        """Negative control: an ordinary turn is still cleaned in place."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-plain-live"
+        db.create_session(session_id=sid, source="cli")
+        try:
+            agent = self._make_agent(db, sid)
+            messages = [
+                {
+                    "role": "user",
+                    "content": "[gateway note] observed\n\nactual question",
+                }
+            ]
+            agent._persist_user_message_idx = 0
+            agent._persist_user_message_override = "actual question"
+            agent._persist_user_message_timestamp = None
+
+            agent._apply_persist_user_message_override(messages)
+
+            assert messages[0]["content"] == "actual question"
+        finally:
+            db.close()
+
 
 class TestFlushSanitizeDivergenceCapture:
     def _make_agent(self, db, sid):

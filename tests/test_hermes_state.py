@@ -3008,6 +3008,31 @@ class TestPruneSessions:
         assert session is not None
         assert session["id"] == "new"
 
+    def test_age_preview_and_prune_use_last_activity(self, db):
+        old_ts = time.time() - 100 * 86400
+        for sid in ("inactive", "recently-active"):
+            db.create_session(session_id=sid, source="telegram")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (old_ts, sid),
+            )
+        db.end_session("inactive", end_reason="agent_close")
+        db.append_message(
+            "recently-active",
+            role="user",
+            content="A recent message in a long-lived conversation.",
+        )
+        db.end_session("recently-active", end_reason="agent_close")
+        db._conn.commit()
+
+        candidates = db.list_prune_candidates(older_than_days=90)
+
+        assert [row["id"] for row in candidates] == ["inactive"]
+        assert candidates[0]["last_active"] == pytest.approx(old_ts)
+        assert db.prune_sessions(older_than_days=90) == 1
+        assert db.get_session("inactive") is None
+        assert db.get_session("recently-active") is not None
+
     def test_prune_skips_active_sessions(self, db):
         db.create_session(session_id="active", source="cli")
         # Backdate but don't end
@@ -5547,6 +5572,39 @@ class TestAutoMaintenance:
         assert not (sessions_dir / "request_dump_old1_001.json").exists()
         # Active session's transcript is untouched
         assert (sessions_dir / "new.jsonl").exists()
+
+    def test_auto_prune_preserves_old_session_with_recent_activity(self, db, tmp_path):
+        """Retention is based on activity, not when a conversation began."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        db.create_session(session_id="long-lived", source="telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - 100 * 86400, "long-lived"),
+        )
+        db._conn.commit()
+        db.append_message(
+            "long-lived",
+            role="user",
+            content="This conversation was active today.",
+        )
+        db.end_session("long-lived", end_reason="agent_close")
+        transcript = sessions_dir / "long-lived.jsonl"
+        transcript.write_text('{"role":"user","content":"recent"}\n')
+
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90,
+            vacuum=False,
+            sessions_dir=sessions_dir,
+        )
+
+        assert result["pruned"] == 0
+        assert db.get_session("long-lived") is not None
+        assert [m["content"] for m in db.get_messages("long-lived")] == [
+            "This conversation was active today."
+        ]
+        assert transcript.exists()
 
     def test_auto_prune_without_sessions_dir_preserves_files(self, db, tmp_path):
         """Backward-compat: no sessions_dir = DB-only cleanup (legacy behavior)."""

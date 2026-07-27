@@ -51,6 +51,8 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `stream --real` | backend | same, from a real LLM stream | measure-real-stream, profile-real-stream |
 | `keystroke` | ci | composer keystroke → paint latency | measure-latency, profile-typing, leak-typing |
 | `transcript` | ci | large-transcript mount + paint cost | (new) |
+| `render-churn` | ci | per-component render attribution + store churn while N tabs stream | (new) |
+| `idle-cost` | report | busy-but-silent tiles: idle commit rate, + fps while resizing / typing | (new) |
 | `cold-start` | cold | launch → CDP → driver → first paint (fresh spawn/run) | (new) |
 | `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |
 | `submit` | backend | Enter → cleared → user msg painted, scroll jump | measure-submit, measure-jump |

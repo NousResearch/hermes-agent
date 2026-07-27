@@ -6,6 +6,7 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
+import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
 
 export {}
 
@@ -54,6 +55,34 @@ declare global {
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+      }
+      // Quick Entry: a global-hotkey mini composer window. Main owns the OS
+      // shortcut registration + the persisted preference (it must restore the
+      // shortcut on a cold launch without the renderer visiting Settings), so
+      // the renderer reads/writes it here and adopts the authoritative reply.
+      quickEntry: {
+        getSettings: () => Promise<QuickEntryStatus>
+        // Returns the resulting state — including `registered: false` +
+        // `error: 'taken'` when another app already owns the chord, so a failed
+        // registration surfaces in Settings instead of failing silently.
+        setSettings: (patch: { enabled?: boolean; shortcut?: string }) => Promise<QuickEntryStatus>
+        // Quick window → main: send this payload (main forwards it to the
+        // primary renderer, which routes it to the target session and submits
+        // through the normal prompt path) and hide.
+        submit: (payload: QuickEntrySubmitPayload) => void
+        // Quick window → main: hide without sending (Escape / blur).
+        dismiss: () => void
+        // Primary renderer → main → quick window: gateway connection state +
+        // the recent-session options. Main caches the latest push and replays
+        // it to a quick window spawned later.
+        pushState: (payload: QuickEntryStatePush) => void
+        // Quick window subscribes to those pushes.
+        onState: (callback: (payload: QuickEntryStatePush) => void) => () => void
+        // Primary renderer subscribes to submits captured by the quick window.
+        onSubmit: (callback: (payload: QuickEntrySubmitPayload | string) => void) => () => void
+        // Quick window subscribes to "you were just summoned" so it can reset
+        // its draft and re-focus the input on every open.
+        onShown: (callback: () => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
@@ -237,6 +266,14 @@ declare global {
         // returns the most-installed themes.
         searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
       }
+      // Find-in-page: delegates to Electron's webContents.findInPage on the
+      // IPC sender's window so Cmd+F from a secondary session window
+      // searches that window (not the primary). `onFoundInPage` returns the
+      // unsubscribe fn; the renderer wires it via `initFindInPageListener`
+      // in store/find-in-page.ts and tears it down when the FindBar unmounts.
+      findInPage: (query: string, options?: { forward?: boolean; findNext?: boolean }) => Promise<{ count: number }>
+      stopFindInPage: () => Promise<void>
+      onFoundInPage: (callback: (result: { activeMatchOrdinal: number; count: number }) => void) => () => void
     }
   }
 }
@@ -423,6 +460,8 @@ export interface HermesTitleBarTheme {
 
 export interface HermesWindowState {
   isFullscreen: boolean
+  isMinimized?: boolean
+  isVisible?: boolean
   nativeOverlayWidth: number
   windowButtonPosition: { x: number; y: number } | null
 }

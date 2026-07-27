@@ -1,4 +1,4 @@
-import { type FC, useCallback, useMemo, useState } from 'react'
+import { type FC, useCallback, useMemo, useRef, useState } from 'react'
 
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
@@ -67,21 +67,53 @@ export const Thread: FC<{
     setRestoreConfirmTarget({ messageId, ...target })
   }, [])
 
+  // The values in this map are component *types*: when their identity
+  // changes, React unmounts and remounts every visible message — async
+  // re-rendered parts (shiki code blocks) collapse and re-expand, so the
+  // whole thread visibly jumps. Parents re-render on unrelated state
+  // (e.g. the 15s status-snapshot poll in the desktop controller) and
+  // can't be trusted to keep callback identities stable (see #38333), so
+  // route the callbacks through a ref instead of listing them as memo
+  // deps. Only their definedness stays a dep — it gates UI (the user
+  // Stop button, the restore-confirm affordance). Assigned during render
+  // (the useStoreSelector pattern) so the ref never lags a render.
+  const callbacksRef = useRef({ onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage })
+  callbacksRef.current = { onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage }
+
+  const hasBranchInNewChat = Boolean(onBranchInNewChat)
+  const hasCancel = Boolean(onCancel)
+  const hasDismissError = Boolean(onDismissError)
+  const hasRestoreToMessage = Boolean(onRestoreToMessage)
+
   const messageComponents = useMemo(
     () => ({
       AssistantMessage: () => (
-        <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />
+        <AssistantMessage
+          onBranchInNewChat={
+            hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
+          }
+          onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
+        />
       ),
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
       UserMessage: () => (
         <UserMessage
-          onCancel={onCancel}
-          onRequestRestoreConfirm={onRestoreToMessage ? requestRestoreConfirm : undefined}
+          onCancel={hasCancel ? () => callbacksRef.current.onCancel?.() : undefined}
+          onRequestRestoreConfirm={hasRestoreToMessage ? requestRestoreConfirm : undefined}
         />
       )
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, requestRestoreConfirm, sessionId]
+    [
+      cwd,
+      gateway,
+      hasBranchInNewChat,
+      hasCancel,
+      hasDismissError,
+      hasRestoreToMessage,
+      requestRestoreConfirm,
+      sessionId
+    ]
   )
 
   const emptyPlaceholder = intro ? (

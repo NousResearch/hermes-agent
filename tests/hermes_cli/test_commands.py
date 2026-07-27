@@ -120,6 +120,16 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_context_command_registered_with_ctx_alias(self):
+        ctx = resolve_command("context")
+        assert ctx is not None
+        assert ctx.name == "context"
+        assert resolve_command("ctx").name == "context"
+        assert "all" in (ctx.subcommands or ())
+        # Available on both CLI and gateway surfaces
+        assert not ctx.cli_only and not ctx.gateway_only
+        assert "context" in GATEWAY_KNOWN_COMMANDS
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"

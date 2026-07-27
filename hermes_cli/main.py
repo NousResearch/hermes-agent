@@ -7713,6 +7713,11 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
+    # ZIP path parity: heal the active memory provider's bridge packages
+    # after the dependency reinstall, same as the git-pull path (#53272,
+    # #70636).
+    _refresh_active_memory_provider_dependencies()
+
     node_failures = _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
@@ -9539,6 +9544,55 @@ def _refresh_active_lazy_features(
             "  ⚠ Leaving `.lazy-refresh-incomplete` until import probes can confirm health."
         )
     return False
+
+
+def _refresh_active_memory_provider_dependencies() -> None:
+    """Refresh pip dependencies for the configured external memory provider.
+
+    Memory-provider bridge packages are declared in each provider's
+    ``plugin.yaml`` (plus mode-dependent extras like Hindsight's
+    ``hindsight-all``), NOT in Hermes' editable-install extras or
+    ``LAZY_DEPS`` alone — so the core dependency reinstall above can strip
+    or downgrade them (#53272 mem0ai, #70636 hindsight-embed). Re-run the
+    provider's declared install for the ACTIVE provider only, after the
+    core install and lazy refresh, so the last write to any shared package
+    is the one the active provider needs.
+
+    Never raises. A failure here must not block the rest of the update.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("Memory provider refresh skipped (config load failed): %s", exc)
+        return
+
+    provider = ""
+    if isinstance(cfg, dict):
+        memory_cfg = cfg.get("memory")
+        if isinstance(memory_cfg, dict):
+            if memory_cfg.get("enabled") is False:
+                return
+            provider = str(memory_cfg.get("provider") or "").strip()
+
+    # "default" / empty is the built-in file-backed store — no pip deps.
+    if not provider or provider in {"default", "builtin", "none"}:
+        return
+
+    try:
+        from hermes_cli.memory_setup import _install_dependencies
+    except Exception as exc:
+        logger.debug("Memory provider refresh skipped (import failed): %s", exc)
+        return
+
+    print()
+    print(f"→ Refreshing active memory provider dependencies ({provider})...")
+
+    try:
+        _install_dependencies(provider, force=True)
+    except Exception as exc:
+        print(f"  ⚠ {provider} dependencies failed to refresh: {exc}")
 
 
 def _install_python_dependencies_with_optional_fallback(
@@ -12198,6 +12252,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
                 "to finish import-based venv repair."
             )
+
+        # Heal the active memory provider's bridge packages last — the core
+        # reinstall + lazy refresh above may have stripped or downgraded
+        # plugin.yaml-declared deps that aren't in extras (#53272, #70636).
+        _refresh_active_memory_provider_dependencies()
 
         node_failures = _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")

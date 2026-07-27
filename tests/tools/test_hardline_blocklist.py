@@ -691,9 +691,44 @@ _ABS_PATH_BLOCK = [
     "`/sbin/reboot`",
     "{ /sbin/reboot; }",
     "env -u FOO /sbin/reboot",
+    # `command` takes options too, and they sit before the executable
+    "command -p /sbin/reboot",
+    "command -- /sbin/reboot",
+    "command -p -- /sbin/reboot",
+    # `--` ends the option list of the wrappers whose options we model, so
+    # the path after it is the program
+    "exec -- /sbin/reboot",
+    "nohup -- /sbin/reboot",
+    "setsid -- /sbin/reboot",
+    "time -- /sbin/reboot",
+    "builtin -- command -p /sbin/reboot",
+    # `exec -a NAME` consumes NAME; -c and -l take no operand
+    "exec -a custom /sbin/reboot",
+    "exec -c /sbin/reboot",
+    "exec -l /sbin/reboot",
+    # assignment prefixes are unbounded in shell grammar, so a fixed walk
+    # budget must not run out and let the executable through unprojected
+    " ".join(f"A{i}=1" for i in range(12)) + " /sbin/reboot",
+    " ".join(f"A{i}=1" for i in range(40)) + " /sbin/reboot",
 ]
 
 _ABS_PATH_ALLOW = [
+    # `command -v` / `-V` only look the command up; nothing is executed, and
+    # `command`'s short options are just p/v/V so a cluster carrying v is
+    # lookup-only as well
+    "command -v /sbin/reboot",
+    "command -V /sbin/reboot",
+    "command -pv /sbin/reboot",
+    # a word outside a wrapper's option list is the program name, and the
+    # shell fails to run it — blocking these would be a false positive
+    "exec -x /sbin/reboot",
+    "exec -- -c /sbin/reboot",
+    "nohup -x /sbin/reboot",
+    "nohup -- -x /sbin/reboot",
+    "setsid -x /sbin/reboot",
+    "time -x /sbin/reboot",
+    "builtin -x /sbin/reboot",
+    "builtin -- -x /sbin/reboot",
     "echo /sbin/shutdown",
     "ls -la /sbin/shutdown",
     "grep 'shutdown' /var/log/syslog",

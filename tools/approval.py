@@ -1067,6 +1067,26 @@ _ENV_OPTIONS_WITH_ARG = {
     "-u", "--unset",
 }
 
+# `command` takes options of its own before the executable, and none of them
+# take a separate operand: `command -p /sbin/reboot` and `command -- ...`
+# both run the executable. `-v`/`-V` are the exception — they only look the
+# command up and print it, so nothing is executed and the walker must stop
+# rather than project a word that never runs. `command`'s only short options
+# are `p`, `v` and `V`, so any cluster carrying v/V (`-pv`) is lookup-only too.
+_COMMAND_LOOKUP_ONLY_SHORT = frozenset("vV")
+_COMMAND_OPTIONS = frozenset({"-p", "-v", "-V"})
+
+# `exec -a NAME` consumes the following word as the argv[0] to use; `-c` and
+# `-l` take no operand. Anything else after `exec` is the program.
+_EXEC_OPTIONS = frozenset({"-a", "-c", "-l"})
+_EXEC_OPTIONS_WITH_ARG = frozenset({"-a"})
+
+
+def _is_lookup_only_option(option_name: str) -> bool:
+    if option_name.startswith("--"):
+        return False
+    return bool(set(option_name[1:]) & _COMMAND_LOOKUP_ONLY_SHORT)
+
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"},
     "node": {"-e", "--eval", "-p", "--print"},
@@ -1990,9 +2010,18 @@ def _project_path_spelled_executables(command: str) -> str | None:
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         wrapper_arg_options: frozenset | set = frozenset()
+        wrapper_options: frozenset | set | None = frozenset()
+        command_option_grammar = False
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
-        for _ in range(12):
+        # Bound the WRAPPER chain, not the whole prefix: shell grammar puts no
+        # limit on assignment prefixes or on a wrapper option list, so counting
+        # those let a caller push the executable past a fixed budget and out of
+        # the projection (`A0=1 ... A11=1 /sbin/reboot` — egilewski on #71996;
+        # eleven repeated options — Sol). Only a wrapper word spends budget; the
+        # walk still terminates because every iteration consumes input.
+        wrapper_budget = 12
+        while wrapper_budget > 0:
             word_start, raw_end, _raw_word = _read_shell_word(command, pos)
             if word_start == raw_end:
                 break
@@ -2014,21 +2043,58 @@ def _project_path_spelled_executables(command: str) -> str | None:
                 continue  # VAR=value prefix: data, keep walking
             if skip_wrapper_options and deobfuscated.startswith("-"):
                 option_name = deobfuscated.lower().split("=", 1)[0]
-                skip_next_wrapper_arg = (
-                    "=" not in deobfuscated
-                    and option_name in wrapper_arg_options
-                )
-                continue
+                if wrapper_options is None:
+                    # sudo/env: their option lists are large and largely
+                    # long-form, so every dash word is still skipped. Left as
+                    # it was — narrowing them is a separate change.
+                    skip_next_wrapper_arg = (
+                        "=" not in deobfuscated
+                        and option_name in wrapper_arg_options
+                    )
+                    continue
+                # Wrappers whose option list is small enough to model exactly.
+                # `--` ends it: whatever follows is the program name even when
+                # it looks like an option (`command -- -p x` runs `-p`), and a
+                # word outside the list is not an option at all, so it falls
+                # through and is read as the program — which is what the shell
+                # does. Both directions matter: skipping every dash word
+                # blocked spellings the shell never executes.
+                if deobfuscated == "--":
+                    skip_wrapper_options = False
+                    continue
+                if command_option_grammar and _is_lookup_only_option(option_name):
+                    break  # `command -v`: a lookup, nothing is executed
+                if option_name in wrapper_options:
+                    skip_next_wrapper_arg = (
+                        "=" not in deobfuscated
+                        and option_name in wrapper_arg_options
+                    )
+                    continue
             basename = _projected_executable_basename(word)
             effective = (basename or deobfuscated).lower()
             if basename is not None and word_start not in replacements:
                 replacements[word_start] = (word_end, basename)
             if effective in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = effective in {"sudo", "env"}
+                wrapper_budget -= 1  # only the wrapper CHAIN is bounded
+                skip_wrapper_options = True
+                command_option_grammar = effective == "command"
                 if effective == "sudo":
+                    wrapper_options = None  # keep the existing skip-everything
                     wrapper_arg_options = _SUDO_OPTIONS_WITH_ARG
                 elif effective == "env":
+                    wrapper_options = None
                     wrapper_arg_options = _ENV_OPTIONS_WITH_ARG
+                elif effective == "command":
+                    wrapper_options = _COMMAND_OPTIONS
+                    wrapper_arg_options = frozenset()
+                elif effective == "exec":
+                    wrapper_options = _EXEC_OPTIONS
+                    wrapper_arg_options = _EXEC_OPTIONS_WITH_ARG
+                else:
+                    # nohup/setsid/time/builtin: nothing option-shaped precedes
+                    # the program, so a dash word is the program itself.
+                    wrapper_options = frozenset()
+                    wrapper_arg_options = frozenset()
                 continue  # wrapper (bare or path-spelled): walk to the command
             break
     if not replacements:

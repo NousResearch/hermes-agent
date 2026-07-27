@@ -705,20 +705,27 @@ function TerminalTranscript({ command, exitCode }: TerminalTranscriptProps) {
 // auto-scrolling window; fewer than this stays a plain inline stack.
 const TOOL_GROUP_SCROLL_THRESHOLD = 3
 
-// Tools whose body must never be trapped behind the window's max-height +
-// fade mask. A run holding any of them stays a plain, fully-visible stack no
-// matter how long it is.
+// Tools whose body must never be hidden — not behind the window's max-height +
+// fade mask, and not behind a settled run's summary chevron. A run holding any
+// of them stays a plain, fully-visible stack no matter how long it is.
 //
-// This list is deliberately tiny. A row rendered by ToolEntry carries
+// This list is deliberately tiny, because the two things it opts out of are
+// already safe for anything ToolEntry renders. For the window: a row carries
 // `data-tool-row`, and the `:has([data-tool-row][data-tool-open])` rule in
-// styles.css lifts the cap whenever one is open — so anything ToolEntry
-// renders takes care of itself. A code/diff row mounts open (see
-// `defaultOpen`), lifting the cap the moment it appears; a collapsed row is a
-// one-line status with no body in the DOM at all, so there is nothing to clip.
+// styles.css lifts the cap whenever one is open, so a code/diff row mounting
+// open (see `defaultOpen`) frees itself the moment it appears, and a collapsed
+// row is a one-line status with no body in the DOM to clip. For the chevron: a
+// run still holding a pending call always renders its rows, so an approval bar
+// can't end up behind one.
 //
 // Only components that bypass ToolEntry need this opt-out: `clarify` and
 // `image_generate` render their own markup, never emit `data-tool-row`, and so
-// the CSS escape hatch can never reach them.
+// neither the CSS escape hatch nor the pending-row rule can reach them.
+//
+// File edits are pointedly NOT here. A settled run collapses its diffs behind
+// the summary, which carries their +N/−M — one click to read, and the run stays
+// compact. Adding them back veto'd the window for nearly every coding session
+// last time (7f2971039, reverted in 058aa34d8); it would do the same here.
 const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
 
 export function isUnboundableTool(toolName: string): boolean {

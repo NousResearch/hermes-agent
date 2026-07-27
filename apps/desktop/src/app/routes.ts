@@ -199,6 +199,15 @@ export function appViewForPath(pathname: string): AppView {
   return APP_VIEW_BY_PATH.get(path) ?? 'chat'
 }
 
+/** Does `to` land on a full page rendered INSIDE the workspace pane
+ *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
+ *  they float over whatever the workspace is already showing. */
+function isWorkspacePageRoute(to: string): boolean {
+  const view = appViewForPath(to)
+
+  return view !== 'chat' && !isOverlayView(view)
+}
+
 /** True while the workspace pane shows a FULL PAGE (skills/messaging/
  *  artifacts/plugin routes) instead of the chat. Published by the wiring
  *  (which owns the router location); the workspace pane contribution mirrors
@@ -206,33 +215,49 @@ export function appViewForPath(pathname: string): AppView {
  *  (settings/…) don't count — the chat stays beneath them. */
 export const $workspaceIsPage = atom(false)
 
-export function syncWorkspaceIsPage(pathname: string): void {
-  const view = appViewForPath(pathname)
-  const isPage = view !== 'chat' && !isOverlayView(view)
+function revealWorkspacePane(): void {
+  noteActiveTreeGroup(null)
+  revealTreePane('workspace')
+}
+
+/**
+ * Point the workspace at `pathname`: mirror "showing a full page" into
+ * `$workspaceIsPage`, and FRONT the pane when it is one.
+ *
+ * A page renders inside `workspace`, so a main zone parked on a session tile
+ * keeps the tile on screen while the route and the page content change behind
+ * it — the navigation looks dead (#72602). Session switches already front the
+ * pane in `store/session-states.ts`; pages had no equivalent.
+ *
+ * The router location drives this, so every entry point gets it without opting
+ * in: sidebar, keybinds, command palette, Command Center, contributed
+ * statusbar/titlebar `to` targets, back/forward, and cold-start restore.
+ */
+export function syncWorkspaceRoute(pathname: string): void {
+  const isPage = isWorkspacePageRoute(pathname)
 
   if (isPage !== $workspaceIsPage.get()) {
     $workspaceIsPage.set(isPage)
   }
+
+  if (isPage) {
+    revealWorkspacePane()
+  }
 }
 
 /**
- * Navigate to `path`, and if it lands on a full page rendered inside the
- * `workspace` pane (skills/messaging/artifacts/contributed routes) also
- * front the `workspace` pane in the pane tree.
+ * Navigate to `to`, fronting the workspace pane when it is a page route.
  *
- * Without this, `navigate()` alone updates the route and the content inside
- * `workspace` correctly, but if a session tile is currently focused in the
- * same tab group, `workspace` stays behind it (issue #72602). This mirrors
- * what `$selectedStoredSessionId.listen` already does for session switches
- * in `store/session-states.ts`.
+ * `syncWorkspaceRoute` covers route CHANGES; this covers the RE-CLICK, the one
+ * case it can't see — hitting Capabilities while already on `/skills` with a
+ * tile focused leaves the location untouched, so no effect fires and only an
+ * imperative reveal brings the page back. Use it wherever a nav affordance can
+ * be triggered from the page it targets.
  */
-export function navigateToWorkspacePage(navigate: NavigateLike, path: string, options?: { replace?: boolean }): void {
-  navigate(path, options)
+export function navigateToWorkspacePage(navigate: NavigateLike, to: string, options?: { replace?: boolean }): void {
+  navigate(to, options)
 
-  const view = appViewForPath(path)
-
-  if (view !== 'chat' && !isOverlayView(view)) {
-    noteActiveTreeGroup(null)
-    revealTreePane('workspace')
+  if (isWorkspacePageRoute(to)) {
+    revealWorkspacePane()
   }
 }

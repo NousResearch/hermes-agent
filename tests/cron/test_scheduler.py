@@ -1228,7 +1228,8 @@ class TestDeliverResultStaleTargetFallback:
         job = {
             "id": "slack-stale",
             "deliver": "origin",
-            "origin": {"platform": "slack", "chat_id": "C-old"},
+            # Explicit shared chat_type: a channel origin DOES escalate to home.
+            "origin": {"platform": "slack", "chat_id": "C-old", "chat_type": "channel"},
         }
         with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.SLACK)), \
              patch("tools.send_message_tool._send_to_platform", new=send_mock), \
@@ -1279,6 +1280,9 @@ class TestDeliverResultStaleTargetFallback:
             "origin": {
                 "platform": "discord", "chat_id": "old-thread",
                 "thread_id": "old-thread", "parent_chat_id": "parent-chan",
+                # A Discord thread is always shared (under a guild channel), so
+                # the cascade may reach the home channel when the parent also dies.
+                "chat_type": "thread",
             },
         }
         with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.DISCORD)), \
@@ -1288,6 +1292,36 @@ class TestDeliverResultStaleTargetFallback:
 
         assert result is None
         assert [c.args[2] for c in send_mock.call_args_list] == ["old-thread", "parent-chan", "home-chan"]
+
+    def test_slack_thread_does_not_escalate_to_home(self, monkeypatch):
+        """A Slack thread can sit inside a DM, so its chat_type='thread' origin
+        must fail closed: parent (the channel) is tried, but home is NOT — unlike
+        a Discord thread, which is always shared. Locks the platform distinction
+        in _THREAD_ALWAYS_SHARED_PLATFORMS."""
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "slack-home")
+        send_mock = AsyncMock(side_effect=[
+            {"error": "is_archived"},  # origin thread's channel gone
+            {"error": "is_archived"},  # parent (same channel, no thread) also gone
+        ])
+        job = {
+            "id": "slack-thread-priv",
+            "deliver": "origin",
+            "origin": {
+                "platform": "slack", "chat_id": "C-priv", "thread_id": "ts-1",
+                "chat_type": "thread",
+            },
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.SLACK)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is not None  # dropped after parent, not escalated to home
+        # Only origin-thread and its parent channel tried; slack-home never used.
+        assert [c.args[2] for c in send_mock.call_args_list] == ["C-priv", "C-priv"]
 
     def test_uncertain_fallback_failure_stops_chain(self, monkeypatch):
         """If a fallback fails for an uncertain reason, stop (don't try home too)."""
@@ -1368,6 +1402,33 @@ class TestDeliverResultStaleTargetFallback:
         assert send_mock.call_count == 1  # no fallback send to the home group
         assert [c.args[2] for c in send_mock.call_args_list] == ["user-1"]
 
+    def test_legacy_origin_without_chat_type_does_not_leak_to_home(self, monkeypatch):
+        """Fail closed: a job created before chat_type was captured has no
+        chat_type in its origin. It may be a private DM, so a definitively
+        undeliverable send must NOT escalate to the shared home channel — the
+        old behavior (missing chat_type == non-DM) could leak private content."""
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100groupHome")
+        send_mock = AsyncMock(side_effect=[
+            {"error": "Forbidden: bot was blocked by the user"},
+        ])
+        job = {
+            "id": "tg-legacy-origin",
+            "deliver": "origin",
+            # No chat_type — a legacy origin captured before chat_type existed.
+            "origin": {"platform": "telegram", "chat_id": "user-1"},
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.TELEGRAM)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "private reminder")
+
+        assert result is not None  # recorded as a delivery error, not redirected
+        assert send_mock.call_count == 1  # no fallback send to the home group
+        assert [c.args[2] for c in send_mock.call_args_list] == ["user-1"]
+
     def test_dm_deleted_topic_falls_back_to_dm_root_not_home(self, monkeypatch):
         """A deleted DM topic drops to the DM root (still private); home is not used."""
         from gateway.config import Platform
@@ -1395,6 +1456,65 @@ class TestDeliverResultStaleTargetFallback:
         # DM root retried (same chat, no topic); home group never used.
         assert [c.args[2] for c in send_mock.call_args_list] == ["user-1", "user-1"]
         assert send_mock.call_args_list[1].kwargs["thread_id"] is None
+
+    def test_matrix_stale_room_fallback_reuses_live_adapter(self, monkeypatch):
+        """A stale Matrix room must redirect through the live gateway adapter,
+        not a fresh/ephemeral send.
+
+        This proves ROUTING, not wire-level encryption: unlike the sibling tests
+        it does NOT mock ``_send_to_platform``; it drives the actual
+        ``_send_to_platform -> _send_matrix_via_adapter -> live adapter`` chain.
+        Both the failed origin send and the home redirect must land on the
+        persistent live adapter — the one holding the gateway's E2EE session
+        (#46310) — with no ephemeral connect/disconnect. That the adapter then
+        encrypts on the wire is the Matrix adapter's own contract, covered by its
+        adapter tests, not here. This closes the review concern that the redirect
+        bypasses ``DeliveryRouter._deliver_to_platform``: ``_send_to_platform`` is
+        itself adapter-aware for Matrix, so the redirect reuses the same session."""
+        import sys
+        from types import SimpleNamespace
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!bot-room:example.org")
+
+        sends = []
+        connect_calls = []
+
+        class LiveMatrixAdapter:
+            async def connect(self, *a, **k):
+                connect_calls.append("connect")
+                return True
+
+            async def disconnect(self):
+                connect_calls.append("disconnect")
+
+            async def send(self, chat_id, message, metadata=None):
+                sends.append(chat_id)
+                if chat_id == "!old:example.org":
+                    return SimpleNamespace(success=False, error="M_FORBIDDEN: not in room", message_id=None)
+                return SimpleNamespace(success=True, error=None, message_id="$ok")
+
+        fake_runner = SimpleNamespace(adapters={Platform.MATRIX: LiveMatrixAdapter()})
+        job = {
+            "id": "matrix-stale",
+            "deliver": "origin",
+            # Explicit shared room: a channel origin may escalate to the home room.
+            "origin": {"platform": "matrix", "chat_id": "!old:example.org", "chat_type": "channel"},
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.MATRIX)), \
+             patch("gateway.run._gateway_runner_ref", return_value=fake_runner), \
+             patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace()}), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is None
+        # Origin room tried (fails M_FORBIDDEN), then redirected to the home room —
+        # BOTH through the live gateway adapter's persistent E2EE session.
+        assert sends == ["!old:example.org", "!bot-room:example.org"]
+        # No ephemeral connect/disconnect: the live E2EE session was reused (#46310),
+        # i.e. the redirect did not fall back to a cleartext/ephemeral send.
+        assert connect_calls == []
 
 
 class TestRunJobSessionPersistence:

@@ -1469,6 +1469,13 @@ def _run_send_blocking(make_coro):
             pool.shutdown(wait=False)
 
 
+# Platforms whose ``chat_type="thread"`` origin is ALWAYS a shared thread (never
+# a 1:1 DM), so a stale thread may escalate to the home channel without leaking
+# private content. Discord threads always live under a guild channel; Slack
+# threads can sit inside a DM, so Slack is deliberately excluded (fail closed).
+_THREAD_ALWAYS_SHARED_PLATFORMS = frozenset({"discord"})
+
+
 def _attempt_delivery_fallback(
     job: dict,
     target: dict,
@@ -1520,21 +1527,37 @@ def _attempt_delivery_fallback(
     # The stored parent channel / chat_type belong to the origin conversation,
     # so only trust them when this target IS the origin (not a fan-out target).
     parent_chat_id = None
-    is_dm = False
+    # Explicit fan-out targets (a user-typed ``deliver=platform:chan``) keep the
+    # home fallback: the user chose that destination, so a dead one redirecting
+    # to home is the intended behavior. The privacy guard applies only to the
+    # job's ORIGIN conversation, whose chat_type we captured.
+    suppress_home = False
     if origin and _target_matches_origin(origin, platform_name, chat_id, thread_id):
         parent_chat_id = origin.get("parent_chat_id")
-        # Suppress the home-channel fallback for a 1:1 DM: the home channel is
-        # typically a shared group, so escalating private DM content there would
-        # leak it. Only an explicit "dm" opts in (older jobs without chat_type
-        # keep prior behavior).
-        is_dm = str(origin.get("chat_type", "")).lower() in ("dm", "private")
+        # Fail closed: escalate origin content to the shared home channel only
+        # when the origin is POSITIVELY a shared chat. A missing/unknown
+        # chat_type — every job created before chat_type was captured — plus
+        # "webhook" and explicit DM kinds are treated as possibly-private and do
+        # NOT escalate. The parent fallback is unaffected: it stays inside the
+        # origin conversation and cannot leak.
+        #
+        # "thread" is platform-dependent: a Discord thread ALWAYS lives under a
+        # guild channel (never a DM), so it is shared and may escalate; on Slack
+        # a thread can sit inside a DM, so it stays fail-closed. (Matrix emits no
+        # "thread" origin; Telegram uses "forum".)
+        chat_type = str(origin.get("chat_type", "")).strip().lower()
+        shared = chat_type in ("group", "channel", "forum") or (
+            chat_type == "thread"
+            and platform_name.lower() in _THREAD_ALWAYS_SHARED_PLATFORMS
+        )
+        suppress_home = not shared
 
     fallback_targets = build_fallback_targets(
         target,
         parent_chat_id=parent_chat_id,
         home_chat_id=_get_home_target_chat_id(platform_name),
         home_thread_id=_get_home_target_thread_id(platform_name),
-        is_direct_message=is_dm,
+        is_direct_message=suppress_home,
     )
     if not fallback_targets:
         return (False, None)

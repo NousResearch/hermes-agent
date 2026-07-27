@@ -220,6 +220,83 @@ function settledRunMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
+// A finished turn that left a call without a result — interrupted, or the
+// result landed elsewhere. The run is history and has to behave like it.
+function abandonedRunMessage(): ThreadMessage {
+  return {
+    id: 'assistant-abandoned-run',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'read-3',
+        toolName: 'read_file',
+        args: { path: '/repo/src/status.tsx' },
+        argsText: JSON.stringify({ path: '/repo/src/status.tsx' }),
+        result: { content: 'export const Status = () => null' }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'search-1',
+        toolName: 'search_files',
+        args: { query: 'toolRuns' },
+        argsText: JSON.stringify({ query: 'toolRuns' })
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+// Still streaming, but the agent has moved past its first run and left both of
+// its calls unresolved. Only the run at the tail is still live.
+function movedOnMessage(): ThreadMessage {
+  return {
+    id: 'assistant-moved-on',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'read-4',
+        toolName: 'read_file',
+        args: { path: '/repo/src/status.tsx' },
+        argsText: JSON.stringify({ path: '/repo/src/status.tsx' })
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'search-2',
+        toolName: 'search_files',
+        args: { query: 'toolRuns' },
+        argsText: JSON.stringify({ query: 'toolRuns' })
+      },
+      { type: 'text', text: 'Let me read the rest of the file.' },
+      {
+        type: 'tool-call',
+        toolCallId: 'term-2',
+        toolName: 'terminal',
+        args: { command: 'ls' },
+        argsText: JSON.stringify({ command: 'ls' })
+      }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function GroupHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -294,6 +371,26 @@ describe('live tool run', () => {
     })
 
     expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
+  })
+})
+
+// A run whose calls never resolved used to read as live forever, which stranded
+// it in the present tense and — because a live run withholds its toggle — left
+// it permanently expanded with no way to collapse it.
+describe('tool run left unresolved', () => {
+  it('settles with the turn rather than narrating work that stopped', async () => {
+    const { container } = render(<GroupHarness message={abandonedRunMessage()} />)
+
+    expect(await screen.findByText('Explored 2 files')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
+  })
+
+  it('settles once the agent moves on, even mid-turn', async () => {
+    const { container } = render(<GroupHarness message={movedOnMessage()} />)
+
+    expect(await screen.findByText('Explored 2 files')).toBeTruthy()
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
   })
 })
 

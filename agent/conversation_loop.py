@@ -1061,6 +1061,9 @@ def run_conversation(
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
     agent._delivered_interim_texts = set()
+    # A configured SessionDB append failure halts only the affected turn. A
+    # cached gateway agent must recover on the next message if storage did.
+    agent._incremental_persistence_failed = False
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
@@ -5785,8 +5788,6 @@ def run_conversation(
                     and previous_interim_visible == current_interim_visible
                 )
                 messages.append(assistant_msg)
-                if not duplicate_previous_interim:
-                    agent._emit_interim_assistant_message(assistant_msg)
 
                 # Mixed batch: error-result the invalid calls and strip them
                 # from the execution set. The assistant message above keeps
@@ -5808,19 +5809,39 @@ def run_conversation(
                         if tc.function.name in agent.valid_tool_names
                     ]
 
+                _tool_turn_persisted = None
                 try:
                     # Persist the assistant tool-call turn before any tool
                     # side effects run. If a destructive tool restarts or
                     # terminates Hermes mid-turn, resume logic still sees the
                     # exact tool-call block that already executed.
-                    agent._flush_messages_to_session_db(messages, conversation_history)
+                    _tool_turn_persisted = agent._flush_messages_to_session_db(
+                        messages, conversation_history
+                    )
                 except Exception as exc:
+                    _tool_turn_persisted = False
                     logger.warning(
                         "Incremental tool-call persistence failed before execution "
                         "(session=%s): %s",
                         agent.session_id or "none",
                         exc,
                     )
+
+                if _tool_turn_persisted is False:
+                    # The canonical append failed. Do not project the row or
+                    # run side-effecting tools from state that exists only in
+                    # this process. Breaking also avoids retrying the same
+                    # unpersisted turn until the iteration budget is exhausted.
+                    _turn_exit_reason = "session_persistence_failed"
+                    final_response = ""
+                    failed = True
+                    break
+
+                # A UI must never observe an assistant/tool-call row that is
+                # still only an ephemeral in-memory projection. Emit interim
+                # commentary only after the canonical SessionDB append above.
+                if not duplicate_previous_interim:
+                    agent._emit_interim_assistant_message(assistant_msg)
 
                 # Close any open streaming display (response box, reasoning
                 # box) before tool execution begins.  Intermediate turns may
@@ -5835,6 +5856,15 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                if getattr(agent, "_incremental_persistence_failed", False):
+                    # A tool result could not be made canonical. Do not send
+                    # the in-memory result back to the model or project any
+                    # later events from this turn.
+                    _turn_exit_reason = "session_persistence_failed"
+                    final_response = ""
+                    failed = True
+                    break
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

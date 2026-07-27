@@ -97,6 +97,9 @@ export function ArtifactLivePreview({ content, kind, title }: { content: string;
       className="block size-full border-0 bg-white"
       sandbox="allow-scripts"
       srcDoc={composeArtifactHtml(content)}
+      // Deliberately raw white + forced light scheme: the frame hosts foreign
+      // generated HTML that assumes a light canvas, so it renders deterministically
+      // light in both app themes instead of inheriting theme tokens it can't see.
       style={{ colorScheme: 'light' }}
       title={title}
     />

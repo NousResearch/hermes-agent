@@ -25,6 +25,10 @@
 // with no changed input, and stores that published a value equal to the last.
 
 import './render-counter'
+// Live interaction profiler — arms on real resize/typing so we can measure the
+// app under REAL sessions instead of a synthetic scenario's toy transcripts.
+// window.__PERF_LIVE__.on() in the console, then just use the app.
+import './perf-live'
 
 import { watchSessionAtoms } from './watched-atoms'
 

@@ -755,7 +755,25 @@ function useToolWindow(enabled: boolean) {
       return
     }
 
-    const pin = () => {
+    // Track the content's HEIGHT and only pin when it grows. The observer also
+    // fires for width changes — a sidebar sash drag resizes every tool window
+    // once per frame — and pinning there is (a) pointless, the list didn't
+    // grow, and (b) expensive: `pin` writes scrollTop then `syncFade` reads it
+    // back, a write->read forced reflow per tool group per frame. Measured on
+    // a real session while dragging the sash: 927ms of `pin` script plus
+    // 2.7s of style recalc across one 60-frame drag. Reading the height off
+    // the RO entry keeps the check reflow-free.
+    let lastHeight = -1
+
+    const pin = (entries: readonly ResizeObserverEntry[]) => {
+      const height = entries[entries.length - 1]?.borderBoxSize?.[0]?.blockSize ?? -1
+      const grew = height < 0 || height > lastHeight
+      lastHeight = height
+
+      if (!grew) {
+        return
+      }
+
       if (stickRef.current) {
         el.scrollTop = el.scrollHeight
       }

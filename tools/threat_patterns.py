@@ -117,8 +117,10 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 
     # ── Exfiltration via curl/wget/cat with secrets (applies everywhere) ──
-    (r'curl\s+[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl", "all"),
-    (r'wget\s+[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget", "all"),
+    # Anchor env var name end with \b to avoid false positives on legitimate
+    # env vars like $TRILLIUM_ETAPI_URL that contain KEY/TOKEN/API as substrings.
+    (r'curl\s+[^\n]{0,2048}\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b', "exfil_curl", "all"),
+    (r'wget\s+[^\n]{0,2048}\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD)S?\b', "exfil_wget", "all"),
     (r'cat\s+[^\n]{0,2048}(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
     (r'(send|post|upload|transmit)\s+[^\n]{0,2048}\s+(to|at)\s+https?://', "send_to_url", "strict"),
     (rf'(include|output|print|share)\s+{_FILLER}(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil", "strict"),

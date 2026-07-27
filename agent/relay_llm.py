@@ -467,12 +467,7 @@ class ManagedLlmStream(Iterator[Any]):
                     "preserving the provider result",
                     exc_info=True,
                 )
-                if not self._defer_logical_completion:
-                    _complete_logical(self._logical, outcome="success")
-                    self._logical = None
-                loop.close()
-                self._loop = None
-                self._stream = iter(())
+                self._preserve_pending_provider_chunks()
                 return
             if not self._defer_logical_completion:
                 _complete_logical(
@@ -532,8 +527,8 @@ class ManagedLlmStream(Iterator[Any]):
                     "preserving the provider result",
                     exc_info=True,
                 )
-                self._close(logical_outcome="success")
-                raise StopIteration from None
+                self._preserve_pending_provider_chunks()
+                return next(self)
             self._close(
                 logical_outcome="cancelled" if _is_cancellation(exc) else "failed"
             )
@@ -552,6 +547,35 @@ class ManagedLlmStream(Iterator[Any]):
     def close(self) -> None:
         """Close an explicitly abandoned stream and cancel its logical call."""
         self._close(logical_outcome="cancelled")
+
+    def _preserve_pending_provider_chunks(self) -> None:
+        """Switch a failed Relay stream to its undelivered provider chunks."""
+        pending = [raw for _encoded, raw in self._raw_chunks]
+        self._raw_chunks.clear()
+        loop = self._loop
+        relay_stream = self._stream
+        self._loop = None
+        self._stream = iter(pending)
+        self._raw_stream_resource = None
+        self._accept_chunk = None
+        if loop is not None:
+            close = getattr(relay_stream, "aclose", None)
+            if callable(close):
+
+                async def close_stream() -> None:
+                    await close()
+
+                try:
+                    loop.run_until_complete(close_stream())
+                except Exception:
+                    logger.debug(
+                        "Relay stream cleanup failed during provider fallback",
+                        exc_info=True,
+                    )
+            loop.close()
+        if not self._defer_logical_completion:
+            _complete_logical(self._logical, outcome="success")
+            self._logical = None
 
     def _close(self, *, logical_outcome: str) -> None:
         if self._closed:

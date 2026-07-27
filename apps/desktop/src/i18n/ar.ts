@@ -1546,11 +1546,11 @@ export const ar = defineLocale({
     allPinned: 'كل الجلسات مثبتة',
     shiftClickHint: 'استخدم Shift للتحديد المتعدد',
     noWorkspace: 'بدون مساحة عمل',
-    noProject: 'لا يوجد مشروع',
     projectEmpty: 'لا توجد جلسات بعد',
     noSessions: 'لا توجد جلسات بعد',
     projects: {
       sectionLabel: 'المشاريع',
+      home: 'الرئيسية',
       newButton: 'مشروع جديد',
       createTitle: 'مشروع جديد',
       createDesc: 'سمِّ مساحة العمل وأضف مجلدا أو أكثر.',

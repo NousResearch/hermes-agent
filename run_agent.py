@@ -7169,21 +7169,12 @@ class AIAgent:
                 # (#62452): avoid re-burning the full idle budget every turn.
                 compressor = getattr(self, "context_compressor", None)
                 if compressor is not None:
-                    streak = (
-                        getattr(compressor, "_consecutive_timeout_failures", 0) + 1
-                    )
-                    compressor._consecutive_timeout_failures = streak
-                    ladder = (60, 300, 900)
-                    cooldown = ladder[min(streak, len(ladder)) - 1]
-                    record = getattr(
-                        compressor, "_record_compression_failure_cooldown", None
-                    )
+                    record = getattr(compressor, "record_timeout_failure", None)
                     if callable(record):
                         try:
                             record(
-                                float(cooldown),
                                 "host compress_context timeout "
-                                "(no summary progress)",
+                                "(no summary progress)"
                             )
                         except Exception:
                             logger.debug(

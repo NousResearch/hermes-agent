@@ -243,6 +243,14 @@ class TestCompressContextForwarderOwnsTimeout:
         agent._conversation_root_id = MagicMock(return_value=None)
         agent.context_compressor = MagicMock()
         agent.context_compressor._consecutive_timeout_failures = 0
+        # Use the real record_timeout_failure method so the cooldown ladder
+        # is exercised end-to-end (not auto-mocked by MagicMock).
+        from agent.context_compressor import ContextCompressor
+        agent.context_compressor.record_timeout_failure = (
+            ContextCompressor.record_timeout_failure.__get__(
+                agent.context_compressor, MagicMock
+            )
+        )
         agent.context_compressor._record_compression_failure_cooldown = MagicMock()
 
         hang = threading.Event()

@@ -794,8 +794,13 @@ def resolve_execution_context(
     ):
         session = turn.lease.session
         return turn.lease.host, session, turn.handle or session.handle
-    runtime = get_runtime()
+    # Managed-execution consumers create and retain the profile host before
+    # reaching an out-of-turn adapter. Do not initialize Relay for the default
+    # no-consumer path.
+    runtime = get_runtime(create=False)
     if runtime is None:
+        return None, None, None
+    if not runtime.managed_execution_enabled():
         return None, None, None
     session = runtime.get_session(session_id)
     if session is None:

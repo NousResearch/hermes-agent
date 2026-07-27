@@ -93,7 +93,9 @@ FEISHU_WEBHOOK_PORT=8765         # 默认：8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # 默认：/feishu/webhook
 ```
 
-当飞书发送 URL 验证挑战（`type: url_verification`）时，webhook 会自动响应，以便你在飞书开发者控制台完成订阅配置。当设置了 `FEISHU_VERIFICATION_TOKEN` 时，挑战响应会进行 token 校验——token 缺失或不匹配的挑战请求将被拒绝，防止未经认证的远端通过回显攻击者控制的挑战数据来证明端点控制权。
+当飞书发送 URL 验证挑战（`type: url_verification`）时，webhook 会自动响应，以便你在飞书开发者控制台完成订阅配置。在注册或重新注册回调 URL 前，必须配置 `FEISHU_VERIFICATION_TOKEN`。token 缺失或不匹配的挑战请求将被拒绝，防止未经认证的远端通过回显攻击者控制的挑战数据来证明端点控制权。在飞书中配置 `FEISHU_ENCRYPT_KEY` 后，挑战会包含在加密的外层对象中；Hermes 先解密，再检查 verification token。解密后的挑战仍然没有签名，因此 Encrypt Key 不能替代接入验证 token。
+
+已经完成接入且仅配置 `FEISHU_ENCRYPT_KEY` 的 webhook 部署仍可接收加密且已正确签名的普通事件；只有在重新执行 URL 验证前才需要补充 `FEISHU_VERIFICATION_TOKEN`。
 
 ## 第三步：配置 Hermes
 
@@ -157,19 +159,19 @@ FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
 
 ### Webhook 加密密钥
 
-在 webhook 模式下运行时，设置加密密钥以启用入站 webhook payload 的签名验证：
+在 webhook 模式下运行时，设置加密密钥以启用回调正文加密和普通入站 webhook 事件的签名验证：
 
 ```bash
 FEISHU_ENCRYPT_KEY=your-encrypt-key
 ```
 
-该密钥可在飞书应用配置的 **事件订阅** 部分找到。设置后，适配器使用以下签名算法验证每个 webhook 请求：
+该密钥可在飞书应用配置的 **事件订阅** 部分找到。飞书发送包含 `encrypt` 字段的外层 JSON 对象；Hermes 使用 SHA-256 派生 AES 密钥，解密带 IV 前缀的 AES-CBC payload，并在解析事件前验证 PKCS7 填充。对于普通事件，Hermes 还使用以下算法验证原始加密请求正文：
 
 ```
 SHA256(timestamp + nonce + encrypt_key + body)
 ```
 
-计算出的哈希值与 `x-lark-signature` 请求头进行时序安全比较。签名无效或缺失的请求将被拒绝，返回 HTTP 401。
+计算出的哈希值与 `x-lark-signature` 请求头进行时序安全比较。签名无效或缺失的普通事件会在消耗投递配额或分发前被拒绝，返回 HTTP 401。飞书的 URL 验证挑战解密后没有签名，因此接入验证改由 `FEISHU_VERIFICATION_TOKEN` 认证。
 
 :::tip
 在 WebSocket 模式下，签名验证由 SDK 自身处理，因此 `FEISHU_ENCRYPT_KEY` 是可选的。在 webhook 模式下，生产环境强烈推荐设置。
@@ -177,15 +179,15 @@ SHA256(timestamp + nonce + encrypt_key + body)
 
 ### 验证 Token
 
-对 webhook payload 中 `token` 字段进行检查的额外认证层：
+注册或重新注册 webhook 回调 URL 前，请设置验证 token：
 
 ```bash
 FEISHU_VERIFICATION_TOKEN=your-verification-token
 ```
 
-该 token 同样可在飞书应用的 **事件订阅** 部分找到。设置后，每个入站 webhook payload 的 `header` 对象中必须包含匹配的 `token`。token 不匹配的请求将被拒绝，返回 HTTP 401。
+该 token 同样可在飞书应用的 **事件订阅** 部分找到。URL 验证接入必须使用它：未配置验证 token，或明文/解密后挑战中的 `token` 不匹配时，Hermes 会拒绝该挑战。对于普通事件，配置该 token 会额外检查 payload token；明文或解密后的 `header.token` 必须匹配，否则 Hermes 返回 HTTP 401。
 
-`FEISHU_ENCRYPT_KEY` 和 `FEISHU_VERIFICATION_TOKEN` 可同时使用，实现纵深防御。
+新建 webhook 部署应同时配置两个 secret：`FEISHU_VERIFICATION_TOKEN` 用于认证 URL 验证并检查事件 token，`FEISHU_ENCRYPT_KEY` 用于解密回调正文并验证普通事件的签名。已经完成接入且仅配置 encrypt key 的部署仍会接受加密且正确签名的普通事件，但在重新执行 URL 验证前必须补充 verification token。
 
 ## 群消息策略
 
@@ -397,13 +399,13 @@ Agent 工作期间，机器人会在你的消息上显示 `Typing` 表情回应�
 
 ## 速率限制（Webhook 模式）
 
-在 webhook 模式下，适配器对每个 IP 强制执行速率限制，防止滥用：
+在 webhook 模式下，请求通过已配置的认证检查后，适配器会对每个 IP 执行已认证投递配额。认证前即被拒绝的流量不会消耗此配额：
 
-- **窗口：** 60 秒滑动窗口
-- **限制：** 每个（app_id, path, IP）三元组每窗口 120 次请求
+- **窗口：** 60 秒固定窗口，从该（app_id, path, IP）三元组的第一个已认证请求开始
+- **限制：** 每个（app_id, path, IP）三元组每窗口 120 次已认证请求
 - **追踪上限：** 最多追踪 4096 个唯一键（防止内存无限增长）
 
-超出限制的请求将收到 HTTP 429（请求过多）。
+超出限制的已认证请求将收到 HTTP 429（请求过多）。如果 webhook 端点暴露在网络中，请在入口或反向代理层配置请求和并发限制，以防范未经认证的网络滥用。
 
 ### Webhook 异常追踪
 
@@ -491,7 +493,7 @@ platforms:
 | `FEISHU_ALLOW_BOTS` | — | `none` | 接受其他机器人消息：`none`、`mentions` 或 `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | 群消息是否必须 @提及 机器人 |
 | `FEISHU_HOME_CHANNEL` | — | — | cron/通知输出的聊天 ID |
-| `FEISHU_ENCRYPT_KEY` | — | _（空）_ | webhook 签名验证的加密密钥 |
+| `FEISHU_ENCRYPT_KEY` | — | _（空）_ | 用于回调解密和普通事件签名验证的加密密钥 |
 | `FEISHU_VERIFICATION_TOKEN` | — | _（空）_ | webhook payload 认证的验证 token |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | 群消息策略：`open`、`allowlist`、`disabled` |
 | `FEISHU_BOT_OPEN_ID` | — | _（空）_ | 机器人的 open_id（用于 @提及 检测） |
@@ -526,7 +528,7 @@ WebSocket 和按群 ACL 设置通过 `config.yaml` 的 `platforms.feishu.extra` 
 | 启用 `FEISHU_ALLOW_BOTS` 后对端机器人消息仍被忽略 | Hermes 尚无法识别自身——请设置 `FEISHU_BOT_OPEN_ID`（若应用使用 `sender_id_type=user_id` 则同时设置 `FEISHU_BOT_USER_ID`）。 |
 | 对端机器人显示为 `ou_xxxxxx` 而非名称 | 授予 `application:bot.basic_info:read` 权限范围。 |
 | 点击审批按钮时出现错误 200340 | 在飞书开发者控制台启用**交互式卡片**能力并配置**卡片请求 URL**。参见上方[飞书应用所需配置](#required-feishu-app-configuration)。 |
-| `Webhook rate limit exceeded` | 同一 IP 每分钟请求超过 120 次。通常是配置错误或循环导致。 |
+| `Webhook rate limit exceeded` | 同一 IP 在当前 60 秒固定窗口内收到的已认证请求超过 120 次。通常是配置错误或循环导致。 |
 
 ## 工具集
 

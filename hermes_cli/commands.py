@@ -113,6 +113,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | draft <text> | show | pause | resume | clear | status | wait <pid> | unwait]"),
+    CommandDef("loop", "Re-run a prompt on a recurring interval in this session", "Session",
+               aliases=("proactive",),
+               args_hint="[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
@@ -1172,7 +1175,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
 #   - egress: Docker-only proxy status; reachable as /hermes egress on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress"})
+#   - version: version banner is low-frequency; /hermes version on Slack (its
+#     native slot went to /loop when the recurring-wakeup command landed).
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

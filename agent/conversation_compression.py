@@ -2170,6 +2170,14 @@ def compress_context(
                         migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
                     except Exception as _goal_err:
                         logger.debug("Could not migrate goal on compression: %s", _goal_err)
+                    # Same boundary hazard for a persistent /loop — carry it
+                    # onto the continuation session so the recurring wakeups
+                    # survive compression.
+                    try:
+                        from hermes_cli.loops import migrate_loop_to_session
+                        migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")
+                    except Exception as _loop_err:
+                        logger.debug("Could not migrate loop on compression: %s", _loop_err)
                     # Auto-number the title for the continuation session
                     if old_title:
                         try:

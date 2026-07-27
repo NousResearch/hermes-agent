@@ -1808,6 +1808,7 @@ def claim_dispatch(job_id: str) -> bool:
                     completed,
                     times,
                 )
+                audit_event(job_id, job.get("name", ""), "removed", removal_details("dispatch_limit_stale"))
                 return False
             # Claim this dispatch before the side effect runs.
             repeat["completed"] = completed + 1
@@ -1984,6 +1985,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     now = _hermes_now()
     raw_jobs = load_jobs()
     needs_save = False
+    # Deferred until after save_jobs() below confirms the removal actually
+    # persisted — this whole scan batches its saves into one call at the end,
+    # so auditing at the point of raw_jobs.remove() would record a removal
+    # that hasn't landed yet if the scan or save fails partway through.
+    _pending_removal_audits: List[Tuple[str, str]] = []
 
     # Repair id-less records BEFORE anything keys off ``job["id"]``. A direct
     # jobs.json edit that bypassed add_job() can leave a record without an "id"
@@ -2274,6 +2280,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     raw_jobs.remove(rj)
                                     needs_save = True
                                     break
+                            _pending_removal_audits.append((job["id"], job.get("name", "")))
                             continue
 
                 # Durably claim a one-shot for the DURATION of its run before
@@ -2311,6 +2318,9 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
     if needs_save:
         save_jobs(raw_jobs)
+
+    for removed_job_id, removed_job_name in _pending_removal_audits:
+        audit_event(removed_job_id, removed_job_name, "removed", removal_details("dispatch_limit_stale"))
 
     return due
 

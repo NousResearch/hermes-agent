@@ -118,6 +118,57 @@ def test_cron_audit_records_run_completion_and_repeat_removal(cron_audit_env):
     assert entries[-1]["details"]["reason"] == "repeat_limit"
 
 
+def test_cron_audit_records_stale_dispatch_removal_via_claim(cron_audit_env):
+    """claim_dispatch() removes a one-shot whose prior tick claimed it and died
+    before mark_job_run() could run — that cleanup bypasses mark_job_run()
+    entirely, so it must audit its own removal rather than going unaudited."""
+    _enable_audit(cron_audit_env)
+
+    from cron.jobs import claim_dispatch, save_jobs
+
+    job = {
+        "id": "stale1",
+        "name": "stale one-shot",
+        "enabled": True,
+        "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
+        "repeat": {"times": 1, "completed": 1},  # already exhausted by a dead tick
+    }
+    save_jobs([job])
+
+    assert claim_dispatch("stale1") is False
+
+    entries = _read_audit_entries(cron_audit_env)
+    assert [entry["action"] for entry in entries] == ["removed"]
+    assert entries[0]["job_id"] == "stale1"
+    assert entries[0]["details"]["reason"] == "dispatch_limit_stale"
+
+
+def test_cron_audit_records_stale_due_scan_removal(cron_audit_env):
+    """get_due_jobs() independently cleans up an exhausted one-shot found
+    during a scheduler scan (not via claim_dispatch()) — must also audit."""
+    _enable_audit(cron_audit_env)
+
+    from cron.jobs import get_due_jobs, save_jobs
+
+    job = {
+        "id": "stale2",
+        "name": "stale due job",
+        "enabled": True,
+        "schedule": {"kind": "once", "run_at": "2026-01-01T00:00:00+00:00"},
+        "next_run_at": "2020-01-01T00:00:00+00:00",  # in the past -> looks due
+        "repeat": {"times": 1, "completed": 1},  # already exhausted
+    }
+    save_jobs([job])
+
+    due = get_due_jobs()
+
+    assert due == []  # not re-fired
+    entries = _read_audit_entries(cron_audit_env)
+    assert [entry["action"] for entry in entries] == ["removed"]
+    assert entries[0]["job_id"] == "stale2"
+    assert entries[0]["details"]["reason"] == "dispatch_limit_stale"
+
+
 def test_cron_audit_config_is_scoped_per_profile(tmp_path, monkeypatch):
     """A profile with audit enabled must not leak its config into another profile.
 

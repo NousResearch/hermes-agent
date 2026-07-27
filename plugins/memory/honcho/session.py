@@ -970,7 +970,7 @@ class HonchoSessionManager:
         Returns:
             True if at least one file was uploaded, False otherwise.
         """
-        memory_path = Path(memory_dir)
+        memory_path = Path(memory_dir).expanduser().resolve()
 
         if not memory_path.exists():
             return False
@@ -1011,14 +1011,27 @@ class HonchoSessionManager:
             targets = state["targets"]
             target_state = targets.setdefault(
                 target_key,
-                {**target, "files": {}},
+                {**target, "sources": {}},
             )
             if not isinstance(target_state, dict):
                 logger.warning("Honcho migration target state is invalid: %s", target_key)
                 return False
-            completed_files = target_state.get("files")
-            if not isinstance(completed_files, dict):
+            sources = target_state.setdefault("sources", {})
+            if not isinstance(sources, dict):
                 logger.warning("Honcho migration target state is invalid: %s", target_key)
+                return False
+            source_path = str(memory_path)
+            source_key = hashlib.sha256(source_path.encode("utf-8")).hexdigest()
+            source_state = sources.setdefault(
+                source_key,
+                {"path": source_path, "files": {}},
+            )
+            if not isinstance(source_state, dict):
+                logger.warning("Honcho migration source state is invalid: %s", source_path)
+                return False
+            completed_files = source_state.get("files")
+            if not isinstance(completed_files, dict):
+                logger.warning("Honcho migration source state is invalid: %s", source_path)
                 return False
 
             user_peer = self._get_or_create_peer(session.user_peer_id)

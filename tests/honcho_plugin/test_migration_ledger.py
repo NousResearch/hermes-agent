@@ -73,6 +73,26 @@ def test_same_destination_uploads_each_file_once(tmp_path, monkeypatch):
     second_remote.upload_file.assert_not_called()
 
 
+def test_same_named_files_from_different_sources_each_upload(tmp_path, monkeypatch):
+    first_dir = tmp_path / "workspace"
+    second_dir = tmp_path / ".openclaw"
+    _write_memory_files(first_dir, "MEMORY.md", "USER.md")
+    _write_memory_files(second_dir, "MEMORY.md", "USER.md")
+    manager, remote = _manager(tmp_path, monkeypatch)
+
+    assert manager.migrate_memory_files("cli:test", str(first_dir)) is True
+    assert manager.migrate_memory_files("cli:test", str(second_dir)) is True
+    assert manager.migrate_memory_files("cli:test", str(first_dir)) is False
+    assert manager.migrate_memory_files("cli:test", str(second_dir)) is False
+
+    assert _uploaded_names(remote) == [
+        "consolidated_memory.md",
+        "user_profile.md",
+        "consolidated_memory.md",
+        "user_profile.md",
+    ]
+
+
 def test_partial_failure_retries_only_failed_file(tmp_path, monkeypatch):
     memory_dir = tmp_path / "memories"
     _write_memory_files(memory_dir, "MEMORY.md", "USER.md", "SOUL.md")
@@ -208,7 +228,11 @@ def test_ledger_records_files_independently(tmp_path, monkeypatch):
         (tmp_path / "state" / "honcho_migration.json").read_text(encoding="utf-8")
     )
     target = next(iter(state["targets"].values()))
-    assert target["files"] == {"MEMORY.md": True, "SOUL.md": True}
+    source = next(iter(target["sources"].values()))
+    assert source == {
+        "path": str(memory_dir),
+        "files": {"MEMORY.md": True, "SOUL.md": True},
+    }
 
 
 def test_state_write_failure_reports_remote_upload(tmp_path, monkeypatch, caplog):

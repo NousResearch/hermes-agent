@@ -849,16 +849,28 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
   const cache = useRef<null | { signature: string; value: ToolRunState }>(null)
 
   return useAuiState(state => {
-    const tools = state.message.parts.slice(Math.max(0, startIndex), endIndex + 1).filter(isToolCallPart)
-    const signature = tools.map(tool => `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}`).join('|')
+    const parts = state.message.parts
+    const tools = parts.slice(Math.max(0, startIndex), endIndex + 1).filter(isToolCallPart)
+    // A missing result only means "still working" while this run is the tail of
+    // a running message — the same qualification ToolEntry puts on a row's
+    // pending state. A turn that ends, or an agent that moves on to later
+    // parts, can leave a call unresolved forever; treating that as live would
+    // strand the run in the present tense AND leave it uncollapsible, since a
+    // live run deliberately withholds its toggle.
+    const live =
+      selectMessageRunning(state) && endIndex >= parts.length - 1 && tools.some(tool => tool.result === undefined)
+    const signature = tools
+      .map(tool => `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}`)
+      .concat(String(live))
+      .join('|')
 
     if (cache.current?.signature !== signature) {
       cache.current = {
         signature,
         value: {
           key: tools[0]?.toolCallId ?? '',
-          live: tools.some(tool => tool.result === undefined),
-          summary: summarizeToolRun(tools)
+          live,
+          summary: summarizeToolRun(tools, live)
         }
       }
     }

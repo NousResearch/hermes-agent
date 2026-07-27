@@ -137,9 +137,14 @@ function lowerFirst(text: string): string {
  * — "Edited wiring.tsx, explored 3 files, ran 5 commands". The category holding
  * the still-running tool speaks in the present tense so a live run reads as
  * work in progress rather than work already done.
+ *
+ * Whether the run is `live` is the caller's to say, not something readable off
+ * the calls: a call can be left without a result by a turn that ended or an
+ * agent that moved on, and a run like that has to read as finished rather than
+ * narrate work that stopped happening.
  */
-export function summarizeToolRun(tools: readonly ToolCallLike[]): RunSummary {
-  const running = tools.find(isPending)
+export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean): RunSummary {
+  const running = live ? tools.find(isPending) : undefined
   const liveCategory = running ? toolCategory(running.toolName) : null
 
   const byCategory = new Map<RunCategory, ToolCallLike[]>()

@@ -6942,16 +6942,9 @@ class AIAgent:
             finally:
                 try:
                     if relay_lease is not None:
-                        try:
-                            if relay_lease.parent_session_id:
-                                relay_runtime.SESSION_COORDINATOR.finalize_conversation(
-                                    profile_key=relay_lease.profile_key,
-                                    session_id=relay_lease.session_id,
-                                )
-                        finally:
-                            relay_runtime.SESSION_COORDINATOR.release_conversation(
-                                relay_lease
-                            )
+                        relay_runtime.SESSION_COORDINATOR.release_conversation(
+                            relay_lease
+                        )
                 finally:
                     if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
                         self._relay_pending_turn_id = None

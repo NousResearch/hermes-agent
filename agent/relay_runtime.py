@@ -635,8 +635,8 @@ class RelaySessionCoordinator:
                 self._reset_turn_context(turn)
                 return
             turn.closed = True
+            lease = turn.lease
             try:
-                lease = turn.lease
                 if isinstance(lease.host, RelayRuntime) and lease.session is not None:
                     self._finish_logical_calls(turn, outcome=outcome)
                     if turn.handle is not None:
@@ -656,8 +656,25 @@ class RelaySessionCoordinator:
                                 "Hermes Relay turn finalization failed", exc_info=True
                             )
             finally:
-                self._unregister_active_turn(turn)
-                self._reset_turn_context(turn)
+                try:
+                    # Delegated agents own one turn. Close their conversation
+                    # while the active-turn guard is still held so a parent
+                    # timeout fallback cannot race this terminal boundary.
+                    if (
+                        lease.parent_session_id
+                        and isinstance(lease.host, RelayRuntime)
+                    ):
+                        lease.host.unregister_subagent({
+                            "child_session_id": lease.session_id
+                        })
+                except Exception:
+                    logger.warning(
+                        "Hermes Relay child conversation finalization failed",
+                        exc_info=True,
+                    )
+                finally:
+                    self._unregister_active_turn(turn)
+                    self._reset_turn_context(turn)
 
     def has_active_turn(self, *, profile_key: str, session_id: str) -> bool:
         """Return whether a turn is still running for one profile/session."""

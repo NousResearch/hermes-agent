@@ -1846,6 +1846,61 @@ def test_coordinator_tracks_active_turns_across_threads(direct_runtime):
     )
 
 
+def test_child_session_closes_before_active_turn_guard_is_released(
+    direct_runtime,
+    monkeypatch,
+):
+    del direct_runtime
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    parent_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="parent",
+        platform="cli",
+    )
+    child_lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="child",
+        platform="subagent",
+        parent_session_id="parent",
+    )
+    child_turn = coordinator.begin_turn(
+        child_lease,
+        turn_id="child-turn",
+        task_id="child-task",
+    )
+    runtime = relay_runtime.get_runtime(create=False)
+    assert runtime is not None
+    close_observations = []
+    original_close = runtime.close_session
+
+    def observe_close(event):
+        close_observations.append(
+            coordinator.has_active_turn(
+                profile_key=profile_key,
+                session_id="child",
+            )
+        )
+        original_close(event)
+
+    monkeypatch.setattr(runtime, "close_session", observe_close)
+
+    coordinator.end_turn(child_turn, outcome="success")
+
+    assert close_observations == [True]
+    assert runtime.get_session("child") is None
+    assert not coordinator.has_active_turn(
+        profile_key=profile_key,
+        session_id="child",
+    )
+    coordinator.release_conversation(child_lease)
+    coordinator.release_conversation(parent_lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id="parent",
+    )
+
+
 def test_core_runtime_ignores_self_parenting_subagent_event(direct_runtime):
     runtime = relay_runtime.get_runtime()
     assert runtime is not None

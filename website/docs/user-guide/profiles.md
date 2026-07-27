@@ -265,6 +265,25 @@ If you want this profile to work in a specific project by default, also set its 
 coder config set terminal.cwd /absolute/path/to/project
 ```
 
+### Credential inheritance
+
+Named profiles inherit credentials from the global/root `auth.json` by default when the
+profile has no usable local entry for a provider. This preserves the historical convenience
+of authenticating once and using that provider across profiles.
+
+Security-sensitive service profiles can disable that fallback in the profile's own
+`config.yaml`:
+
+```yaml
+auth:
+  global_fallback: false
+```
+
+With fallback disabled, provider singleton state and credential-pool entries are resolved
+only from the profile. Global OAuth refresh/write-through paths are also unavailable to that
+profile. Configure the profile's required provider locally; otherwise credential resolution
+fails rather than borrowing root credentials.
+
 ### From the dashboard
 
 The [web dashboard](features/web-dashboard.md#managing-multiple-profiles)

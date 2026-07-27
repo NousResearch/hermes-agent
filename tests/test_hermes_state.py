@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 
 import hermes_state
+from agent.session_activity import ActivityProvenance
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 
@@ -1485,6 +1486,114 @@ class TestListSessionsRich:
 
 
 
+    def test_last_active_prefers_session_activity_heartbeat(self, db):
+        """Mid-turn agent heartbeats must advance last_active without new messages (#72016)."""
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "hello")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=?",
+                (1_700_000_000.0, "s1", "user"),
+            )
+            db._conn.commit()
+
+        before = db.list_sessions_rich()[0]["last_active"]
+        heartbeat = 1_700_000_500.0
+        db.touch_session_activity(
+            "s1",
+            heartbeat,
+            description="starting API call #1",
+            provenance=ActivityProvenance.UNKNOWN,
+        )
+        after = db.list_sessions_rich()[0]["last_active"]
+        assert after == heartbeat
+        assert after > before
+
+        row = db.get_session("s1")
+        assert row["last_activity_at"] == heartbeat
+        assert row["last_activity_description"] == "starting API call #1"
+        assert row["last_activity_provenance"] == "unknown"
+
+        activity = db.get_session_activity("s1")
+        assert activity["last_activity_at"] == heartbeat
+        assert activity["last_activity_description"] == "starting API call #1"
+        assert "phase" not in activity
+
+        # Never move last_activity_at backwards.
+        db.touch_session_activity("s1", heartbeat - 100, description="ignored")
+        assert db.get_session("s1")["last_activity_at"] == heartbeat
+        assert db.get_session("s1")["last_activity_description"] == "starting API call #1"
+
+    def test_clear_session_activity_labels_keeps_timestamp(self, db):
+        """Turn-end label clear must wipe desc/provenance without moving ts."""
+        db.create_session("s1", "cli")
+        heartbeat = 1_700_000_500.0
+        db.touch_session_activity(
+            "s1",
+            heartbeat,
+            description="compressing context",
+            provenance=ActivityProvenance.AGENT_COMPRESSION,
+        )
+        row = db.get_session("s1")
+        assert row["last_activity_at"] == heartbeat
+        assert row["last_activity_description"] == "compressing context"
+        assert row["last_activity_provenance"] == "agent.compression"
+
+        db.clear_session_activity_labels("s1")
+        row = db.get_session("s1")
+        assert row["last_activity_at"] == heartbeat
+        assert row["last_activity_description"] == ""
+        assert row["last_activity_provenance"] == "unknown"
+        activity = db.get_session_activity("s1")
+        assert activity["last_activity_at"] == heartbeat
+        assert activity["last_activity_description"] == ""
+        assert activity["last_activity_provenance"] == "unknown"
+
+    def test_last_active_uses_newer_message_over_stale_heartbeat(self, db):
+        """Rate-limited heartbeats can lag message writes; last_active must take max."""
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "hello")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (1_700_000_800.0, "s1"),
+            )
+            db._conn.commit()
+        db.touch_session_activity("s1", 1_700_000_500.0, description="api")  # older than message
+        assert db.list_sessions_rich()[0]["last_active"] == 1_700_000_800.0
+
+    def test_list_gateway_sessions_last_active_uses_activity_heartbeat(self, db):
+        db.create_session(
+            "gw-1",
+            "telegram",
+            session_key="agent:main:telegram:dm:c1",
+            chat_id="c1",
+            chat_type="dm",
+        )
+        db.append_message("gw-1", "user", "ping")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (1_700_000_000.0, "gw-1"),
+            )
+            db._conn.commit()
+
+        heartbeat = 1_700_000_900.0
+        db.touch_session_activity(
+            "gw-1",
+            heartbeat,
+            description="compressing context",
+        )
+        rows = db.list_gateway_sessions(active_only=True)
+        assert len(rows) == 1
+        assert rows[0]["last_active"] == heartbeat
+        activity = db.get_session_activity("gw-1")
+        assert activity["last_activity_description"] == "compressing context"
+
+    def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
+        t0 = 1709500000.0
+        db.create_session("old", "cli")
+        db.create_session("new", "cli")
 
 
 

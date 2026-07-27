@@ -31,6 +31,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
+from agent.session_activity import ActivityProvenance
 from agent.message_sanitization import _sanitize_surrogates
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
@@ -52,6 +53,8 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _PREVIEW_RAW_SELECT,
     _ephemeral_child_sql,
     _shape_preview,
+    _sql_session_last_active,
+    _sql_session_last_active_by_id,
     DEFERRED_INDEX_SQL,
     FTS_CJK_STALE_KEY,
     FTS_SQL,
@@ -183,6 +186,7 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
         f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
         [prefix, *cwd_params],
     )
+
 
 
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
@@ -3122,13 +3126,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Full rows carry token/cost totals (MCP listings, /status) — drain
         # queued async accounting deltas so consumers see exact counters.
         self.flush_token_counts()
-        query = """
+        query = f"""
             SELECT sessions.*,
-                   COALESCE(
-                       (SELECT MAX(m.timestamp) FROM messages m
-                        WHERE m.session_id = sessions.id),
-                       sessions.started_at
-                   ) AS last_active
+                   {_sql_session_last_active("sessions")} AS last_active
             FROM sessions
             WHERE session_key IS NOT NULL
               AND started_at = (
@@ -3985,6 +3985,87 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if row is None:
             return None
         return row["holder"] if isinstance(row, sqlite3.Row) else row[0]
+
+    def touch_session_activity(
+        self,
+        session_id: str,
+        ts: Optional[float] = None,
+        *,
+        description: Optional[str] = None,
+        provenance: Optional[ActivityProvenance] = None,
+    ) -> None:
+        """Stamp durable mid-turn session activity (observation-only).
+
+        Called (rate-limited) from ``AIAgent._touch_activity`` so gateway/CLI
+        surfaces and stall consumers observe API/tool/compaction activity
+        even when no new message row has been written yet (#72016 / #72039).
+
+        Never moves ``last_activity_at`` backwards. When the timestamp
+        advances, bounded ``last_activity_description`` /
+        ``last_activity_provenance`` are written with it. No-ops when
+        ``session_id`` is empty or the row does not exist.
+        """
+        if not session_id:
+            return
+        from agent.session_activity import (
+            bound_activity_description,
+            normalize_activity_provenance,
+        )
+
+        when = float(ts if ts is not None else time.time())
+        desc = bound_activity_description(description)
+        prov = normalize_activity_provenance(provenance).value
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET "
+                "last_activity_at = ?, "
+                "last_activity_description = ?, "
+                "last_activity_provenance = ? "
+                "WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at < ?)",
+                (when, desc, prov, session_id, when),
+            )
+
+        self._execute_write(_do)
+
+    def clear_session_activity_labels(self, session_id: str) -> None:
+        """Clear mid-turn activity labels after a turn ends.
+
+        Keeps ``last_activity_at`` intact so idle / watchdog clocks stay
+        continuous. Description and provenance are observation labels for
+        *what was happening at* that timestamp during an active turn; once
+        the turn is idle they must not keep advertising "compressing" /
+        "executing tool" (#72039).
+        """
+        if not session_id:
+            return
+        from agent.session_activity import ActivityProvenance
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET "
+                "last_activity_description = ?, "
+                "last_activity_provenance = ? "
+                "WHERE id = ?",
+                ("", ActivityProvenance.UNKNOWN.value, session_id),
+            )
+
+        self._execute_write(_do)
+
+    def get_session_activity(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the durable activity snapshot for *session_id*, or None."""
+        if not session_id:
+            return None
+        row = self.get_session(session_id)
+        if not row:
+            return None
+        from agent.session_activity import build_activity_snapshot
+
+        return build_activity_snapshot(
+            last_activity_at=row.get("last_activity_at"),
+            last_activity_description=row.get("last_activity_description"),
+            last_activity_provenance=row.get("last_activity_provenance"),
+        )
 
     def update_session_meta(
         self,
@@ -5224,14 +5305,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         for _ in range(100):
             with self._lock:
                 cursor = self._conn.execute(
-                    """
+                    f"""
                     SELECT child.id
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
@@ -5239,10 +5320,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         WHEN child.ended_at IS NULL THEN 1
                         ELSE 2
                       END,
-                      COALESCE(
-                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
-                        child.started_at
-                      ) DESC,
+                      {_sql_session_last_active("child")} DESC,
                       child.started_at DESC,
                       child.id DESC
                     LIMIT 1
@@ -5292,7 +5370,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
         message_count, preview (first 60 chars of first user message),
-        last_active (timestamp of last message).
+        last_active (freshest of last_activity_at heartbeat and latest
+        message timestamp, else started_at).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
 
@@ -5483,10 +5562,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 chain_max AS (
                     SELECT
                         root_id,
-                        MAX(COALESCE(
-                            (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
-                            (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
-                        )) AS effective_last_active
+                        MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
                     FROM chain
                     GROUP BY root_id
                 )
@@ -5498,10 +5574,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
-                    COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active,
+                    {_sql_session_last_active("s")} AS last_active,
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
@@ -5523,10 +5596,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                          ORDER BY m.timestamp, m.id LIMIT 1),
                         ''
                     ) AS _preview_raw,
-                    COALESCE(
-                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                        s.started_at
-                    ) AS last_active
+                    {_sql_session_last_active("s")} AS last_active
                 FROM sessions s
                 {where_sql}
                 ORDER BY s.started_at DESC
@@ -7074,22 +7144,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
-        Returns rows enriched with a computed ``last_active`` column (latest
-        message timestamp for the session, falling back to ``started_at``),
-        ordered by most-recently-used first.
+        Returns rows enriched with a computed ``last_active`` column
+        (freshest of ``last_activity_at`` and latest message timestamp,
+        else ``started_at``), ordered by most-recently-used first.
 
-        Pass ``workspace_key`` to scope rows to one workspace — matching
+        Pass ``workspace_key`` to scope rows to one workspace - matching
         :func:`workspace_key` semantics (git repo root, else cwd). Used by
         ``hermes -c``/``--resume`` so the "last" session is the last one in
         the *current* workspace, not the global MRU.
         """
         select_with_last_active = (
-            "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
+            f"SELECT s.*, {_sql_session_last_active('s')} AS last_active "
             "FROM sessions s "
-            "LEFT JOIN ("
-            "SELECT session_id, MAX(timestamp) AS last_active "
-            "FROM messages GROUP BY session_id"
-            ") m ON m.session_id = s.id "
         )
         where_clauses = []
         params: list = []
@@ -7859,8 +7925,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     ) -> int:
         """Archive every session untouched for at least ``idle_days`` days.
 
-        "Touched" is the latest message timestamp (falling back to
-        ``started_at``) — i.e. real recency, not creation time — so a session
+        "Touched" is the freshest of ``last_activity_at`` and the latest
+        message timestamp (else ``started_at``) — i.e. real recency, not
+        creation time — so a session
         created long ago but active yesterday is spared, while an old
         abandoned one (even a still-open one) is swept. Unlike
         :meth:`archive_sessions`, this method can also archive unended
@@ -7889,11 +7956,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 WHERE s.archived = 0
                   AND COALESCE(s.end_reason, '') <> 'compression'
                   {pin_clause}
-                  AND COALESCE(
-                        (SELECT MAX(m.timestamp) FROM messages m
-                         WHERE m.session_id = s.id),
-                        s.started_at
-                      ) < ?
+                  AND {_sql_session_last_active("s")} < ?
                 ORDER BY s.started_at ASC
                 """,
                 (cutoff,),
@@ -8520,10 +8583,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                              ORDER BY m.timestamp, m.id LIMIT 1),
                             ''
                         ) AS _preview_raw,
-                        COALESCE(
-                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                            s.started_at
-                        ) AS last_active
+                        {_sql_session_last_active("s")} AS last_active
                     FROM sessions s
                     WHERE s.source = 'telegram'
                       AND s.user_id = ?
@@ -8549,10 +8609,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                              ORDER BY m.timestamp, m.id LIMIT 1),
                             ''
                         ) AS _preview_raw,
-                        COALESCE(
-                            (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                            s.started_at
-                        ) AS last_active
+                        {_sql_session_last_active("s")} AS last_active
                     FROM sessions s
                     WHERE s.source = 'telegram'
                       AND s.user_id = ?

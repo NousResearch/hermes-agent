@@ -35,7 +35,6 @@ def _bare_agent() -> AIAgent:
     agent._active_children_lock = threading.Lock()
     agent._tool_worker_threads = None
     agent._tool_worker_threads_lock = None
-    agent._current_streamed_reasoning_text = ""
     agent._current_streamed_assistant_text = ""
     agent._stream_needs_break = False
     agent._strip_think_blocks = lambda content: content
@@ -125,14 +124,20 @@ class TestActiveTurnRedirect:
         assert agent.redirect("too late") is False
         assert agent._pending_redirect is None
 
-    def test_hidden_reasoning_is_not_checkpointed(self):
+    def test_reasoning_deltas_are_display_only(self):
+        """Streamed reasoning must never accumulate into replayable transcript
+        state — an assistant checkpoint that inlines chain-of-thought trips
+        Anthropic's output classifier and permanently bricks the session
+        (deterministic empty-response storms on every replay)."""
         agent = _bare_agent()
-        agent.reasoning_callback = None
-        agent._current_streamed_reasoning_text = ""
+        seen = []
+        agent.reasoning_callback = seen.append
 
-        agent._fire_reasoning_delta("private provider thinking")
+        agent._fire_reasoning_delta("visible provider thinking")
 
-        assert agent._current_streamed_reasoning_text == ""
+        # Displayed to the surface, but never checkpointed anywhere.
+        assert seen == ["visible provider thinking"]
+        assert not getattr(agent, "_current_streamed_reasoning_text", "")
 
     def test_response_completion_before_redirect_lock_rejects_correction(self):
         agent = _bare_agent()
@@ -227,7 +232,6 @@ class TestActiveTurnRedirectCheckpoint:
         from agent.conversation_loop import _apply_active_turn_redirect
 
         agent = _bare_agent()
-        agent._current_streamed_reasoning_text = "Shown reasoning."
         agent._current_streamed_assistant_text = "Visible draft."
         messages = [
             {"role": "user", "content": "start"},
@@ -240,9 +244,47 @@ class TestActiveTurnRedirectCheckpoint:
         assert messages[-1]["role"] == "user"
         assert messages[-1]["content"].endswith("Use Postgres instead.")
         assert sum(1 for m in messages if m["role"] == "assistant") == 1
-        assert "Shown reasoning." in messages[-1]["content"]
         assert "Visible draft." in messages[-1]["content"]
         assert "Context from the interrupted assistant response" in messages[-1]["content"]
+
+    def test_checkpoint_never_replays_chain_of_thought(self):
+        """Raw CoT serialized into checkpoint content reads to Anthropic's
+        output classifier as reasoning-injection; because the checkpoint is
+        persisted and replayed on every later call, one redirect during a
+        thinking phase permanently bricked sessions with deterministic
+        empty-response storms (July 2026). Reasoning must never appear in
+        replayable content — in either the assistant-checkpoint or the
+        merged-user-correction shape."""
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        for tail_role in ("user", "assistant"):
+            agent = _bare_agent()
+            # Simulate a surface having displayed reasoning this turn.
+            agent._current_streamed_reasoning_text = "SECRET chain of thought."
+            agent._current_streamed_assistant_text = "Visible draft."
+            messages = [{"role": "user", "content": "start"}]
+            if tail_role == "assistant":
+                messages.append({"role": "assistant", "content": "committed"})
+
+            _apply_active_turn_redirect(agent, messages, "Change course.")
+
+            serialized = "".join(str(m.get("content", "")) for m in messages)
+            assert "SECRET chain of thought." not in serialized
+            assert "Reasoning shown before the interruption" not in serialized
+            assert "Visible draft." in serialized
+
+    def test_checkpoint_omits_reasoning_label_when_nothing_visible(self):
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        agent = _bare_agent()
+        agent._current_streamed_reasoning_text = "thinking only, no text yet"
+        messages = [{"role": "user", "content": "start"}]
+
+        _apply_active_turn_redirect(agent, messages, "New direction.")
+
+        checkpoint = messages[-2]["content"]
+        assert checkpoint == "[This response was interrupted by a user correction.]"
+        assert messages[-1]["content"] == "New direction."
 
 
 class TestSteerInjection:

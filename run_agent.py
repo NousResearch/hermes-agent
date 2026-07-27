@@ -5324,7 +5324,6 @@ class AIAgent:
                         pass
                 self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
-        self._current_streamed_reasoning_text = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
@@ -5665,15 +5664,6 @@ class AIAgent:
                 cb(text)
             except Exception:
                 pass
-            else:
-                # Only checkpoint reasoning that a surface actually displayed.
-                # show_reasoning=false leaves the callback unset, so hidden
-                # provider thinking never becomes visible transcript content.
-                if isinstance(text, str) and text:
-                    self._current_streamed_reasoning_text = (
-                        getattr(self, "_current_streamed_reasoning_text", "")
-                        + text
-                    )
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.

@@ -10,7 +10,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
-import { PANE_TAB_STRIP_LINE, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
+import { PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -131,12 +131,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       // titlebar-height so it opens below the band. 0px elsewhere → unchanged.
       style={{ paddingTop: 'var(--right-rail-top-inset, 0px)' }}
     >
-      <div
-        className={cn(
-          'group/rail-tabs flex h-(--titlebar-height) shrink-0 bg-(--ui-sidebar-surface-background)',
-          PANE_TAB_STRIP_LINE
-        )}
-      >
+      <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 bg-(--ui-sidebar-surface-background)">
         <div
           className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           role="tablist"

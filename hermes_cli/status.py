@@ -65,23 +65,9 @@ def _format_iso_timestamp(value) -> str:
 
 def _format_relative_ts(ts: float) -> str:
     """Format an epoch timestamp as a short relative age for status output."""
-    if not ts:
-        return "?"
-    import time as _time
-    from datetime import datetime
+    from hermes_cli.main import _relative_time
 
-    delta = _time.time() - float(ts)
-    if delta < 60:
-        return "just now"
-    if delta < 3600:
-        return f"{int(delta / 60)}m ago"
-    if delta < 86400:
-        return f"{int(delta / 3600)}h ago"
-    if delta < 172800:
-        return "yesterday"
-    if delta < 604800:
-        return f"{int(delta / 86400)}d ago"
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    return _relative_time(ts)
 
 
 def _configured_model_label(config: dict) -> str:

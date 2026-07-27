@@ -66,4 +66,12 @@ describe('ProjectOverviewRow', () => {
 
     expect(screen.queryByRole('button', { name: 'Toggle Test D sessions' })).toBeNull()
   })
+
+  it('drops the "new session" add button on Home, which has no folder to start in', () => {
+    const home = { id: '__no_project__', isNoProject: true, label: 'Home' } as unknown as SidebarProjectTree
+
+    render(<ProjectOverviewRow onNewSession={vi.fn()} project={home} />)
+
+    expect(screen.queryByRole('button', { name: 'New session in Home' })).toBeNull()
+  })
 })

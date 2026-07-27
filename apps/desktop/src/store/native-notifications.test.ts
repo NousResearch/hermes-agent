@@ -9,6 +9,7 @@ import {
   setNativeNotifyEnabled,
   setNativeNotifyKind
 } from './native-notifications'
+import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, setApprovalRequest } from './prompts'
 import { $activeSessionId, setActiveSessionId } from './session'
 
@@ -43,6 +44,7 @@ beforeEach(() => {
 
   setActiveSessionId(null)
   setWindowState({ focused: false, hidden: true })
+  __resetNativeNotifyBaselineForTests()
 })
 
 afterEach(() => {
@@ -136,6 +138,35 @@ describe('dispatchNativeNotification preferences', () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
     )
+  })
+})
+
+describe('dispatchNativeNotification post-connect baseline', () => {
+  it('suppresses a prompt replayed right after a socket opens', () => {
+    markNativeNotifyBaseline()
+    dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('suppresses a completion replayed right after a socket opens', () => {
+    const sessionId = freshSession()
+    setActiveSessionId(sessionId)
+    markNativeNotifyBaseline()
+    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('fires again once the window has passed', () => {
+    vi.useFakeTimers()
+
+    try {
+      markNativeNotifyBaseline()
+      vi.advanceTimersByTime(5000)
+      dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
+      expect(notify).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

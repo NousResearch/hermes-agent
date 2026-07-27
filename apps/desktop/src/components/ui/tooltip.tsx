@@ -82,7 +82,7 @@ function TooltipContent({
         // rectangular dead space). Instant, no transition (delayDuration=0).
         // pointer-events-none: the tip must never steal hover/clicks from the
         // chrome underneath (titlebar tools, adjacent tabs, etc.).
-        className={cn('pointer-events-none z-[200] w-fit max-w-64 select-none', className)}
+        className={cn('pointer-events-none z-(--z-over-modal) w-fit max-w-64 select-none', className)}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         {...props}

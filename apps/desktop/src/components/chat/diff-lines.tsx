@@ -41,15 +41,15 @@ interface ParsedHunk {
 // plain renderer; the Shiki path omits it so syntax colors win, layering only
 // the background + border.
 const DIFF_KIND_TINT: Record<DiffKind, string> = {
-  add: 'border-emerald-500 bg-emerald-500/12',
+  add: 'border-(--ui-diff-add-border) bg-(--ui-diff-add-background)',
   context: 'border-transparent',
-  remove: 'border-rose-500 bg-rose-500/12'
+  remove: 'border-(--ui-diff-remove-border) bg-(--ui-diff-remove-background)'
 }
 
 const DIFF_KIND_TEXT: Record<DiffKind, string> = {
-  add: 'text-emerald-800 dark:text-emerald-200',
+  add: 'text-(--ui-diff-add-foreground)',
   context: '',
-  remove: 'text-rose-800 dark:text-rose-200'
+  remove: 'text-(--ui-diff-remove-foreground)'
 }
 
 const DIFF_LINE_BASE = 'block min-w-max whitespace-pre border-l-2 px-2.5 py-px'
@@ -537,7 +537,10 @@ function DiffOverviewRuler({ lines }: { lines: DiffLine[] }) {
       <div className="relative w-full" style={{ height: `min(100%, ${lines.length * PREVIEW_LINE_PX}px)` }}>
         {runs.map((run, index) => (
           <div
-            className={cn('absolute inset-x-0', run.kind === 'add' ? 'bg-(--ui-green)' : 'bg-(--ui-red)')}
+            className={cn(
+              'absolute inset-x-0',
+              run.kind === 'add' ? 'bg-(--ui-diff-add-border)' : 'bg-(--ui-diff-remove-border)'
+            )}
             key={index}
             style={{ height: `max(0.125rem, ${run.sizePct}%)`, top: `${run.startPct}%` }}
           />

@@ -142,7 +142,11 @@ export const StreamStallIndicator: FC = () => {
     return `${s.message.content.length}:${textLength}`
   })
 
-  const [stalled, setStalled] = useState(false)
+  // Timestamp of the activity that preceded the current quiet spell, set once
+  // the spell qualifies as a stall. Holding the timestamp (not a boolean) is
+  // what lets the timer read "quiet for 12s" rather than the age of this
+  // component, which is the whole turn so far.
+  const [quietSince, setQuietSince] = useState<number | undefined>(undefined)
   const compacting = useStore($compactionActive)
   const turnTimerKey = useActiveTurnTimerKey()
   // A pending clarify / approval / sudo / secret means the turn is paused on the
@@ -151,14 +155,18 @@ export const StreamStallIndicator: FC = () => {
   const awaitingInput = useStore($activeSessionAwaitingInput)
 
   useEffect(() => {
-    setStalled(false)
-    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_S * 1000)
+    setQuietSince(undefined)
+    const seenAt = Date.now()
+    const id = window.setTimeout(() => setQuietSince(seenAt), STREAM_STALL_S * 1000)
 
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const active = (stalled || compacting) && !awaitingInput
-  const elapsed = useElapsedSeconds(active, compacting ? turnTimerKey : undefined)
+  const active = (quietSince !== undefined || compacting) && !awaitingInput
+
+  // Compaction owns the whole turn, so it keeps counting from the turn's start;
+  // a plain stall counts from the last thing the stream produced.
+  const elapsed = useElapsedSeconds(active, compacting ? turnTimerKey : undefined, compacting ? undefined : quietSince)
 
   if (!active) {
     return null

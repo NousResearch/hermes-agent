@@ -94,10 +94,10 @@ from `config.yaml` via the catalog entry.
 1. Launch Unreal Editor, wait for the project to finish loading; confirm the
    server started (Output Log shows the bind address, or run
    `ModelContextProtocol.StartServer` manually).
-2. Start the Hermes session. Tools register as `mcp_unreal_engine_*`. If
+2. Start the Hermes session. Tools register as `mcp__unreal_engine__*`. If
    they're missing: editor wasn't up first — start it, then open a new
    Hermes session.
-3. Sanity check: call `mcp_unreal_engine_list_toolsets` and confirm toolsets
+3. Sanity check: call `mcp__unreal_engine__list_toolsets` and confirm toolsets
    come back.
 
 ## The Tool Surface: Discovery, Not a Fixed List

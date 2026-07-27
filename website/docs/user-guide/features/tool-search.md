@@ -39,10 +39,10 @@ A typical interaction looks like:
 
 ```
 Model: tool_search("create a github issue")
-  → { matches: [{ name: "mcp_github_create_issue", ... }, ...] }
-Model: tool_describe("mcp_github_create_issue")
+  → { matches: [{ name: "mcp__github__create_issue", ... }, ...] }
+Model: tool_describe("mcp__github__create_issue")
   → { parameters: { type: "object", properties: { ... } } }
-Model: tool_call("mcp_github_create_issue", { title: "...", body: "..." })
+Model: tool_call("mcp__github__create_issue", { title: "...", body: "..." })
   → { ok: true, issue_number: 42 }
 ```
 

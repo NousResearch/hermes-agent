@@ -89,6 +89,15 @@ const ThinkingDisclosure: FC<{
     }
   }, [elapsed, pending, watching])
 
+  // The timer counts whole seconds, so a block that finished inside one reports
+  // "0s" — accurate and useless. Say it was quick and leave the number out.
+  const thoughtLabel =
+    pending || thoughtFor === null
+      ? t.assistant.thread.thinking
+      : thoughtFor < 1
+        ? t.assistant.thread.thoughtBriefly
+        : t.assistant.thread.thoughtFor(formatElapsed(thoughtFor))
+
   // While the preview is live, pin the scroll container to the bottom on
   // every content growth so the latest tokens are always visible.
   useEffect(() => {
@@ -143,9 +152,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            {pending || thoughtFor === null
-              ? t.assistant.thread.thinking
-              : t.assistant.thread.thoughtFor(formatElapsed(thoughtFor))}
+            {thoughtLabel}
           </span>
           {pending && (
             <ActivityTimerText

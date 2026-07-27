@@ -106,6 +106,14 @@ def _guess_extension(data: bytes) -> str:
     if data[:4] == b"%PDF":
         return ".pdf"
     if len(data) >= 8 and data[4:8] == b"ftyp":
+        # iOS Signal delivers voice notes as MP4-container AAC carrying an
+        # audio ftyp brand ("M4A ", "M4B "). Returning ".mp4" for those made
+        # them cache as documents and STT reject them ("Invalid file
+        # format") even though the bytes are valid audio. Read the brand so
+        # audio-branded files land as ".m4a" and route to the audio cache.
+        brand = data[8:12].lower() if len(data) >= 12 else b""
+        if brand in (b"m4a ", b"m4b "):
+            return ".m4a"
         return ".mp4"
     if data[:4] == b"OggS":
         return ".ogg"

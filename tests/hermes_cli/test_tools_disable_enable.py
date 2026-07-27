@@ -212,6 +212,31 @@ class TestToolsValidation:
         assert "web" in saved["platform_toolsets"]["cli"]
         assert "memory" in saved["platform_toolsets"]["cli"]
 
+    def test_restricted_toolset_not_reported_as_enabled(self, capsys):
+        config = {"platform_toolsets": {"telegram": ["web"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config"):
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["discord"], platform="telegram")
+            )
+        out = capsys.readouterr().out
+        assert "not available on platform 'telegram'" in out
+        assert "Enabled" not in out
+
+    def test_mixed_allowed_and_restricted_reports_allowed_only(self, capsys):
+        config = {"platform_toolsets": {"telegram": []}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["web", "discord"], platform="telegram")
+            )
+        out = capsys.readouterr().out
+        assert "Enabled: web" in out
+        assert "discord" not in out.split("Enabled:")[-1]
+        saved = mock_save.call_args[0][0]
+        assert "web" in saved["platform_toolsets"]["telegram"]
+        assert "discord" not in saved["platform_toolsets"]["telegram"]
+
     def test_mixed_valid_and_invalid_applies_valid_only(self):
         config = {"platform_toolsets": {"cli": ["web", "memory"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \

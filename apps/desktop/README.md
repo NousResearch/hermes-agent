@@ -30,7 +30,7 @@ Already have the Hermes CLI? Just run:
 hermes desktop
 ```
 
-It builds and launches the GUI against your existing install — same config, keys, sessions, and skills. On first launch Hermes walks you through picking a provider and model; nothing else to configure.
+It builds and launches the GUI against your existing install — same config, keys, sessions, and skills. If Desktop cannot find a usable runtime or saved remote connection, first launch lets you connect to an existing Hermes gateway or install Hermes locally. Local onboarding then walks you through choosing a provider and model.
 
 ### Prebuilt installers
 
@@ -133,6 +133,19 @@ Before changing the app, read:
 Desktop supports a managed local backend, explicit remote gateways, and Hermes
 Cloud connections. Remote and cloud modes use the same remote-capability path;
 authentication and discovery differ, not the renderer feature model.
+
+When no usable local runtime or saved remote connection exists, the first-run
+screen offers **Connect to existing Hermes** before starting the local installer.
+Desktop probes the gateway to discover token or OAuth authentication, requires a
+successful HTTP and WebSocket connection test, and saves the connection using
+the same encrypted Desktop configuration used by Settings. A saved remote
+connection bypasses this choice on later launches. The regular Desktop build
+still includes the local-install option; this is a remote operating mode, not a
+separate client-only application.
+
+In remote mode the gateway host is the execution boundary: agent tools,
+terminal commands, and file operations run against the remote Hermes host, not
+the computer displaying the Desktop UI.
 
 Projects are the workspace abstraction. A project may own multiple folders,
 repositories, worktrees, and sessions; a bare new chat remains detached unless

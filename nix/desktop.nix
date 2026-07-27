@@ -17,10 +17,13 @@
   ...
 }:
 let
+  # apps/shared ships as a file: workspace dep of apps/desktop, so its
+  # source must be in the filtered src tree too.
   npm = hermesNpmLib.mkNpmPassthru {
-    folder = "apps/desktop";
-    attr = "desktop";
-    pname = "hermes-desktop";
+    dirs = [
+      "apps/desktop"
+      "apps/shared"
+    ];
   };
 
   packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/apps/desktop/package.json"));

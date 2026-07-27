@@ -24,6 +24,7 @@ from hermes_cli.tools_config import (
     TOOL_CATEGORIES,
     gui_toolset_label,
     _visible_providers,
+    provider_readiness_status,
     tools_command,
 )
 
@@ -892,6 +893,98 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
     assert configured == ["web"]
 
 
+def test_configure_all_platforms_configures_selected_tool_missing_provider(monkeypatch):
+    """Regression: `hermes tools` → Configure all platforms → Web Search
+    must enter provider/API-key setup even when Web was already enabled on all
+    configured platforms, so the checklist selection itself has no diff.
+    """
+    config = {"platform_toolsets": {"cli": ["web"], "telegram": ["web"]}}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli", "telegram"],
+    )
+
+    menu_calls = 0
+
+    def choose_by_label(_question, choices, default=0):
+        nonlocal menu_calls
+        menu_calls += 1
+        wanted = "Configure all platforms" if menu_calls == 1 else "Done"
+        for idx, choice in enumerate(choices):
+            if wanted in choice:
+                return idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", choose_by_label)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"web"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_needs_configuration_prompt",
+        lambda ts_key, config, **kwargs: ts_key == "web",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config, **kwargs: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    tools_command(first_install=False, config=config)
+
+    assert configured == ["web"]
+    assert config["platform_toolsets"]["cli"] == ["web"]
+    assert config["platform_toolsets"]["telegram"] == ["web"]
+
+
+def test_configure_single_platform_configures_selected_tool_missing_provider(monkeypatch):
+    """Regression (per-platform sibling of the global flow): `hermes tools` →
+    Configure <platform> → Web Search must enter provider/API-key setup even
+    when Web was already enabled on that platform, so the checklist selection
+    itself has no diff.
+    """
+    config = {"platform_toolsets": {"cli": ["web"]}}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+
+    menu_calls = 0
+
+    def choose_by_label(_question, choices, default=0):
+        nonlocal menu_calls
+        menu_calls += 1
+        wanted = "CLI" if menu_calls == 1 else "Done"
+        for idx, choice in enumerate(choices):
+            if wanted in choice:
+                return idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", choose_by_label)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"web"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_needs_configuration_prompt",
+        lambda ts_key, config, **kwargs: ts_key == "web",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config, **kwargs: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    tools_command(first_install=False, config=config)
+
+    assert configured == ["web"]
+    assert config["platform_toolsets"]["cli"] == ["web"]
+
+
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
@@ -1135,7 +1228,7 @@ def test_computer_use_blank_custom_driver_command_falls_back_to_default():
 
 
 def test_computer_use_post_setup_respects_custom_driver_command_when_installed():
-    """post_setup already-installed checks should version-probe the override."""
+    """post_setup already-installed checks should version-probe the resolved override."""
     def fake_which(name: str):
         return "/opt/bin/custom-cua" if name == "custom-cua" else None
 
@@ -1148,7 +1241,9 @@ def test_computer_use_post_setup_respects_custom_driver_command_when_installed()
         _run_post_setup("cua_driver")
 
     run.assert_called_once()
-    assert run.call_args.args[0] == ["custom-cua", "--version"]
+    # Probe the resolved absolute path so thin GUI PATHs cannot reintroduce a
+    # bare-command miss after HERMES_CUA_DRIVER_CMD was looked up via which().
+    assert run.call_args.args[0] == ["/opt/bin/custom-cua", "--version"]
 
 
 def test_computer_use_post_setup_missing_override_does_not_accept_default_binary():
@@ -1830,3 +1925,222 @@ def test_save_platform_tools_disabling_a_toolset_does_not_touch_disabled_toolset
     assert "todo" not in config["platform_toolsets"]["cli"]
     # disabled_toolsets is untouched by a disable action.
     assert config["agent"]["disabled_toolsets"] == ["memory"]
+
+
+# ─── provider_readiness_status ────────────────────────────────────────────────
+#
+# Server-side truth for the GUI "Ready" pill (issue: Capabilities tab showed
+# Ready for every zero-env-var provider row, including logged-out Nous
+# Subscription rows and never-installed KittenTTS/Piper).
+
+
+def _fake_features(*, logged_in: bool, paid: bool = True):
+    account = (
+        NousPortalAccountInfo(
+            logged_in=True, source="jwt", fresh=False, paid_service_access=paid
+        )
+        if logged_in
+        else NousPortalAccountInfo(
+            logged_in=False, source="none", fresh=False, paid_service_access=None
+        )
+    )
+    return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
+
+
+def test_provider_readiness_env_vars_gate_keys(monkeypatch):
+    provider = {"name": "ElevenLabs", "env_vars": [{"key": "ELEVENLABS_API_KEY"}]}
+
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda key: None)
+    assert provider_readiness_status(provider, {}) == "needs_keys"
+
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda key: "sk-x")
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_keyless_ungated_row_is_ready():
+    # Edge TTS: no env vars, no post_setup, no nous auth → genuinely free.
+    provider = {"name": "Microsoft Edge TTS", "env_vars": [], "tts_provider": "edge"}
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_managed_nous_row_needs_auth_when_logged_out():
+    provider = {
+        "name": "Nous Subscription",
+        "env_vars": [],
+        "requires_nous_auth": True,
+        "managed_nous_feature": "tts",
+    }
+    status = provider_readiness_status(
+        provider, {}, features=_fake_features(logged_in=False)
+    )
+    assert status == "needs_auth"
+
+
+def test_provider_readiness_managed_nous_row_ready_when_entitled():
+    provider = {
+        "name": "Nous Subscription",
+        "env_vars": [],
+        "requires_nous_auth": True,
+        "managed_nous_feature": "tts",
+    }
+    status = provider_readiness_status(
+        provider, {}, features=_fake_features(logged_in=True, paid=True)
+    )
+    assert status == "ready"
+
+
+def test_provider_readiness_managed_nous_row_needs_auth_when_unentitled():
+    # Logged in but unpaid and no free tool pool → still gated.
+    provider = {
+        "name": "Nous Subscription",
+        "env_vars": [],
+        "requires_nous_auth": True,
+        "managed_nous_feature": "video_gen",
+    }
+    status = provider_readiness_status(
+        provider, {}, features=_fake_features(logged_in=True, paid=False)
+    )
+    assert status == "needs_auth"
+
+
+def test_provider_readiness_xai_grok_row_tracks_credentials(monkeypatch):
+    provider = {"name": "xAI TTS", "env_vars": [], "post_setup": "xai_grok"}
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_auth"
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_local_install_rows_track_module_presence(monkeypatch):
+    kitten = {"name": "KittenTTS", "env_vars": [], "post_setup": "kittentts"}
+    piper = {"name": "Piper", "env_vars": [], "post_setup": "piper"}
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._module_installed", lambda name: False
+    )
+    assert provider_readiness_status(kitten, {}) == "needs_setup"
+    assert provider_readiness_status(piper, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._module_installed", lambda name: True
+    )
+    assert provider_readiness_status(kitten, {}) == "ready"
+    assert provider_readiness_status(piper, {}) == "ready"
+
+
+def test_provider_readiness_unknown_post_setup_falls_back_to_is_active():
+    # A post_setup hook with no registered installed-check: selecting the row
+    # runs the hook, so is_active is the completed-setup signal.
+    provider = {"name": "Mystery", "env_vars": [], "post_setup": "mystery_hook"}
+    assert provider_readiness_status(provider, {}, is_active=True) == "ready"
+    assert provider_readiness_status(provider, {}, is_active=False) == "needs_setup"
+
+
+# ── Windows console-flash guard for post-setup subprocess spawns ──────────────
+#
+# The desktop GUI runs post-setup hooks through a detached, console-less
+# `hermes tools post-setup <key>` child. On Windows each console child (npm,
+# npx, pip, powershell) spawned without CREATE_NO_WINDOW materializes a brand
+# new console window — the "terminal flash" reported on the Capabilities
+# browser-setup journey. `_post_setup_no_window_flags` is the single wrapper
+# every hook spawn passes as `creationflags`.
+
+
+def test_post_setup_no_window_flags_zero_on_posix(monkeypatch):
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
+    assert _post_setup_no_window_flags() == 0
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0
+
+
+def test_post_setup_no_window_flags_hides_window_on_windows(monkeypatch):
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+    # CREATE_NO_WINDOW only — DETACHED_PROCESS would sever stdio and break
+    # capture_output in the hooks.
+    assert _post_setup_no_window_flags() == 0x08000000
+
+
+def test_post_setup_no_window_flags_streaming_keeps_interactive_console(monkeypatch):
+    """A hook that streams live output to a real console must stay visible."""
+    import sys as _sys
+
+    from hermes_cli import _subprocess_compat
+    from hermes_cli.tools_config import _post_setup_no_window_flags
+
+    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
+
+    class _Tty:
+        def isatty(self):
+            return True
+
+    class _Pipe:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(_sys, "stdout", _Tty())
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0
+
+    # GUI-spawn case: stdout is a log pipe, no console to stream to — hide.
+    monkeypatch.setattr(_sys, "stdout", _Pipe())
+    assert _post_setup_no_window_flags(streams_to_console=True) == 0x08000000
+
+
+# ── Post-setup readiness predicates for the browser rows ─────────────────────
+#
+# The GUI's "Run setup" idempotence rides on provider_readiness_status
+# reporting ready/needs_setup honestly. agent_browser (local browser) must
+# track the FULL local install (CLI + Chromium), the cloud-provider hook
+# ("browserbase") only the CLI, and camofox its npm package.
+
+
+def test_provider_readiness_agent_browser_tracks_local_install(monkeypatch):
+    provider = {"name": "Local Browser", "env_vars": [], "post_setup": "agent_browser"}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._local_browser_runnable", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._local_browser_runnable", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_cloud_browser_hook_tracks_cli_only(monkeypatch):
+    # Cloud rows (post_setup: "browserbase") host their own Chromium — the
+    # agent-browser CLI being present is the whole install contract.
+    provider = {"name": "Browserbase", "env_vars": [], "post_setup": "browserbase"}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._has_agent_browser", lambda: False
+    )
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription._has_agent_browser", lambda: True
+    )
+    assert provider_readiness_status(provider, {}) == "ready"
+
+
+def test_provider_readiness_camofox_tracks_node_modules(monkeypatch, tmp_path):
+    from hermes_cli import tools_config
+
+    provider = {"name": "Camofox", "env_vars": [], "post_setup": "camofox"}
+
+    monkeypatch.setattr(tools_config, "PROJECT_ROOT", tmp_path)
+    assert provider_readiness_status(provider, {}) == "needs_setup"
+
+    (tmp_path / "node_modules" / "@askjo" / "camofox-browser").mkdir(parents=True)
+    assert provider_readiness_status(provider, {}) == "ready"

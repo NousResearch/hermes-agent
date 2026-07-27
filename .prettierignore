@@ -1,0 +1,4 @@
+# Lockfiles must never be reformatted — main has a repo rule requiring
+# team approval when lockfiles change, so an autofix PR touching one
+# would hang waiting for review.
+package-lock.json

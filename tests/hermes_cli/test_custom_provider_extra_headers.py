@@ -101,6 +101,20 @@ def test_get_custom_provider_extra_headers_no_match_returns_empty():
     ) == {}
 
 
+def test_get_custom_provider_extra_headers_preserves_extra_path_segment():
+    providers = [
+        {
+            "base_url": "https://llm.internal.example.com/v1//",
+            "extra_headers": {"Authorization": "secret"},
+        }
+    ]
+
+    assert get_custom_provider_extra_headers(
+        "https://llm.internal.example.com/v1",
+        custom_providers=providers,
+    ) == {}
+
+
 def test_apply_extra_headers_merges_onto_existing_defaults():
     client_kwargs = {
         "api_key": "x",

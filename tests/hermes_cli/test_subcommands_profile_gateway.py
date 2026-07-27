@@ -92,6 +92,12 @@ def test_gateway_accept_hooks_flag():
     assert ns.accept_hooks is True
 
 
+def test_gateway_run_accepts_external_supervisor_flag():
+    p = _gateway_parser()
+    ns = p.parse_args(["gateway", "run", "--external-supervisor"])
+    assert ns.external_supervisor is True
+
+
 def test_gateway_lifecycle_accepts_legacy_platform_flag():
     p = _gateway_parser()
     for action in ("start", "restart", "status"):

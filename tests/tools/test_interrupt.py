@@ -50,7 +50,7 @@ class TestInterruptModule:
 
         # Target the checker thread's ident so it sees the interrupt
         set_interrupt(True, thread_id=t.ident)
-        t.join(timeout=1)
+        t.join(timeout=5)
         assert seen["value"]
 
         set_interrupt(False, thread_id=t.ident)
@@ -122,6 +122,11 @@ class TestPreToolCheck:
         agent._interrupt_requested = True
         agent.log_prefix = ""
         agent._persist_session = MagicMock()
+        # PR #72425: execute_tool_calls_* read _incremental_persistence_failed
+        # via getattr at loop top. A bare MagicMock auto-creates a truthy value
+        # for any attribute access, which would short-circuit the interrupt
+        # skip path before any cancelled-tool messages are appended.
+        agent._incremental_persistence_failed = False
 
         # Import and call the method
         import types

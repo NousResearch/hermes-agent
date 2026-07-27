@@ -10,12 +10,23 @@ from unittest.mock import patch
 
 def test_prompt_model_selection_uses_curses_radiolist():
     from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.curses_ui import radio_item_plain
 
     seen = {}
 
-    def _fake(title, items, *, selected=0, cancel_returns=None, description=None, searchable=False):
+    def _fake(
+        title,
+        items,
+        *,
+        selected=0,
+        cancel_returns=None,
+        description=None,
+        searchable=False,
+        search_labels=None,
+    ):
         seen["title"] = title
         seen["items"] = items
+        seen["search_labels"] = search_labels
         return 1  # pick second model
 
     with patch("hermes_cli.curses_ui.curses_radiolist", side_effect=_fake), \
@@ -24,9 +35,13 @@ def test_prompt_model_selection_uses_curses_radiolist():
 
     assert result == "model-b"
     assert seen["title"] == "Select default model:"
-    # Items are the models plus the custom/skip entries.
-    assert seen["items"][:2] == ["model-a", "model-b"]
-    assert "Skip (keep current)" in seen["items"]
+    # Items are the models plus the custom/skip entries. Model rows may be
+    # rich (text, style) segments for sale chrome — compare the plain text.
+    plain = [radio_item_plain(item) for item in seen["items"]]
+    assert plain[:2] == ["model-a", "model-b"]
+    assert "Skip (keep current)" in plain
+    assert seen["search_labels"] is not None
+    assert len(seen["search_labels"]) == len(seen["items"])
 
 
 def test_prompt_model_selection_esc_cancels():
@@ -67,8 +82,18 @@ def test_model_selection_with_pricing_passes_description():
 
     seen = {}
 
-    def _fake(title, items, *, selected=0, cancel_returns=None, description=None, searchable=False):
+    def _fake(
+        title,
+        items,
+        *,
+        selected=0,
+        cancel_returns=None,
+        description=None,
+        searchable=False,
+        search_labels=None,
+    ):
         seen["description"] = description
+        seen["search_labels"] = search_labels
         return len(items) - 1  # Skip
 
     pricing = {

@@ -70,3 +70,17 @@ def test_get_custom_provider_tls_settings_no_substring_bypass():
         "https://ollama.example.com.attacker.test/v1",
         custom_providers=providers,
     ) == {}
+
+
+def test_get_custom_provider_tls_settings_preserves_extra_path_segment():
+    providers = [
+        {
+            "base_url": "https://ollama.example.com/v1//",
+            "ssl_verify": False,
+        }
+    ]
+
+    assert get_custom_provider_tls_settings(
+        "https://ollama.example.com/v1",
+        custom_providers=providers,
+    ) == {}

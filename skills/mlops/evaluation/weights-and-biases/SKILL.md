@@ -1,7 +1,7 @@
 ---
 name: weights-and-biases
 description: "W&B: log ML experiments, sweeps, model registry, dashboards."
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [wandb]
@@ -238,7 +238,7 @@ sweep_config = {
     },
     'parameters': {
         'learning_rate': {
-            'distribution': 'log_uniform',
+            'distribution': 'log_uniform_values',
             'min': 1e-5,
             'max': 1e-1
         },
@@ -317,7 +317,7 @@ sweep_config = {
     'method': 'bayes',
     'metric': {'name': 'val/loss', 'goal': 'minimize'},
     'parameters': {
-        'lr': {'distribution': 'log_uniform', 'min': 1e-5, 'max': 1e-1}
+        'lr': {'distribution': 'log_uniform_values', 'min': 1e-5, 'max': 1e-1}
     }
 }
 ```
@@ -433,17 +433,21 @@ trainer.fit(model, datamodule=dm)
 
 ```python
 import wandb
-from wandb.keras import WandbCallback
+from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
 
 # Initialize
 wandb.init(project="keras-demo")
 
-# Add callback
+# Add callbacks (the monolithic WandbCallback was removed;
+# use the dedicated callbacks from wandb.integration.keras instead)
 model.fit(
     x_train, y_train,
     validation_data=(x_val, y_val),
     epochs=10,
-    callbacks=[WandbCallback()]  # Auto-logs metrics
+    callbacks=[
+        WandbMetricsLogger(),                        # Auto-logs metrics
+        WandbModelCheckpoint("models/model-{epoch}")  # Saves checkpoints
+    ]
 )
 ```
 

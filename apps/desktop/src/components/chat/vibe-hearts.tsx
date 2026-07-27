@@ -1,10 +1,6 @@
 import { type CSSProperties } from 'react'
 
-import {
-  createParticleEmitter,
-  ParticleField,
-  type ParticleFieldConfig
-} from '@/components/particles/particle-field'
+import { createParticleEmitter, ParticleField, type ParticleFieldConfig } from '@/components/particles/particle-field'
 import { $petActive, flashPetActivity } from '@/store/pet'
 import { $petOverlayActive, forwardPetReaction } from '@/store/pet-overlay'
 

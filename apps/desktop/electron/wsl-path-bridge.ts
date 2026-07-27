@@ -53,6 +53,7 @@ export function resolveDefaultWslDistro(): string {
       timeout: 2000,
       windowsHide: true
     })
+
     cachedDistro = parseDefaultDistro(out) || 'Ubuntu'
   } catch {
     cachedDistro = 'Ubuntu'

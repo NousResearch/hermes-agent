@@ -289,3 +289,149 @@ def test_upload_unknown_task_404(client):
 
 def test_download_unknown_attachment_404(client):
     assert client.get("/api/plugins/kanban/attachments/424242").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Shared helper — store_attachment_bytes (used by dashboard + tool + CLI)
+# ---------------------------------------------------------------------------
+
+
+def test_store_attachment_bytes_roundtrip(kanban_home):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        att_id = kb.store_attachment_bytes(
+            conn, task_id, "doc.txt", b"some bytes",
+            content_type="text/plain", uploaded_by="tester",
+        )
+        a = kb.get_attachment(conn, att_id)
+        assert a is not None
+        assert a.filename == "doc.txt"
+        assert a.size == len(b"some bytes")
+        assert a.uploaded_by == "tester"
+        assert Path(a.stored_path).read_bytes() == b"some bytes"
+        assert Path(a.stored_path).resolve().is_relative_to(
+            kb.task_attachments_dir(task_id).resolve()
+        )
+    finally:
+        conn.close()
+
+
+def test_store_attachment_bytes_rejects_oversize_and_leaves_no_blob(kanban_home):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        with pytest.raises(kb.AttachmentTooLarge):
+            kb.store_attachment_bytes(
+                conn, task_id, "big.bin", b"0123456789", max_bytes=4,
+            )
+        assert kb.list_attachments(conn, task_id) == []
+        # No partial blob left behind.
+        d = kb.task_attachments_dir(task_id)
+        assert not d.exists() or list(d.iterdir()) == []
+    finally:
+        conn.close()
+
+
+def test_store_attachment_bytes_resolves_collisions(kanban_home):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+        kb.store_attachment_bytes(conn, task_id, "dup.txt", b"a")
+        kb.store_attachment_bytes(conn, task_id, "dup.txt", b"b")
+        names = sorted(a.filename for a in kb.list_attachments(conn, task_id))
+        assert names == ["dup (1).txt", "dup.txt"]
+    finally:
+        conn.close()
+
+
+def test_store_attachment_bytes_unknown_task_leaves_no_blob(kanban_home):
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError):
+            kb.store_attachment_bytes(conn, "t_nope", "x.txt", b"x")
+        # The per-task dir may get created, but no blob should survive the
+        # failed metadata insert.
+        d = kb.task_attachments_dir("t_nope")
+        assert not d.exists() or list(d.iterdir()) == []
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CLI — hermes kanban attach / attachments / attach-rm
+# ---------------------------------------------------------------------------
+
+
+def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
+    from hermes_cli.kanban import run_slash
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn, title="cli-attach")
+    finally:
+        conn.close()
+
+    src = tmp_path / "upload.txt"
+    src.write_bytes(b"cli file body")
+
+    out = run_slash(f"attach {task_id} {src}")
+    assert "Attached" in out, out
+
+    conn = kb.connect()
+    try:
+        atts = kb.list_attachments(conn, task_id)
+        assert len(atts) == 1
+        att_id = atts[0].id
+        assert atts[0].filename == "upload.txt"
+        assert Path(atts[0].stored_path).read_bytes() == b"cli file body"
+    finally:
+        conn.close()
+
+    listed = run_slash(f"attachments {task_id}")
+    assert "upload.txt" in listed
+
+    removed = run_slash(f"attach-rm {att_id}")
+    assert "Deleted attachment" in removed
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, task_id) == []
+    finally:
+        conn.close()
+
+
+def test_cli_attach_honors_name_override(kanban_home, tmp_path):
+    from hermes_cli.kanban import run_slash
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+    finally:
+        conn.close()
+    src = tmp_path / "raw.bin"
+    src.write_bytes(b"xyz")
+    run_slash(f"attach {task_id} {src} --name renamed.dat")
+    conn = kb.connect()
+    try:
+        assert kb.list_attachments(conn, task_id)[0].filename == "renamed.dat"
+    finally:
+        conn.close()
+
+
+def test_cli_attach_missing_file(kanban_home, tmp_path):
+    from hermes_cli.kanban import run_slash
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn)
+    finally:
+        conn.close()
+    out = run_slash(f"attach {task_id} {tmp_path / 'does-not-exist.txt'}")
+    assert "no such file" in out.lower()
+
+
+def test_cli_attachments_unknown_task(kanban_home):
+    from hermes_cli.kanban import run_slash
+
+    out = run_slash("attachments t_nope")
+    assert "no such task" in out.lower()

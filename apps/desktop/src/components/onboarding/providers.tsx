@@ -76,18 +76,29 @@ function ConnectedTag() {
 const PROVIDER_ROW_CLASS =
   'group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)'
 
-export function KeyProviderRow({ onClick }: { onClick: () => void }) {
-  const { t } = useI18n()
-
+/** Quick-key row for API-key providers (Fireworks #2 after Nous, OpenRouter further down). */
+export function KeyProviderRow({ onClick, pitch, title }: { onClick: () => void; pitch: string; title: string }) {
   return (
     <RowButton className={PROVIDER_ROW_CLASS} onClick={onClick}>
       <div className="min-w-0">
-        <span className="text-[length:var(--conversation-text-font-size)] font-semibold">OpenRouter</span>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.openRouterPitch}</p>
+        <span className="text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{pitch}</p>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </RowButton>
   )
+}
+
+export function FireworksProviderRow({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n()
+
+  return <KeyProviderRow onClick={onClick} pitch={t.onboarding.fireworksPitch} title="Fireworks AI" />
+}
+
+export function OpenRouterProviderRow({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n()
+
+  return <KeyProviderRow onClick={onClick} pitch={t.onboarding.openRouterPitch} title="OpenRouter" />
 }
 
 export function ProviderRow({

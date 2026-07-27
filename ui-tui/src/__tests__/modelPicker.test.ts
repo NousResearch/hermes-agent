@@ -21,9 +21,7 @@ describe('ModelPicker provider filtering', () => {
   })
 
   it('returns -1 when provider is undefined', () => {
-    const rows = [
-      { name: 'A', provider: provider('a') }
-    ]
+    const rows = [{ name: 'A', provider: provider('a') }]
 
     expect(providerIndexAfterClearingFilter(rows, undefined)).toBe(-1)
   })

@@ -192,6 +192,32 @@ class TestFlushBehaviour:
         s = StreamingThinkScrubber()
         assert s.flush() == ""
 
+    def test_flush_restores_stream_start_boundary(self) -> None:
+        """End-of-stream flush must re-arm block-boundary gating.
+
+        Thinking-only / empty-response retries flush then stream again
+        without ``reset()``.  If flush left ``_last_emitted_ended_newline``
+        False (e.g. after emitting a held-back ``<``), the next stream's
+        opening ``<think>`` looked mid-line and leaked into the UI.
+        """
+        s = StreamingThinkScrubber()
+        assert s.feed("word") == "word"
+        assert s._last_emitted_ended_newline is False
+        assert s.flush() == ""
+        assert s._last_emitted_ended_newline is True
+        assert (
+            _drive(s, ["<think>", "secret reasoning", "</think>", "Visible answer"])
+            == "Visible answer"
+        )
+
+    def test_flush_partial_tag_tail_does_not_poison_next_stream(self) -> None:
+        """Flushing a held-back ``<`` must not make the next open tag leak."""
+        s = StreamingThinkScrubber()
+        s.feed("word<")
+        assert s.flush() == "<"
+        assert s._last_emitted_ended_newline is True
+        assert _drive(s, ["<think>hidden</think>Hello"]) == "Hello"
+
 
 class TestRealisticStreaming:
     """Character-by-character streaming must work as well as larger chunks."""

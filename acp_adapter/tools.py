@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,8 @@ from acp.schema import (
     ToolCallProgress,
     ToolKind,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Map hermes tool names -> ACP ToolKind
@@ -384,6 +387,24 @@ def _format_execute_code_result(result: Optional[str]) -> Optional[str]:
     error = str(data.get("error") or "")
     exit_code = data.get("exit_code")
     parts = [f"Exit code: {exit_code}" if exit_code is not None else "Execution complete"]
+    if data.get("stdout_truncated"):
+        total = data.get("stdout_bytes_total")
+        captured = data.get("stdout_bytes_captured")
+        omitted = data.get("stdout_bytes_omitted")
+        if all(isinstance(v, int) for v in (captured, total, omitted)):
+            parts.extend([
+                "",
+                (
+                    "Output truncated: "
+                    f"captured {captured:,} of {total:,} bytes "
+                    f"({omitted:,} omitted)."
+                ),
+            ])
+        else:
+            parts.extend(["", "Output truncated."])
+    warning = str(data.get("warning") or "").strip()
+    if warning:
+        parts.extend(["", "Warning:", warning])
     if output:
         parts.extend(["", "Output:", output])
     if error:
@@ -1026,7 +1047,37 @@ def build_tool_start(
     *,
     edit_diff: Any = None,
 ) -> ToolCallStart:
-    """Create a ToolCallStart event for the given hermes tool invocation."""
+    """Create a ToolCallStart event for the given hermes tool invocation.
+
+    A malformed tool argument (e.g. a non-string ``command``/``path`` from a
+    model that ignores the schema) must never abort the ACP tool-call render —
+    ``build_tool_start`` runs on the live tool-progress callback and during
+    session history replay. On any failure in the title/content/location
+    builders, fall back to a minimal, valid start event. Mirrors
+    ``get_cute_tool_message`` in ``agent/display.py``, wrapped for the same
+    reason on the CLI side.
+    """
+    try:
+        return _build_tool_start(
+            tool_call_id, tool_name, arguments, edit_diff=edit_diff
+        )
+    except Exception as exc:  # noqa: BLE001 — a tool-call render must never abort the turn
+        logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
+        safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
+        return acp.start_tool_call(
+            tool_call_id, safe_name, kind=get_tool_kind(safe_name),
+            content=None, locations=[], raw_input=None,
+        )
+
+
+def _build_tool_start(
+    tool_call_id: str,
+    tool_name: str,
+    arguments: Dict[str, Any],
+    *,
+    edit_diff: Any = None,
+) -> ToolCallStart:
+    """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
     kind = get_tool_kind(tool_name)
     title = build_tool_title(tool_name, arguments)
     locations = extract_locations(arguments)

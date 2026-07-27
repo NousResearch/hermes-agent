@@ -52,6 +52,7 @@ class ConfigContext:
     current_base_url: str
     user_providers: dict
     custom_providers: list
+    excluded_providers: list = None
 
     def with_overrides(
         self,
@@ -96,12 +97,14 @@ def load_picker_context() -> ConfigContext:
         current_provider = ""
         current_base_url = ""
     raw = cfg.get("providers")
+    excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
+        excluded_providers=excluded if isinstance(excluded, list) else [],
     )
 
 
@@ -121,6 +124,7 @@ def build_models_payload(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
     max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -165,6 +169,11 @@ def build_models_payload(
       false, still live-probe the current custom endpoint. This keeps normal
       GUI/TUI picker opens fast while making the active custom provider's model
       list match the classic CLI picker.
+    - ``for_picker``: interactive-picker visibility. Keeps providers whose
+      credential pool exists but is entirely rate-limited (exhausted) in the
+      list. Rate limits are per-model, so a different model under the same
+      provider may still work; hiding the provider strands the user. Set for
+      any surface a human is choosing from, not for programmatic resolution.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -179,6 +188,8 @@ def build_models_payload(
         refresh=refresh,
         probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider,
+        for_picker=for_picker,
+        excluded_providers=ctx.excluded_providers or [],
     )
 
     moa_row = _moa_provider_row(ctx.current_provider)
@@ -257,6 +268,126 @@ def build_models_payload(
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def build_model_options_payload(
+    ctx: ConfigContext,
+    *,
+    explicit_only: bool = False,
+    include_unconfigured: bool = False,
+    refresh: bool = False,
+) -> dict:
+    """Build the shared API-server/dashboard/TUI model-options payload.
+
+    This wraps ``build_models_payload`` with the stable picker shape and the
+    safe custom-provider probe policy used for normal GUI/TUI opens:
+
+    - normal open: probe only the current custom provider so offline saved
+      endpoints do not block the picker
+    - explicit refresh: probe every custom provider while busting the model
+      cache so live catalogs repopulate fully
+    """
+    refresh = bool(refresh)
+    return build_models_payload(
+        ctx,
+        explicit_only=bool(explicit_only),
+        include_unconfigured=bool(include_unconfigured),
+        picker_hints=True,
+        canonical_order=True,
+        pricing=True,
+        capabilities=True,
+        refresh=refresh,
+        probe_custom_providers=refresh,
+        probe_current_custom_provider=not refresh,
+    )
+
+
+# ─── Public: auxiliary-task pickers ─────────────────────────────────────
+
+
+def build_aux_picker_rows(
+    *,
+    current_provider: str = "",
+    current_model: str = "",
+    current_base_url: str = "",
+    max_models: int | None = None,
+) -> list[dict]:
+    """Provider rows for any auxiliary-task picker (vision, compression, …).
+
+    THE entry point for every aux picker — present and future. Call this
+    instead of ``list_authenticated_providers()`` directly.
+
+    Aux pickers kept re-deriving their own kwargs and each one silently
+    dropped a different slice of the user's configuration. Two independent
+    contributor PRs landed against the same two call sites for exactly this:
+    #52642 (user ``providers:`` / ``custom_providers:`` entries never
+    appeared) and #66624 (providers with an exhausted credential pool were
+    hidden). Both were per-site kwarg patches, so the next aux picker would
+    have reintroduced the same gap. Routing through one function makes the
+    correct behaviour the default that a new caller cannot forget:
+
+    - user-defined ``providers:`` and saved ``custom_providers:`` entries
+    - ``model_catalog.excluded_providers`` honoured, matching ``/model``
+    - exhausted-credential-pool providers stay visible (``for_picker``)
+    - the active custom endpoint is probed, offline saved ones are not, so
+      the picker never blocks on a dead local server
+
+    The virtual ``moa`` row is excluded: auxiliary tasks must not run the
+    MoA reference fan-out, and ``auxiliary_client`` unwraps a ``moa``
+    provider to its aggregator slot anyway (see ``_resolve_auto``), so
+    offering it here would be a choice silently rewritten behind the user's
+    back. Mirrors the same filter in ``hermes_cli/moa_cmd.py``.
+
+    Rows are the standard ``list_authenticated_providers`` shape. Pair with
+    :func:`format_aux_picker_entries` to render them.
+    """
+    ctx = load_picker_context().with_overrides(
+        current_provider=current_provider,
+        current_model=current_model,
+        current_base_url=current_base_url,
+    )
+    rows = build_models_payload(
+        ctx,
+        for_picker=True,
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        max_models=max_models,
+    )["providers"]
+    return [r for r in rows if str(r.get("slug") or "").strip().lower() != "moa"]
+
+
+def format_aux_picker_entries(
+    rows: list[dict],
+    *,
+    current_provider: str = "",
+    current_base_url: str = "",
+) -> list[tuple[str, str, list[str]]]:
+    """Render aux-picker rows as ``(slug, label, models)`` menu entries.
+
+    Owns the label text and the ``← current`` marker so every aux picker
+    presents providers identically. Callers add their own leading/trailing
+    entries (``auto``, ``Custom endpoint``, ``Back``) around this list.
+
+    A custom endpoint set via a raw ``base_url`` is "current" only through
+    that URL — never through a provider slug — so when ``current_base_url``
+    is set no provider row is marked, matching the pre-existing behaviour of
+    both call sites.
+    """
+    entries: list[tuple[str, str, list[str]]] = []
+    current_slug = str(current_provider or "").strip().lower()
+    has_base_url = bool(str(current_base_url or "").strip())
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        name = row.get("name") or slug
+        total = row.get("total_models") or len(row.get("models") or [])
+        model_hint = f" — {total} models" if total else ""
+        marker = (
+            "  ← current"
+            if slug.lower() == current_slug and current_slug and not has_base_url
+            else ""
+        )
+        entries.append((slug, f"{name}{model_hint}{marker}", list(row.get("models") or [])))
+    return entries
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
@@ -533,6 +664,7 @@ def _apply_pricing(
     from hermes_cli.models import (
         _format_price_per_mtok,
         check_nous_free_tier,
+        compute_sale_discount,
         get_pricing_for_provider,
         partition_nous_models_by_tier,
     )
@@ -565,12 +697,32 @@ def _apply_pricing(
             cache = _format_price_per_mtok(cache_raw) if cache_raw else None
             # A model is "free" when both input and output cost nothing.
             is_free = inp == "free" and (out == "free" or out == "")
-            formatted[mid] = {
+            entry: dict = {
                 "input": inp,
                 "output": out,
                 "cache": cache,
                 "free": is_free,
             }
+            # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
+            # Novita, …) never get discount_percent / was_* even if a nested
+            # pricing.original somehow appeared in their catalog. Free / $0
+            # models never get sale chrome either — even if original leaked.
+            if slug == "nous" and not is_free:
+                sale = compute_sale_discount(
+                    inp_raw, out_raw, p.get("original")
+                )
+                if sale is not None:
+                    discount_percent, was_prompt_raw, was_out_raw = sale
+                    entry["discount_percent"] = discount_percent
+                    if was_prompt_raw != "":
+                        entry["was_input"] = _format_price_per_mtok(
+                            was_prompt_raw
+                        )
+                    if was_out_raw != "":
+                        entry["was_output"] = _format_price_per_mtok(
+                            was_out_raw
+                        )
+            formatted[mid] = entry
 
         if formatted:
             row["pricing"] = formatted

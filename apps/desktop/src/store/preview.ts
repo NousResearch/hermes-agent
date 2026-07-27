@@ -3,6 +3,7 @@ import { atom, computed } from 'nanostores'
 import { persistentAtom } from '@/lib/persisted'
 import { normalize } from '@/lib/text'
 
+import { $artifactTabs, type ArtifactTabId, closeAllArtifactTabs, closeArtifactTab } from './artifacts'
 import {
   $rightRailActiveTabId,
   PREVIEW_PANE_ID,
@@ -79,12 +80,21 @@ export const $filePreviewTabs = persistentAtom<FilePreviewTab[]>(TABS_STORAGE_KE
 })
 
 // Drop a restored active file-tab that didn't survive validation so the rail
-// never points at a tab that isn't there.
+// never points at a tab that isn't there. Artifact tabs are ephemeral (never
+// restored), so a persisted `artifact:` active id is always stale too.
 if (
-  $rightRailActiveTabId.get().startsWith('file:') &&
-  !$filePreviewTabs.get().some(tab => tab.id === $rightRailActiveTabId.get())
+  ($rightRailActiveTabId.get().startsWith('file:') &&
+    !$filePreviewTabs.get().some(tab => tab.id === $rightRailActiveTabId.get())) ||
+  $rightRailActiveTabId.get().startsWith('artifact:')
 ) {
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+}
+
+// Inverse: persisted/default active id is still the live-preview tab, but that
+// target isn't open and file tabs are. Point at the first file tab so ⌘W and
+// the strip agree before React's fallback sync runs.
+if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID && $filePreviewTabs.get().length > 0) {
+  selectRightRailTab($filePreviewTabs.get()[0]!.id)
 }
 
 export const $filePreviewTarget = computed([$filePreviewTabs, $rightRailActiveTabId], (tabs, activeTabId) => {
@@ -417,10 +427,10 @@ export function dismissPreviewTarget() {
   $previewTarget.set(null)
 
   if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID) {
-    selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    selectRightRailTab($filePreviewTabs.get()[0]?.id ?? $artifactTabs.get()[0] ?? RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 
-  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0)
+  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0 || $artifactTabs.get().length > 0)
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
@@ -440,10 +450,12 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
   $filePreviewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    selectRightRailTab(
+      next[Math.min(index, next.length - 1)]?.id ?? $artifactTabs.get()[0] ?? RIGHT_RAIL_PREVIEW_TAB_ID
+    )
   }
 
-  if (next.length === 0 && !$previewTarget.get()) {
+  if (next.length === 0 && !$previewTarget.get() && $artifactTabs.get().length === 0) {
     setPaneOpen(PREVIEW_PANE_ID, false)
   }
 }
@@ -457,13 +469,66 @@ export function closeRightRailTab(tabId: RightRailTabId) {
     return
   }
 
+  if (tabId.startsWith('artifact:')) {
+    closeArtifactTab(tabId as ArtifactTabId)
+
+    if (!$previewTarget.get() && $filePreviewTabs.get().length === 0 && $artifactTabs.get().length === 0) {
+      setPaneOpen(PREVIEW_PANE_ID, false)
+    }
+
+    return
+  }
+
   closeFilePreviewTab(tabId)
 }
 
-export const closeActiveRightRailTab = () => closeRightRailTab($rightRailActiveTabId.get())
+/** Close the tab the right rail is actually showing. Returns false when nothing
+ *  closed (so ⌘W can fall through). Resolves a stale `preview` selection to the
+ *  first file tab when the live preview target is already gone. */
+export function closeActiveRightRailTab(): boolean {
+  let tabId = $rightRailActiveTabId.get()
+
+  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID && !$previewTarget.get()) {
+    const fallback = $filePreviewTabs.get()[0]?.id ?? $artifactTabs.get()[0]
+
+    if (!fallback) {
+      return false
+    }
+
+    tabId = fallback
+  }
+
+  if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
+    if (!$previewTarget.get()) {
+      return false
+    }
+
+    closeRightRailTab(tabId)
+
+    return true
+  }
+
+  if (tabId.startsWith('artifact:')) {
+    if (!$artifactTabs.get().includes(tabId as ArtifactTabId)) {
+      return false
+    }
+
+    closeRightRailTab(tabId)
+
+    return true
+  }
+
+  if (!$filePreviewTabs.get().some(tab => tab.id === tabId)) {
+    return false
+  }
+
+  closeRightRailTab(tabId)
+
+  return true
+}
 
 // The rail's visible tab order: the live preview tab (when present) first, then
-// the file tabs in their stored order. Mirrors `ChatPreviewRail`'s `tabs` memo
+// the file tabs, then artifact tabs. Mirrors `ChatPreviewRail`'s `tabs` memo
 // so "close others / to the right" act on what the user actually sees.
 function rightRailTabOrder(): RightRailTabId[] {
   const ids: RightRailTabId[] = []
@@ -474,6 +539,10 @@ function rightRailTabOrder(): RightRailTabId[] {
 
   for (const tab of $filePreviewTabs.get()) {
     ids.push(tab.id)
+  }
+
+  for (const tabId of $artifactTabs.get()) {
+    ids.push(tabId)
   }
 
   return ids
@@ -504,13 +573,14 @@ export function closeRightRailTabsToRight(tabId: RightRailTabId) {
   }
 }
 
-/** Dismisses the active preview + every file tab so the rail pane unmounts. */
+/** Dismisses the active preview + every file and artifact tab so the rail pane unmounts. */
 export function closeRightRail() {
   if ($previewTarget.get()) {
     dismissPreviewTarget()
   }
 
   $filePreviewTabs.set([])
+  closeAllArtifactTabs()
   setPaneOpen(PREVIEW_PANE_ID, false)
 }
 

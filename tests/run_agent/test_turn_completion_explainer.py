@@ -106,6 +106,16 @@ def test_explanation_for_all_retries_exhausted():
     assert "retries" in out.lower()
 
 
+def test_explanation_for_session_persistence_failed():
+    """Fail-closed persistence exits (#72425) must explain themselves."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed"
+    )
+    assert out  # non-empty
+    assert "session storage" in out.lower()
+    assert "disk space" in out.lower()
+
+
 # --------------------------------------------------------------------------
 # 2. Enable/disable seam
 # --------------------------------------------------------------------------

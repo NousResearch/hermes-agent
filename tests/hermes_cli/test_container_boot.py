@@ -195,6 +195,39 @@ def test_desired_state_running_autostarts_even_if_runtime_failed(tmp_path: Path)
     assert not (scandir / "gateway-resilient" / "down").exists()
 
 
+def test_multiplex_boot_keeps_named_running_profile_registered_down(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the root/default s6 slot may own a multiplex gateway process."""
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "true")
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _seed_default_root(tmp_path, state="running")
+    profile = _make_profile(
+        tmp_path,
+        "resilient",
+        state="running",
+        desired_state="running",
+    )
+    persisted_state = (profile / "gateway_state.json").read_text()
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert actions == [
+        ReconcileAction(
+            profile="default", prior_state="running", action="started",
+        ),
+        ReconcileAction(
+            profile="resilient", prior_state="running", action="registered",
+        ),
+    ]
+    assert not (scandir / "gateway-default" / "down").exists()
+    assert (scandir / "gateway-resilient" / "down").exists()
+    assert (profile / "gateway_state.json").read_text() == persisted_state
+
+
 def test_desired_state_stopped_blocks_legacy_running_runtime(tmp_path: Path) -> None:
     """Explicit stop must survive a stale legacy runtime state of running."""
     scandir = tmp_path / "run-service"; scandir.mkdir()

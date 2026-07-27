@@ -36,21 +36,27 @@ function useGatewayLogTail(): string[] {
   useEffect(() => {
     let cancelled = false
 
-    const load = () =>
-      getLogs({ file: 'gui', lines: LOG_TAIL })
-        .then(res => {
-          if (cancelled) {
-            return
-          }
+    // async: getLogs THROWS (not rejects) when the desktop bridge is missing
+    // (plain-browser mode) — a sync throw here would take down the root
+    // error boundary before the .catch even attaches.
+    const load = async () => {
+      try {
+        const res = await getLogs({ file: 'gui', lines: LOG_TAIL })
 
-          setLines(
-            res.lines
-              .map(line => line.trim())
-              .filter(line => line && !LOG_NOISE_RE.test(line))
-              .slice(-LOG_VISIBLE)
-          )
-        })
-        .catch(() => {})
+        if (cancelled) {
+          return
+        }
+
+        setLines(
+          res.lines
+            .map(line => line.trim())
+            .filter(line => line && !LOG_NOISE_RE.test(line))
+            .slice(-LOG_VISIBLE)
+        )
+      } catch {
+        // Bridge/gateway unavailable — keep the last tail.
+      }
+    }
 
     void load()
     const timer = window.setInterval(load, LOG_POLL_MS)

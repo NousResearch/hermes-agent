@@ -12,7 +12,8 @@ import {
   SiWechat,
   SiWhatsapp
 } from '@icons-pack/react-simple-icons'
-import type { ComponentType, SVGProps } from 'react'
+import type { ComponentPropsWithoutRef, ComponentType, SVGProps } from 'react'
+import { forwardRef } from 'react'
 
 import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -54,13 +55,20 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   yuanbao: { Icon: SiBilibili, color: '#FB7299', kind: 'brand' }
 }
 
-interface PlatformAvatarProps {
+interface PlatformAvatarProps extends Omit<ComponentPropsWithoutRef<'span'>, 'children'> {
   platformId: string
   platformName: string
-  className?: string
 }
 
-export function PlatformAvatar({ className, platformId, platformName }: PlatformAvatarProps) {
+// forwardRef + spreading ...rest is required so a wrapping <Tip> (Radix
+// Tooltip's `asChild`) can actually attach its trigger: asChild clones this
+// component and injects a ref plus pointer/focus/aria handlers onto it. A
+// plain function component with no ref/rest forwarding drops all of that
+// silently — the tooltip renders but never opens (#67500).
+export const PlatformAvatar = forwardRef<HTMLSpanElement, PlatformAvatarProps>(function PlatformAvatar(
+  { className, platformId, platformName, style, ...rest },
+  ref
+) {
   const spec = PLATFORM_ICONS[platformId]
 
   const baseClass = cn(
@@ -70,7 +78,13 @@ export function PlatformAvatar({ className, platformId, platformName }: Platform
 
   if (!spec) {
     return (
-      <span aria-hidden="true" className={cn(baseClass, 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)')}>
+      <span
+        aria-hidden="true"
+        className={cn(baseClass, 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)')}
+        ref={ref}
+        style={style}
+        {...rest}
+      >
         {platformName.charAt(0).toUpperCase()}
       </span>
     )
@@ -82,14 +96,17 @@ export function PlatformAvatar({ className, platformId, platformName }: Platform
     <span
       aria-hidden="true"
       className={baseClass}
+      ref={ref}
       style={{
         // 16% tint of the brand color so the glyph reads against any surface
         // without the avatar dominating the row.
         backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)`,
-        color
+        color,
+        ...style
       }}
+      {...rest}
     >
       {Icon ? <Icon className="size-3.5" /> : spec.monogram || platformName.charAt(0).toUpperCase()}
     </span>
   )
-}
+})

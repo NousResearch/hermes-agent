@@ -84,7 +84,9 @@ export function ReviewPane() {
       {(loading || isRepo) && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
           <div className="flex min-w-0 flex-1">
-            <SidebarPanelLabel>{c.review}</SidebarPanelLabel>
+            {/* Pure self-naming label — redundant under a zone tab that already
+                says "review", so the zone header hides it (styles.css). */}
+            <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
           <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
             <Button
@@ -200,7 +202,7 @@ export function ReviewPane() {
                 <DiffSkeleton />
               ) : null
             ) : diff ? (
-              <FileDiffPanel diff={diff} path={selectedFile.path} />
+              <FileDiffPanel className="mx-0 mb-0 h-full max-h-none" diff={diff} path={selectedFile.path} virtualized />
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}

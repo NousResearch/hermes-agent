@@ -150,3 +150,54 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
     assert "1,050,000" in ctx_line, (
         f"resolver-empty path should fall back to ModelInfo, got: {ctx_line!r}"
     )
+
+
+def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
+    import cli as cli_mod
+
+    writes = []
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "save_config_value",
+        lambda key, value: writes.append((key, value)),
+    )
+    cli = _StubCLI()
+    cli.model = "shared-model"
+    cli.provider = "custom"
+    # Runtime may already diverge from persisted config through a session override.
+    cli.base_url = "https://small.example/v1"
+    result = ModelSwitchResult(
+        success=True,
+        new_model="shared-model",
+        target_provider="custom",
+        provider_changed=False,
+        api_key="",
+        base_url="https://small.example/v1",
+        api_mode="chat_completions",
+        warning_message="",
+        provider_label="Custom",
+        resolved_via_alias=False,
+        capabilities=None,
+        model_info=_FakeModelInfo(),
+        is_global=True,
+    )
+
+    configured = {
+        "model": {
+            "default": "shared-model",
+            "provider": "custom",
+            "base_url": "https://large.example/v1",
+            "context_length": 1_048_576,
+        }
+    }
+    with (
+        patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=256_000,
+        ),
+        patch("hermes_cli.config.load_config_readonly", return_value=configured),
+    ):
+        cli_mod.HermesCLI._apply_model_switch_result(cli, result, True)
+
+    assert ("model.context_length", None) in writes

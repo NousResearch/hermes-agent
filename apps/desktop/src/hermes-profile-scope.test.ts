@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkHermesUpdate,
   getActionStatus,
+  getMemoryProviderConfig,
   getStatus,
   restartGateway,
+  saveMemoryProviderConfig,
   setApiRequestProfile,
   updateHermes
 } from './hermes'
@@ -31,6 +33,17 @@ describe('backend action helpers are profile-scoped', () => {
   it('omits profile when none is active (single-profile users unaffected)', () => {
     void getStatus()
     expect(lastProfile()).toBeUndefined()
+  })
+
+  it('forwards the active profile to memory provider config calls', () => {
+    setApiRequestProfile('coder')
+
+    void getMemoryProviderConfig('honcho')
+    void saveMemoryProviderConfig('honcho', { workspace: 'w' })
+
+    for (const call of api.mock.calls) {
+      expect(call[0].profile).toBe('coder')
+    }
   })
 
   it('forwards the active profile to every backend action', () => {

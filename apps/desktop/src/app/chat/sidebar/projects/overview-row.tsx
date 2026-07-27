@@ -3,6 +3,7 @@ import { useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -27,7 +28,7 @@ import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon }: SidebarProjectTree) {
+export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -38,7 +39,7 @@ export function projectIcon({ color, icon }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || 'folder-library'} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
     </SidebarRowLeadGlyph>
   )
 }
@@ -116,10 +117,12 @@ export function ProjectOverviewRow({
       <SidebarRowShell
         actions={
           <>
-            {onNewSession && (
+            {/* Home has no folder to start a chat in — the sidebar's own "New
+                session" is that button — and no record to rename or delete. */}
+            {onNewSession && !project.isNoProject && (
               <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
             )}
-            <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />
+            {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
           </>
         }
         className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
@@ -135,17 +138,19 @@ export function ProjectOverviewRow({
             {project.label}
           </SidebarRowLink>
           {preview.length > 0 ? (
-            <button
-              aria-label={s.projects.toggle(project.label)}
-              className="flex flex-1 items-center self-stretch bg-transparent p-0"
-              onClick={toggleOpen}
-              type="button"
-            >
-              <DisclosureCaret
-                className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
-                open={open}
-              />
-            </button>
+            <Tip label={s.projects.toggle(project.label)}>
+              <button
+                aria-label={s.projects.toggle(project.label)}
+                className="flex flex-1 items-center self-stretch bg-transparent p-0"
+                onClick={toggleOpen}
+                type="button"
+              >
+                <DisclosureCaret
+                  className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+                  open={open}
+                />
+              </button>
+            </Tip>
           ) : (
             <span className="flex-1" />
           )}

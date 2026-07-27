@@ -15,6 +15,10 @@
 #   scripts/dev-sandbox.sh --persistent hermes desktop
 #   scripts/dev-sandbox.sh --persistent -- npm run dev
 #
+# Seed the sandbox HERMES_HOME from an existing directory (e.g. your main
+# ~/.hermes) so config, sessions, skills, etc. are pre-populated:
+#   scripts/dev-sandbox.sh --from ~/.hermes hermes desktop
+#
 # Override the app name (default: HermesSandbox):
 #   HERMES_DEV_SANDBOX_NAME=Staging scripts/dev-sandbox.sh hermes desktop
 #
@@ -27,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 print_help() {
   cat <<'EOF'
-Usage: dev-sandbox.sh [--persistent] [--] <command...>
+Usage: dev-sandbox.sh [--persistent] [--from DIR] [--] <command...>
 
 Run a Hermes instance in an isolated sandbox.
 
@@ -35,6 +39,10 @@ Options:
   --persistent    Keep the sandbox dir across restarts (under the worktree
                   git root, in .hermes-sandbox/). Without this flag the
                   sandbox is a temp dir that is removed on exit.
+  --from DIR      Copy DIR into the sandbox HERMES_HOME as the starting
+                  point (config, sessions, skills, etc.).
+                  Ignored if the sandbox HERMES_HOME already has content
+                  (e.g. reusing a --persistent sandbox) to avoid clobbering.
   --delete        Delete the existing persistent sandbox in .hermes-sandbox.
   -h, --help      Show this help message.
 
@@ -45,17 +53,35 @@ Environment:
 Examples:
   dev-sandbox.sh hermes desktop
   dev-sandbox.sh --persistent hermes desktop
+  dev-sandbox.sh --from ~/.hermes hermes desktop
   dev-sandbox.sh -- npm run dev
 EOF
 }
 
 PERSISTENT=false
 DELETE=false
+SEED_DIR=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --persistent)
       PERSISTENT=true
+      shift
+      ;;
+    --from)
+      if [ "$#" -lt 2 ] || [[ "$2" == -* ]]; then
+        echo "error: --from requires a directory argument" >&2
+        exit 1
+      fi
+      SEED_DIR="$2"
+      shift 2
+      ;;
+    --from=*)
+      SEED_DIR="${1#--from=}"
+      if [ -z "$SEED_DIR" ]; then
+        echo "error: --from requires a directory argument" >&2
+        exit 1
+      fi
       shift
       ;;
     --delete)
@@ -75,6 +101,15 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ -n "$SEED_DIR" ]; then
+  if [ ! -d "$SEED_DIR" ]; then
+    echo "error: --from dir '$SEED_DIR' does not exist" >&2
+    exit 1
+  fi
+  # Resolve to absolute path so it's valid after we cd later.
+  SEED_DIR="$(cd "$SEED_DIR" && pwd)"
+fi
 
 if [ "$#" -eq 0 ]; then
   print_help >&2
@@ -128,6 +163,17 @@ export HERMES_DESKTOP_USER_DATA_DIR="$SANDBOX_ROOT/user-data"
 export HERMES_DESKTOP_APP_NAME="$SANDBOX_NAME"
 
 mkdir -p "$HERMES_HOME" "$HERMES_DESKTOP_USER_DATA_DIR"
+
+if [ -n "$SEED_DIR" ]; then
+  # Only seed when the sandbox HERMES_HOME is empty — avoids clobbering an
+  # existing persistent sandbox on re-run.
+  if [ -z "$(ls -A "$HERMES_HOME" 2>/dev/null)" ]; then
+    echo "[sandbox] seeding HERMES_HOME from $SEED_DIR" >&2
+    cp -a "$SEED_DIR/." "$HERMES_HOME/"
+  else
+    echo "[sandbox] --from ignored: $HERMES_HOME already has content" >&2
+  fi
+fi
 
 echo "[sandbox] HERMES_HOME=$HERMES_HOME" >&2
 echo "[sandbox] userData=$HERMES_DESKTOP_USER_DATA_DIR" >&2

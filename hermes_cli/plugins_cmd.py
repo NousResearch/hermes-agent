@@ -472,7 +472,7 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
             result = subprocess.run(
                 [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=60,
             )
         except FileNotFoundError as e:
@@ -660,6 +660,11 @@ def cmd_update(name: str) -> None:
         console.print(f"[red]Error:[/red] {output}")
         sys.exit(1)
 
+    # Same stale-bytecode class as the main checkout (#6207/#60242): the
+    # pull just changed .py files under this plugin dir, so drop any
+    # __pycache__ compiled from the previous revision.
+    _clear_plugin_bytecode(target)
+
     # Copy any new .example files
     _copy_example_files(target, console)
 
@@ -713,6 +718,33 @@ def _save_disabled_set(disabled: set) -> None:
         config["plugins"] = {}
     config["plugins"]["disabled"] = sorted(disabled)
     save_config(config)
+
+
+_BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
+
+
+def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
+    """Re-enable the bundled basic dashboard-auth plugin in *cfg*.
+
+    ``hermes setup`` / ``hermes plugins disable basic`` can park the plugin
+    in ``plugins.disabled`` while ``dashboard.basic_auth`` is configured.
+    The basic provider is a bundled backend that still respects the
+    deny-list, so password auth silently fails until the block is removed.
+
+    Returns True when ``plugins.disabled`` was modified.
+    """
+    plugins_cfg = cfg.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        return False
+    disabled = plugins_cfg.get("disabled")
+    if not isinstance(disabled, list):
+        return False
+    if not (set(disabled) & _BASIC_AUTH_PLUGIN_KEYS):
+        return False
+    plugins_cfg["disabled"] = sorted(
+        set(disabled) - _BASIC_AUTH_PLUGIN_KEYS
+    )
+    return True
 
 
 def _get_enabled_set() -> set:
@@ -1927,11 +1959,39 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     if not ok:
         return {"ok": False, "error": msg}
 
+    # Sibling of the CLI ``hermes plugins update`` path: drop bytecode
+    # compiled from the pre-pull plugin revision.
+    _clear_plugin_bytecode(target)
+
     from rich.console import Console
 
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg
     return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+
+
+def _clear_plugin_bytecode(target: Path) -> int:
+    """Remove ``__pycache__`` dirs under a just-updated plugin checkout.
+
+    Plugin dirs live outside the main repo, so the launch-time checkout
+    fingerprint sweep in ``hermes_cli.main`` never covers them. After a
+    ``git pull`` changes a plugin's ``.py`` files, stale bytecode here can
+    produce the same ImportError class as #6207/#60242 in whichever
+    process imports the plugin next. Never raises.
+    """
+    removed = 0
+    try:
+        for cache_dir in target.rglob("__pycache__"):
+            if not cache_dir.is_dir():
+                continue
+            try:
+                shutil.rmtree(cache_dir)
+                removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
@@ -1942,7 +2002,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         result = subprocess.run(
             [git_exe, "pull", "--ff-only"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=60,
             cwd=str(target),
         )

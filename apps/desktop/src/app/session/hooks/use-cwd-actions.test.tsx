@@ -37,7 +37,6 @@ function Harness({
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const actions = useCwdActions({
-    activeSessionId: activeSessionIdRef.current,
     activeSessionIdRef,
     requestGateway
   })
@@ -71,11 +70,7 @@ describe('useCwdActions draft workspace target', () => {
     let handle: CwdActionsHandle | null = null
 
     render(
-      <Harness
-        activeSessionIdRef={activeSessionIdRef}
-        onReady={h => (handle = h)}
-        requestGateway={requestGateway}
-      />
+      <Harness activeSessionIdRef={activeSessionIdRef} onReady={h => (handle = h)} requestGateway={requestGateway} />
     )
     await waitFor(() => expect(handle).not.toBeNull())
 

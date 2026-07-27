@@ -161,6 +161,30 @@ class TestProfileScopedMcp:
         listing = client.get("/api/mcp/servers").json()
         assert not any(s["name"] == "scoped-srv" for s in listing["servers"])
 
+    def test_mcp_bearer_secret_is_profile_scoped(self, client, isolated_profiles):
+        secret = "worker-only-secret"
+        response = client.post(
+            "/api/mcp/servers",
+            params={"profile": "worker_beta"},
+            json={
+                "name": "profile-bearer",
+                "url": "https://example.com/mcp",
+                "auth": "header",
+                "bearer_token": secret,
+            },
+        )
+
+        assert response.status_code == 200
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        assert worker_cfg["mcp_servers"]["profile-bearer"]["headers"] == {
+            "Authorization": "Bearer ${MCP_PROFILE_BEARER_API_KEY}",
+        }
+        assert secret in (isolated_profiles["worker_beta"] / ".env").read_text()
+        assert not (isolated_profiles["default"] / ".env").exists()
+        assert "profile-bearer" not in _cfg(isolated_profiles["default"]).get(
+            "mcp_servers", {}
+        )
+
     def test_mcp_enabled_toggle_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  srv1:\n    url: http://x/sse\n", encoding="utf-8"
@@ -316,6 +340,54 @@ class TestProfileScopedModel:
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404
 
+    def test_model_options_offloads_payload_build_to_threadpool(self, client, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        calls = []
+
+        async def _fake_run_in_threadpool(func, *args, **kwargs):
+            calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(
+            web_server,
+            "run_in_threadpool",
+            _fake_run_in_threadpool,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert len(calls) == 1
+
+    def test_model_options_matches_tui_safe_probe_flags(self, client, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context",
+            lambda: object(),
+        )
+
+        def _fake_build_models_payload(_ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_models_payload",
+            _fake_build_models_payload,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert calls[-1]["refresh"] is False
+        assert calls[-1]["probe_custom_providers"] is False
+        assert calls[-1]["probe_current_custom_provider"] is True
+
+        resp = client.get("/api/model/options", params={"refresh": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["refresh"] is True
+        assert calls[-1]["probe_custom_providers"] is True
+        assert calls[-1]["probe_current_custom_provider"] is False
+
     def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
         calls = []
 
@@ -453,7 +525,9 @@ class TestProfileScopedGateway:
 
         seen_homes = []
 
-        def fake_get_running_pid():
+        def fake_get_running_pid(*args, **kwargs):
+            # /api/status?profile= now passes pid_path= explicitly (the TTL
+            # cache would otherwise serve another profile's PID) — accept it.
             seen_homes.append(str(get_hermes_home()))
             return None
 
@@ -464,7 +538,7 @@ class TestProfileScopedGateway:
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
-            lambda: {"gateway_state": "startup_failed", "platforms": {}},
+            lambda *a, **k: {"gateway_state": "startup_failed", "platforms": {}},
         )
         monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
 
@@ -495,10 +569,14 @@ class TestProfileScopedGateway:
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: None)
-        monkeypatch.setattr(web_server, "read_runtime_status", lambda: runtime)
         monkeypatch.setattr(
-            web_server, "get_runtime_status_running_pid", lambda payload: 4242
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(
+            web_server,
+            "get_runtime_status_running_pid",
+            lambda payload, **k: 4242,
         )
         monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
         from gateway.config import Platform

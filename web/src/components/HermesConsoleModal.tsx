@@ -17,7 +17,6 @@ import { useTheme } from "@/themes";
 type ConsoleFrame =
   | {
       type: "ready";
-      context?: string;
       profile?: string;
       prompt?: string;
     }
@@ -113,7 +112,6 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
   const hasReadyFrameRef = useRef(false);
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
-  const [consoleContext, setConsoleContext] = useState("pending");
   const [consoleProfile, setConsoleProfile] = useState("current");
   const { profile } = useProfileScope();
   const { theme } = useTheme();
@@ -278,7 +276,6 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
         promptRef.current = nextPrompt;
         inputPromptRef.current = nextPrompt;
         hasReadyFrameRef.current = true;
-        setConsoleContext(frame.context || "local");
         setConsoleProfile(frame.profile || "current");
         activeCommandRef.current = false;
         setConnectionState("ready");
@@ -395,7 +392,6 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
 
     const dataDisposable = term.onData(handleInputData);
     setConnectionState("connecting");
-    setConsoleContext("pending");
     setConsoleProfile(profile || "current");
     hasReadyFrameRef.current = false;
     writeLine(term, "\x1b[2mConnecting to Hermes Console...\x1b[0m");
@@ -511,7 +507,6 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
             </h2>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge tone={statusTone}>{connectionState}</Badge>
-              <span className="font-mono">{consoleContext}</span>
               <span className="font-mono">{consoleProfile}</span>
             </div>
           </div>

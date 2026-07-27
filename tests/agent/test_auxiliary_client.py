@@ -274,6 +274,320 @@ class TestResolveTaskProviderModel:
         assert base_url == "https://explicit.example/v1"
         assert api_key == "explicit-key"
 
+    def test_explicit_provider_moa_unwraps_to_aggregator(self, monkeypatch):
+        """An *explicit* `provider="moa"` arg (e.g. a per-task model override
+        naming a MoA preset) must resolve to the preset's aggregator, not the
+        literal "moa" string — mirrors #53827's fix for the implicit
+        "main provider is moa" case in _resolve_auto(), which this function
+        never went through."""
+        preset = {
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        }
+        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: preset,
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="moa",
+            model="opus-gpt",
+            base_url="moa://local",
+            api_key="moa-virtual-provider",
+        )
+
+        assert resolved_provider == "openrouter"
+        assert model == "anthropic/claude-opus-4.8"
+        # The virtual moa:// endpoint must not be forwarded to the aggregator.
+        assert base_url is None
+        assert api_key is None
+
+    def test_config_provider_moa_unwraps_to_aggregator(self, monkeypatch):
+        """`auxiliary.<task>.provider: moa` in config.yaml — the same crash,
+        reached via the config path instead of an explicit call-time arg.
+        Before the fix this returned ("moa", ...) verbatim, and
+        resolve_provider_client() would then look up "moa" in
+        PROVIDER_REGISTRY (which has no such entry, it's not a real HTTP
+        provider), fail, and surface a "MOA_API_KEY environment variable"
+        error for a provider that was never meant to be reached over the wire."""
+        preset = {
+            "aggregator": {"provider": "anthropic", "model": "claude-opus-4.8"},
+        }
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"provider": "moa", "model": "opus-gpt"} if task == "title_generation" else {},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: preset,
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model == "claude-opus-4.8"
+        assert base_url is None
+        assert api_key is None
+
+    def test_config_provider_moa_falls_back_to_default_preset(self, monkeypatch):
+        """`auxiliary.<task>.provider: moa` with no `model:` set must resolve
+        against the user's default MoA preset, not crash or leave "moa"
+        unresolved — resolve_moa_preset() already falls back to
+        default_preset when name is falsy; this just confirms the call site
+        doesn't force a preset name where none was configured."""
+        preset = {
+            "aggregator": {"provider": "nous", "model": "hermes-4-405b"},
+        }
+
+        def fake_resolve(cfg, name):
+            assert name is None  # no auxiliary.<task>.model configured
+            return preset
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"provider": "moa"} if task == "title_generation" else {},
+        )
+        monkeypatch.setattr("hermes_cli.moa_config.resolve_moa_preset", fake_resolve)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "nous"
+        assert model == "hermes-4-405b"
+
+    def test_provider_moa_falls_back_to_literal_when_preset_resolution_fails(self, monkeypatch):
+        """If the MoA preset can't be resolved (e.g. renamed/deleted), the
+        function must not raise — it degrades to the pre-fix behavior
+        (literal "moa") rather than crash resolve_provider_client() harder."""
+        monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
+        monkeypatch.setattr(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            lambda cfg, name: (_ for _ in ()).throw(KeyError("gone-preset")),
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="moa",
+            model="gone-preset",
+        )
+
+        assert resolved_provider == "moa"
+        assert model == "gone-preset"
+
+    def test_non_moa_provider_unaffected_by_unwrap_logic(self):
+        """Regression guard: providers other than "moa" must not be touched
+        by the new unwrap branch."""
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider="anthropic",
+            model="claude-haiku-4-5-20251001",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model == "claude-haiku-4-5-20251001"
+
+    def test_explicit_model_auto_sentinel_is_normalized(self):
+        """MoA slots (agent/moa_loop.py's _slot_runtime) forward a preset's
+        `model:` field as the explicit `model` kwarg here, not through
+        auxiliary.<task> config. Only cfg_model was normalized before, so a
+        MoA reference/aggregator slot configured with `model: auto` sent the
+        literal string "auto" to the wire as a model id."""
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            provider="anthropic",
+            model="auto",
+        )
+
+        assert resolved_provider == "anthropic"
+        assert model is None
+
+    def test_explicit_model_auto_sentinel_case_insensitive(self):
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            provider="anthropic",
+            model="AUTO",
+        )
+
+        assert model is None
+
+    def test_explicit_model_auto_falls_back_to_cfg_model(self, monkeypatch):
+        """When the explicit model is the "auto" sentinel, it must not shadow
+        a real configured task model — the `model or cfg_model` fallback
+        chain should still reach cfg_model exactly as if model had been
+        omitted entirely."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda _task: {"provider": "openai", "model": "gpt-real-model"},
+        )
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="moa_reference",
+            model="auto",
+        )
+
+        assert model == "gpt-real-model"
+
+    def test_non_auto_model_is_unaffected(self):
+        """Regression guard: a real model name must not be touched by the
+        sentinel normalization."""
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            provider="openai",
+            model="gpt-4o-mini",
+        )
+
+        assert model == "gpt-4o-mini"
+
+
+class TestMoaAggregatorSharedResolution:
+    """The shared MoA→aggregator helper and the layers that consume it.
+
+    Real-config tests: write an actual config.yaml under a temp HERMES_HOME
+    and exercise the genuine load_config() → resolve_moa_preset() boundary —
+    no mocking of the configuration-resolution chain.
+    """
+
+    @staticmethod
+    def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": default_preset,
+                        "presets": {
+                            "opus-gpt": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                                ],
+                                "aggregator": {
+                                    "provider": "openrouter",
+                                    "model": "anthropic/claude-opus-4.8",
+                                },
+                            },
+                            "nous-mix": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "nous", "model": "hermes-4-70b"}
+                                ],
+                                "aggregator": {
+                                    "provider": "nous",
+                                    "model": "hermes-4-405b",
+                                },
+                            },
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
+        """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
+        aggregator through the genuine load_config()/resolve_moa_preset() path."""
+        import yaml
+
+        home = self._write_moa_config(tmp_path, monkeypatch)
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg["auxiliary"] = {"title_generation": {"provider": "moa", "model": "opus-gpt"}}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="title_generation",
+        )
+
+        assert resolved_provider == "openrouter"
+        assert model == "anthropic/claude-opus-4.8"
+        assert base_url is None
+        assert api_key is None
+
+    def test_real_config_explicit_task_provider_moa_default_preset(self, tmp_path, monkeypatch):
+        """provider: moa with no model resolves the default preset's aggregator."""
+        import yaml
+
+        home = self._write_moa_config(tmp_path, monkeypatch, default_preset="nous-mix")
+        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg["auxiliary"] = {"compression": {"provider": "moa"}}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+        resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="compression",
+        )
+
+        assert resolved_provider == "nous"
+        assert model == "hermes-4-405b"
+
+    def test_read_main_model_for_aux_unwraps_preset_name(self, tmp_path, monkeypatch):
+        """Main provider moa → the aux-facing main model is the aggregator's
+        model, so every unset auxiliary model defaults to the acting model
+        instead of the preset name."""
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="opus-gpt"):
+            assert _read_main_model_for_aux() == "anthropic/claude-opus-4.8"
+
+    def test_read_main_model_for_aux_unresolvable_preset_returns_empty(self, tmp_path, monkeypatch):
+        """A moa main with a deleted/renamed preset yields "" — never the
+        preset name, which would 400 on any wire."""
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="gone-preset"):
+            assert _read_main_model_for_aux() == ""
+
+    def test_read_main_model_for_aux_passthrough_for_non_moa(self, monkeypatch):
+        from agent.auxiliary_client import _read_main_model_for_aux
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-opus-4.6"):
+            assert _read_main_model_for_aux() == "anthropic/claude-opus-4.6"
+
+    def test_resolve_provider_client_direct_moa_unwraps(self, tmp_path, monkeypatch):
+        """Callers that hit resolve_provider_client("moa", <preset>) directly
+        (vision auto-detect, plugin code) unwrap at the router chokepoint
+        instead of dead-ending in the unknown-provider branch."""
+        self._write_moa_config(tmp_path, monkeypatch)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        client, model = resolve_provider_client("moa", "opus-gpt")
+
+        assert client is not None
+        assert model == "anthropic/claude-opus-4.8"
+
+    def test_main_agent_fallback_uses_aggregator_for_moa_main(self, tmp_path, monkeypatch):
+        """_try_main_agent_model_fallback with a moa main resolves the
+        aggregator instead of asking for a literal "moa" client."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        self._write_moa_config(tmp_path, monkeypatch)
+        with patch("agent.auxiliary_client._read_main_provider", return_value="moa"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="opus-gpt"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
+
+            client, model, label = _try_main_agent_model_fallback("anthropic", task="compression")
+
+        assert client is mock_client
+        assert model == "anthropic/claude-opus-4.8"
+        assert label == "main-agent(openrouter)"
+        assert mock_resolve.call_args.kwargs["provider"] == "openrouter"
+        assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
+
 
 class TestBuildCallKwargsMaxTokens:
     """_build_call_kwargs should not cap output by default (#34530).
@@ -341,6 +655,174 @@ class TestBuildCallKwargsMaxTokens:
             base_url="https://integrate.api.nvidia.com/v1",
         )
         assert kwargs["max_tokens"] == 4096
+
+    # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url,expected_key",
+        [
+            ("zai", "glm-5.2", "https://api.z.ai/api/coding/paas/v4", "max_tokens"),
+            ("openrouter", "deepseek/deepseek-v4-flash:nitro", "https://openrouter.ai/api/v1", "max_tokens"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com", "max_completion_tokens"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1", "max_tokens"),
+        ],
+    )
+    def test_moa_task_sends_max_tokens_on_openai_compatible(self, provider, model, base_url, expected_key):
+        """MoA reference tasks must honor max_tokens regardless of provider.
+
+        The ``reference_max_tokens`` config option (PR #56756) caps advisor output
+        to reduce turn latency.  Before the fix, ``_build_call_kwargs`` silently
+        dropped the value for OpenAI-compatible providers (PR #34845), so the cap
+        never reached the API.  With the ``task`` parameter threaded through,
+        ``task == "moa_reference"`` includes the output cap in kwargs.
+
+        Models that require ``max_completion_tokens`` (GPT-5 family, Copilot)
+        get the correct parameter name via ``auxiliary_max_tokens_param()``.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url=base_url,
+            task="moa_reference",
+        )
+        assert kwargs[expected_key] == 800
+
+    def test_moa_task_sends_max_tokens_on_anthropic_wire(self):
+        """MoA reference tasks on Anthropic-compat endpoints keep max_tokens (unchanged behavior)."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="minimax",
+            model="minimax-m2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url="https://api.minimax.io/v1",
+            task="moa_reference",
+        )
+        assert kwargs["max_tokens"] == 600
+
+    def test_moa_aggregator_does_not_get_max_tokens_on_openai_compat(self):
+        """``reference_max_tokens`` is an advisors-only contract (#56756).
+
+        The aggregator is the acting model — it must NOT be capped by the
+        reference token budget.  Only ``task == "moa_reference"`` triggers
+        the exception in ``_build_call_kwargs``.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="zai",
+            model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_aggregator",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_non_moa_tasks_still_omit_max_tokens(self):
+        """Regression guard: compression/titles/vision keep PR #34845 behavior."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for task in ("compression", "vision", "title_generation", None, ""):
+            kwargs = _build_call_kwargs(
+                provider="openrouter",
+                model="deepseek/deepseek-v4-flash:nitro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=800,
+                base_url="https://openrouter.ai/api/v1",
+                task=task,
+            )
+            assert "max_tokens" not in kwargs, f"max_tokens should be dropped for task={task!r}"
+
+    def test_moa_task_exact_match(self):
+        """Only task == "moa_reference" triggers the cap — not the aggregator,
+        not arbitrary 'moa_' prefixed tasks."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        # 'moa_reference' → honored
+        kw = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_reference",
+        )
+        assert kw["max_tokens"] == 500
+
+        # 'moa_aggregator' → dropped (aggregator is the acting model, not an advisor)
+        kw2 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_aggregator",
+        )
+        assert "max_tokens" not in kw2
+
+        # 'moa_custom_future' → dropped (only moa_reference is whitelisted)
+        kw3 = _build_call_kwargs(
+            provider="zai", model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=500,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_custom_future",
+        )
+        assert "max_tokens" not in kw3
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("gemini", "gemini-2.5-pro", None),
+            ("google", "gemini-2.5-flash", None),
+            (
+                "custom",
+                "gemini-2.5-pro",
+                "https://generativelanguage.googleapis.com/v1beta",
+            ),
+        ],
+    )
+    def test_keeps_max_tokens_for_gemini_native(self, provider, model, base_url):
+        # Native generateContent maps max_tokens → maxOutputTokens; when it is
+        # omitted Gemini applies a fixed 65,535-token ceiling, which silently
+        # turned MoA's reference_max_tokens into a no-op for gemini advisors.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 600
+        assert "max_completion_tokens" not in kwargs
+
+    def test_omits_max_tokens_for_gemini_model_on_openai_compatible_endpoint(self):
+        # Control: the gemini branch keys on provider/base_url, never the model
+        # name. A gemini model served through an OpenAI-compatible endpoint
+        # keeps the default omission behavior (#34530), including Gemini's own
+        # /openai compatibility endpoint.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for provider, base_url in [
+            ("openrouter", "https://openrouter.ai/api/v1"),
+            ("custom", "https://generativelanguage.googleapis.com/v1beta/openai"),
+        ]:
+            kwargs = _build_call_kwargs(
+                provider=provider,
+                model="google/gemini-2.5-pro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=600,
+                base_url=base_url,
+            )
+            assert "max_tokens" not in kwargs
+            assert "max_completion_tokens" not in kwargs
 
 
 class TestNousTagsScoping:
@@ -1259,7 +1741,7 @@ class TestVisionClientFallback:
         real_client = SimpleNamespace(messages=messages_api)
         captured_kwargs = {}
 
-        def fake_create_anthropic_message(_client, kwargs):
+        def fake_create_anthropic_message(_client, kwargs, **_kw):
             captured_kwargs.update(kwargs)
             return final_message
 
@@ -1474,7 +1956,7 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
             patch("agent.auxiliary_client.OpenAI", return_value=fresh_client),
-            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
         ):
             result = call_llm(
@@ -1506,7 +1988,7 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
             patch("agent.auxiliary_client.OpenAI", return_value=fresh_client),
-            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
             patch(
                 "hermes_cli.nous_account.get_nous_portal_account_info",
@@ -1544,7 +2026,7 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
             patch("agent.auxiliary_client._to_async_client", return_value=(fresh_async_client, "nous-model")),
-            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
         ):
             result = await async_call_llm(
@@ -1577,7 +2059,7 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
             patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
             patch("agent.auxiliary_client._to_async_client", return_value=(fresh_async_client, "nous-model")),
-            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
             patch(
                 "hermes_cli.nous_account.get_nous_portal_account_info",
@@ -2376,6 +2858,7 @@ class TestAuxiliaryFallbackLayering:
             "title_generation",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
         mock_main.assert_not_called()
 
@@ -2409,6 +2892,7 @@ class TestAuxiliaryFallbackLayering:
             "compression",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
 
     def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
@@ -2436,8 +2920,12 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert main_chain_client.chat.completions.create.called
+        # Payment errors are provider-wide, so the configured chain is
+        # asked to skip the whole provider (failed_model=None), not just
+        # the failed model — a sibling model can't recover from a 402.
         mock_task_chain.assert_called_once_with(
-            "title_generation", "auto", reason="payment error")
+            "title_generation", "auto", reason="payment error",
+            failed_model=None)
         mock_main_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error")
         mock_builtin_chain.assert_not_called()
@@ -2679,6 +3167,47 @@ class TestTryMainAgentModelFallback:
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
         assert client is None
 
+    def test_same_provider_different_model_falls_back_when_failed_model_given(self):
+        """Self-hosted shape: aux model and main model share one custom
+        provider label. A timeout on the aux model must still reach the main
+        model — same provider, DIFFERENT model (real incident: aux glm-5.2
+        timed out while main macaron-v1-venti on the same endpoint was
+        healthy; the provider-label skip discarded the working fallback)."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "mindai/macaron-v1-venti")):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression", failed_model="zai-org/glm-5.2")
+        assert client is fake_client
+        assert model == "mindai/macaron-v1-venti"
+        assert label == "main-agent(custom)"
+
+    def test_same_provider_same_model_still_skips_with_failed_model(self):
+        """When the model that failed IS the main model, there is nothing to
+        fall back to — the narrowed skip must not regress into a self-retry."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression",
+                failed_model="MindAI/Macaron-V1-Venti")  # case-insensitive match
+        assert client is None and model is None and label == ""
+
+    def test_same_provider_no_failed_model_keeps_provider_wide_skip(self):
+        """Legacy / provider-wide callers (auth 401, payment 402) pass no
+        failed_model: the whole-provider skip must be preserved so broken
+        shared credentials don't trigger a doomed main-model attempt."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression")
+        assert client is None and model is None and label == ""
+
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -2760,7 +3289,7 @@ class TestTransientTransportRetry:
             ),
             patch(
                 "agent.auxiliary_client._validate_llm_response",
-                side_effect=lambda resp, _task: resp,
+                side_effect=lambda resp, _task, **_kw: resp,
             ),
         )
 
@@ -2874,6 +3403,44 @@ class TestTransientTransportRetry:
         # Primary tried ONCE only — no same-provider timeout retry — then fallback.
         assert primary.chat.completions.create.call_count == 1
         assert fb_client.chat.completions.create.call_count == 1
+
+    def test_timeout_forwards_failed_model_to_configured_chain(self):
+        """A timeout is model-specific, so call_llm must forward the failed
+        model to the configured chain (failed_model=<model>, not None). This
+        lets a same-provider sibling in the chain be tried instead of the
+        whole provider being skipped — the exact NVIDIA NIM bug's trigger.
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://integrate.api.nvidia.com/v1"
+        primary.chat.completions.create.side_effect = _Timeout("Request timed out.")
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://integrate.api.nvidia.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fb_client, "sibling-model", "fallback_chain[0](openrouter)"),
+            ) as mock_chain,
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        _, kwargs = mock_chain.call_args
+        assert kwargs.get("failed_model") == "some-model", (
+            "A timeout is model-specific — the failed model must be forwarded "
+            "so a same-provider sibling can be tried, not skipped wholesale."
+        )
 
     def test_non_compression_still_retries_same_provider_on_timeout(self):
         """The timeout skip is scoped to compression only; other auxiliary
@@ -3241,6 +3808,219 @@ class TestAuxiliaryTaskExtraBody:
         assert result is response
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["extra_body"]["enable_thinking"] is True
+
+    def test_reasoning_effort_shorthand_folds_into_extra_body(self):
+        """auxiliary.<task>.reasoning_effort becomes extra_body.reasoning."""
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        client.chat.completions.create.return_value = MagicMock()
+
+        config = {
+            "auxiliary": {
+                "session_search": {"reasoning_effort": "low"}
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "low"}
+
+    def test_reasoning_effort_none_disables(self):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        client.chat.completions.create.return_value = MagicMock()
+
+        config = {"auxiliary": {"session_search": {"reasoning_effort": "none"}}}
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            call_llm(task="session_search", messages=[{"role": "user", "content": "hi"}])
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+
+    def test_explicit_extra_body_reasoning_wins_over_shorthand(self):
+        """config extra_body.reasoning beats the reasoning_effort shorthand."""
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        client.chat.completions.create.return_value = MagicMock()
+
+        config = {
+            "auxiliary": {
+                "session_search": {
+                    "reasoning_effort": "xhigh",
+                    "extra_body": {"reasoning": {"effort": "none"}},
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ):
+            call_llm(task="session_search", messages=[{"role": "user", "content": "hi"}])
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "none"}
+
+    def test_invalid_reasoning_effort_ignored_with_warning(self, caplog):
+        client = MagicMock()
+        client.base_url = "https://api.example.com/v1"
+        client.chat.completions.create.return_value = MagicMock()
+
+        config = {"auxiliary": {"session_search": {"reasoning_effort": "warp9"}}}
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "glm-4.5-air"),
+        ), caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            call_llm(task="session_search", messages=[{"role": "user", "content": "hi"}])
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "reasoning" not in (kwargs.get("extra_body") or {})
+        assert any("reasoning_effort" in rec.message for rec in caplog.records)
+
+    def test_empty_reasoning_effort_is_noop(self):
+        """The DEFAULT_CONFIG ships reasoning_effort: '' — must add nothing."""
+        from agent.auxiliary_client import _get_task_extra_body
+
+        config = {"auxiliary": {"session_search": {"reasoning_effort": ""}}}
+        with patch("hermes_cli.config.load_config", return_value=config):
+            assert _get_task_extra_body("session_search") == {}
+
+    @pytest.mark.parametrize("moa_task", ["moa_reference", "moa_aggregator"])
+    def test_moa_tasks_reject_task_level_reasoning_effort(self, moa_task, caplog):
+        """MoA reasoning is per-slot in the preset — the auxiliary-task
+        shorthand is ignored with a warning pointing at the preset config."""
+        from agent.auxiliary_client import _get_task_extra_body
+
+        config = {"auxiliary": {moa_task: {"reasoning_effort": "xhigh"}}}
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            result = _get_task_extra_body(moa_task)
+
+        assert "reasoning" not in result
+        assert any("per-slot" in rec.message for rec in caplog.records)
+
+    @pytest.mark.parametrize("moa_task", ["moa_reference", "moa_aggregator"])
+    def test_moa_default_config_has_no_reasoning_effort(self, moa_task):
+        """Invariant: the shipped MoA auxiliary blocks must not grow a
+        reasoning_effort key — per-slot preset config is the only surface."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert "reasoning_effort" not in DEFAULT_CONFIG["auxiliary"][moa_task]
+
+    def test_anthropic_aux_client_forwards_extra_body_reasoning(self):
+        """_AnthropicCompletionsAdapter passes extra_body.reasoning into
+        build_anthropic_kwargs as reasoning_config."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
+
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
+                   return_value={"model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64}) as mock_bak, \
+             patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
+             patch("agent.transports.get_transport") as mock_gt:
+            mock_gt.return_value.normalize_response.return_value = MagicMock(
+                content="ok", tool_calls=None, reasoning=None, finish_reason="stop",
+                usage=None, provider_data=None,
+            )
+            adapter.create(
+                model="claude-sonnet-4-6",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                extra_body={"reasoning": {"enabled": True, "effort": "low"}},
+            )
+
+        assert mock_bak.call_args.kwargs["reasoning_config"] == {
+            "enabled": True, "effort": "low",
+        }
+        mock_create.assert_called_once()
+
+    def _run_anthropic_adapter(self, *, call_extra_body=None, bak_result=None):
+        """Drive _AnthropicCompletionsAdapter.create() with mocked SDK layers;
+        return the api_kwargs handed to create_anthropic_message."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
+        bak_result = bak_result or {
+            "model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64,
+        }
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
+                   return_value=dict(bak_result)), \
+             patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
+             patch("agent.transports.get_transport") as mock_gt:
+            mock_gt.return_value.normalize_response.return_value = MagicMock(
+                content="ok", tool_calls=None, reasoning=None, finish_reason="stop",
+                usage=None, provider_data=None,
+            )
+            kwargs = {
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 64,
+            }
+            if call_extra_body is not None:
+                kwargs["extra_body"] = call_extra_body
+            adapter.create(**kwargs)
+        return mock_create.call_args.args[1]
+
+    def test_anthropic_aux_extra_body_passthrough(self):
+        """Bug B (#37217): vendor fields in extra_body reach the Anthropic SDK."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={"thinking": {"type": "disabled"}, "metadata": {"user_id": "u1"}},
+        )
+        assert api_kwargs["extra_body"] == {
+            "thinking": {"type": "disabled"}, "metadata": {"user_id": "u1"},
+        }
+
+    def test_anthropic_aux_extra_body_excludes_reasoning_and_private_keys(self):
+        """The OpenAI-shaped reasoning dict is translated (not forwarded), and
+        private _-prefixed plumbing keys never reach the wire."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={
+                "reasoning": {"enabled": True, "effort": "low"},
+                "_internal": "plumbing",
+                "metadata": {"user_id": "u1"},
+            },
+        )
+        assert api_kwargs["extra_body"] == {"metadata": {"user_id": "u1"}}
+
+    def test_anthropic_aux_extra_body_merges_over_existing(self):
+        """Caller extra_body merges on top of what build_anthropic_kwargs
+        already emitted (fast-mode speed) instead of clobbering it."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={"metadata": {"user_id": "u1"}},
+            bak_result={
+                "model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64,
+                "extra_body": {"speed": "fast"},
+            },
+        )
+        assert api_kwargs["extra_body"] == {
+            "speed": "fast", "metadata": {"user_id": "u1"},
+        }
+
+    def test_anthropic_aux_no_extra_body_unchanged(self):
+        """Regression guard: no caller extra_body -> kwargs identical to before."""
+        api_kwargs = self._run_anthropic_adapter(call_extra_body=None)
+        assert "extra_body" not in api_kwargs
+
+    def test_anthropic_aux_reasoning_only_extra_body_adds_nothing(self):
+        """extra_body containing ONLY the reasoning key must not create an
+        empty extra_body dict on the wire."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={"reasoning": {"enabled": False}},
+        )
+        assert "extra_body" not in api_kwargs
 
     def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
         """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
@@ -3652,6 +4432,69 @@ class TestAuxiliaryAuthRefreshRetry:
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
         stale_client.close.assert_called_once()
 
+    def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
+        """Vertex tokens live ~1h; on a long-running gateway the cached
+        auxiliary client's bearer token expires mid-session and 401s.
+        _refresh_provider_credentials("vertex") must re-mint the token via
+        the adapter (which refreshes in place when near expiry) and evict
+        the stale cached client so the next call rebuilds with a fresh one —
+        previously there was no "vertex" branch here at all, so this fell
+        through to the final `return False` and the stale client (and its
+        dead token) stayed cached until process restart."""
+        stale_client = MagicMock()
+        cache_key = ("vertex", False, None, None, None)
+
+        with (
+            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),
+            patch(
+                "agent.vertex_adapter.get_vertex_config",
+                return_value=("ya29.FRESH", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+            ) as mock_get_config,
+        ):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials("vertex") is True
+
+        mock_get_config.assert_called_once()
+        stale_client.close.assert_called_once()
+
+    def test_refresh_provider_credentials_vertex_returns_false_when_unminted(self):
+        """No usable token/base_url (e.g. ADC and the service-account file
+        both failed) — refresh must report failure, not silently evict and
+        pretend the client is fixed."""
+        with patch("agent.vertex_adapter.get_vertex_config", return_value=(None, None)):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials("vertex") is False
+
+    def test_resolve_provider_client_vertex_builds_client_from_minted_token(self):
+        """End-to-end: resolve_provider_client("vertex", ...) must reach the
+        auth_type == "vertex" branch and build a working client, not die at
+        the PROVIDER_REGISTRY lookup (a plain HERMES_OVERLAYS-only fix would
+        leave this branch dead code — PROVIDER_REGISTRY is what
+        resolve_provider_client actually gates on)."""
+        with (
+            patch("agent.vertex_adapter.has_vertex_credentials", return_value=True),
+            patch(
+                "agent.vertex_adapter.get_vertex_config",
+                return_value=("ya29.FRESH", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
+            ),
+        ):
+            client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert str(client.base_url).rstrip("/") == (
+            "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+        )
+
+    def test_resolve_provider_client_vertex_none_when_no_credentials(self):
+        with patch("agent.vertex_adapter.has_vertex_credentials", return_value=False):
+            client, model = resolve_provider_client("vertex", "google/gemini-3-flash-preview")
+
+        assert client is None
+        assert model is None
+
     @pytest.mark.asyncio
     async def test_async_call_llm_refreshes_anthropic_on_401_for_non_vision(self):
         stale_client = MagicMock()
@@ -3779,6 +4622,157 @@ class TestAuxiliaryPoolRotationRetry:
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429
         mock_fallback.assert_not_called()
+
+
+class TestAnthropicAuxiliaryReasoningTranslation:
+    """Native Anthropic aux adapters must receive normalized Hermes reasoning.
+
+    MoA slot reasoning is carried through call_llm as a Hermes
+    ``reasoning_config``. The native Anthropic Messages path cannot consume the
+    generic OpenAI-style ``extra_body.reasoning`` fallback, so assert the final
+    ``messages.create`` kwargs contain Anthropic's provider-aware wire shape.
+    """
+
+    @staticmethod
+    def _build_adapter(model="claude-fable-5"):
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        captured = {}
+
+        class _Messages:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+
+        real_client = SimpleNamespace(messages=_Messages())
+        return _AnthropicCompletionsAdapter(real_client, model), captured
+
+    def test_reasoning_config_reaches_native_anthropic_wire_kwargs(self):
+        adapter, captured = self._build_adapter()
+
+        adapter.create(
+            model="claude-fable-5",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert captured["output_config"] == {"effort": "medium"}
+        assert "extra_body" not in captured
+
+    def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
+        anthropic_kwargs = _build_call_kwargs(
+            "anthropic",
+            "claude-fable-5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.anthropic.com/v1",
+        )
+        assert anthropic_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+        proxy_kwargs = _build_call_kwargs(
+            "custom",
+            "claude-fable-5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://example.test/anthropic/v1",
+        )
+        assert proxy_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+        openai_wire_kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-compatible",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://example.test/v1",
+        )
+        assert "_reasoning_config" not in openai_wire_kwargs
+
+
+class TestAuxiliaryProviderProfileReasoning:
+    """Auxiliary calls must reuse provider-profile reasoning wire shapes."""
+
+    def test_kimi_reasoning_uses_top_level_effort(self):
+        kwargs = _build_call_kwargs(
+            "kimi-coding",
+            "kimi-k2-turbo-preview",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.moonshot.ai/v1",
+        )
+
+        assert kwargs["reasoning_effort"] == "medium"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    def test_gemini_reasoning_uses_thinking_config(self):
+        kwargs = _build_call_kwargs(
+            "gemini",
+            "gemini-3.5-flash",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+
+        assert kwargs["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+        assert "reasoning" not in kwargs["extra_body"]
+
+    def test_custom_openai_compatible_reasoning_uses_top_level_effort(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "glm-5.2",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "max"},
+            base_url="https://example.test/v1",
+        )
+
+        assert kwargs["reasoning_effort"] == "max"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_preserves_profile_reasoning_kwargs(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        create = AsyncMock(return_value=response)
+        client = SimpleNamespace(
+            base_url="https://api.moonshot.ai/v1",
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create),
+            ),
+        )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=(
+                "kimi-coding",
+                "kimi-k2-turbo-preview",
+                "https://api.moonshot.ai/v1",
+                "test-key",
+                None,
+            ),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "kimi-k2-turbo-preview"),
+        ):
+            result = await async_call_llm(
+                provider="kimi-coding",
+                model="kimi-k2-turbo-preview",
+                messages=[{"role": "user", "content": "hi"}],
+                reasoning_config={"enabled": True, "effort": "high"},
+            )
+
+        assert result is response
+        final_kwargs = create.call_args.kwargs
+        assert final_kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in final_kwargs.get("extra_body", {})
 
 
 class TestCodexAdapterReasoningTranslation:
@@ -3963,7 +4957,7 @@ class TestCodexAdapterPromptCacheKey:
     """
 
     @staticmethod
-    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex"):
+    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex", model="gpt-5.5"):
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
@@ -3996,7 +4990,7 @@ class TestCodexAdapterPromptCacheKey:
         real_client = MagicMock()
         real_client.base_url = base_url
         real_client.responses.create = _create
-        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        adapter = _CodexCompletionsAdapter(real_client, model)
         return adapter, captured_kwargs
 
     def test_cache_key_set_and_prefixed(self):
@@ -4048,6 +5042,69 @@ class TestCodexAdapterPromptCacheKey:
             {"role": "user", "content": "hi"},
         ])
         assert "prompt_cache_key" not in captured
+
+    @pytest.mark.parametrize("model", [
+        "gpt-4.1",
+        "gpt-5.1-codex-max",
+        "openai.gpt-5.5-pro",
+    ])
+    def test_extended_cache_models_set_prompt_cache_retention(self, model):
+        adapter, captured = self._build_adapter(
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+            model=model,
+        )
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["prompt_cache_retention"] == "24h"
+
+    def test_prompt_cache_retention_skipped_for_codex_backend(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+    @pytest.mark.parametrize("base_url", [
+        "https://api.openai.com/v1",
+        "https://example.services.ai.azure.com/openai/v1",
+        "https://responses.example.com/v1",
+    ])
+    def test_prompt_cache_retention_skipped_for_other_compatible_endpoints(self, base_url):
+        adapter, captured = self._build_adapter(base_url=base_url)
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+    def test_prompt_cache_retention_skipped_for_xai_and_github_hosts(self):
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+    def test_prompt_cache_retention_skipped_for_github_models_host(self):
+        """models.github.ai is a GitHub Responses host in the main transport
+        (agent/chat_completion_helpers.py) — the auxiliary path must exclude
+        it from cache-retention emission the same way as githubcopilot.com."""
+        adapter, captured = self._build_adapter(base_url="https://models.github.ai/inference")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
 
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:
@@ -5334,6 +6391,106 @@ class TestCompressionFallbackContextFilter:
 
         assert client is large_client
         assert model == "large-512k"
+
+    # ── same-provider, different-model chain entries ────────────────────
+    # A configured fallback_chain may legitimately list several models
+    # under the *same* provider (e.g. two more NVIDIA NIM models after the
+    # primary NIM model). failed_provider alone must not skip those
+    # sibling entries — only failed_model narrows the skip to the exact
+    # (provider, model) pair that just failed.
+
+    def test_same_provider_sibling_model_not_skipped_when_failed_model_given(
+        self, monkeypatch
+    ):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        sibling_client = MagicMock(name="sibling_nim_client")
+        entries = [
+            self._make_chain_entry("nvidia", "minimaxai/minimax-m3"),
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-flash"),
+        ]
+
+        def fake_resolve(entry):
+            if entry is entries[0]:
+                return sibling_client, "minimaxai/minimax-m3"
+            raise AssertionError("second entry should not be reached")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   return_value=1_048_576):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression",
+                failed_provider="nvidia",
+                failed_model="deepseek-ai/deepseek-v4-pro",
+            )
+
+        assert client is sibling_client, (
+            "A same-provider entry with a DIFFERENT model must still be "
+            "tried when failed_model narrows the skip — regression for the "
+            "bug where an NVIDIA NIM timeout fell straight through to the "
+            "main Codex model instead of trying the other two configured "
+            "NIM models."
+        )
+        assert model == "minimaxai/minimax-m3"
+        assert "nvidia" in label
+
+    def test_same_provider_same_model_still_skipped(self, monkeypatch):
+        """The exact (provider, model) pair that just failed is still
+        skipped — failed_model narrows the skip, it doesn't disable it."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        entries = [
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-pro"),
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=AssertionError("must not be resolved")):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression",
+                failed_provider="nvidia",
+                failed_model="deepseek-ai/deepseek-v4-pro",
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
+
+    def test_same_provider_skipped_wholesale_without_failed_model(self, monkeypatch):
+        """Backward compat: callers that don't know the failed model (e.g.
+        client-build failures where the whole provider is unreachable)
+        still skip every entry sharing that provider, as before."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        entries = [
+            self._make_chain_entry("nvidia", "minimaxai/minimax-m3"),
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-flash"),
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=AssertionError("must not be resolved")):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression", failed_provider="nvidia",
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
 
     # ── L3: main fallback chain ────────────────────────────────────────
 

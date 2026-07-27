@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
 import { $compactionActive } from '@/store/compaction'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
+import { $activeSessionId, $turnStartedAt } from '@/store/session'
 
 const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentPropsWithoutRef<'div'>> = ({
   children,
@@ -36,6 +37,13 @@ const CompactionHint: FC = () => (
   <span className="shimmer min-w-0 truncate text-muted-foreground/55">{COMPACTION_LABEL}</span>
 )
 
+function useActiveTurnTimerKey(): string | undefined {
+  const activeSessionId = useStore($activeSessionId)
+  const turnStartedAt = useStore($turnStartedAt)
+
+  return activeSessionId && turnStartedAt ? `turn:${activeSessionId}:${turnStartedAt}` : undefined
+}
+
 export const CenteredThreadSpinner: FC = () => {
   const { t } = useI18n()
 
@@ -59,11 +67,13 @@ export const CenteredThreadSpinner: FC = () => {
 
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
-  const elapsed = useElapsedSeconds()
+  const timerKey = useActiveTurnTimerKey()
+  const elapsed = useElapsedSeconds(true, timerKey)
   const compacting = useStore($compactionActive)
 
   return (
     <StatusRow
+      className="text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height)"
       data-slot="aui_response-loading"
       label={compacting ? COMPACTION_LABEL : t.assistant.thread.loadingResponse}
     >
@@ -134,6 +144,7 @@ export const StreamStallIndicator: FC = () => {
 
   const [stalled, setStalled] = useState(false)
   const compacting = useStore($compactionActive)
+  const turnTimerKey = useActiveTurnTimerKey()
   // A pending clarify / approval / sudo / secret means the turn is paused on the
   // user, not working — so don't resurrect the "thinking" timer while they
   // decide (matches the pet's awaitingInput pose taking priority over busy).
@@ -147,7 +158,7 @@ export const StreamStallIndicator: FC = () => {
   }, [activity])
 
   const active = (stalled || compacting) && !awaitingInput
-  const elapsed = useElapsedSeconds(active)
+  const elapsed = useElapsedSeconds(active, compacting ? turnTimerKey : undefined)
 
   if (!active) {
     return null

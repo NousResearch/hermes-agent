@@ -227,6 +227,26 @@ class TestBuildToolStart:
         assert result.content is None
         assert result.raw_input is None
 
+    def test_build_tool_start_survives_non_string_command(self):
+        """A malformed (non-string) terminal command previously raised
+        TypeError in build_tool_title (len(None)) and aborted the render."""
+        result = build_tool_start("tc-bad-cmd", "terminal", {"command": None})
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "execute"  # tool identity preserved in the fallback
+
+    def test_build_tool_start_survives_non_string_path(self):
+        """A non-string read_file path previously raised a ToolCallLocation
+        pydantic ValidationError in extract_locations and aborted the render."""
+        result = build_tool_start("tc-bad-path", "read_file", {"path": {"p": "x"}})
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "read"
+
+    def test_build_tool_start_survives_non_string_goal(self):
+        """A non-string delegate_task goal previously raised TypeError
+        (len(123)) in build_tool_title and aborted the render."""
+        result = build_tool_start("tc-bad-goal", "delegate_task", {"goal": 123})
+        assert isinstance(result, ToolCallStart)
+
     def test_build_tool_start_for_web_extract_is_compact(self):
         """web_extract start should stay compact; title identifies URLs."""
         args = {"urls": ["https://example.com/docs"]}
@@ -354,6 +374,27 @@ class TestBuildToolComplete:
         text = result.content[0].content.text
         assert "Exit code: 0" in text
         assert "hello" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_execute_code_shows_truncation_metadata(self):
+        result = build_tool_complete(
+            "tc-code-truncated",
+            "execute_code",
+            (
+                '{"output":"HEAD\\n... [OUTPUT TRUNCATED - 10 bytes omitted out of 60 total] ...\\nTAIL",'
+                '"exit_code":0,'
+                '"stdout_truncated":true,'
+                '"stdout_bytes_captured":50,'
+                '"stdout_bytes_total":60,'
+                '"stdout_bytes_omitted":10,'
+                '"warning":"execute_code stdout was truncated; the script did run."}'
+            ),
+        )
+        text = result.content[0].content.text
+        assert "Exit code: 0" in text
+        assert "Output truncated: captured 50 of 60 bytes (10 omitted)." in text
+        assert "Warning:" in text
+        assert "the script did run" in text
         assert result.raw_output is None
 
     def test_build_tool_complete_marks_success_false_as_failed(self):

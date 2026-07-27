@@ -256,5 +256,6 @@ class TestBranchFlushesBeforeEndSession:
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 
         agent._flush_messages_to_session_db.assert_called_once_with(
-            cli_instance.conversation_history
+            cli_instance.conversation_history,
+            conversation_history=cli_instance.conversation_history,
         )

@@ -2,9 +2,15 @@ import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-u
 import { type MutableRefObject, type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
-import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
+import { desktopSlashCommandArgumentMode } from '@/lib/desktop-slash-commands'
 
-import { COMPLETION_ACTIONS, slashArgStage, slashChipKindForItem, slashCommandToken } from '../composer-utils'
+import {
+  COMPLETION_ACTIONS,
+  isSkillItem,
+  slashArgStage,
+  slashChipKindForItem,
+  slashCommandToken
+} from '../composer-utils'
 import {
   composerPlainText,
   placeCaretEnd,
@@ -83,11 +89,16 @@ export function useComposerTrigger({
     const before = textBeforeCaret(editor)
     const found = detectTrigger(before ?? composerPlainText(editor))
 
-    // The arg-stage popover is only useful for commands with an options screen.
-    // For a no-arg command it would dead-end on "No matches", so drop it — the
-    // directive is already complete.
+    // A text-only command has no completion screen once its prose begins. Mixed
+    // commands such as /goal stay live so their finite subcommands can still be
+    // suggested, while arbitrary goal text remains valid.
+    const argumentMode =
+      found?.kind === '/' && slashArgStage(found.query)
+        ? desktopSlashCommandArgumentMode(slashCommandToken(found.query))
+        : null
+
     const detected =
-      found?.kind === '/' && slashArgStage(found.query) && !desktopSlashCommandTakesArgs(slashCommandToken(found.query))
+      found?.kind === '/' && slashArgStage(found.query) && argumentMode !== 'options' && argumentMode !== 'mixed'
         ? null
         : found
 
@@ -112,7 +123,13 @@ export function useComposerTrigger({
       return
     }
 
-    setTriggerItems(triggerAdapter.search(trigger.query))
+    const items = triggerAdapter.search(trigger.query)
+
+    // Mid-message only offers SKILLS. A built-in like `/model` or `/new` acts
+    // on the app, so it's meaningless as a reference inside prose — only a
+    // skill reads as "handle this part with X". Filtering here rather than in
+    // the fetcher keeps one completion source for both shapes.
+    setTriggerItems(trigger.inline ? items.filter(isSkillItem) : items)
   }, [trigger, triggerAdapter])
 
   const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
@@ -121,6 +138,11 @@ export function useComposerTrigger({
   // a no-arg command has nothing to offer, and a fully-typed arg commits on
   // Space/Tab — neither should dead-end on a popover.
   const argStageEmpty = trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+
+  const slashFreeTextArgStage =
+    trigger?.kind === '/' &&
+    slashArgStage(trigger.query) &&
+    ['mixed', 'text'].includes(desktopSlashCommandArgumentMode(slashCommandToken(trigger.query)) ?? '')
 
   const closeTrigger = () => {
     setTrigger(null)
@@ -136,9 +158,16 @@ export function useComposerTrigger({
   // the completion list is empty because the arg is already fully typed (the
   // backend completer drops exact matches). Reuses the chip path via a
   // synthetic item whose serialized form is the verbatim text.
-  const commitTypedSlashDirective = () => {
+  const commitTypedSlashDirective = (): boolean => {
     if (trigger?.kind !== '/') {
-      return
+      return false
+    }
+
+    // Free prose must stay ordinary contentEditable text. This guard also
+    // protects against a stale completion result reaching the keydown path
+    // before refreshTrigger has caught up with the latest DOM input.
+    if (desktopSlashCommandArgumentMode(slashCommandToken(trigger.query)) !== 'options') {
+      return false
     }
 
     const text = `/${trigger.query.trimEnd()}`
@@ -156,6 +185,8 @@ export function useComposerTrigger({
         rawText: text
       }
     })
+
+    return true
   }
 
   const replaceTriggerWithChip = (item: Unstable_TriggerItem) => {
@@ -191,17 +222,20 @@ export function useComposerTrigger({
     // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
     // it — expand to its options step so the popover shows the inline list, just
     // as typing `/personality ` by hand would. A serialized value with a space is
-    // already an arg pick (`/personality alice`), so it commits normally.
+    // already an arg pick (`/personality alice`), so it commits normally. An
+    // inline (mid-message) pick never expands: it's a reference inside prose, so
+    // there's no command invocation for the args to belong to.
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
-    const expandsToArgs = trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+    const argumentMode = desktopSlashCommandArgumentMode(command)
+    const expandsToArgs = trigger.kind === '/' && !trigger.inline && !serialized.includes(' ') && argumentMode !== null
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
     // No pill while expanding — the bare command stays plain text until an arg
     // is picked, at which point a single pill is emitted for the full command.
     const slashKind = !expandsToArgs && trigger.kind === '/' ? slashChipKindForItem(item) : null
-    const keepTriggerOpen = starter || expandsToArgs
+    const keepTriggerOpen = starter || (expandsToArgs && argumentMode !== 'text')
 
     const finish = () => {
       draftRef.current = composerPlainText(editor)
@@ -273,6 +307,7 @@ export function useComposerTrigger({
     refreshTrigger,
     replaceTriggerWithChip,
     setTriggerActive,
+    slashFreeTextArgStage,
     trigger,
     triggerActive,
     triggerItems,

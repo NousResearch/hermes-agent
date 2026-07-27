@@ -151,8 +151,17 @@ def _make_source():
 
 def _bloat(n):
     # Stand-in for the oversized, post-compression "child" transcript that
-    # could not be compressed any further (#35809).
-    return [{"role": "user", "content": "x" * 2000} for _ in range(n)]
+    # could not be compressed any further (#35809). Alternates roles so the
+    # fixture is a valid conversation: load_transcript is a live-replay
+    # restore site and heals alternation violations on load (#64934), so a
+    # degenerate all-user transcript would be merged into one message.
+    return [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": "x" * 2000,
+        }
+        for i in range(n)
+    ]
 
 
 class TestAutoResetLoadsCleanContext:

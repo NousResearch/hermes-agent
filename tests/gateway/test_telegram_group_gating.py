@@ -11,6 +11,7 @@ from gateway.session import SessionSource
 def _make_adapter(
     require_mention=None,
     free_response_chats=None,
+    free_response_topics=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
     ignored_threads=None,
@@ -30,6 +31,8 @@ def _make_adapter(
         extra["require_mention"] = require_mention
     if free_response_chats is not None:
         extra["free_response_chats"] = free_response_chats
+    if free_response_topics is not None:
+        extra["free_response_topics"] = free_response_topics
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
@@ -343,7 +346,9 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
 
     assert attributed.text == "/new@hermes_bot"
     assert attributed.get_command() == "new"
-    assert attributed.source.user_id is None
+    # Commands preserve sender identity for slash-access control (#67816).
+    assert attributed.source.user_id == "111"
+    assert attributed.source.user_name == "Alice"
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
@@ -541,6 +546,41 @@ def test_free_response_chats_bypass_mention_requirement():
 
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200)) is True
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
+
+
+def test_free_response_topics_bypass_mention_requirement_only_for_topic():
+    adapter = _make_adapter(require_mention=True, free_response_topics=["-200:31"])
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=31)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=32)) is False
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201, thread_id=31)) is False
+
+
+def test_free_response_topics_treat_missing_thread_as_general_topic():
+    adapter = _make_adapter(require_mention=True, free_response_topics=["-200:1"])
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=None)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=31)) is False
+
+
+def test_free_response_topic_messages_are_dispatched_not_observed():
+    """A free-response topic message must go to the dispatcher, not the observe path."""
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-200"],
+        group_allowed_chats=["-200"],
+        observe_unmentioned_group_messages=True,
+        free_response_topics=["-200:31"],
+    )
+
+    in_topic = _group_message("hello everyone", chat_id=-200, thread_id=31)
+    assert adapter._should_process_message(in_topic) is True
+    assert adapter._should_observe_unmentioned_group_message(in_topic) is False
+
+    # Same chat, different topic: not dispatched, but still observable.
+    other_topic = _group_message("side chatter", chat_id=-200, thread_id=32)
+    assert adapter._should_process_message(other_topic) is False
+    assert adapter._should_observe_unmentioned_group_message(other_topic) is True
 
 
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():
@@ -936,6 +976,33 @@ def test_top_level_require_mention_does_not_override_telegram_section(monkeypatc
     assert config is not None
     # The telegram-specific "false" must win over the top-level "true".
     assert __import__("os").environ.get("TELEGRAM_REQUIRE_MENTION") == "false"
+
+
+def test_config_bridges_telegram_free_response_topics(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  free_response_topics:\n"
+        '    - "-1001234567:3"\n'
+        '    - "-1001234567:9"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_TOPICS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    tg_cfg = config.platforms.get(Platform.TELEGRAM)
+    assert tg_cfg is not None
+    # free_response_topics is carried in PlatformConfig.extra (like guest_mode)
+    # AND bridged to the env var the adapter reads at runtime. The env var is
+    # not a key that appears in developer .env files, so asserting it via
+    # os.environ stays deterministic.
+    assert tg_cfg.extra.get("free_response_topics") == ["-1001234567:3", "-1001234567:9"]
+    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_TOPICS"] == "-1001234567:3,-1001234567:9"
 
 
 def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
@@ -1345,3 +1412,212 @@ def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
         assert "program.exe" in message["content"]
 
     asyncio.run(_run())
+
+
+# ── Bot identity: renames and non-"bot"-suffixed handles ────────────────────
+# Two failure modes fixed together (both break the mention gate):
+#   1. PTB caches getMe() in Bot._bot_user and only rewrites it inside
+#      get_me(). After a BotFather rename the adapter compares against the OLD
+#      handle, so the exclusive-mention gate reads a message addressed to us as
+#      one addressed to a different bot and silently drops it.
+#   2. The bot-handle pattern assumed every bot username ends in "bot".
+#      Collectible (Fragment) usernames can be assigned to bots and don't
+#      (@jarvis, @pic), making such a bot unable to recognise its own handle.
+
+
+class _IdentityBot:
+    """Stand-in for PTB's Bot: ``.username`` only changes when get_me() runs."""
+
+    def __init__(self, bot_id=999, cached="hermes_bot", server=None):
+        self.id = bot_id
+        self._cached = cached
+        self._server = server if server is not None else cached
+        self.get_me_calls = 0
+
+    @property
+    def username(self):
+        return self._cached
+
+    async def get_me(self):
+        self.get_me_calls += 1
+        self._cached = self._server
+        return SimpleNamespace(id=self.id, username=self._server)
+
+
+def _reply_to_bot_message(text, *, entities=None, bot_username, bot_id=999):
+    """Group message replying to one of our messages.
+
+    Telegram stamps the bot's CURRENT username on ``reply_to_message.from_user``,
+    which is how a rename becomes observable without an extra API call.
+    """
+    message = _group_message(text, entities=entities)
+    message.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=bot_id, username=bot_username),
+        message_id=10, text="previous bot reply", caption=None,
+    )
+    return message
+
+
+def test_renamed_bot_still_routes_when_reply_reveals_new_handle():
+    """A rename observed from an inbound update takes effect immediately."""
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+    text = "@new_helper_bot thanks!"
+    message = _reply_to_bot_message(
+        text, entities=_mention_entities(text, ["@new_helper_bot"]),
+        bot_username="new_helper_bot",
+    )
+
+    assert adapter._should_process_message(message) is True
+    assert adapter._current_bot_username() == "new_helper_bot"
+    # Learned from the update stream — no Bot API round-trip needed.
+    assert adapter._bot.get_me_calls == 0
+
+
+def test_stale_username_does_not_route_message_to_another_bot():
+    """The exclusive-mention gate must not fire on our own (renamed) handle."""
+    adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True)
+    adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+    adapter._note_bot_username("new_helper_bot")
+    text = "@new_helper_bot what's the weather"
+    message = _group_message(text, entities=_mention_entities(text, ["@new_helper_bot"]))
+
+    assert adapter._explicit_bot_mentions_exclude_self(message) is False
+    assert adapter._should_process_message(message) is True
+
+
+def test_stale_username_schedules_background_identity_recheck():
+    """A drop caused by a stale handle self-corrects via a TTL-guarded getMe."""
+    async def _run():
+        adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True)
+        adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+        adapter._background_tasks = set()
+        text = "@new_helper_bot what's the weather"
+        message = _group_message(text, entities=_mention_entities(text, ["@new_helper_bot"]))
+
+        # First message is lost — nothing has revealed the new handle yet.
+        assert adapter._should_process_message(message) is False
+        await asyncio.gather(*list(adapter._background_tasks))
+
+        assert adapter._bot.get_me_calls == 1
+        assert adapter._current_bot_username() == "new_helper_bot"
+        # Recovered without a gateway restart.
+        assert adapter._should_process_message(message) is True
+
+    asyncio.run(_run())
+
+
+def test_identity_recheck_is_rate_limited_in_multi_bot_groups():
+    """Traffic legitimately aimed at other bots must not trigger a getMe storm."""
+    async def _run():
+        adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True)
+        adapter._bot = _IdentityBot(cached="hermes_bot")
+        adapter._background_tasks = set()
+        text = "@other_helper_bot please run it"
+
+        for _ in range(25):
+            adapter._should_process_message(
+                _group_message(text, entities=_mention_entities(text, ["@other_helper_bot"]))
+            )
+            await asyncio.gather(*list(adapter._background_tasks))
+
+        assert adapter._bot.get_me_calls <= 1
+
+    asyncio.run(_run())
+
+
+def test_bot_never_adopts_another_accounts_username():
+    """Only a user id matching this bot may update our own handle."""
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot = _IdentityBot(cached="hermes_bot")
+    message = _group_message("hello")
+    message.from_user = SimpleNamespace(id=555, username="impostor_bot", full_name="Impostor", first_name="Impostor")
+
+    adapter._observe_bot_identity_from_message(message)
+
+    assert adapter._current_bot_username() == "hermes_bot"
+
+
+def test_collectible_username_without_bot_suffix_is_recognised():
+    """A Fragment handle (@jarvis) must still count as addressing this bot."""
+    adapter = _make_adapter(require_mention=True, bot_username="jarvis")
+    text = "@jarvis hey"
+    message = _group_message(text, entities=_mention_entities(text, ["@jarvis"]))
+
+    assert adapter._message_mentions_bot(message) is True
+    assert adapter._should_process_message(message) is True
+
+
+def test_collectible_username_recognised_without_entities():
+    """Entity-less client updates must also match a non-'bot' handle."""
+    adapter = _make_adapter(require_mention=True, bot_username="jarvis")
+    message = _group_message("@jarvis hey", entities=[])
+
+    assert adapter._message_mentions_bot(message) is True
+    assert adapter._should_process_message(message) is True
+
+
+def test_collectible_username_not_suppressed_by_other_bot_mention():
+    """@jarvis + @other_bot in one message must still reach @jarvis."""
+    adapter = _make_adapter(
+        require_mention=True, exclusive_bot_mentions=True, bot_username="jarvis",
+    )
+    text = "@jarvis ask @other_helper_bot for the log"
+    message = _group_message(
+        text, entities=_mention_entities(text, ["@jarvis", "@other_helper_bot"]),
+    )
+
+    assert adapter._explicit_bot_mentions_exclude_self(message) is False
+    assert adapter._should_process_message(message) is True
+
+
+def test_human_handles_still_do_not_act_as_routing_hints():
+    """Widening self-matching must not make human @handles suppress this bot."""
+    adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True)
+    text = "@alice can you check this"
+    message = _group_message(text, entities=_mention_entities(text, ["@alice"]))
+
+    assert adapter._explicit_bot_mentions_exclude_self(message) is False
+
+
+def test_messages_addressed_to_a_different_bot_are_still_suppressed():
+    """The multi-bot exclusivity contract is preserved."""
+    adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True)
+    text = "@other_helper_bot do it"
+    message = _group_message(text, entities=_mention_entities(text, ["@other_helper_bot"]))
+
+    assert adapter._explicit_bot_mentions_exclude_self(message) is True
+    assert adapter._should_process_message(message) is False
+
+
+def test_clean_bot_trigger_text_strips_the_current_handle():
+    """Prefix stripping must follow a rename, not the stale cached handle."""
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+    adapter._note_bot_username("new_helper_bot")
+
+    assert adapter._clean_bot_trigger_text("@new_helper_bot ship it") == "ship it"
+
+
+def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
+    """A never-checked identity is stale even when monotonic() is near zero.
+
+    time.monotonic() has an arbitrary epoch: on a freshly-booted host (CI
+    runners, containers) it starts near 0. A 0.0 "never checked" sentinel
+    therefore reads as "checked just now" for the first TTL seconds of
+    uptime, suppressing the very first identity refresh — so the stale-handle
+    recovery silently did nothing on exactly the machines most likely to be
+    freshly booted. Caught by CI, invisible on a long-lived dev box.
+    """
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+
+    # Simulate a host that booted 12 seconds ago.
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.time.monotonic", lambda: 12.0
+    )
+
+    assert adapter._bot_identity_is_fresh() is False
+
+    adapter._note_bot_username("new_helper_bot")
+    assert adapter._bot_identity_is_fresh() is True

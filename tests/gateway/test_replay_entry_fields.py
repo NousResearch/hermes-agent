@@ -251,3 +251,68 @@ class TestBuildReplayEntry:
         assert "timestamp" not in entry
         assert "internal_marker" not in entry
         assert "tool_call_id" not in entry
+
+
+class TestReplayEntryApiContentSidecar:
+    """The api_content sidecar (persist-what-you-send) must survive the
+    gateway's transcript→agent_history rebuild, or the whole prompt-cache
+    fix is inert on gateway platforms — but only when this pipeline did not
+    rewrite the content (a rewrite means different bytes must replay)."""
+
+    def test_user_forwards_api_content_when_content_unchanged(self):
+        msg = {"role": "user", "content": "hi", "api_content": "hi\n\nCTX"}
+        entry = _build_replay_entry("user", "hi", msg)
+        assert entry["api_content"] == "hi\n\nCTX"
+        assert entry["content"] == "hi"
+
+    def test_assistant_forwards_api_content_when_content_unchanged(self):
+        msg = {"role": "assistant", "content": "a", "api_content": "a <memory-context>"}
+        entry = _build_replay_entry("assistant", "a", msg)
+        assert entry["api_content"] == "a <memory-context>"
+
+    def test_dropped_when_pipeline_rewrote_content(self):
+        """Timestamp injection / auto-continue strip / mirror prefix change
+        the replayed content — resending the stored sidecar would
+        reintroduce exactly what was stripped."""
+        msg = {"role": "user", "content": "hi", "api_content": "hi\n\nCTX"}
+        entry = _build_replay_entry("user", "[Tue 12:00] hi", msg)
+        assert "api_content" not in entry
+
+    def test_tool_role_never_forwards(self):
+        msg = {"role": "tool", "content": "r", "api_content": "r+X"}
+        entry = _build_replay_entry("tool", "r", msg)
+        assert "api_content" not in entry
+
+    def test_non_string_or_empty_sidecar_ignored(self):
+        for bad in (None, "", 42, ["x"]):
+            msg = {"role": "user", "content": "hi", "api_content": bad}
+            entry = _build_replay_entry("user", "hi", msg)
+            assert "api_content" not in entry
+
+
+class TestGatewayHistoryBuildForwardsSidecar:
+    def test_end_to_end_history_build_keeps_sidecar(self):
+        from gateway.run import _build_gateway_agent_history
+
+        history = [
+            {"role": "user", "content": "hi", "api_content": "hi\n\nCTX", "timestamp": 123.0},
+            {"role": "assistant", "content": "hello"},
+        ]
+        agent_history, _obs = _build_gateway_agent_history(history)
+        assert agent_history[0]["api_content"] == "hi\n\nCTX"
+
+    def test_mirror_prefix_drops_sidecar(self):
+        from gateway.run import _build_gateway_agent_history
+
+        history = [
+            {
+                "role": "user",
+                "content": "hi",
+                "api_content": "hi\n\nCTX",
+                "mirror": True,
+                "mirror_source": "other",
+            },
+        ]
+        agent_history, _obs = _build_gateway_agent_history(history)
+        assert agent_history[0]["content"].startswith("[Delivered from other]")
+        assert "api_content" not in agent_history[0]

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+
 import { test } from 'vitest'
 
 import { parseDefaultDistro, resolvePickerDefaultPath, wslPosixToWindowsAccessible } from './wsl-path-bridge'

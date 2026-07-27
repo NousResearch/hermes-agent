@@ -140,6 +140,32 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     assert added == {"mcp_new_server_tool"}
 
 
+def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
+    """A refresh removes stale provider tools when memory becomes disabled."""
+    agent = _agent(
+        ["read_file", "memory_search"],
+        enabled=["all"],
+        disabled=["memory"],
+    )
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **kw: [_tool("read_file")],
+    )
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert "memory_search" not in agent.valid_tool_names
+    assert all(t["function"]["name"] != "memory_search" for t in agent.tools)
+
+
 def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     """#5544: context-engine tools must NOT be re-injected on a restricted
     toolset. A platform with enabled_toolsets that excludes context_engine

@@ -48,37 +48,58 @@ export function applyZoomLevel(webContents, level) {
   return clamped
 }
 
-// Chromium on Windows can drop webContents zoom when a BrowserWindow is minimized
-// and restored. Re-apply the persisted level on these lifecycle transitions.
-export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore']
+// Chromium can drop webContents zoom when a BrowserWindow is resized, minimized
+// and restored, or crosses onto a monitor with different display scaling. macOS
+// and Windows provide trailing `resized`/`moved` events; Linux only provides the
+// noisy `resize`/`move` pair, so debounce those fallbacks before re-applying the
+// persisted level.
+export const ZOOM_RESIZE_REASSERT_DELAY_MS = 100
 
-export function installZoomReassertOnWindowEvents(win, reassert) {
+export function zoomReassertWindowEvents(platform = process.platform) {
+  return platform === 'linux' ? ['show', 'restore', 'resize', 'move'] : ['show', 'restore', 'resized', 'moved']
+}
+
+export function installZoomReassertOnWindowEvents(win, reassert, platform = process.platform) {
   if (!win?.on) {
     return
   }
 
-  for (const event of ZOOM_REASSERT_WINDOW_EVENTS) {
+  let resizeTimer
+
+  for (const event of zoomReassertWindowEvents(platform)) {
     win.on(event, () => {
       if (win.isDestroyed?.()) {
         return
       }
 
-      reassert()
+      if (event !== 'resize' && event !== 'move') {
+        reassert()
+
+        return
+      }
+
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (!win.isDestroyed?.()) {
+          reassert()
+        }
+      }, ZOOM_RESIZE_REASSERT_DELAY_MS)
     })
   }
 }
 
 /**
  * Zoom-wiring decision per window kind. Chat windows (main + session) keep
- * global UI zoom; the pet overlay opts out because it sizes its own OS window
- * to the sprite and inheriting zoom would crop it.
+ * global UI zoom; the pet overlay and the Quick Entry composer opt out because
+ * they size their own OS window and inheriting zoom would crop/overflow them.
  *
- * Extracted so the "pet opts out, everything else opts in" contract is
+ * Extracted so the "helper windows opt out, everything else opts in" contract is
  * unit-testable without booting a BrowserWindow or reading source.
  */
 export const ZOOM_WINDOW_CONFIG = {
   chat: { zoom: true },
-  petOverlay: { zoom: false }
+  petOverlay: { zoom: false },
+  quickEntry: { zoom: false }
 } as const
 
 export function zoomWiringForWindowKind(kind) {

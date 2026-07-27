@@ -32,6 +32,13 @@ from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
+try:
+    import hermes_cli as _hermes_cli
+
+    _HERMES_VERSION = str(_hermes_cli.__version__)
+except Exception:
+    _HERMES_VERSION = "0.0.0"
+
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 # Published max output-token ceiling shared by every current Gemini text model
@@ -99,7 +106,10 @@ def probe_gemini_tier(
                 url,
                 params={"key": key},
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
+                },
             )
     except Exception as exc:
         logger.debug("probe_gemini_tier: network error: %s", exc)
@@ -150,6 +160,42 @@ _FREE_TIER_GUIDANCE = (
     "an agent session. Enable billing on your Google Cloud project and "
     "regenerate the key in a billing-enabled project: "
     "https://aistudio.google.com/apikey"
+)
+
+
+def is_standard_key_auth_error(
+    status: int, error_message: str, reason: str = ""
+) -> bool:
+    """Return True when a Gemini 401 indicates Google rejected the key TYPE.
+
+    Google began rejecting unrestricted legacy "Standard" Google Cloud API
+    keys on the Gemini API on June 19, 2026, and ALL Standard keys stop
+    working in September 2026. The rejection surfaces as a misleading 401
+    telling the user to supply an OAuth 2 access token ("Request had invalid
+    authentication credentials. Expected OAuth 2 access token, login cookie
+    or other valid authentication credential."), optionally carrying
+    ``google.rpc.ErrorInfo`` reason ``ACCESS_TOKEN_TYPE_UNSUPPORTED``.
+
+    Scoped narrowly so a plain bad key (reason ``API_KEY_INVALID``,
+    "API key not valid") keeps its existing message.
+    """
+    if status != 401:
+        return False
+    if reason == "ACCESS_TOKEN_TYPE_UNSUPPORTED":
+        return True
+    return "expected oauth 2 access token" in (error_message or "").lower()
+
+
+_STANDARD_KEY_GUIDANCE = (
+    "\n\nGoogle Gemini rejected this API key's type — you do NOT need OAuth. "
+    "Google began rejecting legacy 'Standard' Google Cloud keys for the "
+    "Gemini API on June 19, 2026, and all Standard keys stop working in "
+    "September 2026. Open https://aistudio.google.com/api-keys, check the "
+    "key's type and status, and create a replacement Gemini API key (or, as "
+    "a temporary bridge, restrict the Standard key to "
+    "generativelanguage.googleapis.com). Then update GEMINI_API_KEY / "
+    "GOOGLE_API_KEY in ~/.hermes/.env and restart your session. "
+    "Details: https://ai.google.dev/gemini-api/docs/api-key"
 )
 
 
@@ -260,8 +306,12 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     thought_signature = _tool_call_extra_signature(tool_call)
-    if thought_signature:
-        part["thoughtSignature"] = thought_signature
+    # Fallback sentinel for cross-provider tool_calls (e.g. fallback from
+    # xAI/Anthropic to Gemini, where the original tool_call carries no
+    # Gemini thoughtSignature). Mirrors gemini_cloudcode_adapter.py:106.
+    # Without this, Gemini 3 thinking models reject replayed history with
+    # 400 INVALID_ARGUMENT on the missing thoughtSignature.
+    part["thoughtSignature"] = thought_signature or "skip_thought_signature_validator"
     return part
 
 
@@ -810,6 +860,12 @@ def gemini_http_error(
     if status == 429 and is_free_tier_quota_error(err_message or body_text):
         message = message + _FREE_TIER_GUIDANCE
 
+    # Legacy "Standard" Google Cloud key rejection (June 19, 2026 onward) ->
+    # Google's raw 401 misleadingly tells the user to use OAuth. Append the
+    # actual fix (mint a new Gemini API key in AI Studio).
+    if is_standard_key_auth_error(status, err_message or body_text, reason):
+        message = message + _STANDARD_KEY_GUIDANCE
+
     return GeminiAPIError(
         message,
         code=code,
@@ -901,7 +957,11 @@ class GeminiNativeClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-goog-api-key": self.api_key,
-            "User-Agent": "hermes-agent (gemini-native)",
+            # Include Hermes client context following Gemini's partner
+            # integration guidance.
+            # See https://ai.google.dev/gemini-api/docs/partner-integration
+            "User-Agent": f"hermes-agent/{_HERMES_VERSION} (gemini-native)",
+            "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
         }
         headers.update(self._default_headers)
         return headers

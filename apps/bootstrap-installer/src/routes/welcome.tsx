@@ -1,4 +1,5 @@
 import { type CSSProperties } from 'react'
+
 import { HackeryButton } from '../components/hackery-button'
 import { startInstall } from '../store'
 

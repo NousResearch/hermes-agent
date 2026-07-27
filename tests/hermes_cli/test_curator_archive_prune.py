@@ -101,7 +101,7 @@ def test_prune_nothing_to_do(monkeypatch, capsys):
     import hermes_cli.curator as curator_cli
     import tools.skill_usage as skill_usage
 
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [])
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: [])
     rc = curator_cli._cmd_prune(_ns(days=30, yes=True, dry_run=False))
     assert rc == 0
     assert "nothing to prune" in capsys.readouterr().out
@@ -117,7 +117,7 @@ def test_prune_filters_pinned_and_archived(monkeypatch, capsys):
         _mk_record("recent", idle_days=10),
         _mk_record("old-active", idle_days=200),
     ]
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: rows)
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
     archived = []
     monkeypatch.setattr(
         skill_usage, "archive_skill",
@@ -144,7 +144,7 @@ def test_prune_falls_back_to_created_at_when_never_used(monkeypatch, capsys):
     # Force last_activity_at to None explicitly
     rows[0]["last_activity_at"] = None
 
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: rows)
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
     archived = []
     monkeypatch.setattr(
         skill_usage, "archive_skill",
@@ -160,7 +160,7 @@ def test_prune_dry_run_makes_no_changes(monkeypatch, capsys):
     import tools.skill_usage as skill_usage
 
     rows = [_mk_record("old-skill", idle_days=200)]
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: rows)
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
     archived = []
     monkeypatch.setattr(
         skill_usage, "archive_skill",
@@ -179,7 +179,7 @@ def test_prune_prompts_without_yes(monkeypatch, capsys):
     import tools.skill_usage as skill_usage
 
     rows = [_mk_record("old-skill", idle_days=200)]
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: rows)
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
     archived = []
     monkeypatch.setattr(
         skill_usage, "archive_skill",
@@ -197,7 +197,7 @@ def test_prune_confirms_with_y(monkeypatch, capsys):
     import tools.skill_usage as skill_usage
 
     rows = [_mk_record("old-skill", idle_days=200)]
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: rows)
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
     archived = []
     monkeypatch.setattr(
         skill_usage, "archive_skill",
@@ -217,7 +217,7 @@ def test_prune_reports_partial_failure(monkeypatch, capsys):
         _mk_record("ok-skill", idle_days=200),
         _mk_record("bad-skill", idle_days=200),
     ]
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: rows)
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
 
     def fake_archive(name):
         if name == "bad-skill":

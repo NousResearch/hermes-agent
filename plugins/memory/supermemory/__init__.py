@@ -31,7 +31,7 @@ _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
 _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
-_CONVERSATIONS_URL = "https://api.supermemory.ai/v4/conversations"
+_DEFAULT_BASE_URL = "https://api.supermemory.ai"
 _API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 _TRIVIAL_RE = re.compile(
     r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
@@ -65,6 +65,7 @@ def _default_config() -> dict:
         "search_mode": _DEFAULT_SEARCH_MODE,
         "entity_context": _DEFAULT_ENTITY_CONTEXT,
         "api_timeout": _DEFAULT_API_TIMEOUT,
+        "base_url": "",
         "enable_custom_container_tags": False,
         "custom_containers": [],
         "custom_container_instructions": "",
@@ -75,6 +76,18 @@ def _sanitize_tag(raw: str) -> str:
     tag = re.sub(r"[^a-zA-Z0-9_]", "_", raw or "")
     tag = re.sub(r"_+", "_", tag)
     return tag.strip("_") or _DEFAULT_CONTAINER_TAG
+
+
+def _resolve_base_url(config_value: Any = "") -> str:
+    """Resolve the API base URL: config > SUPERMEMORY_BASE_URL env var > default.
+
+    Supports self-hosted Supermemory servers (e.g. http://localhost:6767).
+    """
+    raw = (
+        str(config_value or "").strip()
+        or os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+    )
+    return (raw or _DEFAULT_BASE_URL).rstrip("/") or _DEFAULT_BASE_URL
 
 
 def _clamp_entity_context(text: str) -> str:
@@ -129,6 +142,7 @@ def _load_supermemory_config(hermes_home: str) -> dict:
         config["api_timeout"] = max(0.5, min(15.0, float(config.get("api_timeout", _DEFAULT_API_TIMEOUT))))
     except Exception:
         config["api_timeout"] = _DEFAULT_API_TIMEOUT
+    config["base_url"] = str(config.get("base_url", "") or "").strip()
 
     # Multi-container support
     config["enable_custom_container_tags"] = _as_bool(config.get("enable_custom_container_tags"), False)
@@ -263,7 +277,8 @@ def _is_trivial_message(text: str) -> bool:
 
 
 class _SupermemoryClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+    def __init__(self, api_key: str, timeout: float, container_tag: str,
+                 search_mode: str = "hybrid", base_url: str = ""):
         # Lazy-install the supermemory SDK on demand. ensure() honors
         # security.allow_lazy_installs (default true) and, on a sealed Docker
         # venv, redirects the install to the durable target. On failure we
@@ -276,15 +291,16 @@ class _SupermemoryClient:
             pass
         except Exception:
             pass
-
         from supermemory import Supermemory
 
         self._api_key = api_key
         self._container_tag = container_tag
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
         self._timeout = timeout
+        self._base_url = _resolve_base_url(base_url)
         self._client = Supermemory(
             api_key=api_key,
+            base_url=self._base_url,
             timeout=timeout,
             max_retries=0,
             default_headers={"x-sm-source": "hermes"},
@@ -388,7 +404,7 @@ class _SupermemoryClient:
             payload["metadata"] = self._merge_metadata(metadata)
 
         req = urllib.request.Request(
-            _CONVERSATIONS_URL,
+            f"{self._base_url}/v4/conversations",
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self._api_key}",
@@ -410,6 +426,7 @@ def _resolve_container_tag_for_setup(hermes_home: str, *, identity: str = "defau
 
 def _probe_supermemory_connection(api_key: str, hermes_home: str, *, identity: str = "default") -> dict:
     config = _load_supermemory_config(hermes_home)
+    base_url = _resolve_base_url(config["base_url"])
     status = {
         "ok": False,
         "error": "",
@@ -432,6 +449,7 @@ def _probe_supermemory_connection(api_key: str, hermes_home: str, *, identity: s
             timeout=config["api_timeout"],
             container_tag=status["container_tag"],
             search_mode=config["search_mode"],
+            base_url=base_url,
         )
         profile = client.get_profile()
         facts = [
@@ -531,6 +549,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._search_mode = _DEFAULT_SEARCH_MODE
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
         self._api_timeout = _DEFAULT_API_TIMEOUT
+        self._base_url = _DEFAULT_BASE_URL
         self._hermes_home = ""
         self._write_enabled = True
         self._active = False
@@ -645,6 +664,9 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._search_mode = self._config["search_mode"]
         self._entity_context = self._config["entity_context"]
         self._api_timeout = self._config["api_timeout"]
+        # Base URL: config > SUPERMEMORY_BASE_URL env var > api.supermemory.ai.
+        # Supports self-hosted Supermemory servers.
+        self._base_url = _resolve_base_url(self._config["base_url"])
         self._enable_custom_containers = self._config["enable_custom_container_tags"]
         self._custom_containers = self._config["custom_containers"]
         self._custom_container_instructions = self._config["custom_container_instructions"]
@@ -663,6 +685,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                     timeout=self._api_timeout,
                     container_tag=self._container_tag,
                     search_mode=self._search_mode,
+                    base_url=self._base_url,
                 )
             except Exception:
                 logger.warning("Supermemory initialization failed", exc_info=True)

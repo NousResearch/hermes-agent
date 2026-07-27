@@ -1,10 +1,13 @@
 """Tests for the delivery routing module."""
 
 import pytest
+from typing import Any, cast
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import SendResult
+from gateway.relay.adapter import RelayAdapter
+from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.session import SessionSource
 
 
@@ -125,6 +128,98 @@ class TestPlatformNameCaseInsensitivity:
         assert target.platform == Platform.TELEGRAM
         assert target.chat_id == "12345"
 
+class _RelayDeliveryTransport:
+    """Relay transport that advertises Slack and records outbound wire frames."""
+
+    def __init__(self):
+        self._identities = [("slack", "bot-1")]
+        self.sent = []
+
+    async def send_outbound(self, action, *, platform=None):
+        self.sent.append((action, platform))
+        if not action.get("metadata", {}).get("user_id"):
+            return {"success": False, "error": "target not routed to an onboarded tenant"}
+        return {"success": True, "message_id": "relay-message-1"}
+
+
+def _make_relay(transport):
+    return RelayAdapter(
+        PlatformConfig(enabled=True),
+        CapabilityDescriptor(
+            contract_version=CONTRACT_VERSION,
+            platform="slack",
+            label="Slack",
+            max_message_length=4000,
+            supports_draft_streaming=False,
+            supports_edit=True,
+            supports_threads=True,
+            markdown_dialect="slack",
+            len_unit="chars",
+        ),
+        transport=cast(Any, transport),
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch):
+    """A persisted Slack home must work immediately after a gateway restart."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    transport = _RelayDeliveryTransport()
+    relay = _make_relay(transport)
+    config = GatewayConfig(
+        platforms={
+            Platform.RELAY: PlatformConfig(enabled=True),
+            Platform.SLACK: PlatformConfig(
+                enabled=False,
+                home_channel=HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="D123",
+                    name="Owner DM",
+                    user_id="U123",
+                ),
+            ),
+        },
+    )
+    router = DeliveryRouter(config, adapters={Platform.RELAY: relay})
+
+    result = await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
+        "scheduled result",
+        metadata={"job_id": "cron-1", "user_id": "stale-user"},
+    )
+
+    assert getattr(result, "success", False) is True
+    assert len(transport.sent) == 1
+    action, wire_platform = transport.sent[0]
+    assert wire_platform == "slack"
+    assert action["chat_id"] == "D123"
+    assert action["metadata"] == {"job_id": "cron-1", "user_id": "U123"}
+
+
+@pytest.mark.asyncio
+async def test_relay_media_fallback_retains_explicit_platform_and_owner():
+    """Attachment fallback cannot default to another Relay identity after restart."""
+    transport = _RelayDeliveryTransport()
+    transport._identities = [("discord", "discord-bot"), ("slack", "slack-bot")]
+    relay = _make_relay(transport)
+
+    result = await relay.send_document(
+        chat_id="D123",
+        file_path="/tmp/report.pdf",
+        metadata={
+            "_relay_logical_platform": "slack",
+            "user_id": "U123",
+        },
+    )
+
+    assert result.success is True
+    assert len(transport.sent) == 1
+    action, wire_platform = transport.sent[0]
+    assert wire_platform == "slack"
+    assert action["metadata"] == {"user_id": "U123"}
+    assert "_relay_logical_platform" not in action["metadata"]
+
+
 class RecordingAdapter:
     def __init__(self):
         self.calls = []
@@ -139,6 +234,92 @@ class RecordingAdapter:
             {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
         )
         return "38049"
+
+
+@pytest.mark.asyncio
+async def test_native_adapter_wins_when_relay_also_fronts_platform(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    native = RecordingAdapter()
+    transport = _RelayDeliveryTransport()
+    relay = _make_relay(transport)
+    config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(enabled=True),
+            Platform.RELAY: PlatformConfig(enabled=True),
+        },
+    )
+    router = DeliveryRouter(
+        config,
+        adapters={Platform.SLACK: native, Platform.RELAY: relay},
+    )
+
+    await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
+        "native result",
+        metadata=None,
+    )
+
+    assert native.calls == [
+        {"chat_id": "D123", "content": "native result", "metadata": None}
+    ]
+    assert transport.sent == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_native_adapter_does_not_shadow_relay(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    native = RecordingAdapter()
+    transport = _RelayDeliveryTransport()
+    relay = _make_relay(transport)
+    config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=False,
+                home_channel=HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id="D123",
+                    name="Owner DM",
+                    user_id="U123",
+                ),
+            ),
+            Platform.RELAY: PlatformConfig(enabled=True),
+        },
+    )
+    router = DeliveryRouter(
+        config,
+        adapters={Platform.SLACK: native, Platform.RELAY: relay},
+    )
+
+    await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
+        "relay result",
+        metadata=None,
+    )
+
+    assert native.calls == []
+    assert len(transport.sent) == 1
+    assert transport.sent[0][1] == "slack"
+
+
+@pytest.mark.asyncio
+async def test_relay_does_not_claim_unadvertised_platform(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    transport = _RelayDeliveryTransport()
+    transport._identities = [("discord", "bot-1")]
+    relay = _make_relay(transport)
+    config = GatewayConfig(
+        platforms={Platform.RELAY: PlatformConfig(enabled=True)},
+    )
+    router = DeliveryRouter(config, adapters={Platform.RELAY: relay})
+
+    with pytest.raises(ValueError, match="No adapter configured for slack"):
+        await router._deliver_to_platform(
+            DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
+            "must not route",
+            metadata=None,
+        )
+
+    assert transport.sent == []
 
 
 class StaleTopicAdapter:

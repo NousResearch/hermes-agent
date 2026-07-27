@@ -46,6 +46,7 @@ async function renderField(value: unknown, onChange = vi.fn()) {
 async function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
   const { FallbackModelsField } = await import('./fallback-models-field')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
   const view = render(
     <QueryClientProvider client={client}>
       <FallbackModelsField onChange={onChange} value={value} />

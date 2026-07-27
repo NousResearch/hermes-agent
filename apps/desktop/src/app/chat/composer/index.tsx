@@ -22,7 +22,12 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
-import { COMPOSER_FADE_BACKGROUND, type QueueEditState, slashArgStage } from './composer-utils'
+import {
+  acceptsTriggerCompletion,
+  COMPOSER_FADE_BACKGROUND,
+  type QueueEditState,
+  slashArgStage
+} from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
@@ -302,12 +307,14 @@ export function ChatBar({
     ascendTriggerPath,
     closeTrigger,
     commitTypedSlashDirective,
+    moveTriggerActive,
     refreshTrigger,
     replaceTriggerWithChip,
     setTriggerActive,
     slashFreeTextArgStage,
     trigger,
     triggerActive,
+    triggerActiveExplicit,
     triggerItems,
     triggerKeyConsumedRef,
     triggerLoading
@@ -528,7 +535,7 @@ export function ChatBar({
       if (event.key === 'ArrowDown') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
-        setTriggerActive(idx => (idx + 1) % triggerItems.length)
+        moveTriggerActive(1)
 
         return
       }
@@ -536,20 +543,21 @@ export function ChatBar({
       if (event.key === 'ArrowUp') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
-        setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
+        moveTriggerActive(-1)
 
         return
       }
 
-      // Enter / Tab / Space all accept the highlighted item: a no-arg command
-      // commits its directive chip, an arg-taking command expands to its
-      // options step, and an arg option commits the full `/cmd arg` chip. Space
-      // is slash-only (an `@` mention takes a literal space) and gated to a
-      // non-empty query so a bare `/ ` still types a space.
-      const acceptOnSpace =
-        event.key === ' ' && trigger.kind === '/' && Boolean(trigger.query.trim()) && !slashFreeTextArgStage
-
-      const accept = event.key === 'Enter' || event.key === 'Tab' || acceptOnSpace
+      // Accepting the highlighted item: a no-arg command commits its directive
+      // chip, an arg-taking command expands to its options step, and an arg
+      // option commits the full `/cmd arg` chip.
+      const accept = acceptsTriggerCompletion({
+        activeExplicit: triggerActiveExplicit,
+        freeTextArgStage: slashFreeTextArgStage,
+        key: event.key,
+        kind: trigger.kind,
+        query: trigger.query
+      })
 
       if (accept) {
         event.preventDefault()

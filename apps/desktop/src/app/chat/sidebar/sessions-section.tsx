@@ -210,6 +210,7 @@ export function SidebarSessionsSection({
   // so partition buckets stay truthful — but NEVER for pins, where a turn
   // finishing was floating background tasks over the user's fixed ranking.
   const preserveInputOrder = pinned || (sessionsDraggable && !dateGrouped)
+
   const displayEntries = useMemo(
     () => flattenSessionsWithBranches(sessions, { preserveOrder: preserveInputOrder }),
     [sessions, preserveInputOrder]

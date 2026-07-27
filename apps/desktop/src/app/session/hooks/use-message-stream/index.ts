@@ -257,6 +257,7 @@ export function useMessageStream({
     // 30fps of text growth, expensive multi-stream flushes degrade text fps
     // instead of interactivity — capped so text never updates slower than 4/s.
     const sinceLast = performance.now() - lastFlushAtRef.current
+
     const adaptiveFloor = Math.min(
       Math.max(STREAM_DELTA_FLUSH_MS, lastFlushCostRef.current * 3),
       MAX_STREAM_FLUSH_GAP_MS

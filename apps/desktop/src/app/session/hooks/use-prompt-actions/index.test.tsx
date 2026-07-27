@@ -934,6 +934,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const focusedSessionId = 'work-runtime-session'
     const persistedModes = new Map<string, string>()
     const sessionProfiles = new Map([[focusedSessionId, focusedProfile]])
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'slash.exec') {
         const sessionId = String(params?.session_id ?? '')
@@ -949,6 +950,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
       return {} as never
     })
+
     let handle: HarnessHandle | null = null
 
     render(

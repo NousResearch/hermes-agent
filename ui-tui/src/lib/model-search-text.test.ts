@@ -16,12 +16,7 @@ describe('modelSearchText', () => {
 })
 
 describe('model picker search with aliases', () => {
-  const models = [
-    'kimi-k2.6',
-    'kimi-k2.5',
-    'k3',
-    'kimi-for-coding',
-  ]
+  const models = ['kimi-k2.6', 'kimi-k2.5', 'k3', 'kimi-for-coding']
 
   it('surfaces k3 when the user searches kimi', () => {
     const ranked = fuzzyRank(models, 'kimi', modelSearchText).map(r => r.item)

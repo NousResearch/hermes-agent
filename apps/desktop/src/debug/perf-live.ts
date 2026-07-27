@@ -42,7 +42,8 @@ interface LongFrame {
   scripts: Array<{ invoker: string; ms: number; src: string }>
 }
 
-const RESIZE_SELECTOR = '[role="separator"], [data-slot="pane-resize-handle"], [class*="cursor-col-resize"], [class*="cursor-row-resize"]'
+const RESIZE_SELECTOR =
+  '[role="separator"], [data-slot="pane-resize-handle"], [class*="cursor-col-resize"], [class*="cursor-row-resize"]'
 const TYPING_SELECTOR = '[contenteditable="true"], textarea, input[type="text"]'
 
 // A gesture is "over" once this long passes with no further input events.
@@ -69,7 +70,8 @@ let lastReport: null | Sample = null
 let longFrames: LongFrame[] = []
 
 const loafObserver =
-  typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes?.includes('long-animation-frame')
+  typeof PerformanceObserver !== 'undefined' &&
+  PerformanceObserver.supportedEntryTypes?.includes('long-animation-frame')
     ? new PerformanceObserver(list => {
         if (!active) {
           return
@@ -100,9 +102,7 @@ const loafObserver =
                 src: (s.sourceURL ?? '').split('/').pop() ?? ''
               })),
             // styleAndLayoutStart -> frame end is the engine's style+layout tail.
-            styleMs: e.styleAndLayoutStart
-              ? Math.round(e.startTime + e.duration - e.styleAndLayoutStart)
-              : 0
+            styleMs: e.styleAndLayoutStart ? Math.round(e.startTime + e.duration - e.styleAndLayoutStart) : 0
           })
         }
       })
@@ -263,7 +263,6 @@ function on() {
   window.addEventListener('pointermove', onPointerMove, true)
   window.addEventListener('keydown', onKeyDown, true)
 
-   
   console.log(
     '%cperf-live%c armed — resize a pane or type in the composer; a report prints when you stop.',
     'background:#5a7db0;color:#fff;padding:1px 6px;border-radius:3px',

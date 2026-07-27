@@ -33,6 +33,26 @@ export function currentPickerSelection(
   }
 }
 
+/** Provider label for the composer pill tooltip. Custom endpoints carry an
+ *  opaque slug (`custom`, or a `custom:<id>` scheme for `custom_providers`
+ *  entries) — prefer the catalog's display name (the endpoint's user-chosen
+ *  `name`), else strip the `custom:` scheme so the endpoint id shows, else
+ *  the raw slug. */
+export function displayProviderLabel(provider: string, catalogName?: string): string {
+  const slug = provider.trim()
+  const name = catalogName?.trim()
+
+  if (name) {
+    return name
+  }
+
+  if (/^custom:/i.test(slug)) {
+    return slug.slice('custom:'.length) || slug
+  }
+
+  return slug
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()
@@ -96,13 +116,15 @@ export function displayModelName(model: string): string {
 }
 
 /** Status bar trigger label — model name plus the live session state (effort/fast).
+ *  `displayName` overrides the prettified name for ids that aren't real model ids
+ *  (MoA presets are user-chosen names — shown verbatim, `default` localized).
  *  `defaultEffort` is the profile's configured level, used when the surface has
  *  no explicit effort so the label never advertises a default the agent won't use. */
 export function formatModelStatusLabel(
   model: string,
-  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
+  options?: { displayName?: string; defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
-  const name = displayModelName(model)
+  const name = options?.displayName || displayModelName(model)
 
   if (!model.trim()) {
     return name

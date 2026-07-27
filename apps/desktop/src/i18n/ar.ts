@@ -2020,7 +2020,8 @@ export const ar = defineLocale({
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
       refreshModels: 'تحديث النماذج',
-      fast: 'سريع'
+      fast: 'سريع',
+      moaPresets: 'إعدادات MOA المسبقة'
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',

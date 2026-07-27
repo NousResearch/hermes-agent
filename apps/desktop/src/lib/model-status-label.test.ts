@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelStatusLabel } from './model-status-label'
+import {
+  currentPickerSelection,
+  displayModelName,
+  displayProviderLabel,
+  formatModelStatusLabel
+} from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
@@ -44,6 +49,25 @@ describe('model-status-label', () => {
 
   it('returns just the placeholder name when there is no model', () => {
     expect(formatModelStatusLabel('')).toBe('No model')
+  })
+
+  describe('displayProviderLabel', () => {
+    it('prefers the catalog display name (custom endpoints show their user-chosen name)', () => {
+      expect(displayProviderLabel('custom', 'My Relay')).toBe('My Relay')
+      expect(displayProviderLabel('axet-proxy', 'Axet Proxy')).toBe('Axet Proxy')
+    })
+
+    it('strips the custom: scheme so the endpoint id shows when no catalog name exists', () => {
+      expect(displayProviderLabel('custom:local-ollama')).toBe('local-ollama')
+      expect(displayProviderLabel('custom:local-ollama', '  ')).toBe('local-ollama')
+    })
+
+    it('falls back to the raw slug', () => {
+      expect(displayProviderLabel('custom')).toBe('custom')
+      expect(displayProviderLabel('anthropic', undefined)).toBe('anthropic')
+      // Degenerate scheme-only slug never renders as an empty label.
+      expect(displayProviderLabel('custom:')).toBe('custom:')
+    })
   })
 
   describe('currentPickerSelection', () => {

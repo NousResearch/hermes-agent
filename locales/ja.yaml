@@ -1,6 +1,12 @@
 # Hermes 静的メッセージカタログ -- 日本語
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+auth:
+  no_provider_configured: "推論プロバイダーが設定されていません。'hermes model' を実行してプロバイダーとモデルを選択するか、~/.hermes/.env に API キー（OPENROUTER_API_KEY、OPENAI_API_KEY など）を設定してください。"
+
+provider:
+  custom_endpoint: "カスタムエンドポイント"
+
 approval:
   dangerous_header: "⚠️  危険なコマンド: {description}"
   choose_long:     "      [o]今回のみ  |  [s]セッション中  |  [a]常に許可  |  [d]拒否"

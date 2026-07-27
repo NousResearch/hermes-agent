@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayEntityName } from '@/lib/display-name'
 import { AlertTriangle } from '@/lib/icons'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -106,7 +107,7 @@ export function CreateProfileDialog({
               autoFocus
               id="new-profile-name"
               onChange={event => setName(event.target.value)}
-              placeholder="my-profile"
+              placeholder={p.namePlaceholder}
               value={name}
             />
             <FieldHint error={invalid}>{p.nameHint}</FieldHint>
@@ -124,7 +125,7 @@ export function CreateProfileDialog({
                 <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
                 {profiles.map(profile => (
                   <SelectItem key={profile.name} value={profile.name}>
-                    {profile.name}
+                    {displayEntityName(profile.name, t)}
                   </SelectItem>
                 ))}
               </SelectContent>

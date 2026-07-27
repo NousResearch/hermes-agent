@@ -1,6 +1,12 @@
 # Catálogo de mensajes estáticos de Hermes -- Español
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+auth:
+  no_provider_configured: "No inference provider configured. Run 'hermes model' to choose a provider and model, or set an API key (OPENROUTER_API_KEY, OPENAI_API_KEY, etc.) in ~/.hermes/.env."
+
+provider:
+  custom_endpoint: "Endpoint personalizado"
+
 approval:
   dangerous_header: "⚠️  COMANDO PELIGROSO: {description}"
   choose_long:     "      [o]una vez  |  [s]sesión  |  [a]siempre  |  [d]denegar"

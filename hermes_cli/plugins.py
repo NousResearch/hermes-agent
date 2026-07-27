@@ -335,6 +335,23 @@ class LoadedPlugin:
     deferred: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ApiServerCapabilityContext:
+    """Stable, non-secret context exposed to API capability providers.
+
+    Capability discovery runs outside the aiohttp event loop.  Passing the
+    live adapter or request into that worker would expose mutable server state,
+    credentials, and a request object owned by another thread.  This value
+    object is the complete provider contract instead.
+    """
+
+    server_name: str
+    request_method: str
+    request_path: str
+    auth_required: bool
+    profile: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
@@ -2113,8 +2130,14 @@ class PluginManager:
         """Return plugin-contributed API server routes in registration order."""
         return list(self._api_server_routes)
 
-    def get_api_server_capabilities(self, *, adapter: Any = None, request: Any = None) -> List[Dict[str, Any]]:
+    def get_api_server_capabilities(
+        self,
+        *,
+        context: ApiServerCapabilityContext,
+    ) -> List[Dict[str, Any]]:
         """Resolve plugin capability contributions for /v1/capabilities."""
+        if not isinstance(context, ApiServerCapabilityContext):
+            raise TypeError("context must be an ApiServerCapabilityContext")
         results: List[Dict[str, Any]] = []
         for entry in self._api_server_capability_providers:
             plugin_name = entry.get("plugin", "unknown")
@@ -2122,7 +2145,7 @@ class PluginManager:
             if not callable(provider):
                 continue
             try:
-                payload = provider(adapter=adapter, request=request)
+                payload = provider(context=context)
             except Exception as exc:
                 logger.warning(
                     "Plugin '%s' API server capability provider failed (%s); skipping",

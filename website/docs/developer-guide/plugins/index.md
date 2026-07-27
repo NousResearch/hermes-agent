@@ -291,8 +291,11 @@ from aiohttp import web
 async def health(request):
     return web.json_response({"status": "ready"})
 
-def capabilities(*, adapter, request):
-    return {"health": {"method": "GET", "path": "/v1/plugins/acme/health"}}
+def capabilities(*, context):
+    return {
+        "health": {"method": "GET", "path": "/v1/plugins/acme/health"},
+        "auth_required": context.auth_required,
+    }
 
 def register(ctx):
     ctx.register_api_server_route(
@@ -314,12 +317,21 @@ Each path must be non-empty and remain below the registering plugin's canonical
 namespace, `/v1/plugins/<plugin-key>/`; method/path pairs and optional route
 names must be unique.
 
-Capability providers are synchronous callbacks invoked with keyword-only
-`adapter` and `request` context. Register at most one provider per plugin and
-return either a JSON-serializable dictionary or `None`. Valid dictionaries are
-published at `extensions.plugins.<plugin-key>` in `GET /v1/capabilities`.
-Provider failures and invalid payloads are logged and skipped so one plugin
-cannot break capability discovery for the server.
+Capability providers are synchronous callbacks invoked with one keyword-only
+`context` argument. The context is an immutable
+`ApiServerCapabilityContext` containing only `server_name`, `request_method`,
+`request_path`, `auth_required`, and `profile`; it deliberately does not expose
+the live adapter, request, headers, or API key across the worker-thread
+boundary. Register at most one provider per plugin and return either a
+JSON-serializable dictionary or `None`. Valid dictionaries are published at
+`extensions.plugins.<plugin-key>` in `GET /v1/capabilities`. Provider failures
+and invalid payloads are logged and skipped so one plugin cannot break
+capability discovery for the server.
+
+Synchronous route handlers and capability discovery use an adapter-owned,
+bounded executor. A timed-out callback keeps its worker slot until it actually
+returns, so repeated hung plugin calls cannot grow the process-wide executor or
+queue additional plugin work without bound.
 
 When `gateway.multiplex_profiles` is enabled, these extensions belong only to
 the default profile that owns the shared listener. They are not mirrored into

@@ -17,6 +17,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 import types
 import uuid
@@ -40,6 +41,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_cli.plugins import ApiServerCapabilityContext
 
 
 # ---------------------------------------------------------------------------
@@ -666,8 +668,11 @@ class TestCapabilitiesEndpoint:
 
     @pytest.mark.asyncio
     async def test_capabilities_include_plugin_extension_payload(self, adapter):
+        seen = []
+
         class _PluginManager:
-            def get_api_server_capabilities(self, *, adapter=None, request=None):
+            def get_api_server_capabilities(self, *, context):
+                seen.append(context)
                 return [
                     {"plugin": "alpha", "capabilities": {"alpha_flag": True}},
                     {"plugin": "beta", "capabilities": {"beta_count": 2}},
@@ -683,25 +688,35 @@ class TestCapabilitiesEndpoint:
                 "alpha": {"alpha_flag": True},
                 "beta": {"beta_count": 2},
             }
+        assert seen == [
+            ApiServerCapabilityContext(
+                server_name="api_server",
+                request_method="GET",
+                request_path="/v1/capabilities",
+                auth_required=False,
+                profile=None,
+            )
+        ]
 
     @pytest.mark.asyncio
     async def test_plugin_capability_providers_run_off_event_loop(self, adapter):
         class _PluginManager:
-            def get_api_server_capabilities(self, *, adapter=None, request=None):
+            def get_api_server_capabilities(self, *, context):
                 return [{"plugin": "alpha", "capabilities": {"enabled": True}}]
 
         adapter._plugin_manager = _PluginManager()
         calls = []
 
-        async def _to_thread(func, *args, **kwargs):
+        async def _run_plugin_sync(func, *args, timeout, **kwargs):
             calls.append(func)
             return func(*args, **kwargs)
 
         request = MagicMock()
         request.headers = {}
-        with patch(
-            "gateway.platforms.api_server.asyncio.to_thread",
-            new=_to_thread,
+        with patch.object(
+            adapter,
+            "_run_plugin_sync",
+            new=_run_plugin_sync,
         ):
             response = await adapter._handle_capabilities(request)
 
@@ -713,7 +728,7 @@ class TestCapabilitiesEndpoint:
         provider_called = False
 
         class _PluginManager:
-            def get_api_server_capabilities(self, *, adapter=None, request=None):
+            def get_api_server_capabilities(self, *, context):
                 nonlocal provider_called
                 provider_called = True
                 return [{"plugin": "default-only", "capabilities": {"enabled": True}}]
@@ -734,20 +749,21 @@ class TestCapabilitiesEndpoint:
     @pytest.mark.asyncio
     async def test_plugin_capability_timeout_preserves_core_response(self, adapter):
         class _PluginManager:
-            def get_api_server_capabilities(self, *, adapter=None, request=None):
-                raise AssertionError("provider should be represented by patched to_thread")
+            def get_api_server_capabilities(self, *, context):
+                raise AssertionError("provider should be represented by patched runner")
 
         adapter._plugin_manager = _PluginManager()
         request = MagicMock()
         request.headers = {}
 
-        async def _never_returns(func, *args, **kwargs):
-            await asyncio.Event().wait()
+        async def _times_out(func, *args, **kwargs):
+            raise asyncio.TimeoutError
 
         with (
-            patch(
-                "gateway.platforms.api_server.asyncio.to_thread",
-                new=_never_returns,
+            patch.object(
+                adapter,
+                "_run_plugin_sync",
+                new=_times_out,
             ),
             patch(
                 "gateway.platforms.api_server.PLUGIN_CAPABILITY_TIMEOUT_SECONDS",
@@ -845,13 +861,14 @@ class TestPluginApiServerRoutes:
         adapter._mount_plugin_api_routes(app.router)
         calls = []
 
-        async def _to_thread(func, *args, **kwargs):
+        async def _run_plugin_sync(func, *args, timeout, **kwargs):
             calls.append(func)
             return func(*args, **kwargs)
 
-        with patch(
-            "gateway.platforms.api_server.asyncio.to_thread",
-            new=_to_thread,
+        with patch.object(
+            adapter,
+            "_run_plugin_sync",
+            new=_run_plugin_sync,
         ):
             async with TestClient(TestServer(app)) as cli:
                 response = await cli.get("/v1/plugins/plugin-test/sync")
@@ -956,6 +973,61 @@ class TestPluginApiServerRoutes:
         assert response.status == 500
         assert body["error"]["code"] == "plugin_route_failed"
         assert "timed out" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_timed_out_sync_handlers_do_not_accumulate_worker_threads(self, adapter):
+        release = threading.Event()
+        lock = threading.Lock()
+        calls = 0
+
+        def _plugin_handler(request):
+            nonlocal calls
+            with lock:
+                calls += 1
+            release.wait(timeout=2)
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/plugin-test/bounded-sync",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        adapter._mount_plugin_api_routes(app.router)
+
+        try:
+            with (
+                patch(
+                    "gateway.platforms.api_server.PLUGIN_API_HANDLER_TIMEOUT_SECONDS",
+                    0.05,
+                ),
+                patch(
+                    "gateway.platforms.api_server.PLUGIN_SYNC_MAX_WORKERS",
+                    2,
+                    create=True,
+                ),
+            ):
+                async with TestClient(TestServer(app)) as cli:
+                    first = await asyncio.gather(
+                        cli.get("/v1/plugins/plugin-test/bounded-sync"),
+                        cli.get("/v1/plugins/plugin-test/bounded-sync"),
+                    )
+                    assert [response.status for response in first] == [500, 500]
+
+                    third = await cli.get("/v1/plugins/plugin-test/bounded-sync")
+                    assert third.status == 500
+
+            with lock:
+                assert calls == 2
+        finally:
+            release.set()
 
     @pytest.mark.asyncio
     async def test_plugin_route_invalid_response_is_isolated(self, adapter, caplog):

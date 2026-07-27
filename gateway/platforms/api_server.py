@@ -47,7 +47,8 @@ import inspect
 import json
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from functools import wraps
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial, wraps
 import logging
 import os
 import re
@@ -73,6 +74,7 @@ _api_request_profile: ContextVar[Optional[str]] = ContextVar(
 # event loop or leave an HTTP request open forever.
 PLUGIN_API_HANDLER_TIMEOUT_SECONDS = 30.0
 PLUGIN_CAPABILITY_TIMEOUT_SECONDS = 5.0
+PLUGIN_SYNC_MAX_WORKERS = 4
 
 
 def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
@@ -1286,6 +1288,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
         self._pending_agent_requests: int = 0
+        # Synchronous plugin handlers are isolated from asyncio's process-wide
+        # default executor.  A matching admission gate prevents timed-out
+        # callbacks (which Python cannot forcibly stop) from spawning or
+        # queueing an unbounded number of worker threads.
+        self._plugin_sync_executor: Optional[ThreadPoolExecutor] = None
+        self._plugin_sync_slots: Optional[asyncio.BoundedSemaphore] = None
         self._plugin_manager = self._load_plugin_manager()
 
     def active_agent_work_count(self) -> int:
@@ -1386,6 +1394,53 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _get_plugin_sync_runtime(
+        self,
+    ) -> tuple[ThreadPoolExecutor, asyncio.BoundedSemaphore]:
+        """Return the adapter-owned bounded runtime for synchronous plugins."""
+        if self._plugin_sync_executor is None or self._plugin_sync_slots is None:
+            workers = max(1, int(PLUGIN_SYNC_MAX_WORKERS))
+            self._plugin_sync_executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="hermes-plugin-api",
+            )
+            self._plugin_sync_slots = asyncio.BoundedSemaphore(workers)
+        return self._plugin_sync_executor, self._plugin_sync_slots
+
+    async def _run_plugin_sync(
+        self,
+        callback: Callable,
+        *args: Any,
+        timeout: float,
+        **kwargs: Any,
+    ) -> Any:
+        """Run one synchronous plugin callback with bounded admission.
+
+        The slot is released only when the worker really exits, not when the
+        HTTP request times out.  That distinction keeps hung callbacks from
+        accumulating executor threads or queued work across later requests.
+        """
+        loop = asyncio.get_running_loop()
+        executor, slots = self._get_plugin_sync_runtime()
+        started = loop.time()
+        await asyncio.wait_for(slots.acquire(), timeout=timeout)
+        remaining = timeout - (loop.time() - started)
+        if remaining <= 0:
+            slots.release()
+            raise asyncio.TimeoutError
+
+        try:
+            future = loop.run_in_executor(
+                executor,
+                partial(callback, *args, **kwargs),
+            )
+        except BaseException:
+            slots.release()
+            raise
+
+        future.add_done_callback(lambda _future, _slots=slots: _slots.release())
+        return await asyncio.wait_for(asyncio.shield(future), timeout=remaining)
+
     def _mount_plugin_api_routes(self, router: Any) -> None:
         """Mount default-profile plugin routes without breaking core startup.
 
@@ -1465,7 +1520,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             if inspect.iscoroutinefunction(_handler):
                                 result = _handler(request)
                             else:
-                                result = await asyncio.to_thread(_handler, request)
+                                result = await self._run_plugin_sync(
+                                    _handler,
+                                    request,
+                                    timeout=PLUGIN_API_HANDLER_TIMEOUT_SECONDS,
+                                )
                             if inspect.isawaitable(result):
                                 result = await result
                             return result
@@ -3105,11 +3164,16 @@ class APIServerAdapter(BasePlatformAdapter):
             and hasattr(manager, "get_api_server_capabilities")
         ):
             try:
-                plugin_caps = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        manager.get_api_server_capabilities,
-                        adapter=self,
-                        request=request,
+                from hermes_cli.plugins import ApiServerCapabilityContext
+
+                plugin_caps = await self._run_plugin_sync(
+                    manager.get_api_server_capabilities,
+                    context=ApiServerCapabilityContext(
+                        server_name="api_server",
+                        request_method="GET",
+                        request_path="/v1/capabilities",
+                        auth_required=bool(self._api_key),
+                        profile=_api_request_profile.get(),
                     ),
                     timeout=PLUGIN_CAPABILITY_TIMEOUT_SECONDS,
                 )
@@ -7151,6 +7215,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
+        plugin_executor = self._plugin_sync_executor
+        self._plugin_sync_executor = None
+        self._plugin_sync_slots = None
+        if plugin_executor is not None:
+            plugin_executor.shutdown(wait=False, cancel_futures=True)
         self._app = None
         logger.info("[%s] API server stopped", self.name)
 

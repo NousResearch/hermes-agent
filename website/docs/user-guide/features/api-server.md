@@ -276,7 +276,11 @@ JSON-serializable object or `None`. Invalid or failing providers are skipped so
 they cannot break the core capability response. Plugin routes cannot leave the
 registering plugin's namespace or replace a core route. Synchronous handlers
 and capability providers run off the API event loop, and both surfaces have
-bounded execution time.
+bounded execution time and bounded worker admission. Timed-out synchronous
+callbacks retain their worker slot until they really exit, preventing repeated
+hung plugin calls from accumulating threads. Providers receive only an
+immutable, non-secret capability context—not the live adapter, request,
+headers, or bearer key.
 
 In multiplex mode, plugin API routes and capability extensions are available
 only on the unprefixed default-profile listener. Hermes does not expose the

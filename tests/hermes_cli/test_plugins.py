@@ -3,6 +3,7 @@
 import logging
 import sys
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,7 @@ import pytest
 import yaml
 
 from hermes_cli.plugins import (
+    ApiServerCapabilityContext,
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
     PluginContext,
@@ -1166,7 +1168,7 @@ class TestPluginApiServerHooks:
         )
         assert mgr.get_api_server_routes()[0]["plugin"] == "category/api-plugin"
 
-    def test_register_api_server_capability_provider_is_invoked_with_context(self):
+    def test_register_api_server_capability_provider_is_invoked_with_safe_context(self):
         mgr = PluginManager()
         manifest = PluginManifest(
             name="display-name",
@@ -1177,34 +1179,52 @@ class TestPluginApiServerHooks:
 
         seen = {}
 
-        def _provider(*, adapter=None, request=None):
-            seen["adapter"] = adapter
-            seen["request"] = request
+        def _provider(*, context):
+            seen["context"] = context
             return {"feature_flag": True}
 
         ctx.register_api_server_capability(_provider)
 
-        capabilities = mgr.get_api_server_capabilities(adapter="adapter-x", request="request-y")
+        context = ApiServerCapabilityContext(
+            server_name="api_server",
+            request_method="GET",
+            request_path="/v1/capabilities",
+            auth_required=True,
+            profile=None,
+        )
+        capabilities = mgr.get_api_server_capabilities(context=context)
         assert capabilities == [
             {
                 "plugin": "category/api-plugin",
                 "capabilities": {"feature_flag": True},
             }
         ]
-        assert seen == {"adapter": "adapter-x", "request": "request-y"}
+        assert seen == {"context": context}
+        assert not hasattr(context, "adapter")
+        assert not hasattr(context, "request")
+        with pytest.raises(FrozenInstanceError):
+            context.request_path = "/mutated"
 
     def test_plugin_capability_provider_failure_isolated(self, caplog):
         mgr = PluginManager()
         manifest = PluginManifest(name="api-plugin", source="user")
         ctx = PluginContext(manifest, mgr)
 
-        def _bad_provider(*, adapter=None, request=None):
+        def _bad_provider(*, context):
             raise RuntimeError("boom")
 
         ctx.register_api_server_capability(_bad_provider)
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
-            capabilities = mgr.get_api_server_capabilities(adapter=None, request=None)
+            capabilities = mgr.get_api_server_capabilities(
+                context=ApiServerCapabilityContext(
+                    server_name="api_server",
+                    request_method="GET",
+                    request_path="/v1/capabilities",
+                    auth_required=False,
+                    profile=None,
+                )
+            )
         assert capabilities == []
         assert "api server capability provider" in caplog.text.lower()
 
@@ -1225,7 +1245,15 @@ class TestPluginApiServerHooks:
         ctx.register_api_server_capability(lambda **kwargs: {"bad": object()})
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
-            capabilities = mgr.get_api_server_capabilities(adapter=None, request=None)
+            capabilities = mgr.get_api_server_capabilities(
+                context=ApiServerCapabilityContext(
+                    server_name="api_server",
+                    request_method="GET",
+                    request_path="/v1/capabilities",
+                    auth_required=False,
+                    profile=None,
+                )
+            )
 
         assert capabilities == []
         assert "json-serializable" in caplog.text.lower()

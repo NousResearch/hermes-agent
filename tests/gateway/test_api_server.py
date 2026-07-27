@@ -1161,6 +1161,30 @@ class TestPluginApiServerRoutes:
         assert "/v1/plugins/other-plugin/status" not in paths
         assert "own namespace" in caplog.text.lower()
 
+    def test_plugin_route_rejects_unsafe_plugin_namespace(self, adapter, caplog):
+        async def _plugin_handler(request):
+            return web.json_response({"ok": True})
+
+        class _PluginManager:
+            def get_api_server_routes(self):
+                return [
+                    {
+                        "method": "GET",
+                        "path": "/v1/plugins/plugin-test/{tail:.*}/status",
+                        "handler": _plugin_handler,
+                        "plugin": "plugin-test/{tail:.*}",
+                    }
+                ]
+
+        adapter._plugin_manager = _PluginManager()
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING"):
+            adapter._mount_plugin_api_routes(app.router)
+
+        paths = [res.canonical for res in app.router.resources()]
+        assert "/v1/plugins/plugin-test/{tail}/status" not in paths
+        assert "safe url path segments" in caplog.text.lower()
+
     def test_duplicate_plugin_route_is_rejected(self, adapter, caplog):
         async def _plugin_handler(request):
             return web.json_response({"ok": True})

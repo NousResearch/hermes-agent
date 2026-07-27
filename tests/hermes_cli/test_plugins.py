@@ -1168,6 +1168,32 @@ class TestPluginApiServerHooks:
         )
         assert mgr.get_api_server_routes()[0]["plugin"] == "category/api-plugin"
 
+    @pytest.mark.parametrize(
+        "plugin_key",
+        [
+            "api plugin",
+            "../api-plugin",
+            "api-plugin/{tail:.*}",
+        ],
+    )
+    def test_register_api_server_route_rejects_unsafe_plugin_namespace(
+        self, plugin_key
+    ):
+        mgr = PluginManager()
+        ctx = PluginContext(
+            PluginManifest(name="display-name", key=plugin_key, source="user"),
+            mgr,
+        )
+
+        with pytest.raises(ValueError, match="safe URL path segments"):
+            ctx.register_api_server_route(
+                "GET",
+                f"/v1/plugins/{plugin_key}/status",
+                lambda request: None,
+            )
+
+        assert mgr.get_api_server_routes() == []
+
     def test_register_api_server_capability_provider_is_invoked_with_safe_context(self):
         mgr = PluginManager()
         manifest = PluginManifest(

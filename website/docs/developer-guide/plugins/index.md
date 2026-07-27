@@ -315,7 +315,9 @@ the API server's bearer authentication and security middleware. Methods are
 limited to `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, and `DELETE`.
 Each path must be non-empty and remain below the registering plugin's canonical
 namespace, `/v1/plugins/<plugin-key>/`; method/path pairs and optional route
-names must be unique.
+names must be unique. Every plugin-key segment must start with an ASCII letter
+or digit and contain only ASCII letters, digits, dots, underscores, or hyphens;
+aiohttp route-template syntax is not allowed in the namespace itself.
 
 Capability providers are synchronous callbacks invoked with one keyword-only
 `context` argument. The context is an immutable

@@ -1452,6 +1452,7 @@ class APIServerAdapter(BasePlatformAdapter):
         manager = getattr(self, "_plugin_manager", None)
         if manager is None or not hasattr(manager, "get_api_server_routes"):
             return
+        from hermes_cli.plugins import is_safe_api_server_plugin_id
 
         existing_routes: set[tuple[str, str]] = set()
         for resource in router.resources():
@@ -1486,6 +1487,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 plugin = str(route.get("plugin", "")).strip("/")
                 if not method or not path or not callable(handler):
                     raise ValueError("missing method/path/handler")
+                if not is_safe_api_server_plugin_id(plugin):
+                    raise ValueError(
+                        "plugin namespace must contain safe URL path segments"
+                    )
                 if not isinstance(path, str) or not path.startswith("/"):
                     raise ValueError("path must start with /")
                 if not path.startswith("/v1/plugins/"):

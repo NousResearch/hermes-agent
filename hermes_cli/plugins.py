@@ -278,6 +278,15 @@ def _get_enabled_plugins() -> Optional[set]:
 # ---------------------------------------------------------------------------
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+_API_PLUGIN_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def is_safe_api_server_plugin_id(plugin_id: str) -> bool:
+    """Return whether a plugin id is safe to embed as literal URL segments."""
+    return bool(plugin_id) and all(
+        _API_PLUGIN_ID_SEGMENT_RE.fullmatch(segment)
+        for segment in plugin_id.split("/")
+    )
 
 
 @dataclass
@@ -1255,6 +1264,10 @@ class PluginContext:
         if path == "/v1/plugins/":
             raise ValueError("API server route path must include a route name")
         plugin_id = str(self.manifest.key or self.manifest.name).strip("/")
+        if not is_safe_api_server_plugin_id(plugin_id):
+            raise ValueError(
+                "API server plugin namespace must contain safe URL path segments"
+            )
         plugin_namespace = f"/v1/plugins/{plugin_id}/"
         if not plugin_id or not path.startswith(plugin_namespace):
             raise ValueError(

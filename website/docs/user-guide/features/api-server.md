@@ -267,7 +267,8 @@ routes use the same `API_SERVER_KEY` bearer authentication as core API-server
 routes. Plugin handlers receive the native `aiohttp.web.Request` and must
 return an `aiohttp.web.StreamResponse` (synchronously or asynchronously).
 Hermes rejects non-callable handlers, invalid methods and paths, duplicate
-method/path pairs, and duplicate route names during plugin registration. A
+method/path pairs, duplicate route names, and plugin namespaces containing
+unsafe URL path segments or route-template syntax during registration. A
 handler exception or invalid response produces a stable JSON `500` response
 without exposing the exception to the API client.
 

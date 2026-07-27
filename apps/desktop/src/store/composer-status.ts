@@ -156,6 +156,39 @@ const goalToItem = (goal: { detail?: string; status: GoalStatus; title: string }
 })
 
 // The single thing the stack reads: a typed, merged item list per session.
+//
+// Identity contract: this computed's inputs churn constantly during a turn (a
+// subagent tick, a 5s background poll, a todo update — in ANY session), but
+// the merged output for most sessions is unchanged. Rebuilding fresh arrays
+// and item objects every time handed every mounted composer stack a new
+// reference per recompute — cross-session churn × open tiles. Stabilize both
+// levels: an unchanged session keeps its previous array (and item objects),
+// and a fully-unchanged map keeps its previous reference so `computed` skips
+// the notify entirely ("preserve reference identity on no-ops").
+const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
+  a.id === b.id &&
+  a.type === b.type &&
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode &&
+  a.currentTool === b.currentTool &&
+  a.goalStatus === b.goalStatus &&
+  a.todoStatus === b.todoStatus &&
+  a.sessionId === b.sessionId
+
+const stabilizeItems = (prev: ComposerStatusItem[] | undefined, next: ComposerStatusItem[]): ComposerStatusItem[] => {
+  if (!prev) {
+    return next
+  }
+
+  const merged = next.map((item, i) => (prev[i] && sameStatusItem(prev[i], item) ? prev[i] : item))
+
+  return merged.length === prev.length && merged.every((item, i) => item === prev[i]) ? prev : merged
+}
+
+let prevStatusItems: Record<string, ComposerStatusItem[]> = {}
+
 export const $statusItemsBySession = computed(
   [$goalsBySession, $subagentsBySession, $backgroundStatusBySession, $todosBySession],
   (goals, subs, background, todos) => {
@@ -183,7 +216,14 @@ export const $statusItemsBySession = computed(
       push(sid, list)
     }
 
-    return out
+    let unchanged = Object.keys(prevStatusItems).length === Object.keys(out).length
+
+    for (const sid of Object.keys(out)) {
+      out[sid] = stabilizeItems(prevStatusItems[sid], out[sid]!)
+      unchanged &&= out[sid] === prevStatusItems[sid]
+    }
+
+    return (prevStatusItems = unchanged ? prevStatusItems : out)
   }
 )
 

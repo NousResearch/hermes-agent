@@ -8049,16 +8049,27 @@ class SessionDB:
         Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
         ``preview`` is the first 80 characters of the message content
         (with line breaks collapsed to spaces). Used by the /rewind
-        slash command picker.
+        slash command picker, CLI/TUI/gateway ``/undo [N]``, and any other
+        caller that needs real user-turn targets.
+
+        Bookkeeping timeline rows (``display_kind`` set — e.g. model_switch,
+        async_delegation_complete, auto_continue, hidden) are excluded. They
+        are durable ``role='user'`` rows for the API transcript, but no client
+        counts them as user turns (desktop demotes them to system / drops them;
+        the CLI already uses ``not m.get("display_kind")``). Including them here
+        made ``/undo`` soft-delete from a marker instead of the last real turn —
+        same class of index skew as the prompt.submit ordinal bug.
 
         By default only active messages are returned.
         """
         active_clause = "" if include_inactive else " AND active = 1"
+        # Match CLI/desktop: only real user turns, not timeline bookkeeping.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, timestamp, content FROM messages "
                 "WHERE session_id = ? AND role = 'user'"
-                f"{active_clause} "
+                f"{active_clause}{display_clause} "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, int(limit)),
             )

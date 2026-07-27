@@ -13,6 +13,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $chatLayout, setChatLayout } from '@/store/chat-layout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -245,6 +246,7 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const chatLayout = useStore($chatLayout)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -285,6 +287,11 @@ export function AppearanceSettings() {
   const toolOptions = [
     { id: 'product', label: a.product },
     { id: 'technical', label: a.technical }
+  ] as const
+
+  const chatLayoutOptions = [
+    { id: 'stacked', label: a.chatLayoutStacked },
+    { id: 'bubbles', label: a.chatLayoutBubbles }
   ] as const
 
   const embedOptions = [
@@ -469,6 +476,21 @@ export function AppearanceSettings() {
             }
             description={a.backdropDesc}
             title={a.backdropTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setChatLayout(id)
+                }}
+                options={chatLayoutOptions}
+                value={chatLayout}
+              />
+            }
+            description={a.chatLayoutDesc}
+            title={a.chatLayoutTitle}
           />
 
           <ListRow

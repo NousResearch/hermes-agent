@@ -44,6 +44,7 @@ interface LongFrame {
 
 const RESIZE_SELECTOR =
   '[role="separator"], [data-slot="pane-resize-handle"], [class*="cursor-col-resize"], [class*="cursor-row-resize"]'
+
 const TYPING_SELECTOR = '[contenteditable="true"], textarea, input[type="text"]'
 
 // A gesture is "over" once this long passes with no further input events.

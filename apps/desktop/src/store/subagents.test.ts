@@ -150,6 +150,7 @@ describe('subagent store', () => {
     const ids = listFor('s1')
       .map(item => item.id)
       .sort()
+
     expect(ids).toEqual(['live-a', 'live-b'])
     expect(activeSubagentCount(listFor('s1'))).toBe(2)
   })

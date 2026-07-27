@@ -108,7 +108,7 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
     <button
       className={cn(
         'group/artifact my-1.5 flex w-full max-w-md items-center gap-2.5 overflow-hidden rounded-[0.625rem] border border-border px-3 py-2.5 text-left transition-colors',
-        streaming ? 'cursor-default' : 'cursor-pointer hover:border-border hover:bg-accent/40'
+        streaming ? 'cursor-default' : 'cursor-pointer hover:bg-accent/40'
       )}
       data-slot="aui_artifact-card"
       disabled={streaming}
@@ -121,13 +121,13 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
       <span className="min-w-0 flex-1">
         <span
           className={cn(
-            'block truncate text-[0.8125rem] font-medium text-foreground',
+            'block truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground',
             streaming && 'shimmer text-foreground/55'
           )}
         >
           {title}
         </span>
-        <span className="block truncate text-[0.6875rem] text-muted-foreground">
+        <span className="block truncate text-[length:var(--conversation-tool-font-size)] text-muted-foreground">
           {streaming
             ? copy.generating(lineCount)
             : versionCount > 1
@@ -136,7 +136,7 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
         </span>
       </span>
       {!streaming && (
-        <span className="shrink-0 text-[0.6875rem] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/artifact:opacity-100">
+        <span className="shrink-0 text-[length:var(--conversation-tool-font-size)] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/artifact:opacity-100">
           {copy.open}
         </span>
       )}

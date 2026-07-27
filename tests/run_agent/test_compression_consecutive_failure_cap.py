@@ -163,8 +163,9 @@ class TestConsecutiveFailureCompressionCap:
 
         def _fake_compress_effective(messages, system_message, **_kwargs):
             compress_calls.append(len(messages))
-            return messages[1:], "compressed prompt"
+            return messages, "compressed prompt"
 
+        agent.context_compressor._last_compression_made_progress = True
         agent.context_compressor.should_defer_preflight_to_real_usage.return_value = True
 
         responses = [_tool_response(0), _tool_response(1), _stop_response()]

@@ -135,11 +135,13 @@ def _run_tool_loop(agent, n_tool_iterations: int, *, effective=False):
 
     def _fake_compress_effective(messages, system_message, **_kwargs):
         compress_calls.append(len(messages))
-        # Return one fewer message — real compression reduces context,
-        # so ``len(messages) < len(snapshot)`` detects material progress.
-        return messages[1:], "compressed prompt"
+        return messages, "compressed prompt"
 
     _fake_compress = _fake_compress_effective if effective else _fake_compress_identity
+
+    # Mirror the real compressor's progress flag so the effectiveness
+    # tracker sees material progress only when the test expects it.
+    agent.context_compressor._last_compression_made_progress = effective
 
     with (
         patch.object(agent, "_compress_context", side_effect=_fake_compress),

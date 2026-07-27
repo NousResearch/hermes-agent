@@ -376,3 +376,37 @@ class TestRedecoratePromptCacheOnPolicyChange:
         else:
             assert guidance in content
 
+
+    def test_moa_no_guidance_prepared_messages_still_refreshed(self):
+        # guidance=None is a real prepared shape (all references failed /
+        # silent degraded policy). The MoA facade sends prepared["messages"],
+        # so the rebase must refresh the prepared object even without
+        # guidance — otherwise the aggregator ships the STALE decoration
+        # and #72626 persists for the no-guidance MoA sub-path.
+        prompt = "sys"
+        decorated = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "task"},
+            ],
+            native_anthropic=True,
+        )
+
+        class _Completions:
+            def rebase_prepared_request(self, prepared, messages):
+                # Mirrors MoAChatCompletions.rebase_prepared_request with
+                # falsy guidance: copy messages, skip the attach.
+                return {**prepared, "messages": [dict(m) for m in messages]}
+
+        # Policy change while staying on moa: cache-on -> cache-off.
+        agent = _cache_agent(use_caching=False, prompt=prompt, provider="moa")
+        agent.client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+        prepared = {"guidance": None, "messages": decorated}
+        out, new_prepared = _redecorate_prompt_cache_for_provider(
+            agent, decorated, moa_prepared=prepared
+        )
+        assert new_prepared is not None
+        # The prepared object the facade will send must carry the
+        # redecorated (stripped) messages, not the stale decorated list.
+        assert _count_cache_markers(new_prepared["messages"]) == 0
+        assert new_prepared["messages"] == out

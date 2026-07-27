@@ -926,8 +926,14 @@ def _redecorate_prompt_cache_for_provider(
     if (
         prepared is not None
         and getattr(agent, "provider", None) == "moa"
-        and guidance
     ):
+        # No `and guidance` here: guidance=None is a real prepared shape
+        # (all-references-failed / silent degraded policy builds the
+        # prepared request without attaching guidance), and the MoA facade
+        # sends prepared["messages"] — not api_kwargs["messages"] — so the
+        # rebase must refresh the prepared object even when there is no
+        # guidance to re-attach. rebase_prepared_request handles falsy
+        # guidance by copying the messages and skipping the attach.
         completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         rebase = getattr(completions, "rebase_prepared_request", None)
         if callable(rebase):

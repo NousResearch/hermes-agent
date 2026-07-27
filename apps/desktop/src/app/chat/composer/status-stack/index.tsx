@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
 import {
@@ -84,17 +85,18 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const itemsBySession = useStore($statusItemsBySession)
-  const previewsBySession = useStore($previewStatusBySession)
+  // Subscribe to THIS session's slice only. Both maps churn on other
+  // sessions' activity (subagent ticks, background polls, preview updates in
+  // any tile); a whole-map `useStore` re-rendered every mounted stack — one
+  // per open tile — on all of it. The per-key arrays are referentially stable
+  // across unrelated writes, so the slice hook bails out unless OUR session's
+  // items actually changed.
+  const items = useSessionSlice($statusItemsBySession, sessionId)
+  const previews = useSessionSlice($previewStatusBySession, sessionId)
   const scrolledUp = useStore($threadScrolledUp)
   const billing = useStore($billingBlock)
 
-  const groups = useMemo(
-    () => groupStatusItems(sessionId ? (itemsBySession[sessionId] ?? []) : []),
-    [itemsBySession, sessionId]
-  )
-
-  const previews = sessionId ? (previewsBySession[sessionId] ?? []) : []
+  const groups = useMemo(() => groupStatusItems(items), [items])
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream.

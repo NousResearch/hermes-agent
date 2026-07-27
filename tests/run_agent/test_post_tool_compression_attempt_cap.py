@@ -135,9 +135,9 @@ def _run_tool_loop(agent, n_tool_iterations: int, *, effective=False):
 
     def _fake_compress_effective(messages, system_message, **_kwargs):
         compress_calls.append(len(messages))
-        # Return a shallow copy — a new list object, so the identity
-        # check ``messages is not _input`` detects material progress.
-        return list(messages), "compressed prompt"
+        # Return one fewer message — real compression reduces context,
+        # so ``len(messages) < len(snapshot)`` detects material progress.
+        return messages[1:], "compressed prompt"
 
     _fake_compress = _fake_compress_effective if effective else _fake_compress_identity
 

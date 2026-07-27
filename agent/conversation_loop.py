@@ -1761,7 +1761,7 @@ def run_conversation(
             else:
                 # Track whether this compression materially reduced context.
                 # Only effective compactions reset the failure streak (#72451).
-                if messages is not _pre_api_input:
+                if len(messages) < len(_pre_api_input):
                     _last_compression_effective = True
                 # Reset retry/empty-response state so the compacted request
                 # gets a fresh chance instead of inheriting stale recovery
@@ -5971,7 +5971,7 @@ def run_conversation(
                     else:
                         # Track whether this compression materially reduced
                         # context (#72451).
-                        if messages is not _post_tool_input:
+                        if len(messages) < len(_post_tool_input):
                             _last_compression_effective = True
                         conversation_history = conversation_history_after_compression(
                             agent, messages, conversation_history

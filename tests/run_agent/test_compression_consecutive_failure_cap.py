@@ -163,7 +163,7 @@ class TestConsecutiveFailureCompressionCap:
 
         def _fake_compress_effective(messages, system_message, **_kwargs):
             compress_calls.append(len(messages))
-            return list(messages), "compressed prompt"
+            return messages[1:], "compressed prompt"
 
         agent.context_compressor.should_defer_preflight_to_real_usage.return_value = True
 

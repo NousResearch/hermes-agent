@@ -1508,11 +1508,11 @@ export interface Translations {
     allPinned: string
     shiftClickHint: string
     noWorkspace: string
-    noProject: string
     projectEmpty: string
     noSessions: string
     projects: {
       sectionLabel: string
+      home: string
       newButton: string
       createTitle: string
       createDesc: string

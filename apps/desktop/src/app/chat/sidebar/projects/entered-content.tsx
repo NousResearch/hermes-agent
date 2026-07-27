@@ -23,13 +23,7 @@ import { SidebarRowStack } from '../chrome'
 
 import { useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
-import {
-  mergeRepoWorktreeGroups,
-  overlayRepoLanes,
-  type SidebarProjectTree,
-  type SidebarSessionGroup,
-  type SidebarWorkspaceTree
-} from './workspace-groups'
+import { type SidebarProjectTree, type SidebarSessionGroup, type SidebarWorkspaceTree } from './workspace-groups'
 import { WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
 
 // The entered project's body. Main-checkout sessions render directly — no
@@ -40,16 +34,12 @@ export function EnteredProjectContent({
   project,
   renderRows,
   onNewSession,
-  repoWorktrees,
-  liveSessions,
-  removedSessionIds
+  repoWorktrees
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   repoWorktrees?: Record<string, HermesGitWorktree[]>
-  liveSessions?: SessionInfo[]
-  removedSessionIds?: ReadonlySet<string>
 }) {
   if (!project.repos.length) {
     return null
@@ -63,9 +53,7 @@ export function EnteredProjectContent({
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
           key={repo.id}
-          liveSessions={liveSessions}
           onNewSession={onNewSession}
-          removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
           showHeader={!single}
@@ -80,40 +68,22 @@ function RepoFlatSection({
   showHeader,
   renderRows,
   onNewSession,
-  discoveredWorktrees,
-  liveSessions,
-  removedSessionIds
+  discoveredWorktrees
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   discoveredWorktrees?: HermesGitWorktree[]
-  liveSessions?: SessionInfo[]
-  removedSessionIds?: ReadonlySet<string>
 }) {
   const { t } = useI18n()
   const s = t.sidebar
   const [open, toggleOpen] = useWorkspaceNodeOpen(repo.id)
   const dismissedWorktrees = useStore($dismissedWorktreeIds)
 
-  // The repo's session lanes already come fully built from the backend; this
-  // only injects empty VISUAL lanes from a live `git worktree list`.
-  const mergedGroups = useMemo(() => mergeRepoWorktreeGroups(repo, discoveredWorktrees), [repo, discoveredWorktrees])
-
-  // Optimistic placement runs against the MERGED lane set (backend + visual
-  // git-worktree lanes) so out-of-tree/sibling worktrees — which exist as visual
-  // lanes before the snapshot carries their sessions — get the new row. The
-  // overlay drops lanes it empties, so re-merge to restore still-real worktrees.
-  const overlaidGroups = useMemo(() => {
-    if (!(liveSessions?.length || removedSessionIds?.size)) {
-      return mergedGroups
-    }
-
-    const { groups } = overlayRepoLanes({ ...repo, groups: mergedGroups }, liveSessions ?? [], removedSessionIds)
-
-    return mergeRepoWorktreeGroups({ id: repo.id, path: repo.path, groups }, discoveredWorktrees)
-  }, [repo, mergedGroups, discoveredWorktrees, liveSessions, removedSessionIds])
+  // Visual lanes and live rows were already reconciled once before the
+  // SidebarSessionsSection empty-state gate.
+  const overlaidGroups = repo.groups
 
   const discoveredWorktreePaths = useMemo(
     () =>

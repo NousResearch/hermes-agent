@@ -10,6 +10,7 @@ import {
   mergeRepoWorktreeGroups,
   overlayLiveLanes,
   overlayLivePreviews,
+  overlayProjectLiveLanes,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -674,6 +675,160 @@ describe('overlayLiveLanes', () => {
     const overlaid = overlayLiveLanes(project, [existing])
 
     expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['dup'])
+  })
+
+  it('keeps a live row in its authoritative backend lane when optimistic metadata disagrees', () => {
+    const snapshot = makeSession('/www/app', { id: 'dup', git_branch: 'historical' })
+    const live = makeSession('/www/app', { id: 'dup', git_branch: null, title: 'updated live row' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: '/www/app', label: 'app', isMain: true, path: '/www/app', sessions: [snapshot] })]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [live])
+    const rows = overlaid.repos[0].groups.flatMap(group => group.sessions)
+
+    expect(rows.map(session => session.id)).toEqual(['dup'])
+    expect(rows[0].title).toBe('updated live row')
+    expect(overlaid.repos[0].groups.map(group => group.id)).toEqual(['/www/app'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('refreshes an authoritative backend row when its live cwd is temporarily absent', () => {
+    const snapshot = makeSession('/www/app', { id: 'dup', title: 'snapshot title' })
+    const live = makeSession(null, { id: 'dup', title: 'updated live row' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: '/www/app', label: 'app', isMain: true, path: '/www/app', sessions: [snapshot] })]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [live])
+    const rows = overlaid.repos[0].groups.flatMap(group => group.sessions)
+
+    expect(rows.map(session => session.id)).toEqual(['dup'])
+    expect(rows[0].title).toBe('updated live row')
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('does not path-place a backend-owned session into a second repo', () => {
+    const snapshot = makeSession('/www/a', { id: 'dup', title: 'snapshot title' })
+    const live = makeSession('/www/b', { id: 'dup', title: 'updated live row' })
+
+    const project = projectNode({
+      id: '/www',
+      repos: [
+        {
+          id: '/www/a',
+          label: 'a',
+          path: '/www/a',
+          sessionCount: 1,
+          groups: [lane({ id: '/www/a', label: 'a', isMain: true, path: '/www/a', sessions: [snapshot] })]
+        },
+        { id: '/www/b', label: 'b', path: '/www/b', sessionCount: 0, groups: [] }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions).map(session => session.id)).toEqual(['dup'])
+    expect(overlaid.repos[0].groups[0].sessions[0].title).toBe('updated live row')
+    expect(overlaid.repos[1].groups).toEqual([])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('routes a new optimistic row to only the most specific nested repo', () => {
+    const live = makeSession('/www/nested/src', { id: 'fresh' })
+
+    const project = projectNode({
+      id: '/www',
+      repos: [
+        {
+          id: '/www',
+          label: 'www',
+          path: '/www',
+          sessionCount: 0,
+          groups: [lane({ id: '/www::branch::main', label: 'main', isMain: true, path: '/www' })]
+        },
+        {
+          id: '/www/nested',
+          label: 'nested',
+          path: '/www/nested',
+          sessionCount: 0,
+          groups: [lane({ id: '/www/nested::branch::main', label: 'main', isMain: true, path: '/www/nested' })]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions)).toEqual([])
+    expect(overlaid.repos[1].groups.flatMap(group => group.sessions).map(session => session.id)).toEqual(['fresh'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('places a new row into an out-of-tree visual worktree at project scope', () => {
+    const live = makeSession('/outside/repo-feature/src', { id: 'fresh' })
+
+    const project = projectNode({
+      id: '/repo',
+      repos: [
+        {
+          id: '/repo',
+          label: 'repo',
+          path: '/repo',
+          sessionCount: 0,
+          groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
+        }
+      ]
+    })
+
+    const repoWorktrees: Record<string, HermesGitWorktree[]> = {
+      '/repo': [
+        { branch: 'main', detached: false, isMain: true, locked: false, path: '/repo' },
+        { branch: 'feature', detached: false, isMain: false, locked: false, path: '/outside/repo-feature' }
+      ]
+    }
+
+    const overlaid = overlayProjectLiveLanes(project, [live], repoWorktrees)
+    const feature = overlaid.repos[0].groups.find(group => group.path === '/outside/repo-feature')
+
+    expect(feature?.sessions.map(session => session.id)).toEqual(['fresh'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('preserves the project reference when visual merge and live overlay are semantic no-ops', () => {
+    const project = projectNode({
+      id: '/repo',
+      repos: [
+        {
+          id: '/repo',
+          label: 'repo',
+          path: '/repo',
+          sessionCount: 0,
+          groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
+        }
+      ]
+    })
+
+    expect(overlayProjectLiveLanes(project, [])).toBe(project)
   })
 
   it('adds a new session to an existing worktree lane keyed by a divergent id (matches by path)', () => {

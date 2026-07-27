@@ -97,6 +97,16 @@ const comparisonSegments = (path: string): string[] => {
 /** Canonical per-host comparison key (separator/case/trailing-slash agnostic). */
 const pathKey = (path: null | string | undefined): string => comparisonSegments(path ?? '').join('/')
 
+/** Matched root depth, or -1 when `path` is outside `root`. */
+const pathDepthWithin = (path: null | string | undefined, root: null | string | undefined): number => {
+  const pathSegments = comparisonSegments(path ?? '')
+  const rootSegments = comparisonSegments(root ?? '')
+
+  return rootSegments.length && rootSegments.every((segment, index) => pathSegments[index] === segment)
+    ? rootSegments.length
+    : -1
+}
+
 /** Last path segment. */
 export const baseName = (path: string): string | undefined => segments(path).pop()
 
@@ -500,34 +510,44 @@ export function overlayRepoLanes(
   for (const session of live) {
     const cwd = (session.cwd || '').trim()
 
-    if (removed.has(session.id) || !cwd) {
+    if (removed.has(session.id)) {
       continue
     }
 
-    // (1) Join an EXISTING worktree lane by its own path. A linked worktree can
-    // live anywhere on disk (often a repo sibling, e.g. `repo-ci`), so nesting
-    // under the repo root isn't reliable — but the lane carries its real dir.
-    // Longest match wins; skip the root lane so an in-tree `.worktrees/<slug>`
-    // session isn't swallowed by main.
-    let lane: SidebarSessionGroup | undefined
+    // (1) A backend snapshot already owns this durable session id. Keep that
+    // authoritative lane even when the optimistic row's incomplete/stale Git
+    // metadata would compute a different lane; only refresh the row contents.
+    let lane = lanes.find(group => group.sessions.some(row => row.id === session.id))
+
+    if (!lane && !cwd) {
+      continue
+    }
+
+    // (2) Otherwise join an EXISTING worktree lane by its own path. A linked
+    // worktree can live anywhere on disk (often a repo sibling, e.g. `repo-ci`),
+    // so nesting under the repo root isn't reliable — but the lane carries its
+    // real dir. Longest match wins; skip the root lane so an in-tree
+    // `.worktrees/<slug>` session isn't swallowed by main.
     let bestLen = -1
 
-    for (const g of lanes) {
-      const lanePath = normalizePath(g.path)
+    if (!lane) {
+      for (const g of lanes) {
+        const lanePath = normalizePath(g.path)
 
-      if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, cwd)) {
-        continue
-      }
+        if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, cwd)) {
+          continue
+        }
 
-      const len = segments(lanePath).length
+        const len = segments(lanePath).length
 
-      if (len > bestLen) {
-        bestLen = len
-        lane = g
+        if (len > bestLen) {
+          bestLen = len
+          lane = g
+        }
       }
     }
 
-    // (2) Else place under the repo root via a computed lane (main / branch /
+    // (3) Else place under the repo root via a computed lane (main / branch /
     // in-tree `.worktrees` / kanban). Match by id, then path (the backend may
     // key a worktree lane off the git-probed root OR a branch-style id), then
     // the main-lane label; create it when the snapshot lacked it.
@@ -576,8 +596,58 @@ export function overlayLiveLanes(
 ): SidebarProjectTree {
   let changed = false
 
-  const repos = project.repos.map(repo => {
-    const next = overlayRepoLanes(repo, live, removed)
+  // A snapshot session belongs to exactly one backend-selected repo. Route its
+  // live row only to that owner so another repo cannot path-place the same id.
+  const snapshotRepoBySessionId = new Map<string, number>()
+
+  for (const [repoIndex, repo] of project.repos.entries()) {
+    for (const group of repo.groups) {
+      for (const session of group.sessions) {
+        if (!snapshotRepoBySessionId.has(session.id)) {
+          snapshotRepoBySessionId.set(session.id, repoIndex)
+        }
+      }
+    }
+  }
+
+  const bestOptimisticRepo = (session: SessionInfo): number | undefined => {
+    let best: { depth: number; isRepoRoot: boolean; repoIndex: number } | undefined
+
+    for (const [repoIndex, repo] of project.repos.entries()) {
+      const candidates = [
+        { isRepoRoot: true, path: repo.path },
+        ...repo.groups.map(group => ({ isRepoRoot: false, path: group.path }))
+      ]
+
+      for (const candidate of candidates) {
+        const depth = pathDepthWithin(session.cwd, candidate.path)
+
+        if (
+          depth < 0 ||
+          (best && (depth < best.depth || (depth === best.depth && (!candidate.isRepoRoot || best.isRepoRoot))))
+        ) {
+          continue
+        }
+
+        best = { depth, isRepoRoot: candidate.isRepoRoot, repoIndex }
+      }
+    }
+
+    return best?.repoIndex
+  }
+
+  const liveByRepo = project.repos.map(() => [] as SessionInfo[])
+
+  for (const session of live) {
+    const repoIndex = snapshotRepoBySessionId.get(session.id) ?? bestOptimisticRepo(session)
+
+    if (repoIndex !== undefined) {
+      liveByRepo[repoIndex].push(session)
+    }
+  }
+
+  const repos = project.repos.map((repo, repoIndex) => {
+    const next = overlayRepoLanes(repo, liveByRepo[repoIndex], removed)
 
     changed ||= next !== repo
 
@@ -589,6 +659,64 @@ export function overlayLiveLanes(
   }
 
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
+}
+
+/**
+ * Entered-project composition: merge visual-only worktree lanes before the
+ * optimistic overlay can place rows into them, reconcile once at project scope,
+ * then restore any still-real empty visual lanes the overlay pruned.
+ */
+export function overlayProjectLiveLanes(
+  project: SidebarProjectTree,
+  live: SessionInfo[],
+  repoWorktrees?: Readonly<Record<string, HermesGitWorktree[]>>,
+  removed: ReadonlySet<string> = new Set()
+): SidebarProjectTree {
+  const sameGroups = (before: SidebarSessionGroup[], after: SidebarSessionGroup[]): boolean =>
+    before.length === after.length &&
+    before.every((group, index) => {
+      const next = after[index]
+      const keys = new Set([...Object.keys(group), ...Object.keys(next)])
+
+      for (const key of keys) {
+        if (key === 'sessions') {
+          continue
+        }
+
+        if (
+          !Object.is(
+            (group as unknown as Record<string, unknown>)[key],
+            (next as unknown as Record<string, unknown>)[key]
+          )
+        ) {
+          return false
+        }
+      }
+
+      return (
+        group.sessions.length === next.sessions.length &&
+        group.sessions.every((session, sessionIndex) => session === next.sessions[sessionIndex])
+      )
+    })
+
+  const mergeVisualLanes = (repo: SidebarWorkspaceTree): SidebarWorkspaceTree => {
+    const groups = mergeRepoWorktreeGroups(repo, repo.path ? repoWorktrees?.[repo.path] : undefined)
+
+    return sameGroups(repo.groups, groups) ? repo : { ...repo, groups }
+  }
+
+  const visualRepos = project.repos.map(mergeVisualLanes)
+
+  const withVisualLanes = visualRepos.every((repo, index) => repo === project.repos[index])
+    ? project
+    : { ...project, repos: visualRepos }
+
+  const overlaid = overlayLiveLanes(withVisualLanes, live, removed)
+  const restoredRepos = overlaid.repos.map(mergeVisualLanes)
+
+  return restoredRepos.every((repo, index) => repo === overlaid.repos[index])
+    ? overlaid
+    : { ...overlaid, repos: restoredRepos }
 }
 
 /** Merge live sessions into per-project overview previews, keyed by project path. */

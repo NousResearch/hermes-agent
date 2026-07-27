@@ -114,7 +114,6 @@ import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import {
   orderProjectsByIds,
-  overlayLiveLanes,
   overlayLivePreviews,
   PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
@@ -682,21 +681,11 @@ export function ChatSidebar({
         ? enteredProjectTree
         : overviewEnteredProject
 
-    // The live-session overlay (creates/evictions) is applied per-repo in
-    // RepoFlatSection, AFTER the visual git-worktree lanes are merged in (so
-    // out-of-tree worktrees can be placed). Here we just order the snapshot.
+    // Here we only order the backend snapshot. SidebarSessionsSection merges
+    // visual worktree lanes and applies one project-wide live overlay before
+    // deciding whether the entered project has content.
     return { ...hydrated, repos: orderRepos(hydrated.repos) }
   }, [overviewEnteredProject, enteredProjectTree, orderRepos])
-
-  // Overlay live `$sessions` onto the entered project so a just-created session
-  // (which the backend snapshot hasn't folded in yet) counts as content and
-  // renders immediately — same optimistic layer as the overview previews. The
-  // backend now seeds each project folder as an (empty) repo, so the overlay
-  // always has a lane to place a new in-project session into.
-  const enteredProjectContent = useMemo(
-    () => (enteredProject ? overlayLiveLanes(enteredProject, agentSessions, removedSessionIds) : undefined),
-    [enteredProject, agentSessions, removedSessionIds]
-  )
 
   const scopedRepoPaths = useMemo(
     () =>
@@ -1399,7 +1388,7 @@ export function ChatSidebar({
                 projectBackRow={
                   inProject ? <ProjectBackRow label={s.projects.back} onClick={exitProjectScope} /> : undefined
                 }
-                projectContent={inProject ? enteredProjectContent : undefined}
+                projectContent={inProject ? enteredProject : undefined}
                 projectOverview={projectOverview}
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}

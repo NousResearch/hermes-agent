@@ -17,6 +17,7 @@ import { sessionPinId } from '@/store/session'
 import { SidebarCount, SidebarDateDivider } from './chrome'
 import {
   EnteredProjectContent,
+  overlayProjectLiveLanes,
   ProjectOverviewRow,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -197,7 +198,22 @@ export function SidebarSessionsSection({
   // A defined project list is itself content (even an empty project should
   // render as a drill-in row so the user can see it exists).
   const hasProjectOverview = Boolean(projectOverview?.length)
-  const hasProjectContent = Boolean(projectContent && projectContent.sessionCount > 0)
+
+  // Entered-project membership must be reconciled exactly once, after visual
+  // worktree lanes exist and before the empty-state gate. A pre-overlay in the
+  // parent would make an unseen row look backend-owned by a less-specific repo;
+  // gating first would hide an out-of-tree row before it can be placed.
+  const renderedProjectContent = useMemo(
+    () =>
+      projectContent
+        ? overlayProjectLiveLanes(projectContent, liveSessions ?? [], projectRepoWorktrees, removedSessionIds)
+        : undefined,
+    [projectContent, liveSessions, projectRepoWorktrees, removedSessionIds]
+  )
+
+  const hasProjectContent = Boolean(
+    renderedProjectContent?.repos.some(repo => repo.groups.some(group => group.sessions.length > 0))
+  )
 
   const showEmptyState =
     forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)
@@ -288,12 +304,10 @@ export function SidebarSessionsSection({
     inner = (
       <>
         {projectBackRow}
-        {hasProjectContent ? (
+        {hasProjectContent && renderedProjectContent ? (
           <EnteredProjectContent
-            liveSessions={liveSessions}
             onNewSession={onNewSessionInWorkspace}
-            project={projectContent}
-            removedSessionIds={removedSessionIds}
+            project={renderedProjectContent}
             renderRows={renderRowsDated}
             repoWorktrees={projectRepoWorktrees}
           />

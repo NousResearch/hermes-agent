@@ -13,6 +13,7 @@ export { SidebarWorkspaceGroup } from './workspace-group'
 export {
   overlayLiveLanes,
   overlayLivePreviews,
+  overlayProjectLiveLanes,
   sessionRecency,
   type SidebarProjectTree,
   type SidebarSessionGroup,

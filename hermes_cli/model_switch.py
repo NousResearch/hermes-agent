@@ -2370,7 +2370,8 @@ def list_authenticated_providers(
             entry_models: list = []
             if default_model:
                 entry_models.append(default_model)
-            for model_id in _declared_model_ids(ep_cfg.get("models", [])):
+            entry_declared_models = _declared_model_ids(ep_cfg.get("models", []))
+            for model_id in entry_declared_models:
                 if model_id not in entry_models:
                     entry_models.append(model_id)
 
@@ -2404,6 +2405,7 @@ def list_authenticated_providers(
                     "name": grp_display or display_name,
                     "api_url": api_url,
                     "models": [],
+                    "has_explicit_models": False,
                     "ep_cfg": ep_cfg,  # used below for discover_models / api_key
                     "raw_names": [],
                 }
@@ -2411,6 +2413,13 @@ def list_authenticated_providers(
             for _m in entry_models:
                 if _m and _m not in ep_groups[group_key]["models"]:
                     ep_groups[group_key]["models"].append(_m)
+            # Track explicit ``models:`` declarations separately from the
+            # merged list: a singular ``default_model``/``model`` is only the
+            # active selection and must not be mistaken for the user narrowing
+            # the endpoint to a curated subset (mirrors section 4's
+            # declaration-tracking; see #40542 / PR #61928).
+            if entry_declared_models:
+                ep_groups[group_key]["has_explicit_models"] = True
             ep_groups[group_key]["raw_names"].append(display_name)
 
         for grp in ep_groups.values():
@@ -2433,8 +2442,11 @@ def list_authenticated_providers(
             # unless the provider explicitly opts out via discover_models: false.
             # Policy mirrors Section 4's should_probe logic:
             # - With an api_key: always probe (user opted into the endpoint).
-            # - Without an api_key but with explicit models: skip — the user
-            #   is narrowing a public endpoint to a specific subset.
+            # - Without an api_key but with an explicit ``models:`` list:
+            #   skip — the user is narrowing a public endpoint to a specific
+            #   subset. A singular ``default_model``/``model`` does NOT count
+            #   as narrowing (it's just the active selection) and must not
+            #   suppress discovery — mirrors section 4 / #40542.
             # - Without an api_key AND no explicit models: probe anyway so
             #   bare-endpoint providers (local llama.cpp / Ollama servers)
             #   still show their full model catalog.
@@ -2445,7 +2457,7 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            has_explicit_models = bool(models_list)
+            has_explicit_models = bool(grp.get("has_explicit_models"))
             _ep_url_norm = str(api_url).strip().rstrip("/").lower()
             _ep_slug_norm = str(ep_name).strip().lower()
             _ep_custom_slug_norm = custom_provider_slug(display_name).lower()

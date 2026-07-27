@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-sync'
 import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
@@ -13,10 +14,9 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
-  setSessionProfileTotals,
+  setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading,
-  setSessionsTotal
+  setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
 
@@ -42,8 +42,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // "batched sidebar endpoint missing" capability verdict across the switch.
   resetSidebarBatchCapability()
   setSessions([])
-  setSessionsTotal(0)
-  setSessionProfileTotals({})
+  setSessionProfilesTruncated({})
   setCronSessions([])
   setMessagingSessions([])
   setMessagingPlatformTotals({})
@@ -52,6 +51,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
   // $unreadFinishedSessionIds is separate, so wipe it explicitly.
   clearAllSessionStates()
+  resetLiveRuntimeTracking()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
   resetSessionsLimit()

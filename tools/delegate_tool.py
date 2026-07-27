@@ -2099,8 +2099,11 @@ def _run_single_child(
                     _err = (
                         f"Subagent timed out after {child_timeout}s with "
                         f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
+                        f"stuck on a slow API call, tool call, or unresponsive "
+                        f"network request."
                     )
+                    if diagnostic_path:
+                        _err += f" Diagnostic: {diagnostic_path}"
             else:
                 _err = str(_timeout_exc)
 
@@ -2112,6 +2115,13 @@ def _run_single_child(
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
+                "timeout_seconds": child_timeout if is_timeout else None,
+                "timed_out_after_seconds": duration if is_timeout else None,
+                "timeout_phase": (
+                    "before_first_llm_call" if is_timeout and child_api_calls == 0
+                    else "after_llm_calls" if is_timeout
+                    else None
+                ),
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
@@ -3062,6 +3072,38 @@ def delegate_task(
                 except Exception:
                     pass
 
+        def _batch_progress():
+            # Progress token for the async registry's stale monitor: the
+            # combined (api_call_count, current_tool, last_activity_ts) of
+            # every child. last_activity_ts is ticked by _touch_activity on
+            # every streamed chunk ("receiving stream response"), every tool
+            # transition, and every API-call start/completion — so a child
+            # streaming a long response is alive even though api_call_count
+            # only advances when the call completes (same liveness signal as
+            # the compaction inactivity budget, PR #71508). A fully frozen
+            # token past the stale threshold means the detached batch is
+            # wedged (e.g. stuck inside the first model API call — #60203).
+            # in_tool=True while ANY child is inside a tool so legitimately
+            # slow tools get the higher staleness ceiling, mirroring the
+            # sync-path heartbeat monitor.
+            parts = []
+            in_tool = False
+            for _c in _child_agents:
+                try:
+                    _summary = _c.get_activity_summary()
+                    _tool = _summary.get("current_tool")
+                    parts.append(
+                        (
+                            _summary.get("api_call_count", 0),
+                            _tool,
+                            _summary.get("last_activity_ts"),
+                        )
+                    )
+                    in_tool = in_tool or bool(_tool)
+                except Exception:
+                    parts.append(None)
+            return tuple(parts), in_tool
+
         _goals = [t["goal"] for t in task_list]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
@@ -3081,6 +3123,7 @@ def delegate_task(
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
+            progress_fn=_batch_progress,
         )
 
         if dispatch.get("status") == "dispatched":

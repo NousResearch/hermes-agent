@@ -14,6 +14,7 @@ import {
   clipboard,
   dialog,
   net as electronNet,
+  globalShortcut,
   ipcMain,
   Menu,
   nativeImage,
@@ -30,6 +31,7 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
+import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -80,6 +82,7 @@ import {
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { findGitBash as _findGitBash } from './find-git-bash'
+import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
@@ -139,6 +142,7 @@ import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
@@ -373,9 +377,9 @@ if (IS_WINDOWS) {
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
 // Keep the renderer running at full speed while the window is in the background
-// or occluded. The chat transcript streams to screen through a
-// requestAnimationFrame-gated flush; Chromium pauses rAF (and clamps timers)
-// for backgrounded/occluded renderers, so without these the live answer stalls
+// or occluded. The chat transcript streams to screen through a bounded timer
+// flush; Chromium clamps timers for backgrounded/occluded renderers, so without
+// these the live answer stalls
 // whenever the window loses focus (switching to your editor mid-turn, detached
 // devtools, another window covering it) and only paints on refocus or refresh.
 // `backgroundThrottling: false` on the BrowserWindow covers the blurred case;
@@ -1032,6 +1036,12 @@ let remoteReauthFailure = null
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
 let bootstrapAbortController = null
+// Explicit "the user asked for a repair" flag. Repair used to signal intent by
+// deleting the bootstrap marker, which stranded healthy installs whose only
+// problem was a transient backend error (#72166). Intent now lives here, so
+// repair can force the installer without destroying provenance about how the
+// install was created. Cleared once the reinstall is under way.
+let bootstrapRepairRequested = false
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -3383,11 +3393,11 @@ function readJson(filePath) {
   }
 }
 
-// Bootstrap-complete marker helpers. The marker is written ONCE by the
-// first-launch bootstrap runner (Phase 1D) after install.ps1 stages succeed
-// AND the user has finished initial configuration. On every subsequent boot
-// we check `isBootstrapComplete()` and skip the bootstrap flow entirely if
-// the marker is present and current-schema.
+// Bootstrap-complete marker helpers. The marker is written by whichever
+// installer ran: install.ps1, install.sh, the Rust bootstrap installer, or the
+// first-launch bootstrap runner. It is provenance ("a bootstrap finished
+// here"), NOT the launch gate -- activeRuntimeState() decides that, because a
+// healthy runtime can predate the marker or outlive a repair that cleared it.
 //
 // Marker schema (version 1):
 //   {
@@ -3420,29 +3430,13 @@ function isActiveRuntimeUsable() {
   )
 }
 
-function isBootstrapComplete() {
-  const marker = readBootstrapMarker()
-
-  if (!marker || typeof marker !== 'object') {
-    return false
-  }
-
-  if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) {
-    return false
-  }
-
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) {
-    return false
-  }
-
+function activeRuntimeState() {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
-  // update`, which moves HEAD legitimately. The marker just attests "we
-  // ran the bootstrap successfully at least once." We DO additionally require
-  // a runnable venv: an interrupted or split-home install can leave the marker
-  // + checkout without a venv, and trusting that spawns a dead backend
-  // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isActiveRuntimeUsable()
+  // update`, which moves HEAD legitimately. The marker only attests "a
+  // desktop-managed bootstrap ran here at least once"; runtime usability is
+  // what decides whether we can actually launch.
+  return classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, isActiveRuntimeUsable())
 }
 
 function writeBootstrapMarker(payload) {
@@ -3702,14 +3696,28 @@ function resolveHermesBackend(backendArgs) {
     }
   }
 
-  // 3. Bootstrap-complete ACTIVE_HERMES_ROOT -- the canonical install at
-  //    %LOCALAPPDATA%\hermes\hermes-agent (Windows) or ~/.hermes/hermes-agent.
-  //    The bootstrap marker means install.ps1 stages finished and the user
-  //    completed initial configuration; we trust the install and go straight
-  //    to spawning hermes. Updates flow through the in-app update path
-  //    (applyUpdates -> git pull) or `hermes update` from the CLI.
-  if (isBootstrapComplete()) {
+  // 3. ACTIVE_HERMES_ROOT — the canonical install at
+  //    %LOCALAPPDATA%\\hermes\\hermes-agent (Windows) or ~/.hermes/hermes-agent.
+  //    A valid bootstrap marker proves Desktop finished the first-run install
+  //    flow, but marker provenance is NOT the same thing as runtime usability:
+  //    the CLI can create the exact same repo+venv layout, and older desktop
+  //    builds could leave a healthy install behind without the marker. If the
+  //    active runtime is usable, launch it directly; only fall through to
+  //    bootstrap when the runtime itself is unusable.
+  const activeRuntime = activeRuntimeState()
+
+  if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
+    if (!activeRuntime.hasValidMarker) {
+      rememberLog(
+        `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
+      )
+    }
+
     return createActiveBackend(backendArgs)
+  }
+
+  if (bootstrapRepairRequested) {
+    rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
   }
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
@@ -3885,6 +3893,10 @@ async function ensureRuntime(backend) {
 
     bootstrapAbortController = new AbortController()
 
+    // The repair request has been honoured by reaching the installer; clear it
+    // so a later boot isn't forced through bootstrap again.
+    bootstrapRepairRequested = false
+
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
       activeRoot: backend.activeRoot,
@@ -3979,10 +3991,10 @@ async function ensureRuntime(backend) {
     // No venv at the expected location AND no bootstrap-needed sentinel
     // means we have a half-installed checkout: .git exists, source files
     // exist, but venv is missing or broken. This shouldn't happen in
-    // normal flow because isBootstrapComplete() requires
-    // isHermesSourceRoot() and the bootstrap writes the marker only after
-    // install.ps1 succeeds. If we hit this, the user (or a deleted venv)
-    // broke the invariant; tell them to re-run the install.
+    // normal flow because activeRuntimeState() requires isHermesSourceRoot()
+    // plus an importable hermes_cli before it hands back the active runtime.
+    // If we hit this, the user (or a deleted venv) broke the invariant; tell
+    // them to re-run the install.
     throw new Error(
       `Hermes venv missing at ${VENV_ROOT}. Re-run the desktop installer or ` + '`scripts/install.ps1` to rebuild it.'
     )
@@ -4927,6 +4939,8 @@ function getNativeOverlayWidth() {
 function getWindowState(win = mainWindow) {
   return {
     isFullscreen: Boolean(win?.isFullScreen?.()),
+    isMinimized: Boolean(win?.isMinimized?.()),
+    isVisible: Boolean(win?.isVisible?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition()
   }
@@ -8655,6 +8669,211 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
+// ── Quick Entry ─────────────────────────────────────────────────────────────
+//
+// A global shortcut summons a small frameless always-on-top composer from
+// anywhere, so a prompt can be fired without raising the whole app. The window
+// carries NO gateway connection: it hands its text to us, we forward it to the
+// PRIMARY renderer, and that renderer submits through the same prompt path the
+// normal composer uses (see store/quick-entry + hooks/use-quick-entry-bridge).
+//
+// Main owns the OS registration and the persisted preference (it must restore
+// the shortcut on a cold launch without the renderer ever visiting Settings),
+// same authority split as keep-awake. Registration failure is surfaced, never
+// swallowed: a chord another app already owns comes back as `error: 'taken'`.
+const QUICK_ENTRY_CONFIG_PATH = path.join(app.getPath('userData'), 'quick-entry.json')
+
+let quickEntryWindow = null
+
+// Latest state push from the primary renderer (connection + recent sessions),
+// replayed to a quick window that spawns after the push happened.
+let quickEntryLastState = null
+
+function readQuickEntrySettings() {
+  try {
+    return sanitizeQuickEntrySettings(JSON.parse(fs.readFileSync(QUICK_ENTRY_CONFIG_PATH, 'utf8')))
+  } catch {
+    // Missing / unreadable / malformed → shipped defaults (enabled, default chord).
+    return sanitizeQuickEntrySettings(undefined)
+  }
+}
+
+function writeQuickEntrySettings(settings) {
+  try {
+    fs.mkdirSync(path.dirname(QUICK_ENTRY_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(QUICK_ENTRY_CONFIG_PATH, JSON.stringify(settings, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[quick-entry] write failed: ${error.message}`)
+  }
+}
+
+function quickEntryUrl() {
+  if (DEV_SERVER) {
+    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=quick#/`
+  }
+
+  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=quick#/`
+}
+
+function spawnQuickEntryWindow() {
+  const cursor = screen.getCursorScreenPoint()
+  const display = screen.getDisplayNearestPoint(cursor)
+  const bounds = quickEntryWindowBounds(display?.workArea)
+
+  const win = new BrowserWindow({
+    ...bounds,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
+    // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
+    // capture window never becomes the app's cmd-tab anchor.
+    skipTaskbar: !IS_MAC,
+    hasShadow: true,
+    alwaysOnTop: true,
+    type: IS_MAC ? 'panel' : undefined,
+    hiddenInMissionControl: IS_MAC,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      devTools: true
+    }
+  })
+
+  win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
+  win.setHiddenInMissionControl?.(true)
+
+  try {
+    win.setVisibleOnAllWorkspaces(
+      true,
+      IS_MAC ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined
+    )
+  } catch {
+    // Not supported everywhere — best effort.
+  }
+
+  // Opts out of global UI zoom for the same reason as the pet overlay: it sizes
+  // its own OS window and a zoomed composer would overflow it.
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
+
+  // Hide on blur. The window must never hold the user's focus captive — losing
+  // focus is the cheapest, least surprising dismiss (matches Spotlight).
+  win.on('blur', () => {
+    if (!win.isDestroyed()) {
+      win.hide()
+    }
+  })
+
+  win.on('closed', () => {
+    if (quickEntryWindow === win) {
+      quickEntryWindow = null
+    }
+  })
+
+  // Replay the last known gateway state as soon as the page can hear it — a
+  // freshly spawned quick window must not sit "disconnected" when the primary
+  // renderer already reported a live gateway.
+  win.webContents.on('did-finish-load', () => {
+    if (!win.isDestroyed() && quickEntryLastState) {
+      win.webContents.send('hermes:quick-entry:state', quickEntryLastState)
+    }
+  })
+
+  win.loadURL(quickEntryUrl())
+
+  return win
+}
+
+// Move the (already-open) window to the display the cursor is on, so the chord
+// summons it where the user is looking rather than where they last were.
+function repositionQuickEntryWindow(win) {
+  try {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    win.setBounds(quickEntryWindowBounds(display?.workArea))
+  } catch (error) {
+    rememberLog(`[quick-entry] reposition failed: ${error.message}`)
+  }
+}
+
+function showQuickEntryWindow() {
+  if (!quickEntryWindow || quickEntryWindow.isDestroyed()) {
+    quickEntryWindow = spawnQuickEntryWindow()
+    quickEntryWindow.once('ready-to-show', () => {
+      if (!quickEntryWindow?.isDestroyed()) {
+        quickEntryWindow.show()
+        quickEntryWindow.focus()
+      }
+    })
+
+    return
+  }
+
+  repositionQuickEntryWindow(quickEntryWindow)
+  quickEntryWindow.show()
+  quickEntryWindow.focus()
+  // Re-summoned: tell the renderer to clear any stale draft and refocus.
+  quickEntryWindow.webContents.send('hermes:quick-entry:shown')
+}
+
+function hideQuickEntryWindow() {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.hide()
+  }
+}
+
+// The chord toggles: pressing it while the composer is up puts it away, so one
+// gesture does exactly one thing in both directions.
+function toggleQuickEntryWindow() {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed() && quickEntryWindow.isVisible()) {
+    hideQuickEntryWindow()
+
+    return
+  }
+
+  showQuickEntryWindow()
+}
+
+const quickEntryShortcut = createQuickEntryShortcut(globalShortcut, toggleQuickEntryWindow)
+
+function applyQuickEntrySettings(settings) {
+  const state = quickEntryShortcut.apply(settings)
+
+  if (!settings.enabled) {
+    // Turning the feature off must not leave an orphan always-on-top window.
+    if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+      quickEntryWindow.close()
+    }
+
+    quickEntryWindow = null
+  }
+
+  if (state.error === 'taken') {
+    rememberLog(`[quick-entry] shortcut ${state.shortcut} is already taken by another application`)
+  } else if (state.error === 'invalid') {
+    rememberLog(`[quick-entry] shortcut ${state.shortcut} is not a valid accelerator`)
+  }
+
+  return { ...state, enabled: settings.enabled }
+}
+
+function closeQuickEntryWindow() {
+  quickEntryShortcut.dispose()
+
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.close()
+  }
+
+  quickEntryWindow = null
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -8681,9 +8900,9 @@ function createWindow() {
     show: false,
     backgroundColor: getWindowBackgroundColor(),
     // Shared with the secondary session windows (chatWindowWebPreferences) so
-    // both keep `backgroundThrottling: false` — the chat transcript streams via
-    // a requestAnimationFrame-gated flush that Chromium pauses for blurred
-    // windows, stalling the live answer until refocus. See session-windows.ts.
+    // both keep `backgroundThrottling: false` — the chat transcript uses a
+    // bounded timer flush that Chromium clamps for blurred windows, stalling
+    // the live answer until refocus. See session-windows.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -8751,6 +8970,10 @@ function createWindow() {
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
+  mainWindow.on('minimize', () => sendWindowStateChanged())
+  mainWindow.on('restore', () => sendWindowStateChanged())
+  mainWindow.on('hide', () => sendWindowStateChanged())
+  mainWindow.on('show', () => sendWindowStateChanged())
 
   // Reopen where the user left off. resized/moved settle once per drag; close is
   // the cross-platform backstop, flushed synchronously before the window is gone.
@@ -9106,20 +9329,17 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:repair', async () => {
-  // Forceful repair: drop the bootstrap-complete marker so the next
-  // startHermes() re-runs the full installer (refreshing a broken/partial
-  // venv), and clear any latched failure + live connection. The renderer
-  // reloads afterwards to re-drive the boot flow from scratch.
-  rememberLog('[bootstrap] repair requested by renderer; clearing marker + latched failure')
+  // Forceful repair: force the next startHermes() through the full installer
+  // (refreshing a broken/partial venv) and clear any latched failure + live
+  // connection. The renderer reloads afterwards to re-drive the boot flow.
+  //
+  // We do NOT delete the bootstrap marker here. Repair is also reachable from
+  // transient backend errors on a perfectly healthy install, and deleting the
+  // marker in that case stranded the app in first-run setup with no way back
+  // (#72166). The explicit flag carries the intent instead.
+  rememberLog('[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure')
 
-  try {
-    if (fileExists(BOOTSTRAP_COMPLETE_MARKER)) {
-      fs.rmSync(BOOTSTRAP_COMPLETE_MARKER, { force: true })
-    }
-  } catch (error) {
-    rememberLog(`[bootstrap] failed to remove marker during repair: ${error.message}`)
-  }
-
+  bootstrapRepairRequested = true
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
@@ -9947,10 +10167,137 @@ ipcMain.on('hermes:keep-awake', (_event, on) => {
   }
 })
 
+// Quick Entry: the renderer reads the live registration state on settings mount
+// and writes the preference back. Main is authoritative — it owns the OS
+// accelerator — so both handlers return the state that ACTUALLY resulted,
+// including `registered: false` + `error: 'taken'` when another app owns the
+// chord. See electron/quick-entry.ts + store/quick-entry.
+ipcMain.handle('hermes:quick-entry:settings:get', async () => {
+  const settings = readQuickEntrySettings()
+  const state = quickEntryShortcut.current()
+
+  // Ground truth is what the last apply produced; the shortcut we report is the
+  // live one (a saved-but-rejected chord still shows what the user asked for).
+  return {
+    enabled: settings.enabled,
+    error: state.error,
+    registered: state.registered,
+    shortcut: settings.enabled ? state.shortcut : settings.shortcut
+  }
+})
+
+ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
+  const current = readQuickEntrySettings()
+
+  const next = sanitizeQuickEntrySettings({
+    enabled: patch?.enabled === undefined ? current.enabled : patch.enabled === true,
+    shortcut: typeof patch?.shortcut === 'string' && patch.shortcut.trim() ? patch.shortcut : current.shortcut
+  })
+
+  writeQuickEntrySettings(next)
+
+  return applyQuickEntrySettings(next)
+})
+
+// Quick window → main → PRIMARY renderer. We never submit here: the renderer
+// owns the one prompt-submit path, and forwarding keeps it that way. The
+// payload is `{ target, text }` — target routing (current chat / a picked
+// session / new) is the renderer's job too.
+ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
+  hideQuickEntryWindow()
+
+  const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+
+  if (!text) {
+    return
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    rememberLog('[quick-entry] dropped a submit: no primary window to route it to')
+
+    return
+  }
+
+  // Deliberately does NOT raise/focus the main window — the user asked to fire
+  // a prompt from wherever they were, not to be yanked into the app.
+  mainWindow.webContents.send('hermes:quick-entry:submit', {
+    target: typeof payload?.target === 'string' && payload.target ? payload.target : 'current',
+    text
+  })
+})
+
+// Primary renderer → main → quick window: gateway connection state + the
+// recent-session list for the target picker. Cached so a quick window spawned
+// AFTER the last push still boots from truth instead of "disconnected".
+ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
+  quickEntryLastState = payload ?? null
+
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.webContents.send('hermes:quick-entry:state', payload)
+  }
+})
+
+ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())
+
 ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
   }
+})
+
+// ── Find-in-page (Ctrl/Cmd+F) ─────────────────────────────────────────────
+// The desktop supports multiple BrowserWindows (one primary plus any
+// per-session secondary windows spawned via `hermes:window:openSession`).
+// Find must run against the requesting window, not a global — otherwise
+// Cmd+F pressed in a secondary session window would search the primary
+// and the match counter would report matches the user can't see. Resolve
+// the sender through `BrowserWindow.fromWebContents(event.sender)` and
+// forward `found-in-page` results back to that same sender.
+
+// Lazily-installed forwarder per sender webContents. We track one
+// uninstall fn per webContents id and prune entries when the sender goes
+// away — Electron does not auto-detach webContents listeners on close,
+// so the map is the cleanup path.
+const foundInPageForwarders = new Map<number, () => void>()
+
+function ensureFoundInPageForwarder(sender: Electron.WebContents): void {
+  if (foundInPageForwarders.has(sender.id)) {
+    return
+  }
+
+  const uninstall = installFoundInPageForwarder(sender)
+  foundInPageForwarders.set(sender.id, uninstall)
+
+  sender.once('destroyed', () => {
+    foundInPageForwarders.get(sender.id)?.()
+    foundInPageForwarders.delete(sender.id)
+  })
+}
+
+ipcMain.handle('hermes:find-in-page', (event, query, options) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+
+  if (!win || win.isDestroyed()) {
+    return { count: 0 }
+  }
+
+  ensureFoundInPageForwarder(event.sender)
+  performFind(win.webContents, query, options)
+
+  // The match count arrives asynchronously via `found-in-page`; the
+  // synchronous return value is intentionally `{ count: 0 }` to mirror
+  // Electron's own `findInPage` return semantics (an opaque request id).
+  return { count: 0 }
+})
+
+ipcMain.handle('hermes:stop-find-in-page', event => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+
+  if (!win || win.isDestroyed()) {
+    return
+  }
+
+  stopFind(win.webContents)
 })
 
 ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
@@ -10963,6 +11310,10 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   keepAwake.set(readPersistedKeepAwake())
+  // Quick Entry's global chord — registered on ready so a cold launch restores
+  // it without the renderer visiting Settings. A failed registration is logged
+  // here and surfaced in Settings via the IPC state (never silent).
+  applyQuickEntrySettings(readQuickEntrySettings())
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -11040,6 +11391,10 @@ app.on('before-quit', event => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
+
+  // Same for the Quick Entry composer — and release its global accelerator so a
+  // quitting Hermes never keeps another app's chord hostage.
+  closeQuickEntryWindow()
 
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {

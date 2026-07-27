@@ -9615,6 +9615,8 @@ class SessionDB:
     @staticmethod
     def _prune_filter_where(
         *,
+        last_active_before: Optional[float] = None,
+        last_active_after: Optional[float] = None,
         started_before: Optional[float] = None,
         started_after: Optional[float] = None,
         source: Optional[str] = None,
@@ -9657,6 +9659,24 @@ class SessionDB:
         """
         clauses = ["s.ended_at IS NOT NULL"]
         params: list = []
+        if last_active_before is not None:
+            clauses.append(
+                """COALESCE(
+                       (SELECT MAX(m.timestamp) FROM messages m
+                        WHERE m.session_id = s.id),
+                       s.started_at
+                   ) < ?"""
+            )
+            params.append(last_active_before)
+        if last_active_after is not None:
+            clauses.append(
+                """COALESCE(
+                       (SELECT MAX(m.timestamp) FROM messages m
+                        WHERE m.session_id = s.id),
+                       s.started_at
+                   ) >= ?"""
+            )
+            params.append(last_active_after)
         if started_before is not None:
             clauses.append("s.started_at < ?")
             params.append(started_before)
@@ -9744,18 +9764,31 @@ class SessionDB:
         Backs ``--dry-run`` and pre-confirmation counts. Accepts the same
         keyword filters as :meth:`_prune_filter_where` (unknown names raise
         ``TypeError`` there). Rows are ordered oldest-first and carry
-        ``id, source, title, model, started_at, ended_at, message_count,
-        archived``.
+        ``id, source, title, model, started_at, last_active, ended_at,
+        message_count, archived``. ``older_than_days`` is an inactivity
+        threshold: it uses the latest message timestamp, falling back to
+        ``started_at`` for sessions without messages.
         """
-        if filters.get("started_before") is None and older_than_days is not None:
-            filters["started_before"] = time.time() - (older_than_days * 86400)
+        if (
+            filters.get("last_active_before") is None
+            and filters.get("started_before") is None
+            and older_than_days is not None
+        ):
+            filters["last_active_before"] = time.time() - (
+                older_than_days * 86400
+            )
         where, params = self._prune_filter_where(source=source, **filters)
         with self._lock:
             cursor = self._conn.execute(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
+                           COALESCE(
+                               (SELECT MAX(m.timestamp) FROM messages m
+                                WHERE m.session_id = s.id),
+                               s.started_at
+                           ) AS last_active,
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
-                    ORDER BY s.started_at ASC""",
+                    ORDER BY last_active ASC, s.started_at ASC""",
                 params,
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -9794,8 +9827,8 @@ class SessionDB:
         "Touched" is the latest message timestamp (falling back to
         ``started_at``) — i.e. real recency, not creation time — so a session
         created long ago but active yesterday is spared, while an old
-        abandoned one (even a still-open one) is swept. This differs from
-        :meth:`archive_sessions`, which ages on ``started_at`` and only ended
+        abandoned one (even a still-open one) is swept. Unlike
+        :meth:`archive_sessions`, this method can also archive unended
         sessions.
 
         Guards:
@@ -9844,15 +9877,19 @@ class SessionDB:
     ) -> int:
         """Delete sessions matching the filters. Returns count deleted.
 
-        Default behavior (no keyword filters) is unchanged: delete ended
-        sessions older than ``older_than_days`` days, optionally restricted
-        to ``source``. Additional keyword filters AND together — the full
-        set is defined by :meth:`_prune_filter_where`:
+        By default, delete ended sessions inactive for
+        ``older_than_days`` days, optionally restricted to ``source``.
+        Activity is the latest message timestamp, falling back to
+        ``started_at`` for sessions without messages. Additional keyword
+        filters AND together — the full set is defined by
+        :meth:`_prune_filter_where`:
 
+        * ``last_active_before`` / ``last_active_after`` — epoch bounds on
+          the latest message timestamp (falling back to ``started_at``).
         * ``started_before`` / ``started_after`` — epoch bounds on
-          ``started_at``. ``started_before`` overrides ``older_than_days``;
-          pass ``older_than_days=None`` for no upper age bound (e.g. when
-          only pruning a recent window via ``started_after``).
+          ``started_at``. An explicit ``started_before`` overrides the
+          default ``older_than_days`` inactivity cutoff; pass
+          ``older_than_days=None`` for no implicit upper age bound.
         * ``title_like`` / ``model_like`` / ``branch_like`` —
           case-insensitive substring matches.
         * ``end_reason`` / ``provider`` / ``user_id`` / ``chat_id`` /
@@ -9874,8 +9911,14 @@ class SessionDB:
         ``request_dump_*``) for every pruned session, outside the DB
         transaction.
         """
-        if filters.get("started_before") is None and older_than_days is not None:
-            filters["started_before"] = time.time() - (older_than_days * 86400)
+        if (
+            filters.get("last_active_before") is None
+            and filters.get("started_before") is None
+            and older_than_days is not None
+        ):
+            filters["last_active_before"] = time.time() - (
+                older_than_days * 86400
+            )
         where, where_params = self._prune_filter_where(source=source, **filters)
         removed_ids: list[str] = []
 
@@ -10613,7 +10656,7 @@ class SessionDB:
         vacuum: bool = True,
         sessions_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
-        """Idempotent auto-maintenance: prune old sessions + optional VACUUM.
+        """Idempotent auto-maintenance: prune inactive sessions + optional VACUUM.
 
         Records the last run timestamp in state_meta so subsequent calls
         within ``min_interval_hours`` no-op. Designed to be called once at
@@ -10667,7 +10710,7 @@ class SessionDB:
 
             if pruned > 0:
                 logger.info(
-                    "state.db auto-maintenance: pruned %d session(s) older than %d days%s",
+                    "state.db auto-maintenance: pruned %d session(s) inactive for %d days%s",
                     pruned,
                     retention_days,
                     " + VACUUM" if result["vacuumed"] else "",

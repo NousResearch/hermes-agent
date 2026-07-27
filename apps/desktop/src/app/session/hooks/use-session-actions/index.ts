@@ -53,7 +53,6 @@ import {
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
-  setSessionsTotal,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -1293,9 +1292,6 @@ export function useSessionActions({
       // the delete RPC is in flight, so a racing refresh can't flash it back.
       tombstoneSessions(removedIds)
       beginSessionMutation(removedIds)
-      // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
-      // doesn't keep claiming the removed row is still on the server.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -1330,7 +1326,6 @@ export function useSessionActions({
       } catch (err) {
         if (removed) {
           setSessions(prev => [removed, ...prev])
-          setSessionsTotal(prev => prev + 1)
         }
 
         untombstoneSessions(removedIds)
@@ -1393,10 +1388,6 @@ export function useSessionActions({
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       tombstoneSessions(archivedIds)
       beginSessionMutation(archivedIds)
-      // Archived sessions are hidden by the listSessions(min_messages=1) query
-      // on the next refresh, so they count as "removed" for the load-more
-      // footer math.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
@@ -1419,7 +1410,6 @@ export function useSessionActions({
       } catch (err) {
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
-          setSessionsTotal(prev => prev + 1)
         }
 
         untombstoneSessions(archivedIds)

@@ -1272,10 +1272,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
     Subscription paths:
 
-    - **Gateway** (telegram/discord/slack/etc): ``HERMES_SESSION_PLATFORM``
-      and ``HERMES_SESSION_CHAT_ID`` are set in ContextVars by the
-      messaging gateway before agent dispatch. The notification poller
-      already keys off these, so we just register a row.
+    - **Gateway** (telegram/discord/slack/etc): ``HERMES_SESSION_PLATFORM``,
+      ``HERMES_SESSION_CHAT_ID``, and ``HERMES_SESSION_CHAT_TYPE`` are set in
+      ContextVars by the messaging gateway before agent dispatch. The
+      notification poller already keys off these, so we just register a row.
 
     - **TUI** (herm desktop / herm TUI): the platform/chat_id ContextVars
       are intentionally cleared (TUI is a single-channel local UI, not
@@ -1333,18 +1333,43 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "") or ""
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
             or os.environ.get("HERMES_PROFILE")
         )
+        if not notifier_profile:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                notifier_profile = get_active_profile_name() or "default"
+            except Exception:
+                notifier_profile = "default"
+        delivery_metadata: dict[str, Any] = {}
+        if thread_id:
+            delivery_metadata["thread_id"] = thread_id
+        if chat_type:
+            delivery_metadata["chat_type"] = chat_type
+        if (
+            platform.lower() == "telegram"
+            and thread_id
+            and (chat_type or "").lower() in {"dm", "direct", "private"}
+        ):
+            delivery_metadata["telegram_dm_topic_reply_fallback"] = True
+            if str(thread_id) not in {"", "1"}:
+                delivery_metadata["direct_messages_topic_id"] = str(thread_id)
+            if message_id:
+                delivery_metadata["telegram_reply_to_message_id"] = str(message_id)
 
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb
         _kb.add_notify_sub(
             conn, task_id=task_id,
             platform=platform, chat_id=chat_id,
+            chat_type=chat_type,
             thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            delivery_metadata=delivery_metadata or None,
         )
         return True
     except Exception as _exc:

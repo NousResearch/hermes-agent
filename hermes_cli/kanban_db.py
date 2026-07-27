@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -1300,9 +1300,11 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     task_id       TEXT NOT NULL,
     platform      TEXT NOT NULL,
     chat_id       TEXT NOT NULL,
+    chat_type     TEXT,
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
     notifier_profile TEXT,
+    delivery_metadata TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
@@ -2445,6 +2447,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+        if "chat_type" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "chat_type", "chat_type TEXT"
+            )
+        if "delivery_metadata" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "delivery_metadata", "delivery_metadata TEXT"
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2567,8 +2577,8 @@ _REBUILD_SPECS = {
     "kanban_notify_subs": (
         "CREATE TABLE kanban_notify_subs ("
         " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
-        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
-        " notifier_profile TEXT, created_at INTEGER NOT NULL,"
+        " chat_type TEXT, thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
+        " notifier_profile TEXT, delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
@@ -3172,6 +3182,7 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3192,6 +3203,47 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
     ).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in parents if p not in present]
+
+
+def _inherit_notify_subs(
+    conn: sqlite3.Connection,
+    child_id: str,
+    parents: Iterable[str],
+    *,
+    created_at: Optional[int] = None,
+) -> None:
+    """Copy gateway notification subscriptions from parent tasks to a child.
+
+    The inherited subscription starts caught up to the child's current event
+    cursor. This makes manual `link_tasks(parent, existing_child)` safe: the
+    parent chat receives future child terminal events without replaying the
+    child's pre-link history.
+    """
+    parent_ids = tuple(dict.fromkeys(p for p in parents if p))
+    if not parent_ids:
+        return
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_events WHERE task_id = ?",
+        (child_id,),
+    ).fetchone()
+    cursor = int(row["cursor"] if row is not None else 0)
+    placeholders = ",".join("?" * len(parent_ids))
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id,
+             notifier_profile, created_at, last_event_id)
+        SELECT ?, platform, chat_id, thread_id, user_id, notifier_profile, ?, ?
+          FROM kanban_notify_subs
+         WHERE task_id IN ({placeholders})
+        """,
+        (
+            child_id,
+            int(created_at if created_at is not None else time.time()),
+            cursor,
+            *parent_ids,
+        ),
+    )
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
@@ -3375,6 +3427,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
         )
+        _inherit_notify_subs(conn, child_id, (parent_id,))
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -6012,6 +6065,7 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            _inherit_notify_subs(conn, new_id, (task_id,), created_at=now)
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).
@@ -8761,6 +8815,12 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # The dispatcher is detached from every conversation. Its worker must never
+    # inherit routing mirrored by a previous gateway turn, even before the first
+    # session binds ContextVars in this process.
+    from gateway.session_context import _VAR_MAP
+    for key in _VAR_MAP:
+        env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -9329,28 +9389,100 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _encode_notify_delivery_metadata(
+    metadata: Optional[Mapping[str, Any]],
+) -> Optional[str]:
+    """Serialize platform send metadata stored on notification subscriptions."""
+    if not isinstance(metadata, Mapping):
+        return None
+    clean: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            clean[str(key)] = value
+    if not clean:
+        return None
+    return json.dumps(clean, sort_keys=True, separators=(",", ":"))
+
+
+def _decode_notify_delivery_metadata(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(key): value
+        for key, value in data.items()
+        if isinstance(value, (str, int, float, bool))
+    }
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
     task_id: str,
     platform: str,
     chat_id: str,
+    chat_type: Optional[str] = None,
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    delivery_metadata: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    New subscriptions start "caught up": ``last_event_id`` snaps to the
+    task's current ``MAX(task_events.id)`` at creation instead of the
+    schema default 0. A cursor of 0 on an already-active task made the
+    gateway notifier replay every historical terminal event on its next
+    tick — and with many stale subs, a single boot-time burst of 100+
+    messages (issue #29905). Subscribers only want events that occur
+    AFTER they subscribe; the gateway/tool auto-subscribe paths run at
+    task creation, where the snapshot is 0 anyway.
+    """
     now = int(time.time())
+    metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, chat_type, thread_id, user_id,
+                 notifier_profile, delivery_metadata, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (
+                task_id,
+                platform,
+                chat_id,
+                chat_type,
+                thread_id or "",
+                user_id,
+                notifier_profile,
+                metadata_json,
+                now,
+                task_id,
+            ),
         )
+        if chat_type:
+            # Self-heal rows created before chat_type was persisted.
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET chat_type = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                   AND (chat_type IS NULL OR chat_type = '')
+                """,
+                (chat_type, task_id, platform, chat_id, thread_id or ""),
+            )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
             # backfilling only when the existing value is unset.
@@ -9363,6 +9495,18 @@ def add_notify_sub(
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )
+        if metadata_json:
+            # A duplicate subscribe from the same chat/thread should refresh
+            # the routing anchor. Telegram DM-topic notifications need the
+            # latest reply anchor to stay inside the visible topic lane.
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET delivery_metadata = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                """,
+                (metadata_json, task_id, platform, chat_id, thread_id or ""),
+            )
 
 
 def list_notify_subs(
@@ -9374,7 +9518,53 @@ def list_notify_subs(
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
-    return [dict(r) for r in rows]
+    out: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        if "delivery_metadata" in item:
+            item["delivery_metadata"] = _decode_notify_delivery_metadata(
+                item.get("delivery_metadata")
+            )
+        out.append(item)
+    return out
+
+
+def count_notify_subs(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> int:
+    """Count ``kanban_notify_subs`` rows via a read-only connection.
+
+    Cheap probe for the gateway notifier's zero-subscription early exit:
+    unlike :func:`connect`, this never creates the DB file, never runs
+    schema init/migration, and never opens the database writable (no
+    write locks, no checkpoints — though a read-only open of a WAL
+    database may still create the ``-shm``/``-wal`` sidecars, it cannot
+    write table content). Rows in a not-yet-checkpointed WAL are
+    visible, so a freshly added subscription is never missed. A missing
+    DB, or a legacy DB that predates the subscriptions table, counts as
+    zero. Path resolution matches :func:`connect` (explicit ``db_path``,
+    else ``board`` via :func:`kanban_db_path`). Raises
+    :class:`sqlite3.Error` when the DB exists but cannot be read
+    (locked, corrupt); callers choose their own fallback.
+    """
+    path = db_path if db_path is not None else kanban_db_path(board=board)
+    if not path.exists():
+        return 0
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM kanban_notify_subs"
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
 
 
 def remove_notify_sub(

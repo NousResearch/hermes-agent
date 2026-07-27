@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import { isUnboundableTool, shouldBoundToolGroup, technicalTrace } from './fallback'
-import { isFileEditTool } from './fallback-model'
 
 describe('shouldBoundToolGroup', () => {
   it('bounds long runs of ordinary tool calls', () => {
@@ -23,25 +22,18 @@ describe('isUnboundableTool', () => {
     expect(isUnboundableTool('image_generate')).toBe(true)
   })
 
-  it('exempts tools whose body is a code block the user reads', () => {
-    expect(isUnboundableTool('execute_code')).toBe(true)
-    expect(isUnboundableTool('read_file')).toBe(true)
-  })
-
-  // The window clips a diff to a ~2-row viewport, so every tool that renders
-  // one has to be exempt. Derived from isFileEditTool rather than re-listed,
-  // so a newly supported edit tool can't be exempt in one place and clipped
-  // in the other.
-  it('exempts every file-edit tool, so diffs are never clipped', () => {
-    for (const toolName of ['edit_file', 'patch', 'write_file']) {
-      expect(isFileEditTool(toolName)).toBe(true)
-      expect(isUnboundableTool(toolName)).toBe(true)
+  // Everything ToolEntry renders carries `data-tool-row`, so the
+  // `:has([data-tool-row][data-tool-open])` rule in styles.css lifts the cap
+  // on its own. A diff row mounts open and frees the group immediately; a
+  // collapsed row has no body in the DOM to clip. Exempting these in JS
+  // instead vetoed grouping for the whole run — and since reads and edits are
+  // most of a coding session, runs of 19 calls never collapsed at all.
+  it('bounds the rows the CSS break-out already covers', () => {
+    for (const toolName of ['read_file', 'execute_code', 'edit_file', 'patch', 'write_file']) {
+      expect(isUnboundableTool(toolName)).toBe(false)
     }
   })
 
-  // Console output is a log tail: the last lines are the ones that matter,
-  // which is exactly what the bounded window pins. Keeping it boundable is
-  // what stops the exemption from swallowing the feature whole.
   it('still bounds console output and other ordinary rows', () => {
     expect(isUnboundableTool('terminal')).toBe(false)
     expect(isUnboundableTool('web_search')).toBe(false)

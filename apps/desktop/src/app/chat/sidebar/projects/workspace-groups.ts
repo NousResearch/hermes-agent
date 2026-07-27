@@ -30,7 +30,10 @@ export interface SidebarSessionGroup {
   mode?: 'profile' | 'source' | 'workspace'
   onLoadMore?: () => void
   sourceId?: string
-  totalCount?: number
+  /** Profile lanes only: the backend page was capped, so more rows exist on
+   *  disk than were loaded. Replaces the old exact `totalCount`, which cost a
+   *  COUNT(*) per profile on every sidebar refresh just to render `n/total`. */
+  hasMore?: boolean
 }
 
 /** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */

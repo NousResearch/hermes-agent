@@ -267,6 +267,9 @@ export const en: Translations = {
       'view.closeTab': 'Close tab',
       'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',
+      'view.findInPage': 'Find in page',
+      'view.findNext': 'Find next match',
+      'view.findPrevious': 'Find previous match',
       'appearance.toggleMode': 'Toggle light / dark',
       'profile.default': 'Switch to default profile',
       'profile.switch.1': 'Switch to profile 1',
@@ -302,6 +305,11 @@ export const en: Translations = {
       'composer.history': 'Cycle popover / history',
       'composer.cancel': 'Close popover · cancel run'
     }
+  },
+
+  findInPage: {
+    next: 'Next match',
+    previous: 'Previous match'
   },
 
   language: {
@@ -542,6 +550,16 @@ export const en: Translations = {
       invalidJson: 'Invalid config JSON',
       keepAwakeTitle: 'Keep computer awake',
       keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.'
+    },
+    quickEntry: {
+      enabledTitle: 'Quick Entry',
+      enabledDesc:
+        'Summon a small composer from anywhere with a global shortcut and fire a prompt without opening Hermes.',
+      shortcutTitle: 'Quick Entry shortcut',
+      shortcutDesc: 'Needs at least one modifier, e.g. CommandOrControl+Shift+Space.',
+      active: 'Shortcut is active.',
+      takenBy: 'Another app already uses this shortcut — pick a different one.',
+      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.'
     },
     credentials: {
       pasteKey: 'Paste key',
@@ -2013,6 +2031,10 @@ export const en: Translations = {
   statusStack: {
     agents: 'Agents',
     background: count => `${count} Background`,
+    goalActive: 'Goal active',
+    goalDone: 'Goal done',
+    goalPaused: 'Goal paused',
+    goalWaiting: 'Goal waiting',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
     running: 'Running',
@@ -2381,6 +2403,13 @@ export const en: Translations = {
       gatewayOffline: 'offline',
       gatewayRestarting: 'restarting…',
       gatewayTitle: 'Hermes inference gateway status',
+      customizeTitle: 'Show in status bar',
+      toggleApprovalMode: 'Approvals',
+      toggleBackendVersion: 'Backend version',
+      toggleCommandCenter: 'Command Center',
+      toggleTerminal: 'Terminal',
+      toggleVersion: 'Version & updates',
+      toggleWorkspace: 'Workspace',
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',

@@ -650,6 +650,16 @@ export const ja = defineLocale({
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
     },
+    quickEntry: {
+      enabledTitle: 'クイック入力',
+      enabledDesc:
+        'グローバルショートカットで小さな入力欄をどこからでも呼び出し、Hermes を開かずにプロンプトを送信します。',
+      shortcutTitle: 'クイック入力のショートカット',
+      shortcutDesc: '修飾キーが 1 つ以上必要です（例: CommandOrControl+Shift+Space）。',
+      active: 'ショートカットは有効です。',
+      takenBy: 'このショートカットは他のアプリが使用しています。別のものを選んでください。',
+      invalidShortcut: '有効なショートカットではありません。修飾キーを 1 つ以上含めてください。'
+    },
     credentials: {
       pasteKey: 'キーを貼り付け',
       pasteLabelKey: label => `${label} キーを貼り付け`,
@@ -1880,6 +1890,10 @@ export const ja = defineLocale({
   statusStack: {
     agents: 'エージェント',
     background: count => `バックグラウンド ${count} 件`,
+    goalActive: '目標進行中',
+    goalDone: '目標達成',
+    goalPaused: '目標一時停止中',
+    goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
     running: '実行中',

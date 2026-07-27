@@ -277,7 +277,7 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
         start: match.index ?? 0,
         end: (match.index ?? 0) + match[0].length,
         type: match[1] || 'file',
-        label: shortLabel(match[1] as HermesRefType, id),
+        label: refChipLabel(match[1] || 'file', id),
         id
       }
     }),
@@ -320,23 +320,28 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
   return segments
 }
 
-function shortLabel(type: HermesRefType, id: string): string {
+/** Display text for a `@kind:value` chip. Shared with the composer's
+ *  contenteditable chips so a link reads the same before and after send: the
+ *  host leads (scheme and `www.` are noise) and the path rides along for the
+ *  chip's `truncate` to cut — a bare hostname can't tell two links apart. */
+export function refChipLabel(type: string, id: string): string {
   if (type === 'terminal') {
     return id || 'terminal'
   }
 
+  if (type === 'session') {
+    return sessionRefFallbackLabel(id)
+  }
+
   if (type === 'url') {
     try {
-      const parsed = new URL(id)
+      const { hostname, pathname, search } = new URL(id)
+      const path = `${pathname}${search}`.replace(/\/$/, '')
 
-      return parsed.hostname || id
+      return `${hostname.replace(/^www\./i, '')}${path}` || id
     } catch {
       return id
     }
-  }
-
-  if (type === 'session') {
-    return sessionRefFallbackLabel(id)
   }
 
   const tail = id.split(/[\\/]/).filter(Boolean).pop()

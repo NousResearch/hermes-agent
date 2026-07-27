@@ -222,8 +222,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "starlette==1.3.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "python-multipart==0.0.32",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
@@ -238,10 +238,23 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==1.26.0",
-        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
-    "tool.trace_upload": ("huggingface-hub==1.2.3",),
+    #
+    # huggingface-hub is a SHARED dependency: transformers (pulled by
+    # sentence-transformers for local Hindsight embeddings) requires
+    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively.
+    # Because active_features() marks a feature active from mere package
+    # presence, the `hermes update` lazy-refresh pass re-asserts THIS pin on
+    # every install where hub is present — so an exact pin below 1.5.0
+    # force-downgrades the shared package and breaks Hindsight startup
+    # (#60783). Policy: keep the exact pin (no ranges — security posture),
+    # but it MUST stay inside transformers' accepted window and MUST match
+    # uv.lock so the whole tree converges on ONE hub version
+    # (tests/test_project_metadata.py enforces both). When bumping: update
+    # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.
+    "tool.trace_upload": ("huggingface-hub==1.24.0",),
 }
 
 
@@ -864,8 +877,12 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
+    A feature counts as "active" if its anchor package (the first declared
+    spec) is currently installed in the venv (presence check, ignoring
+    version). We intentionally do NOT treat shared helper packages as proof
+    that a backend was enabled: for example ``platform.matrix`` depends on
+    generic packages like ``asyncpg``/``aiosqlite`` that can be installed for
+    unrelated reasons, while the actual Matrix adapter anchor is ``mautrix``.
     Features the user has never enabled stay quiet.
 
     Used by ``hermes update`` to figure out which lazy backends need a
@@ -873,7 +890,7 @@ def active_features() -> list[str]:
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if specs and _is_present(specs[0]):
             active.append(feature)
     return active
 

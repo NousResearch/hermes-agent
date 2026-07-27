@@ -437,7 +437,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 500,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -1762,8 +1762,23 @@ class AIAgent:
                 # blocks. A list override, however, is the original clean
                 # multimodal payload (for example before a queued /model note)
                 # and must replace the API-local list once the turn is final.
-                if override is not None and (
-                    not isinstance(msg.get("content"), list) or isinstance(override, list)
+                # Preflight compaction can re-anchor this index at a message
+                # whose content was MERGED with the compaction summary
+                # (merge-summary-into-tail).  That is not an accident:
+                # ``reanchor_current_turn_user_idx`` falls back to the last
+                # user row precisely BECAUSE the merge rewrote the content and
+                # the exact-match lookup misses.  Overwriting it with the clean
+                # text would drop the summary from the continuation history the
+                # next turn is built from — the same hazard the DB-write twin
+                # below already refuses (see the sibling guard in
+                # ``_flush_messages_to_session_db_unlocked``).
+                if (
+                    override is not None
+                    and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    and (
+                        not isinstance(msg.get("content"), list)
+                        or isinstance(override, list)
+                    )
                 ):
                     msg["content"] = override
                 if timestamp is not None:

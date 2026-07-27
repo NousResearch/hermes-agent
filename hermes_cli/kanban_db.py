@@ -7600,13 +7600,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # the override governs the unified counter instead (#72174).
                 streak = _protocol_violation_streak(conn, tid)
                 if task_override is None:
-                    # Default policy (PR #64353): a protocol violation is
-                    # accounted against its own bounded, violation-only
-                    # streak, independent of the unified
-                    # ``consecutive_failures`` counter every other failure
-                    # kind uses — an earlier crash/timeout neither consumes
-                    # nor extends it, and a below-budget violation does not
-                    # tick the unified counter either.
+                    # Default policy (PR #64353) — see the block comment
+                    # above ``auto_blocked`` for the full rationale.
                     if streak < _PROTOCOL_VIOLATION_FAILURE_LIMIT:
                         # Below budget: the task is already back at
                         # ``ready`` (respawn allowed) with
@@ -7637,20 +7632,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         },
                     )
                 else:
-                    # Explicit per-task override (#72174 fix): an explicit
-                    # ``max_retries`` is a contract on the task's TOTAL
-                    # retry budget, so a violation must count into the same
-                    # unified ``consecutive_failures`` counter every other
-                    # failure kind feeds — NOT the dedicated violation-only
-                    # streak above, which a mixed sequence of ordinary
-                    # crashes/timeouts and below-streak-budget violations
-                    # could ride past the explicit cap without ever
-                    # tripping it. ``_record_task_failure`` already
-                    # resolves ``task.max_retries`` with top precedence
-                    # (same as every other failure kind), so this is the
-                    # identical call the plain-crash branch below makes —
-                    # it increments the counter unconditionally (even when
-                    # it doesn't trip) and trips exactly at the override.
+                    # Explicit override (#72174 fix) — see the block comment
+                    # above ``auto_blocked``. ``_record_task_failure``
+                    # already resolves ``task.max_retries`` with top
+                    # precedence, so this is the identical call the
+                    # plain-crash branch below makes: it increments the
+                    # unified counter unconditionally and trips exactly at
+                    # the override.
                     tripped = _record_task_failure(
                         conn, tid,
                         error=error_text,
@@ -7662,7 +7650,6 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                             "claimer": claimer,
                             "protocol_violation": True,
                             "protocol_violations": streak,
-                            "protocol_violation_limit": int(task_override),
                         },
                     )
                 if tripped:

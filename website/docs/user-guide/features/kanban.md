@@ -411,7 +411,9 @@ set) and can be disabled with `HERMES_KANBAN_STOP_NUDGE=0`.
 **Dispatcher-side recovery:** If the nudges are exhausted or the worker crashes
 before reaching the nudge, the dispatcher gives the violation a **bounded retry**
 (up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` consecutive violations, default 3)
-before auto-blocking the task instead of respawning it into the same loop. The
+before auto-blocking the task instead of respawning it into the same loop. A
+protocol violation usually means the model wrote a plain-text answer and
+exited without using the Kanban tool surface. The retry
 budget counts only *consecutive* clean-exit protocol violations — interleaved
 rate-limited requeues are neutral, and any other failure kind resets the
 streak. This default, independent streak only applies when the task has no
@@ -419,9 +421,7 @@ explicit `max_retries` set. Once a task sets an explicit `max_retries=N`, that
 is a cap on the task's *total* retry budget: violations count into the same
 unified failure counter as crashes and timeouts, so the task blocks on its Nth
 non-successful attempt overall, regardless of how many of those attempts were
-violations versus other failure kinds. This usually means the model wrote a
-plain-text answer and exited without using the Kanban tool
-surface.
+violations versus other failure kinds.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 

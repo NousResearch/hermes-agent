@@ -77,8 +77,20 @@ export const Thread: FC<{
   // deps. Only their definedness stays a dep — it gates UI (the user
   // Stop button, the restore-confirm affordance). Assigned during render
   // (the useStoreSelector pattern) so the ref never lags a render.
+  //
+  // cwd / gateway / sessionId ride the same ref for the same reason, and it
+  // is load-bearing on the hot path: all three change on EVERY session
+  // switch, so listing them as deps re-minted these types mid-switch and
+  // remounted the entire OUTGOING transcript — thousands of renders of a
+  // thread that was about to be replaced, all of it before the resume RPC
+  // had even been sent. They are read inside the edit composer (which only
+  // exists while a message is being edited), never during a plain render,
+  // so a ref read is always current by the time it matters.
   const callbacksRef = useRef({ onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage })
   callbacksRef.current = { onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage }
+
+  const editContextRef = useRef({ cwd, gateway, sessionId })
+  editContextRef.current = { cwd, gateway, sessionId }
 
   const hasBranchInNewChat = Boolean(onBranchInNewChat)
   const hasCancel = Boolean(onCancel)
@@ -96,7 +108,11 @@ export const Thread: FC<{
         />
       ),
       SystemMessage,
-      UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
+      UserEditComposer: () => {
+        const { cwd: editCwd, gateway: editGateway, sessionId: editSessionId } = editContextRef.current
+
+        return <UserEditComposer cwd={editCwd} gateway={editGateway} sessionId={editSessionId} />
+      },
       UserMessage: () => (
         <UserMessage
           onCancel={hasCancel ? () => callbacksRef.current.onCancel?.() : undefined}
@@ -104,16 +120,7 @@ export const Thread: FC<{
         />
       )
     }),
-    [
-      cwd,
-      gateway,
-      hasBranchInNewChat,
-      hasCancel,
-      hasDismissError,
-      hasRestoreToMessage,
-      requestRestoreConfirm,
-      sessionId
-    ]
+    [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, requestRestoreConfirm]
   )
 
   const emptyPlaceholder = intro ? (

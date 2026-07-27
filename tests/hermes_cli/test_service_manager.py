@@ -250,6 +250,35 @@ def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
         assert mode == 0o3730, f"{rel}/ mode = {oct(mode)}, want 0o3730"
 
 
+def test_seed_supervise_skeleton_applies_modes_after_chown(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ownership changes must not silently clear event set-ID bits."""
+    import os
+    from pathlib import Path
+
+    import hermes_cli.service_manager as service_manager
+
+    operations: list[tuple[str, str]] = []
+    real_chmod = Path.chmod
+
+    def record_chown(path, uid, gid) -> None:
+        operations.append(("chown", Path(path).name))
+
+    def record_chmod(path, mode, *, follow_symlinks=True) -> None:
+        operations.append(("chmod", path.name))
+        real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "chown", record_chown)
+    monkeypatch.setattr(Path, "chmod", record_chmod)
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+    service_manager._seed_supervise_skeleton(svc_dir)
+
+    assert operations[:2] == [("chown", "event"), ("chmod", "event")]
+
+
 
 
 

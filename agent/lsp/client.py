@@ -492,10 +492,28 @@ class LSPClient:
                     pass
         finally:
             self._state = "stopped"
-            await self._cleanup_process()
+            await self._cleanup_process(wait_for_graceful_exit=True)
 
-    async def _cleanup_process(self) -> None:
+    async def _cleanup_process(
+        self, *, wait_for_graceful_exit: bool = False
+    ) -> None:
         async with self._cleanup_lock:
+            proc = self._proc
+            if (
+                wait_for_graceful_exit
+                and proc is not None
+                and proc.returncode is None
+            ):
+                # The LSP ``exit`` notification asks the server to terminate.
+                # Give it the advertised grace period before sending an OS signal.
+                # Besides avoiding needless SIGTERM, this closes a Darwin race where
+                # the child exits and its PID is reused before asyncio updates the
+                # Process.returncode field.
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                except asyncio.TimeoutError:
+                    pass
+
             current_task = asyncio.current_task()
             reader_task = self._reader_task
             self._reader_task = None
@@ -517,7 +535,6 @@ class LSPClient:
                     await stderr_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-            proc = self._proc
             self._proc = None
             if proc is None:
                 return

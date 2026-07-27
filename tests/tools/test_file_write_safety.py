@@ -256,6 +256,48 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
+    def test_canonical_user_temp_child_allowed(self, tmp_path, monkeypatch):
+        """A canonical temp child remains writable inside a sensitive parent."""
+        from tools import file_tools
+
+        temp_root = tmp_path / "user-temp"
+        temp_root.mkdir()
+        sensitive_parent = str(tmp_path.resolve()) + os.sep
+        monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: str(temp_root))
+        monkeypatch.setattr(
+            file_tools,
+            "_SENSITIVE_PATH_PREFIXES",
+            (sensitive_parent,),
+        )
+
+        target = temp_root / "workspace" / "artifact.txt"
+        assert file_tools._check_sensitive_path(str(target)) is None
+
+    def test_temp_symlink_escape_to_protected_sibling_blocked(
+        self, tmp_path, monkeypatch
+    ):
+        """Canonicalization must prevent a temp-root symlink escape."""
+        from tools import file_tools
+
+        temp_root = tmp_path / "user-temp"
+        protected = tmp_path / "db"
+        temp_root.mkdir()
+        protected.mkdir()
+        escape = temp_root / "escape"
+        escape.symlink_to(protected, target_is_directory=True)
+
+        sensitive_parent = str(tmp_path.resolve()) + os.sep
+        monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: str(temp_root))
+        monkeypatch.setattr(
+            file_tools,
+            "_SENSITIVE_PATH_PREFIXES",
+            (sensitive_parent,),
+        )
+
+        result = file_tools._check_sensitive_path(str(escape / "secret"))
+        assert result is not None
+        assert "sensitive system path" in result
+
 
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.

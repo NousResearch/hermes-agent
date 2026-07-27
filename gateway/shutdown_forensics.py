@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -208,9 +209,9 @@ def spawn_async_diagnostic(
     """Fire-and-forget ``ps``-style snapshot written to ``log_path``.
 
     Runs as a detached subprocess so it can't block the asyncio event loop
-    or compete with platform teardown.  The subprocess uses its own
-    ``timeout`` so a wedged ``ps`` still self-cleans within
-    ``timeout_seconds``.
+    or compete with platform teardown. GNU ``timeout`` (or Homebrew
+    ``gtimeout``) bounds the subprocess when available; otherwise the detached
+    diagnostic still cannot block gateway teardown.
 
     Returns the subprocess PID on success, ``None`` on failure.  Never
     raises.
@@ -231,19 +232,31 @@ def spawn_async_diagnostic(
     if sys.platform == "win32":
         return None
 
-    script = (
-        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
-        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "echo '--- pstree of self ---'; "
-        f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; "
-        "cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
-    )
+    if sys.platform == "darwin":
+        script = (
+            f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
+            "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
+            "echo '--- ps aux (top 60 by cpu) ---'; "
+            "ps aux 2>/dev/null | sort -nrk 3 | head -60; "
+            "echo '--- process ancestry ---'; "
+            f"ps -p {os.getpid()} -o pid=,ppid=,state=,etime=,command= 2>/dev/null || true; "
+            "echo '--- load average ---'; sysctl -n vm.loadavg 2>/dev/null || true; "
+            "echo '=== end ==='"
+        )
+    else:
+        script = (
+            f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
+            "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
+            "echo '--- ps auxf (top 60 by cpu) ---'; "
+            "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+            "echo '--- pstree of self ---'; "
+            f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
+            "echo '--- /proc/loadavg ---'; "
+            "cat /proc/loadavg 2>/dev/null || true; "
+            "echo '--- recent dmesg (oom/killed) ---'; "
+            "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
+            "echo '=== end ==='"
+        )
 
     try:
         # Open the log file in append mode and let the subprocess inherit.
@@ -259,8 +272,12 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        timeout_executable = shutil.which("timeout") or shutil.which("gtimeout")
+        argv = ["bash", "-c", script]
+        if timeout_executable:
+            argv = [timeout_executable, f"{timeout_seconds:.0f}", *argv]
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            argv,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

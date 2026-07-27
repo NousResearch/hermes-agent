@@ -102,7 +102,8 @@ class TestDetectDangerousRm:
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                temp_dir = os.path.realpath("/tmp")
+                assert detect_dangerous_command(f"rm -f {temp_dir}/{prefix}example.py") == (
                     False,
                     None,
                     None,

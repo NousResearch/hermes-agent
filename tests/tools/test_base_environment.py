@@ -132,6 +132,15 @@ class TestAtomicSnapshotWrite:
         assert ".tmp.$$" not in wrapped
 
 
+    def test_wrap_command_mv_chained_on_export_success(self):
+        """A failed export must not replace a valid snapshot."""
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        assert "export -p" in wrapped and "> " in wrapped and "&& mv -f " in wrapped
+        assert "rm -f " in wrapped
+
+
     def test_init_session_bootstrap_also_atomic_and_mktemp(self):
         """The init_session bootstrap (first snapshot write) is the same shared
         file a concurrent command could source — it must be atomic and use

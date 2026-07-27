@@ -450,6 +450,8 @@ class HonchoClientConfig:
     user_observe_others: bool = True
     ai_observe_me: bool = True
     ai_observe_others: bool = True
+    # Whether observationMode or observation was explicitly set in config.
+    observation_explicit: bool = False
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -507,6 +509,10 @@ class HonchoClientConfig:
             return cls.from_env(host=resolved_host)
 
         host_block = _host_block(raw, resolved_host)
+        observation_explicit = any(
+            key in host_block or key in raw
+            for key in ("observationMode", "observation")
+        )
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
@@ -727,6 +733,7 @@ class HonchoClientConfig:
                 ),
                 host_block.get("observation") or raw.get("observation"),
             ),
+            observation_explicit=observation_explicit,
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),

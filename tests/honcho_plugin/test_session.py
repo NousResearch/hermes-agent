@@ -1,11 +1,13 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
+import sys
 import time
 
 from datetime import datetime
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
@@ -59,6 +61,146 @@ class TestHonchoSession:
         session.add_message("user", "msg2")
         session.clear()
         assert session.messages == []
+
+
+class _FakeSessionPeerConfig:
+    def __init__(self, *, observe_me, observe_others):
+        self.observe_me = observe_me
+        self.observe_others = observe_others
+
+
+def _install_fake_honcho_sdk(monkeypatch):
+    honcho_module = ModuleType("honcho")
+    honcho_module.__path__ = []
+    session_module = ModuleType("honcho.session")
+    session_module.SessionPeerConfig = _FakeSessionPeerConfig
+    honcho_module.session = session_module
+    monkeypatch.setitem(sys.modules, "honcho", honcho_module)
+    monkeypatch.setitem(sys.modules, "honcho.session", session_module)
+
+
+class TestSessionPeerObservationConfig:
+    def test_explicit_mismatch_updates_only_affected_peer(self, monkeypatch):
+        _install_fake_honcho_sdk(monkeypatch)
+        cfg = HonchoClientConfig(
+            write_frequency="turn",
+            user_observe_me=True,
+            user_observe_others=False,
+            ai_observe_me=True,
+            ai_observe_others=True,
+            observation_explicit=True,
+        )
+        mgr = HonchoSessionManager(config=cfg)
+        honcho = MagicMock()
+        remote_session = honcho.session.return_value
+        remote_session.context.return_value = SimpleNamespace(messages=[])
+        user_peer = MagicMock()
+        assistant_peer = MagicMock()
+        remote_session.get_peer_configuration.side_effect = [
+            SimpleNamespace(observe_me=False, observe_others=False),
+            SimpleNamespace(observe_me=True, observe_others=True),
+        ]
+
+        with patch.object(
+            HonchoSessionManager,
+            "honcho",
+            new_callable=lambda: property(lambda self: honcho),
+        ):
+            mgr._get_or_create_honcho_session("session", user_peer, assistant_peer)
+
+        remote_session.set_peer_configuration.assert_called_once()
+        peer, peer_config = remote_session.set_peer_configuration.call_args.args
+        assert peer is user_peer
+        assert peer_config.observe_me is True
+        assert peer_config.observe_others is False
+        remote_session.set_peers.assert_not_called()
+
+    def test_matching_server_config_does_not_update_peers(self, monkeypatch):
+        _install_fake_honcho_sdk(monkeypatch)
+        cfg = HonchoClientConfig(
+            write_frequency="turn",
+            user_observe_me=True,
+            user_observe_others=False,
+            ai_observe_me=True,
+            ai_observe_others=True,
+            observation_explicit=True,
+        )
+        mgr = HonchoSessionManager(config=cfg)
+        honcho = MagicMock()
+        remote_session = honcho.session.return_value
+        remote_session.context.return_value = SimpleNamespace(messages=[])
+        remote_session.get_peer_configuration.side_effect = [
+            SimpleNamespace(observe_me=True, observe_others=False),
+            SimpleNamespace(observe_me=True, observe_others=True),
+        ]
+
+        with patch.object(
+            HonchoSessionManager,
+            "honcho",
+            new_callable=lambda: property(lambda self: honcho),
+        ):
+            mgr._get_or_create_honcho_session("session", MagicMock(), MagicMock())
+
+        remote_session.set_peer_configuration.assert_not_called()
+        remote_session.set_peers.assert_not_called()
+
+    def test_implicit_local_policy_preserves_server_values(self, monkeypatch):
+        _install_fake_honcho_sdk(monkeypatch)
+        cfg = HonchoClientConfig(observation_explicit=False)
+        mgr = HonchoSessionManager(config=cfg)
+        honcho = MagicMock()
+        remote_session = honcho.session.return_value
+        remote_session.context.return_value = SimpleNamespace(messages=[])
+        remote_session.get_peer_configuration.side_effect = [
+            SimpleNamespace(observe_me=False, observe_others=True),
+            SimpleNamespace(observe_me=True, observe_others=False),
+        ]
+
+        with patch.object(
+            HonchoSessionManager,
+            "honcho",
+            new_callable=lambda: property(lambda self: honcho),
+        ):
+            mgr._get_or_create_honcho_session("session", MagicMock(), MagicMock())
+
+        remote_session.set_peer_configuration.assert_not_called()
+        assert (
+            mgr._user_observe_me,
+            mgr._user_observe_others,
+            mgr._ai_observe_me,
+            mgr._ai_observe_others,
+        ) == (False, True, True, False)
+
+    def test_disables_observer_before_enabling_another(self, monkeypatch):
+        _install_fake_honcho_sdk(monkeypatch)
+        cfg = HonchoClientConfig(
+            user_observe_me=True,
+            user_observe_others=False,
+            ai_observe_me=True,
+            ai_observe_others=True,
+            observation_explicit=True,
+        )
+        mgr = HonchoSessionManager(config=cfg)
+        honcho = MagicMock()
+        remote_session = honcho.session.return_value
+        remote_session.context.return_value = SimpleNamespace(messages=[])
+        remote_session.get_peer_configuration.side_effect = [
+            SimpleNamespace(observe_me=True, observe_others=True),
+            SimpleNamespace(observe_me=True, observe_others=False),
+        ]
+        user_peer = MagicMock()
+        assistant_peer = MagicMock()
+
+        with patch.object(
+            HonchoSessionManager,
+            "honcho",
+            new_callable=lambda: property(lambda self: honcho),
+        ):
+            mgr._get_or_create_honcho_session("session", user_peer, assistant_peer)
+
+        calls = remote_session.set_peer_configuration.call_args_list
+        assert [call.args[0] for call in calls] == [user_peer, assistant_peer]
+        assert [call.args[1].observe_others for call in calls] == [False, True]
 
 
 # ---------------------------------------------------------------------------

@@ -229,6 +229,7 @@ class TestObservationModeMigration:
         }))
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.observation_mode == "unified"
+        assert cfg.observation_explicit is False
 
     def test_new_config_defaults_to_directional(self, tmp_path):
         """Config with no host block and no credentials → 'directional' (new default)."""
@@ -236,6 +237,15 @@ class TestObservationModeMigration:
         cfg_file.write_text(json.dumps({}))
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.observation_mode == "directional"
+        assert cfg.observation_explicit is False
+
+    def test_explicit_observation_mode_is_marked_explicit(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"observationMode": "directional"}))
+
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+
+        assert cfg.observation_explicit is True
 
 
     def test_granular_observation_overrides_preset(self, tmp_path):

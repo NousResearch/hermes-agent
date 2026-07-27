@@ -5982,12 +5982,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                 }
                 if preview is not None:
-                    event["preview"] = preview
+                    event["preview"] = redact_sensitive_text(
+                        str(preview), force=True
+                    )
                 for key in (
                     "goal",
                     "task_count",
                     "task_index",
                     "subagent_id",
+                    "child_session_id",
                     "parent_id",
                     "depth",
                     "model",
@@ -6005,8 +6008,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tail",
                 ):
                     value = kwargs.get(key)
-                    if value is not None:
-                        event[key] = value
+                    if value is None:
+                        continue
+                    # Free-text fields can carry child terminal/tool output —
+                    # force the same secret redaction the API applies to error
+                    # text before it leaves the process on a public stream.
+                    if key in ("goal", "summary", "output_tail") and isinstance(
+                        value, str
+                    ):
+                        value = redact_sensitive_text(value, force=True)
+                    event[key] = value
                 _push(event)
             # _thinking, subagent.tool, and subagent_progress are intentionally
             # not forwarded on the /v1/runs stream: they are high-volume UI

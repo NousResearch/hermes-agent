@@ -4667,7 +4667,8 @@ class TelegramAdapter(BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,  # ignore rich-option params (options, display_type, auth_policy)
+        options: Optional[list] = None,
+        **kwargs,  # display_type / auth_policy / timeout_seconds ignored on Telegram
     ) -> SendResult:
         """Render a clarify prompt with one inline button per choice.
 
@@ -4676,9 +4677,17 @@ class TelegramAdapter(BasePlatformAdapter):
         "Other" button flips the entry into text-capture mode so the next
         message becomes the response.
 
-        Open-ended mode (``choices`` empty): renders the question as plain
-        text — no buttons.  The next message in the session is captured by
-        the gateway's text-intercept and resolves the clarify.
+        Rich-options mode (``options`` non-empty, ``choices`` None): reuses
+        the multi-choice rendering — one numbered line and one inline button
+        per option (label-or-value) plus the "Other" button — so the two are
+        visually identical.  A button tap resolves to the option's ``value``
+        (not its label); see the ``cl:`` callback site.  ``display_type`` and
+        ``auth_policy`` have no Telegram equivalent (no modal / per-user auth)
+        and are intentionally ignored.
+
+        Open-ended mode (``choices`` and ``options`` both empty): renders the
+        question as plain text — no buttons.  The next message in the session
+        is captured by the gateway's text-intercept and resolves the clarify.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -4687,14 +4696,27 @@ class TelegramAdapter(BasePlatformAdapter):
             text = f"❓ {_html.escape(question)}"
             thread_id = self._metadata_thread_id(metadata)
 
-            if choices:
+            # Labels rendered in the message body and on the inline buttons.
+            # The rich-options path derives a choices-equivalent from
+            # ``options`` so it flows through the exact same numbered-body +
+            # inline-button rendering the simple path uses.  Button indices
+            # stay aligned with ``entry.options`` (see the cl: callback),
+            # which resolves a tap to the option's value.
+            render_labels: Optional[list] = choices
+            if not render_labels and options:
+                render_labels = [
+                    opt.get("label") or opt.get("value")
+                    for opt in options
+                ]
+
+            if render_labels:
                 # Render full option text in the message body so mobile
                 # users can read long choices that would be truncated in
                 # inline button labels.  Buttons keep short numeric labels
                 # (1, 2, …, Other) to avoid Telegram truncation.
                 option_lines = "\n".join(
                     f"{i + 1}. {_html.escape(str(c))}"
-                    for i, c in enumerate(choices)
+                    for i, c in enumerate(render_labels)
                 )
                 text += f"\n\n{option_lines}"
 
@@ -4705,11 +4727,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             }
 
-            if choices:
+            if render_labels:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
                 rows = []
-                for idx in range(len(choices)):
+                for idx in range(len(render_labels)):
                     rows.append([
                         InlineKeyboardButton(
                             str(idx + 1),
@@ -5558,15 +5580,22 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="Invalid choice.")
                     return
 
-                # Look up the choice text from the entry registered in the
+                # Look up the response text from the entry registered in the
                 # clarify primitive.  Fall back to the index if the entry
                 # has been cleaned up (race with timeout / session reset).
                 resolved_text: Optional[str] = None
                 try:
                     from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
                     entry = _clarify_entries.get(clarify_id)
-                    if entry and entry.choices and 0 <= idx < len(entry.choices):
-                        resolved_text = entry.choices[idx]
+                    if entry:
+                        if entry.choices and 0 <= idx < len(entry.choices):
+                            # Simple-choices path: resolve to the choice text.
+                            resolved_text = entry.choices[idx]
+                        elif entry.options and 0 <= idx < len(entry.options):
+                            # Rich-options path: resolve to the option's
+                            # *value* (not its label), mirroring what Discord
+                            # returns to the agent.
+                            resolved_text = entry.options[idx].get("value")
                 except Exception:
                     resolved_text = None
 

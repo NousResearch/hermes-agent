@@ -12222,6 +12222,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _cprint(f"  {_DIM}{reqs['hint']}{_RST}")
             return False
 
+        if announce and not reqs.get("deps_available", True):
+            # Fresh install: the engine constructor lazy-installs its deps
+            # (onnxruntime is a large wheel) — tell the user why this is slow.
+            _cprint(f"{_DIM}Installing wake word engine (first use — this may take a minute)...{_RST}")
+
         self._wake_start_new_session = bool(cfg.get("start_new_session", True))
         try:
             start_listening(self._on_wake_word, owner=self, config=cfg)

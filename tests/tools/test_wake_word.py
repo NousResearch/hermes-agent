@@ -112,6 +112,53 @@ def test_requirements_unavailable_without_audio(monkeypatch):
     assert r["audio_available"] is False
 
 
+def test_requirements_fresh_install_lazy_allowed(monkeypatch):
+    """Deps missing + lazy installs allowed → available, so /wake on can
+    reach the engine constructor's ``lazy_deps.ensure()`` call.
+
+    Regression: the audio probe imports sounddevice/numpy — packages the
+    lazy installer would fetch — so gating ``available`` on it made the
+    lazy-install path unreachable on a fresh machine (the /wake on handler
+    printed the pip hint and bailed before ensure() ever ran).
+    """
+    def _boom():
+        raise AssertionError("audio probe must not run while deps are missing")
+
+    monkeypatch.setattr(ww, "_audio_available", _boom)
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: False)
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    assert r["available"] is True
+    assert r["deps_available"] is False
+    assert r["hint"] == ""
+
+
+def test_requirements_fresh_install_lazy_disabled(monkeypatch):
+    """Deps missing + lazy installs disabled → unavailable, with the manual
+    pip command as the remediation hint."""
+    monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: False)
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
+    monkeypatch.setattr(
+        "tools.lazy_deps.feature_install_command", lambda f: f"uv pip install {f}"
+    )
+    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    assert r["available"] is False
+    assert r["deps_available"] is False
+    assert "install" in r["hint"]
+
+
+def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
+    """Once deps ARE installed, a failing audio probe blocks with a mic hint
+    (lazy installs can't fix a missing audio device)."""
+    monkeypatch.setattr(ww, "_audio_available", lambda: False)
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    assert r["available"] is False
+    assert "audio device" in r["hint"]
+
+
 # ── openWakeWord engine (bundled model + base-model fetch) ───────────────
 
 

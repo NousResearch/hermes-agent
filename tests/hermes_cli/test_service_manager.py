@@ -1118,11 +1118,11 @@ def _log_run_setup_fragment(rendered: str) -> str:
 def test_s6_log_run_creates_leaf_as_hermes_without_chown(
     s6_scandir, fake_subprocess_run,
 ) -> None:
-    """log/run must not root-chown volume paths; create the leaf as hermes.
+    """log/run must not root-chown/unlink volume paths; create leaf as hermes.
 
     #45258 parent ownership is stage2's job (``logs/gateways`` seeded as
-    hermes). Restartable log/run must not pathname-chown a hermes-writable
-    tree from root — that is a symlink TOCTOU privilege-escalation hole.
+    hermes). Restartable log/run must not pathname-chown or pathname-rm a
+    hermes-writable tree from root — that is a symlink TOCTOU hole.
     """
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway("coder")
@@ -1134,18 +1134,23 @@ def test_s6_log_run_creates_leaf_as_hermes_without_chown(
         f"saw: {log_text!r}"
     )
     assert 's6-setuidgid hermes mkdir -p "$log_dir"' in log_text
-    assert 'else\n  mkdir -p "$log_dir"\nfi\n' in log_text
+    assert 's6-setuidgid hermes rm -f "$log_dir/lock"' in log_text
+    assert 'else\n  mkdir -p "$log_dir"\n  rm -f "$log_dir/lock"\nfi\n' in log_text
+    # Lock cleanup must not remain a bare root-context pathname op after fi.
+    after_fi = log_text.split("fi\n", 1)[-1]
+    assert 'rm -f "$log_dir/lock"' not in after_fi
 
     mkdir_as_hermes_idx = log_text.index('s6-setuidgid hermes mkdir -p "$log_dir"')
+    rm_as_hermes_idx = log_text.index('s6-setuidgid hermes rm -f "$log_dir/lock"')
     exec_idx = log_text.index("s6-log 1 ")
-    assert mkdir_as_hermes_idx < exec_idx
+    assert mkdir_as_hermes_idx < rm_as_hermes_idx < exec_idx
 
     # Runtime path expansion, never a baked-in absolute path.
     assert '/opt/data/logs/gateways"' not in log_text
 
 
 def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None:
-    """Symlinked ``$log_dir`` must not cause any chown of the referent."""
+    """Symlinked ``$log_dir`` must not redirect root chown/rm to the referent."""
     import os
     import stat
     import subprocess
@@ -1166,6 +1171,7 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
     victim = tmp_path / "victim"
     victim.mkdir()
     (victim / "marker").write_text("keep", encoding="utf-8")
+    (victim / "lock").write_text("keep-lock", encoding="utf-8")
     before = victim.stat()
 
     bin_dir = tmp_path / "bin"
@@ -1177,8 +1183,9 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
         "exit 0\n",
         encoding="utf-8",
     )
-    # Pretend we are root so the script takes the s6-setuidgid mkdir path,
-    # and make s6-setuidgid a no-op drop that just runs the command.
+    # Pretend we are root so the script takes the s6-setuidgid setup path.
+    # Mark the drop so fake rm can refuse unlink outside HERMES_HOME the way
+    # a real hermes uid cannot delete a foreign root-owned lock.
     (bin_dir / "id").write_text(
         "#!/bin/sh\n"
         'if [ "$1" = "-u" ]; then echo 0; exit 0; fi\n'
@@ -1188,10 +1195,23 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
     (bin_dir / "s6-setuidgid").write_text(
         "#!/bin/sh\n"
         "shift\n"
-        'exec "$@"\n',
+        'HERMES_TEST_DROPPED=1 exec "$@"\n',
         encoding="utf-8",
     )
-    for name in ("chown", "id", "s6-setuidgid"):
+    real_rm = "/bin/rm"
+    (bin_dir / "rm").write_text(
+        "#!/bin/sh\n"
+        # Privilege-dropped: no-op. Models that hermes cannot unlink a foreign
+        # root-owned lock outside the volume; avoids a realpath/rm TOCTOU in
+        # the test double itself. Root-context: real rm — a residual bare
+        # ``rm -f "$log_dir/lock"`` would delete victim/lock via the symlink.
+        'if [ -n "$HERMES_TEST_DROPPED" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        f'exec {real_rm} "$@"\n',
+        encoding="utf-8",
+    )
+    for name in ("chown", "id", "s6-setuidgid", "rm"):
         p = bin_dir / name
         p.chmod(p.stat().st_mode | stat.S_IXUSR)
 
@@ -1214,8 +1234,8 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
 
     def _swap_race() -> None:
         # Alternate leaf between a real dir and a symlink to the victim while
-        # the setup fragment runs — proves there is no privileged chown window
-        # to win, unlike a check-then-chown preflight.
+        # the setup fragment runs — proves there is no privileged chown/rm
+        # window to win, unlike a check-then-use preflight.
         while not stop.is_set():
             try:
                 _clear_leaf()
@@ -1243,6 +1263,7 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
                 check=False,
             )
             assert proc.returncode == 0, (proc.stdout, proc.stderr)
+            assert (victim / "lock").is_file(), "symlinked leaf must not let root unlink victim/lock"
     finally:
         stop.set()
         racer.join(timeout=2)
@@ -1252,6 +1273,7 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
     assert after.st_uid == before.st_uid
     assert after.st_gid == before.st_gid
     assert (victim / "marker").read_text(encoding="utf-8") == "keep"
+    assert (victim / "lock").read_text(encoding="utf-8") == "keep-lock"
 
 
 def test_s6_log_run_mkdir_as_hermes_on_real_dirs(tmp_path) -> None:
@@ -1270,7 +1292,7 @@ def test_s6_log_run_mkdir_as_hermes_on_real_dirs(tmp_path) -> None:
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    mkdir_recorder = tmp_path / "mkdir_via_setuidgid.txt"
+    setuid_recorder = tmp_path / "setuidgid_calls.txt"
     chown_recorder = tmp_path / "chown_calls.txt"
 
     (bin_dir / "id").write_text(
@@ -1281,7 +1303,7 @@ def test_s6_log_run_mkdir_as_hermes_on_real_dirs(tmp_path) -> None:
     )
     (bin_dir / "s6-setuidgid").write_text(
         "#!/bin/sh\n"
-        f'printf "%s\\n" "$*" >> "{mkdir_recorder.as_posix()}"\n'
+        f'printf "%s\\n" "$*" >> "{setuid_recorder.as_posix()}"\n'
         "shift\n"
         'exec "$@"\n',
         encoding="utf-8",
@@ -1316,11 +1338,15 @@ def test_s6_log_run_mkdir_as_hermes_on_real_dirs(tmp_path) -> None:
     )
     assert proc.returncode == 0, (proc.stdout, proc.stderr)
 
-    mkdir_calls = mkdir_recorder.read_text(encoding="utf-8").strip().splitlines()
+    setuid_calls = setuid_recorder.read_text(encoding="utf-8").strip().splitlines()
     assert any(
         c.split()[:3] == ["hermes", "mkdir", "-p"] and "gateways/coder" in c
-        for c in mkdir_calls
-    ), mkdir_calls
+        for c in setuid_calls
+    ), setuid_calls
+    assert any(
+        c.split()[:3] == ["hermes", "rm", "-f"] and c.rstrip().endswith("/lock")
+        for c in setuid_calls
+    ), setuid_calls
     assert (hermes_home / "logs" / "gateways" / "coder").is_dir()
     assert (
         not chown_recorder.exists()

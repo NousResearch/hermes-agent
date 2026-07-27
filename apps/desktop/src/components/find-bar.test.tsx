@@ -609,4 +609,17 @@ describe('FindBar', () => {
     await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
     expect(bridge.stopFindInPage).not.toHaveBeenCalled()
   })
+
+  it('does not render on overlay routes (settings, command center, …)', () => {
+    // Match isOverlayView: agents, command-center, cron, profiles, settings,
+    // starmap, webhooks. Test with the most commonly hit one.
+    openFindBar()
+    renderFindBar('/settings')
+
+    expect(screen.queryByRole('search')).toBeNull()
+    // The store still has active=true but the component guard suppresses
+    // rendering — a harmless state ghost that the next pathname-change
+    // cleanup will drain via closeFindBar.
+    expect($findInPage.get().active).toBe(true)
+  })
 })

@@ -4792,6 +4792,76 @@ def _reload_updated_runtime_modules() -> None:
         logger.debug("Could not refresh update runtime modules: %s", exc)
 
 
+# Stamp file recording the checkout fingerprint the bytecode cache was last
+# validated against. Lives next to the checkout (NOT in HERMES_HOME) because
+# __pycache__ is per-checkout state shared by every profile.
+_BYTECODE_FINGERPRINT_FILE = ".bytecode-fingerprint"
+
+
+def _record_bytecode_fingerprint() -> None:
+    """Persist the current checkout fingerprint after a bytecode sweep.
+
+    Never raises. A failed write just means the next launch re-sweeps —
+    safe, merely redundant.
+    """
+    try:
+        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
+        if not fingerprint:
+            return
+        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
+        tmp_path = stamp_path.with_name(stamp_path.name + ".tmp")
+        tmp_path.write_text(fingerprint, encoding="utf-8")
+        tmp_path.replace(stamp_path)
+    except OSError as exc:
+        logger.debug("Could not record bytecode fingerprint: %s", exc)
+
+
+def _sweep_stale_bytecode_if_checkout_changed() -> None:
+    """Clear ``__pycache__`` at launch when the checkout changed underneath us.
+
+    The stale-bytecode bug class (issues #6207, #60242; Dhruv's WhatsApp
+    ``cannot import name 'parse_model_flags_detailed'`` report) has one
+    shared shape: the checkout's ``.py`` files change (git pull inside
+    ``hermes update``, a manual ``git pull``, a ZIP update, a file-sync
+    restore) while ``__pycache__`` retains bytecode from the previous
+    revision, and a later process trusts the stale ``.pyc`` instead of the
+    fresh source.
+
+    Update-time clears alone can never close this class: ``hermes update``
+    always executes the PRE-pull updater code, so any hardening added to it
+    only takes effect one update late, and manual ``git pull`` never runs
+    the updater at all. This launch-time guard closes the loop: every
+    ``hermes`` entry point compares the checkout fingerprint (cheap file
+    reads, no git subprocess) against the last-validated stamp and sweeps
+    the bytecode cache once when they diverge.
+
+    Never raises — a failure here must not block launch.
+    """
+    try:
+        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
+        if not fingerprint:
+            return  # non-git install — the ZIP update path clears explicitly
+        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
+        try:
+            recorded = stamp_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            recorded = ""
+        if recorded == fingerprint:
+            return
+        removed = _clear_bytecode_cache(PROJECT_ROOT)
+        if removed:
+            logger.info(
+                "Checkout changed since last launch (%s -> %s): cleared %d stale __pycache__ director%s",
+                recorded or "unknown",
+                fingerprint,
+                removed,
+                "y" if removed == 1 else "ies",
+            )
+        _record_bytecode_fingerprint()
+    except Exception as exc:
+        logger.debug("Stale-bytecode launch sweep failed: %s", exc)
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -7810,6 +7880,7 @@ def _update_via_zip(args):
         print(
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
+    _record_bytecode_fingerprint()
 
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
@@ -12308,6 +12379,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
+        _record_bytecode_fingerprint()
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
@@ -12396,6 +12468,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
+        _record_bytecode_fingerprint()
         _reload_updated_runtime_modules()
 
         # Upgrade pip before lazy refreshes — stale pip can fail source builds
@@ -15586,6 +15659,12 @@ def main():
         _cleanup_quarantined_exes()
     except Exception:
         pass
+
+    # If the checkout changed since the last launch (hermes update, manual
+    # git pull, old-updater update that predates newer clears), sweep stale
+    # __pycache__ once so no process — this one's lazy imports included —
+    # resolves fresh source against old bytecode. Never raises.
+    _sweep_stale_bytecode_if_checkout_changed()
 
     # Self-heal a venv left half-built by an interrupted ``hermes update``
     # (Ctrl-C, terminal close, WSL OOM mid-install). Skip when the user is

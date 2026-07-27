@@ -1947,6 +1947,29 @@ export const zh: Translations = {
     copyPath: '复制路径'
   },
 
+  artifactCard: {
+    kind: { code: '代码', html: '交互页面', svg: '图形' },
+    generating: lines => `生成中… ${lines} 行`,
+    versionBadge: count => `${count} 个版本`,
+    open: '打开'
+  },
+
+  artifactPane: {
+    tabFallback: '产物',
+    modePreview: '预览',
+    modeSource: '源码',
+    versionOf: (current, total) => `第 ${current}/${total} 版`,
+    olderVersion: '较旧版本',
+    newerVersion: '较新版本',
+    latest: '最新',
+    copyContent: '复制内容',
+    download: '下载',
+    openInBrowser: '在浏览器中打开',
+    openInBrowserFailed: '无法在浏览器中打开',
+    missingTitle: '产物不可用',
+    missingBody: '此产物已不在本地注册表中。'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新建会话',

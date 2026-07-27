@@ -1495,6 +1495,29 @@ export const ar = defineLocale({
     copyUrl: 'نسخ الرابط',
     copyPath: 'نسخ المسار'
   },
+
+  artifactCard: {
+    kind: { code: 'كود', html: 'صفحة تفاعلية', svg: 'رسم' },
+    generating: lines => `جارٍ الإنشاء… ${lines} سطرًا`,
+    versionBadge: count => `${count} إصدارات`,
+    open: 'فتح'
+  },
+
+  artifactPane: {
+    tabFallback: 'ناتج',
+    modePreview: 'معاينة',
+    modeSource: 'المصدر',
+    versionOf: (current, total) => `الإصدار ${current} من ${total}`,
+    olderVersion: 'إصدار أقدم',
+    newerVersion: 'إصدار أحدث',
+    latest: 'الأحدث',
+    copyContent: 'نسخ المحتوى',
+    download: 'تنزيل',
+    openInBrowser: 'فتح في المتصفح',
+    openInBrowserFailed: 'تعذّر الفتح في المتصفح',
+    missingTitle: 'الناتج غير متاح',
+    missingBody: 'لم يعد هذا الناتج موجودًا في السجل المحلي.'
+  },
   sidebar: {
     nav: {
       'new-session': 'جلسة جديدة',

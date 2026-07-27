@@ -1757,6 +1757,29 @@ export const en: Translations = {
     copyPath: 'Copy path'
   },
 
+  artifactCard: {
+    kind: { code: 'Code', html: 'Interactive page', svg: 'Graphic' },
+    generating: lines => `Generating… ${lines} lines`,
+    versionBadge: count => `${count} versions`,
+    open: 'Open'
+  },
+
+  artifactPane: {
+    tabFallback: 'Artifact',
+    modePreview: 'PREVIEW',
+    modeSource: 'SOURCE',
+    versionOf: (current, total) => `v${current} of ${total}`,
+    olderVersion: 'Older version',
+    newerVersion: 'Newer version',
+    latest: 'Latest',
+    copyContent: 'Copy content',
+    download: 'Download',
+    openInBrowser: 'Open in browser',
+    openInBrowserFailed: 'Could not open in browser',
+    missingTitle: 'Artifact unavailable',
+    missingBody: 'This artifact is no longer in the local registry.'
+  },
+
   sidebar: {
     nav: {
       'new-session': 'New session',

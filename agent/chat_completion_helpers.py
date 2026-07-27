@@ -433,26 +433,56 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 
 
 def should_use_direct_api_call(agent) -> bool:
-    """Whether a cron OpenAI-wire request should skip the interrupt worker.
+    """Whether an OpenAI-wire request should skip the interrupt worker.
 
-    Issue #62151 is specific to OpenRouter's chat-completions path inside the
-    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on their
-    established workers: their cancellation and client ownership differ, and
-    the report provides no evidence that those paths share the pre-HTTP wedge.
+    Two nested-pool contexts wedge before the socket opens when the request
+    is pushed onto yet another daemon worker thread:
+
+    - Gateway cron turns (#62151): gateway asyncio loop → cron thread →
+      interrupt worker. Fixed by running inline.
+    - Delegated children (#60203): gateway loop → async-delegation executor
+      (module-lifetime daemon pool) → per-child timeout executor → interrupt
+      worker. Same fingerprint after multi-day gateway uptime — children hang
+      at their FIRST API call with zero stale-detector output (the worker
+      never reaches dispatch), all providers, restart cures it. The cron fix
+      originally excluded delegation "for lack of evidence"; #60203 is that
+      evidence.
+
+    Running inline drops the deepest thread layer (whose only job is
+    interactive-interrupt responsiveness). Interrupts still work: the inline
+    path registers ``agent._active_request_abort``, which ``interrupt()``
+    invokes cross-thread to shut the active sockets — the same mechanism the
+    async-delegation stall monitor (#72227) relies on.
+
+    Keep native/Codex/Bedrock/MoA transports on their established workers:
+    their cancellation and client ownership differ.
     """
-    return (
-        getattr(agent, "platform", None) == "cron"
-        and getattr(agent, "api_mode", None) == "chat_completions"
-        and getattr(agent, "provider", None) != "moa"
-    )
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return False
+    if getattr(agent, "provider", None) == "moa":
+        return False
+    if getattr(agent, "platform", None) == "cron":
+        return True
+    # Delegated child (delegate_task sync or background) — detected via the
+    # execution ContextVar set by _run_single_child, with the agent's own
+    # platform stamp as a fallback for callers that bypass the runner.
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        if is_delegated_child_context():
+            return True
+    except Exception:
+        pass
+    return getattr(agent, "platform", None) == "subagent"
 
 
 def direct_api_call(agent, api_kwargs: dict):
     """Run a non-streaming LLM call inline on the conversation thread.
 
-    Used when ``should_use_direct_api_call`` is True. Skips the interrupt worker
-    (whose only job is interactive-interrupt responsiveness, which this context
-    does not have) so the nested-pool deadlock (#62151) cannot occur. Because the
+    Used when ``should_use_direct_api_call`` is True (cron turns and
+    delegated children). Skips the interrupt worker (whose only job is
+    interactive-interrupt responsiveness, which these contexts do not have)
+    so the nested-pool deadlock (#62151, #60203) cannot occur. Because the
     request runs in-flight normally, the per-request OpenAI client's own httpx
     timeout (provider ``request_timeout_seconds`` / ``HERMES_API_TIMEOUT``) bounds
     a genuinely hung provider — the same bound interactive calls already rely on.
@@ -463,7 +493,7 @@ def direct_api_call(agent, api_kwargs: dict):
     request_client_lock = threading.Lock()
 
     def _abort_active_request(reason: str) -> None:
-        """Abort the inline request from cron's watchdog/interrupt thread."""
+        """Abort the inline request from a watchdog/interrupt thread."""
         with request_client_lock:
             request_client = request_client_holder["client"]
         if request_client is not None:

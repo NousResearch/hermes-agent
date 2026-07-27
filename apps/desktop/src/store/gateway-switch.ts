@@ -13,8 +13,8 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
-  setSessions,
   setSessionProfilesTruncated,
+  setSessions,
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'

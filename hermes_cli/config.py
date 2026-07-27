@@ -3444,10 +3444,22 @@ def _exit_invalid(msg: str) -> None:
     sys.exit(1)
 
 
-def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
-    """Write only the user's raw config back (never the merged defaults)."""
+def _write_user_config(
+    config_path: Path,
+    user_config: Dict[str, Any],
+    before: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Write only the user's raw config back, preserving untouched formatting when possible."""
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    if before is None:
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
+        return
+    from utils import atomic_roundtrip_yaml_apply
+
+    try:
+        atomic_roundtrip_yaml_apply(config_path, before, user_config)
+    except Exception:
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
@@ -3505,6 +3517,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
     value = _coerce_config_set_value(key, value)
+    # The round-trip writer applies only this before/after diff so unrelated
+    # comments, quoting, blank lines, and ordering survive (#63039).
+    config_before_write = copy.deepcopy(user_config)
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")
@@ -3523,7 +3538,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    _write_user_config(config_path, user_config)
+    _write_user_config(config_path, user_config, config_before_write)
 
     # Keep .env in sync: terminal_tool reads TERMINAL_ENV etc. directly from env vars.
     env_var = terminal_config_env_var_for_key(key)
@@ -3589,6 +3604,7 @@ def unset_config_value(key: str):
     if _redirect_note:
         # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
+    config_before_write = copy.deepcopy(user_config)
     removed = _unset_nested(user_config, key)
 
     env_var = terminal_config_env_var_for_key(key)
@@ -3598,7 +3614,7 @@ def unset_config_value(key: str):
     if not removed:
         _exit_invalid(f"Config key not set: {key}")
 
-    _write_user_config(config_path, user_config)
+    _write_user_config(config_path, user_config, config_before_write)
     print(f"✓ Unset {key} from {config_path}")
 
 

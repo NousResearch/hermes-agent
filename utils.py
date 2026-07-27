@@ -372,6 +372,67 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     _roundtrip_dump(path, yaml_rt, existing)
 
 
+def _rt_safe_scalar(value: Any) -> Any:
+    """Quote strings whose plain YAML form would round-trip as another type."""
+    if isinstance(value, str):
+        try:
+            if not isinstance(yaml.safe_load(value), str):
+                from ruamel.yaml.scalarstring import SingleQuotedScalarString
+
+                return SingleQuotedScalarString(value)
+        except yaml.YAMLError:
+            pass
+    elif isinstance(value, dict):
+        return {key: _rt_safe_scalar(item) for key, item in value.items()}
+    elif isinstance(value, list):
+        return [_rt_safe_scalar(item) for item in value]
+    return value
+
+
+def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
+    """Apply only changed paths to a round-trip document, preserving untouched formatting."""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return
+    for key in before:
+        if key not in after and key in doc:
+            del doc[key]
+    for key, new_value in after.items():
+        if key in before and before[key] == new_value:
+            continue
+        old_value = before.get(key)
+        existing = doc[key] if key in doc else None
+        if isinstance(existing, dict) and isinstance(old_value, dict) and isinstance(new_value, dict):
+            _apply_yaml_diff(existing, old_value, new_value)
+        elif (
+            isinstance(existing, list)
+            and isinstance(old_value, list)
+            and isinstance(new_value, list)
+            and len(existing) == len(old_value) == len(new_value)
+        ):
+            for index, (old_item, new_item) in enumerate(zip(old_value, new_value)):
+                if old_item == new_item:
+                    continue
+                if (
+                    isinstance(existing[index], dict)
+                    and isinstance(old_item, dict)
+                    and isinstance(new_item, dict)
+                ):
+                    _apply_yaml_diff(existing[index], old_item, new_item)
+                else:
+                    existing[index] = _rt_safe_scalar(new_item)
+        else:
+            doc[key] = _rt_safe_scalar(new_value)
+
+
+def atomic_roundtrip_yaml_apply(path: Union[str, Path], before: Any, after: Any) -> None:
+    """Persist a computed mapping while preserving formatting on unchanged paths."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_rt, doc = _roundtrip_load(path)
+    _apply_yaml_diff(doc, before if isinstance(before, dict) else {}, after)
+    _roundtrip_dump(path, yaml_rt, doc)
+
+
 def safe_json_loads(text: str, default: Any = None) -> Any:
     """Parse JSON, returning *default* on any parse error."""
     try:

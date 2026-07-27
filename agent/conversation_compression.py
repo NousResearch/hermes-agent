@@ -1737,6 +1737,7 @@ def compress_context(
                         len(durable_parent),
                     )
                     messages = durable_parent
+                    _pre_msg_count = len(messages)
                     # Token estimate was for the stale snapshot; clear it so
                     # the compressor re-derives from the adopted transcript
                     # instead of under-counting the newly visible rows.

@@ -591,10 +591,11 @@ function Sash({
     >
       {/* Persistent hairline: same token as PaneShell's divider sash
           (--ui-stroke-secondary) so every seam — vertical or horizontal —
-          reads identically. */}
+          reads identically. Sits at 0.1 so seams recede into the surface,
+          and comes up to full on hover alongside the thicker grab band. */}
       <span
         className={cn(
-          'absolute bg-(--ui-stroke-secondary)',
+          'absolute bg-(--ui-stroke-secondary) opacity-10 transition-opacity duration-100 group-hover:opacity-100',
           horizontal ? 'inset-y-0 left-1/2 w-px -translate-x-1/2' : 'inset-x-0 top-1/2 h-px -translate-y-1/2'
         )}
       />

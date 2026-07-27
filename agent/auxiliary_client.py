@@ -2794,7 +2794,13 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
         return None, None
     api_key, base_url = resolved
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    real_client = _create_openai_client(api_key=api_key, base_url=base_url)
+    from tools.xai_http import hermes_xai_default_headers
+
+    real_client = _create_openai_client(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers=hermes_xai_default_headers(),
+    )
     return CodexAuxiliaryClient(real_client, model), model
 
 
@@ -4892,6 +4898,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
         async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+    elif base_url_host_matches(sync_base_url, "x.ai"):
+        from tools.xai_http import hermes_xai_default_headers
+
+        async_kwargs["default_headers"] = hermes_xai_default_headers()
     else:
         # Fall back to profile.default_headers for providers that declare
         # client-level headers on their ProviderProfile (e.g. attribution
@@ -5515,6 +5525,10 @@ def resolve_provider_client(
             ))
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers.update(build_nvidia_nim_headers(base_url))
+        elif base_url_host_matches(base_url, "x.ai"):
+            from tools.xai_http import hermes_xai_default_headers
+
+            headers.update(hermes_xai_default_headers())
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI

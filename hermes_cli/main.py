@@ -4455,7 +4455,11 @@ def cmd_sync(args):
             "  now               Reconcile now: pull then push\n"
             "  enable <skill>    Opt a skill into sync\n"
             "  disable <skill>   Opt a skill out of sync\n"
-            "  device [--name N] Show or set this device's sync label",
+            "  device [--name N] Show or set this device's sync label\n"
+            "\n"
+            "These cover your PERSONAL skills, across your own devices.\n"
+            "To share a skill with your organisation instead:\n"
+            "  hermes skills propose <skill>",
             file=sys.stderr,
         )
         return 1

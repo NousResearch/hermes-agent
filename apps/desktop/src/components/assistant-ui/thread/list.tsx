@@ -217,18 +217,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // changes stay urgent (main.tsx disables router transitions); it's exactly
   // this backfill that belongs at background priority. "Show earlier" pages
   // (budget > RENDER_BUDGET) never re-enter here.
-  //
-  // NOT while this thread is streaming: an interrupted transition RESTARTS
-  // from scratch, and stream flushes land every 33-250ms — so switching to a
-  // streaming session re-ran the whole 300-part backfill render over and
-  // over (measured: 1374ms settle, 30 commits, Primitive.div x2237 on one
-  // switch; the same switch while idle settles in ~50ms). The user lands at
-  // the live tail anyway; older turns backfill the moment the run ends, and
-  // "Show earlier" remains the manual path meanwhile.
-  const threadRunning = useAuiState(s => s.thread.isRunning)
-
   useEffect(() => {
-    if (renderBudget >= RENDER_BUDGET || threadRunning) {
+    if (renderBudget >= RENDER_BUDGET) {
       return
     }
 
@@ -240,7 +230,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     })
 
     return () => cancelAnimationFrame(rafId)
-  }, [renderBudget, threadRunning])
+  }, [renderBudget])
 
   // Weights (per-message part counts) fold into the BUDGET only. Group
   // identity stays structural, so a streaming append re-runs this cheap sum —

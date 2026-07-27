@@ -1349,6 +1349,72 @@ def test_request_rewrite_preserves_fields_dropped_by_codec(relay_turn, monkeypat
     ]
 
 
+def test_request_rewrite_is_ignored_when_codec_baseline_fails(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    captured_requests = []
+    original = {
+        "model": "test-model",
+        "messages": [],
+        "temperature": 0.0,
+        "extra_body": {"routing": {"provider": "nim"}},
+    }
+
+    async def lossy_execute(_name, request, callback, **_kwargs):
+        rewritten = {
+            key: value
+            for key, value in request.content.items()
+            if key != "extra_body"
+        }
+        rewritten["temperature"] = 0.25
+        return callback(relay.LLMRequest(request.headers, rewritten))
+
+    monkeypatch.setattr(relay.llm, "execute", lossy_execute)
+    monkeypatch.setattr(
+        relay_llm,
+        "_codec_round_trip_request_body",
+        lambda *_args, **_kwargs: None,
+    )
+
+    relay_llm.execute(
+        original,
+        lambda request: captured_requests.append(request) or {"content": "ok"},
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        metadata={
+            "api_mode": "chat_completions",
+            "api_request_id": "request-codec-failure",
+        },
+    )
+
+    assert captured_requests == [original]
+
+
+def test_codec_baseline_failure_is_explicit(relay_turn, monkeypatch, caplog):
+    relay, _turn = relay_turn
+    request_body = {"model": "test-model", "messages": []}
+    request = relay.LLMRequest({}, request_body)
+
+    class FailingCodec:
+        def decode(self, _request):
+            raise RuntimeError("simulated codec failure")
+
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: FailingCodec())
+
+    with caplog.at_level("WARNING", logger="agent.relay_llm"):
+        baseline = relay_llm._codec_round_trip_request_body(
+            relay,
+            request,
+            relay_request_body=request_body,
+            metadata={"api_mode": "chat_completions"},
+        )
+
+    assert baseline is None
+    assert "ignoring request rewrites" in caplog.text
+
+
 def test_request_rewrite_can_remove_codec_represented_field(relay_turn, monkeypatch):
     relay, _turn = relay_turn
     captured_requests = []

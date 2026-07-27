@@ -855,13 +855,13 @@ def _provider_request(
     request: Any,
     *,
     relay_request_body: dict[str, Any],
-    codec_baseline_body: dict[str, Any],
+    codec_baseline_body: dict[str, Any] | None,
     metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
     content = getattr(request, "content", request)
     if not isinstance(content, dict):
         content = relay_request_body
-    if _json_equal(content, relay_request_body):
+    if codec_baseline_body is None or _json_equal(content, relay_request_body):
         final = dict(original)
     else:
         baseline = codec_baseline_body
@@ -1006,7 +1006,7 @@ def _codec_round_trip_request_body(
     *,
     relay_request_body: dict[str, Any],
     metadata: dict[str, Any] | None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Return the codec-only request shape used to identify real rewrites."""
     codec = _codec(relay, metadata)
     if codec is None:
@@ -1018,8 +1018,16 @@ def _codec_round_trip_request_body(
         if isinstance(content, dict):
             return _provider_request_body(content, metadata)
     except Exception:
-        logger.debug("NeMo Relay request codec baseline failed", exc_info=True)
-    return _provider_request_body(relay_request_body, metadata)
+        logger.warning(
+            "NeMo Relay request codec baseline failed; ignoring request rewrites",
+            exc_info=True,
+        )
+        return None
+    logger.warning(
+        "NeMo Relay request codec returned an unsupported baseline; "
+        "ignoring request rewrites"
+    )
+    return None
 
 
 def _provider_request_body(

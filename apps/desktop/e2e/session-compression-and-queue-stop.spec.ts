@@ -57,25 +57,14 @@ test.describe('session compression', () => {
     await send(page, 'E2E_COMPRESSION_THIRD')
     await expect.poll(() => receivedUserTexts().filter(text => text === 'E2E_COMPRESSION_THIRD').length).toBe(1)
 
-    // Commit the command before typing its argument. This waits for the async
-    // completion request on cold CI workers, then uses the composer's own
-    // keyboard accept path to advance the arg-taking command. Bare commands
-    // that take arguments intentionally remain plain text instead of becoming
-    // chips. Clicking a later completion after typing the argument can insert
-    // a second command token (for example `//compress ...`) as plain text.
+    // This test covers compression and continuation, not slash completion.
+    // Insert the complete command atomically and click Send so an async
+    // completion response cannot consume Enter as a picker acceptance.
     const composer = page.locator('[contenteditable="true"]').first()
     await composer.click()
-    await composer.type('/compress', { delay: 15 })
-    const compressionCompletion = page
-      .locator('[data-slot="composer-completion-drawer"][role="listbox"]')
-      .getByRole('button', { name: /^\/compress\b/ })
-    await expect(compressionCompletion).toBeVisible()
-    await compressionCompletion.hover()
-    await expect(compressionCompletion).toHaveAttribute('data-highlighted', '')
-    await page.keyboard.press('Enter')
-    await expect.poll(() => composer.textContent()).toMatch(/^\/compress\s*$/)
-    await composer.type(' preserve the three test turns', { delay: 15 })
-    await page.keyboard.press('Enter')
+    await page.keyboard.insertText('/compress preserve the three test turns')
+    await expect.poll(() => composer.textContent()).toContain('preserve the three test turns')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
     await expect
       .poll(() => page.locator('[data-slot="aui_thread-viewport"]').textContent(), { timeout: 90_000 })
       .toMatch(/Compressed|No changes from compression/)

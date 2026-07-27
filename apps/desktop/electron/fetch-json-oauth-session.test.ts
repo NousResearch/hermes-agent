@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { describe, it } from 'vitest'
 import { fileURLToPath } from 'node:url'
+
+import { describe, it } from 'vitest'
 
 /**
  * Regression for #72530: body stream errors after `response` (e.g.

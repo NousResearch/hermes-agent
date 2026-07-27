@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tools.clarify_gateway import _ClarifyEntry, _coerce_text_response
 from tools.clarify_tool import (
     CLARIFY_SCHEMA,
     MAX_OPTIONS,
@@ -568,3 +569,149 @@ class TestSessionOwnerCapture:
             "_clarify_callback_sync must pass session_owner_user_id= to its "
             "register(...) call so adapters can read the session initiator."
         )
+
+
+# ===========================================================================
+# Typed rich-option coercion (T4 — tools/clarify_gateway.py::_coerce_text_response)
+# ===========================================================================
+
+def _rich_entry(options=None):
+    """A clarify entry registered with rich options and choices=None."""
+    if options is None:
+        options = [
+            {"label": "Approve", "value": "yes"},
+            {"label": "Reject", "value": "no"},
+        ]
+    return _ClarifyEntry(
+        clarify_id="c-rich", session_key="sk-rich", question="Q?",
+        choices=None, options=options,
+    )
+
+
+def _simple_entry(choices=None):
+    """A clarify entry registered with simple string choices."""
+    if choices is None:
+        choices = ["red", "green", "blue"]
+    return _ClarifyEntry(
+        clarify_id="c-simple", session_key="sk-simple", question="Q?",
+        choices=choices,
+    )
+
+
+def _open_entry():
+    """An open-ended clarify entry: neither choices nor options."""
+    return _ClarifyEntry(
+        clarify_id="c-open", session_key="sk-open", question="Q?",
+        choices=None, options=None,
+    )
+
+
+class TestCoerceRichOptions:
+    """T4: typed text is mapped to an option's ``value`` when rich options are set.
+
+    Covers the four resolution branches (index / label / value / custom) plus
+    the out-of-range and non-matching reject paths. ``entry.choices`` is None
+    and ``entry.options`` is set for every case here.
+    """
+
+    # -- index branch --------------------------------------------------------
+
+    def test_index_in_range_first(self):
+        assert _coerce_text_response(_rich_entry(), "1") == "yes"
+
+    def test_index_in_range_second(self):
+        assert _coerce_text_response(_rich_entry(), "2") == "no"
+
+    def test_index_zero_is_out_of_range(self):
+        # 1-based; "0" is below range and must NOT resolve positionally.
+        assert _coerce_text_response(_rich_entry(), "0") == "0"
+
+    def test_index_above_range_returns_unchanged(self):
+        assert _coerce_text_response(_rich_entry(), "3") == "3"
+
+    def test_negative_index_returns_unchanged(self):
+        assert _coerce_text_response(_rich_entry(), "-1") == "-1"
+
+    # -- label branch --------------------------------------------------------
+
+    def test_label_match_returns_value(self):
+        assert _coerce_text_response(_rich_entry(), "Approve") == "yes"
+
+    def test_label_match_case_insensitive(self):
+        assert _coerce_text_response(_rich_entry(), "REJECT") == "no"
+
+    def test_label_match_with_whitespace(self):
+        assert _coerce_text_response(_rich_entry(), "  approve  ") == "yes"
+
+    def test_text_not_a_label_falls_through(self):
+        # "maybe" matches neither label nor value — reject path.
+        assert _coerce_text_response(_rich_entry(), "maybe") == "maybe"
+
+    # -- value branch --------------------------------------------------------
+
+    def test_value_match_returns_value(self):
+        assert _coerce_text_response(_rich_entry(), "yes") == "yes"
+
+    def test_value_match_case_insensitive(self):
+        assert _coerce_text_response(_rich_entry(), "NO") == "no"
+
+    def test_text_not_a_value_falls_through(self):
+        # Distinct from labels/values — must survive as a custom answer.
+        assert _coerce_text_response(_rich_entry(), "later") == "later"
+
+    # -- custom / free-text branch ------------------------------------------
+
+    def test_custom_text_preserved_unchanged(self):
+        # Neither an index, label, nor value: free-text "Other" semantic.
+        assert _coerce_text_response(_rich_entry(), "ask me tomorrow") == "ask me tomorrow"
+
+    def test_numeric_looking_text_with_no_index_match_still_custom(self):
+        # A number that is out of range is not forced into an option.
+        assert _coerce_text_response(_rich_entry(), "42") == "42"
+
+    def test_index_wins_over_label_match(self):
+        # Precedence: when an option's label is itself a number ("1"), typing
+        # "1" resolves positionally (index 0) rather than to that option by
+        # label.  Locks the index > label > value ordering.
+        opts = [
+            {"label": "first", "value": "v-first"},
+            {"label": "1", "value": "v-label-one"},
+        ]
+        assert _coerce_text_response(_rich_entry(opts), "1") == "v-first"
+
+
+class TestCoerceSimplePathUnchanged:
+    """T4: the simple-choices branch (``entry.choices`` set) stays byte-identical.
+
+    Regression guard — the new options-aware code path must not perturb the
+    existing choices behaviour.
+    """
+
+    def test_index_returns_choice_text(self):
+        assert _coerce_text_response(_simple_entry(), "1") == "red"
+
+    def test_index_second_choice(self):
+        assert _coerce_text_response(_simple_entry(), "2") == "green"
+
+    def test_index_zero_out_of_range(self):
+        assert _coerce_text_response(_simple_entry(), "0") == "0"
+
+    def test_index_above_range(self):
+        assert _coerce_text_response(_simple_entry(), "9") == "9"
+
+    def test_label_match_returns_canonical_choice(self):
+        assert _coerce_text_response(_simple_entry(), "GREEN") == "green"
+
+    def test_unknown_text_returns_raw(self):
+        assert _coerce_text_response(_simple_entry(), "purple") == "purple"
+
+
+class TestCoerceOpenEndedUnchanged:
+    """T4: open-ended clarifies (no choices, no options) are passed through."""
+
+    def test_open_ended_returns_trimmed_text(self):
+        assert _coerce_text_response(_open_entry(), "  hello world  ") == "hello world"
+
+    def test_open_ended_numeric_passed_through(self):
+        assert _coerce_text_response(_open_entry(), "42") == "42"
+

@@ -216,7 +216,23 @@ def get_pending_for_session(
 
 
 def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
-    """Map typed choice replies to canonical choice text, otherwise keep custom text."""
+    """Map typed choice replies to canonical choice text, otherwise keep custom text.
+
+    Two shapes, mutually exclusive on the entry:
+
+    * **Simple choices** (``entry.choices`` set) — a typed 1-based index maps to
+      ``choices[idx]``; case-insensitive text matching a choice returns the
+      canonical choice string; anything else is preserved as a custom answer
+      (the "Other" semantic).
+
+    * **Rich options** (``entry.choices`` is None and ``entry.options`` set) —
+      a typed 1-based index maps to ``options[idx]["value"]``; case-insensitive
+      text matching an option's ``label`` or ``value`` resolves to that
+      option's ``value``; anything else is preserved unchanged (custom
+      free-text answer).  This mirrors the simple path's coercion so a user
+      who replies by typing instead of tapping a button still lands on the
+      option's value rather than the raw text they typed.
+    """
     text = str(response).strip()
     if entry.choices:
         try:
@@ -228,6 +244,22 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
         for choice in entry.choices:
             if text.casefold() == str(choice).strip().casefold():
                 return str(choice).strip()
+    elif entry.options:
+        try:
+            idx = int(text) - 1
+        except ValueError:
+            idx = -1
+        if 0 <= idx < len(entry.options):
+            return entry.options[idx]["value"]
+        folded = text.casefold()
+        for opt in entry.options:
+            label = str(opt["label"]).strip()
+            if label and folded == label.casefold():
+                return opt["value"]
+        for opt in entry.options:
+            value = str(opt["value"]).strip()
+            if value and folded == value.casefold():
+                return opt["value"]
     return text
 
 

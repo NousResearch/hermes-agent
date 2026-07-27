@@ -106,9 +106,7 @@ export function flattenSessionsWithBranches(
     children?.forEach((child, index) => emit(child, index === children.length - 1 ? '└─ ' : '├─ '))
   }
 
-  const roots = sessions
-    .filter(session => !nestedIds.has(session.id))
-    .map((session, index) => ({ index, session }))
+  const roots = sessions.filter(session => !nestedIds.has(session.id)).map((session, index) => ({ index, session }))
 
   if (!options.preserveOrder) {
     roots.sort((a, b) => groupRecency(b.session) - groupRecency(a.session) || a.index - b.index)

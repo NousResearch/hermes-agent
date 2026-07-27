@@ -9,17 +9,19 @@
  * hermes_cli/model_search.py.
  */
 const MODEL_SEARCH_ALIASES: Record<string, readonly string[]> = {
-  k3: ['kimi-k3', 'kimi'],
+  k3: ['kimi-k3', 'kimi']
 }
 
 /** Haystack for fuzzy/substring model search; never changes the wire id. */
 export function modelSearchText(model: string): string {
   const id = model.trim()
+
   if (!id) {
     return model
   }
 
   const aliases = MODEL_SEARCH_ALIASES[id.toLowerCase()]
+
   if (!aliases?.length) {
     return id
   }

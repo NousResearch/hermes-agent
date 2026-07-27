@@ -11166,6 +11166,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_heartbeat_command(cmd_original)
         elif canonical == "refine":
             self._handle_refine_command(cmd_original)
+        elif canonical == "loop":
+            self._handle_loop_command(cmd_original)
         elif canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a
@@ -11509,6 +11511,149 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._heartbeat_watchdog_started = False
 
         threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
+
+    # ────────────────────────────────────────────────────────────────
+    # /loop — recurring in-session wakeups (Claude Code /loop parity)
+    # ────────────────────────────────────────────────────────────────
+    def _get_loop_manager(self):
+        """Return the LoopManager bound to the current session_id.
+
+        Cached on ``self._loop_manager`` and rebound lazily when
+        ``session_id`` changes (mirrors ``_get_goal_manager``).
+        """
+        try:
+            from hermes_cli.loops import LoopManager
+        except Exception as exc:
+            logging.debug("loop manager unavailable: %s", exc)
+            return None
+
+        sid = getattr(self, "session_id", None) or ""
+        if not sid:
+            return None
+
+        existing = getattr(self, "_loop_manager", None)
+        if existing is not None and getattr(existing, "session_id", None) == sid:
+            return existing
+
+        mgr = LoopManager(session_id=sid)
+        self._loop_manager = mgr
+        return mgr
+
+    def _maybe_fire_loop_tick(self) -> None:
+        """Idle hook run from process_loop: fire a due /loop wakeup.
+
+        Only runs while the agent is idle and nothing is queued — a real
+        user message always wins the idle boundary. An active (non-parked)
+        /goal also wins: its judge-driven continuations own the idle
+        boundary, so the loop defers to the next poll.
+        """
+        mgr = self._get_loop_manager()
+        if mgr is None or not mgr.is_due():
+            return
+        # The idle poll runs at ~10 Hz; once a tick is due but deferred
+        # (queued input / active goal), every poll would otherwise hit the
+        # DB via goal_blocks_loop_tick. Throttle the deferred re-check.
+        now = time.time()
+        if now - getattr(self, "_last_loop_tick_check", 0.0) < 2.0:
+            return
+        self._last_loop_tick_check = now
+        # Real user input (or anything else queued) takes priority; the
+        # loop stays due and fires at the next idle poll.
+        try:
+            if not self._pending_input.empty():
+                return
+        except Exception:
+            return
+        try:
+            from hermes_cli.loops import goal_blocks_loop_tick
+
+            if goal_blocks_loop_tick(mgr.session_id):
+                return
+        except Exception:
+            pass
+
+        wakeup = mgr.fire_tick()
+        if not wakeup:
+            return
+        try:
+            state = mgr.state
+            tick_no = state.ticks_fired if state else "?"
+            _cprint(f"  {_DIM}↻ /loop wakeup #{tick_no} firing…{_RST}")
+            self._pending_input.put(wakeup)
+        except Exception as exc:
+            logging.debug("loop tick injection failed: %s", exc)
+            try:
+                mgr.abandon_tick()
+            except Exception:
+                pass
+            return
+        # A slash-command loop (e.g. `/loop 10m /recap`) is dispatched via
+        # process_command, which never reaches the post-turn chat() finally
+        # block — so the tick would never complete and the loop would wedge
+        # on awaiting_response. Slash ticks have no model reply to evaluate;
+        # complete them immediately (caps and scheduling still apply).
+        if wakeup.lstrip().startswith("/"):
+            try:
+                decision = mgr.complete_tick("")
+                msg = decision.get("message") or ""
+                if msg:
+                    _cprint(f"  {msg}")
+            except Exception:
+                pass
+
+    def _maybe_complete_loop_tick_after_turn(self) -> None:
+        """Post-turn hook: evaluate a finished /loop wakeup turn.
+
+        No-op unless the turn that just ended was a loop wakeup
+        (``awaiting_response`` set by ``fire_tick``). Detects the
+        LOOP_COMPLETE marker, judges --until, applies caps, and schedules
+        the next tick. Mirrors _maybe_continue_goal_after_turn's shape.
+        """
+        mgr = self._get_loop_manager()
+        if mgr is None:
+            return
+        state = mgr.state
+        if state is None or not state.awaiting_response:
+            return
+
+        # A user-interrupted wakeup turn pauses the loop (recoverable via
+        # /loop resume) — same contract as the goal loop's Ctrl+C handling.
+        if getattr(self, "_last_turn_interrupted", False):
+            try:
+                mgr.pause(reason="user-interrupted (Ctrl+C)")
+            except Exception:
+                pass
+            _cprint(
+                f"  {_DIM}⏸ Loop paused — wakeup turn was interrupted. "
+                f"Use /loop resume to continue, or /loop stop to end it.{_RST}"
+            )
+            return
+
+        last_response = ""
+        try:
+            hist = self.conversation_history or []
+            for msg in reversed(hist):
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        parts = [
+                            p.get("text", "")
+                            for p in content
+                            if isinstance(p, dict) and p.get("type") in {"text", "output_text"}
+                        ]
+                        last_response = "\n".join(t for t in parts if t)
+                    else:
+                        last_response = str(content or "")
+                    break
+        except Exception:
+            last_response = ""
+
+        decision = mgr.complete_tick(last_response)
+        msg = decision.get("message") or ""
+        if msg:
+            _cprint(f"  {msg}")
+        elif decision.get("status") == "active" and mgr.state is not None:
+            _cprint(f"  {_DIM}↻ Loop: {mgr.state.remaining_label()}.{_RST}")
 
 
 
@@ -18281,6 +18426,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 self._drain_process_notifications("cli-idle")
                             except Exception:
                                 pass
+                            # Fire a due /loop wakeup while idle (defers to
+                            # queued user input and active /goal loops).
+                            try:
+                                self._maybe_fire_loop_tick()
+                            except Exception:
+                                pass
                         continue
 
                     # Voice-transcribed messages arrive wrapped in a sentinel
@@ -18450,6 +18601,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             self._maybe_continue_goal_after_turn()
                         except Exception as _goal_exc:
                             logging.debug("goal continuation hook failed: %s", _goal_exc)
+
+                        # /loop tick completion: if the turn that just ended
+                        # was a loop wakeup, evaluate it (LOOP_COMPLETE marker,
+                        # --until judge, caps) and schedule the next tick.
+                        try:
+                            self._maybe_complete_loop_tick_after_turn()
+                        except Exception as _loop_exc:
+                            logging.debug("loop completion hook failed: %s", _loop_exc)
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

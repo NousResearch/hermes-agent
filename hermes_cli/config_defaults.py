@@ -1846,6 +1846,24 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+
+    # Loops — /loop recurring in-session wakeups (Claude Code parity).
+    # A loop re-runs a prompt (or slash command) on a cadence inside the
+    # live session. Fixed-interval mode fires on the user's clock;
+    # self-paced mode (no interval given) starts at the floor and backs
+    # off exponentially while the agent's replies stop changing.
+    "loops": {
+        # Smallest fixed interval accepted (seconds). Tighter cadences are
+        # raised to this floor — each tick is a full agent turn.
+        "min_interval_seconds": 30,
+        # Backstop tick budget: the loop auto-pauses after this many
+        # wakeups unless the user set --times. 0 = unlimited.
+        "max_ticks": 100,
+        # Self-paced cadence bounds (seconds).
+        "self_paced_floor_seconds": 60,
+        "self_paced_ceiling_seconds": 900,
+    },
+
     # Mixture of Agents — named presets used by /moa. A preset is an execution
     # mode around the main model, not a provider/model itself: references +
     # aggregator synthesize private guidance before each main-model iteration.

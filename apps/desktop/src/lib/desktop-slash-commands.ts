@@ -267,6 +267,13 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'mixed'
   },
   {
+    name: '/loop',
+    description: 'Re-run a prompt on a recurring interval in this session',
+    aliases: ['/proactive'],
+    surface: exec(),
+    argumentMode: 'mixed'
+  },
+  {
     name: '/personality',
     description: 'Switch personality for this session',
     surface: exec(),

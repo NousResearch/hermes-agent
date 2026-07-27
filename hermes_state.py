@@ -10790,6 +10790,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def list_meta_prefix(self, prefix: str) -> List[Tuple[str, str]]:
+        """Return ``[(key, value), ...]`` for state_meta keys with ``prefix``.
+
+        Used by feature stores that persist one row per session under a
+        namespaced key (e.g. ``loop:<session_id>``) and need to enumerate
+        them across sessions (the gateway's idle /loop wakeup watcher).
+        ``prefix`` is matched literally — LIKE wildcards in it are escaped.
+        """
+        if not prefix:
+            return []
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'",
+                (escaped + "%",),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.
 

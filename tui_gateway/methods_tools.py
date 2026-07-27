@@ -834,6 +834,37 @@ def _(rid, params: dict) -> dict:
             {"type": "send", "notice": notice, "message": state.goal},
         )
 
+    if name == "loop":
+        # /loop — recurring in-session wakeups (Claude Code parity). State
+        # mutation via the shared dispatcher; the notification poller thread
+        # fires due wakeups into this session while it's idle.
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.loops import LoopManager, dispatch_loop_command
+        except Exception as exc:
+            return _err(rid, 5030, f"loops unavailable: {exc}")
+
+        sid_key = session.get("session_key") or ""
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+
+        mgr = LoopManager(session_id=sid_key)
+        result = dispatch_loop_command(mgr, arg)
+        output = result.get("output") or ""
+        if result.get("created"):
+            try:
+                from hermes_cli.loops import goal_blocks_loop_tick
+
+                if goal_blocks_loop_tick(sid_key):
+                    output += (
+                        "\nNote: an active /goal is driving this session — loop "
+                        "wakeups defer until the goal finishes, pauses, or parks."
+                    )
+            except Exception:
+                pass
+        return _ok(rid, {"type": "exec", "output": output})
+
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the
         # truncated rows on disk, and prefill the composer with the text

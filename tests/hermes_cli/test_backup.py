@@ -19,8 +19,10 @@ def _make_hermes_tree(root: Path) -> None:
     """Create a realistic ~/.hermes directory structure for testing."""
     (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
     (root / ".env").write_text("OPENROUTER_API_KEY=sk-test-123\n")
-    (root / "memory_store.db").write_bytes(b"fake-sqlite")
-    (root / "hermes_state.db").write_bytes(b"fake-state")
+    for db_name in ("memory_store.db", "hermes_state.db"):
+        with sqlite3.connect(root / db_name) as conn:
+            conn.execute("CREATE TABLE sample (value TEXT)")
+            conn.execute("INSERT INTO sample VALUES ('test')")
 
     # Sessions
     (root / "sessions").mkdir(exist_ok=True)
@@ -224,6 +226,65 @@ class TestBackup:
             assert "logs/agent.log" in names
             # Skins
             assert "skins/cyber.yaml" in names
+
+    def test_failed_sqlite_backup_never_raw_copies_live_wal_db(self, tmp_path, monkeypatch, capsys):
+        """A failed backup() must not silently archive the stale main DB file.
+
+        Keep a real, uncheckpointed WAL transaction live so a raw copy of only
+        ``state.db`` would be a valid-looking but torn snapshot.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        db_path = hermes_home / "state.db"
+
+        writer = sqlite3.connect(db_path)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE events (value TEXT)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("INSERT INTO events VALUES ('only-in-wal')")
+        writer.commit()
+        assert Path(f"{db_path}-wal").stat().st_size > 0
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        import hermes_cli.backup as backup_mod
+        real_connect = backup_mod.sqlite3.connect
+
+        class FailingBackupConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def backup(self, _destination):
+                raise sqlite3.OperationalError("forced backup failure")
+
+            def close(self):
+                self._connection.close()
+
+        def connect_with_failed_backup(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if str(database).startswith(f"file:{db_path}"):
+                return FailingBackupConnection(connection)
+            return connection
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", connect_with_failed_backup)
+        out_zip = tmp_path / "backup.zip"
+        try:
+            backup_mod.run_backup(Namespace(output=str(out_zip)))
+        finally:
+            writer.close()
+
+        with zipfile.ZipFile(out_zip) as zf:
+            assert "config.yaml" in zf.namelist()
+            assert "state.db" not in zf.namelist()
+
+        output = capsys.readouterr().out
+        assert "Backup incomplete" in output
+        assert "state.db: SQLite safe copy failed" in output
+        assert "Restore with:" not in output
 
     def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """SQLite staging temp files must be created on the output zip's
@@ -1370,6 +1431,29 @@ class TestSafeCopyDb:
         assert rows == [("wal-test",)]
 
 
+
+    def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
+        from hermes_cli.backup import is_zeroed_sqlite_file
+        p = tmp_path / "state.db"
+        p.write_bytes(bytes(4096))  # all NULs
+        assert is_zeroed_sqlite_file(p) is True
+
+    def test_is_zeroed_sqlite_file_rejects_valid_db(self, tmp_path):
+        from hermes_cli.backup import is_zeroed_sqlite_file
+        p = tmp_path / "ok.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute("CREATE TABLE t (x INT)")
+        conn.commit()
+        conn.close()
+        assert is_zeroed_sqlite_file(p) is False
+
+    def test_is_zeroed_sqlite_file_empty_file(self, tmp_path):
+        from hermes_cli.backup import is_zeroed_sqlite_file
+        p = tmp_path / "empty.db"
+        p.write_bytes(b"")
+        assert is_zeroed_sqlite_file(p) is False
+
+
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
 # ---------------------------------------------------------------------------
@@ -1416,17 +1500,56 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         db_copy = hermes_home / "state-snapshots" / snap_id / "state.db"
         assert db_copy.exists()
-
         conn = sqlite3.connect(str(db_copy))
         rows = conn.execute("SELECT * FROM sessions").fetchall()
         conn.close()
         assert len(rows) == 1
         assert rows[0] == ("s1", "hello world")
 
+    def test_failed_state_db_copy_is_loud(self, hermes_home, monkeypatch, capsys):
+        """#68474: unreadable state.db must not look like a silent success."""
+        from hermes_cli import backup as backup_mod
+
+        def boom(src, dst):
+            return False
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", boom)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        err = capsys.readouterr().out
+        assert "SQLite safe copy FAILED" in err or "CRITICAL" in err
+        assert "state.db" in err
+        # Other small files may still snapshot
+        if snap_id:
+            manifest = (hermes_home / "state-snapshots" / snap_id / "manifest.json")
+            assert manifest.exists()
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            assert "state.db" not in data.get("files", {})
+            assert "state.db" in data.get("failed_dbs", [])
+
     def test_copies_nested_files(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         assert (hermes_home / "state-snapshots" / snap_id / "cron" / "jobs.json").exists()
+
+    def test_copies_discord_recovery_ledger(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+
+        gateway_dir = hermes_home / "gateway"
+        gateway_dir.mkdir()
+        ledger = gateway_dir / "discord_message_recovery.db"
+        conn = sqlite3.connect(ledger)
+        conn.execute("CREATE TABLE handled (message_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO handled VALUES ('123')")
+        conn.commit()
+        conn.close()
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+
+        copied = hermes_home / "state-snapshots" / snap_id / "gateway" / ledger.name
+        assert copied.exists()
+        conn = sqlite3.connect(copied)
+        assert conn.execute("SELECT message_id FROM handled").fetchall() == [("123",)]
+        conn.close()
 
     def test_copies_channel_aliases(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
@@ -1700,6 +1823,56 @@ class TestQuickSnapshot:
         # Cleanup the seeded escape source so the test is hermetic.
         escape_src.unlink()
 
+    def test_oversized_db_suppresses_pruning(self, hermes_home, capsys):
+        """#68805: an oversized state.db skipped for size must suppress
+        pruning so the older complete snapshot (containing the only
+        recoverable database) is preserved.
+
+        Reproduces the reviewer's scenario: keep=1 + a state.db exceeding
+        the size cap → the new snapshot omits state.db, failed_dbs stays
+        empty (the file wasn't unreadable, just too large), and without
+        tracking oversized_skipped the older complete snapshot would be
+        pruned — losing the only recovery copy.
+        """
+        import json
+        import time as _t
+        from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots
+
+        # First snapshot: complete (state.db is small, under any cap)
+        first_id = create_quick_snapshot(label="complete", hermes_home=hermes_home)
+        assert first_id is not None
+        first_dir = hermes_home / "state-snapshots" / first_id
+        assert (first_dir / "state.db").exists()
+
+        _t.sleep(1.05)  # ensure distinct timestamp
+
+        # Second snapshot: state.db exceeds the 1024-byte cap → skipped for
+        # size, but small config files (32-54 bytes) still land in the manifest.
+        second_id = create_quick_snapshot(
+            label="oversized", hermes_home=hermes_home, max_file_size=1024, keep=1
+        )
+        assert second_id is not None
+        second_dir = hermes_home / "state-snapshots" / second_id
+        assert not (second_dir / "state.db").exists()
+
+        # Manifest must record the oversized skip
+        with open(second_dir / "manifest.json") as f:
+            meta = json.load(f)
+        assert "state.db" in meta.get("oversized_skipped", [])
+
+        # CRITICAL: the first (complete) snapshot must survive pruning
+        # because the second snapshot is incomplete (oversized state.db).
+        all_snaps = list_quick_snapshots(limit=100, hermes_home=hermes_home)
+        snap_ids = {s["id"] for s in all_snaps}
+        assert first_id in snap_ids, (
+            f"Complete snapshot {first_id} was pruned by an incomplete "
+            f"(oversized) snapshot — the recovery copy was lost!"
+        )
+        assert second_id in snap_ids
+
+        out = capsys.readouterr().out
+        assert "skipping state.db" in out.lower() or "skipping snapshot prune" in out.lower()
+
 
 class TestQuickSnapshotProjectsKanban:
     """Regression for #52889: projects.db / kanban.db must survive an upgrade.
@@ -1901,6 +2074,53 @@ class TestQuickSnapshotProjectsKanban:
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""
+
+    def test_failed_sqlite_snapshot_removes_incomplete_archive(self, tmp_path, monkeypatch):
+        """The non-interactive full-zip helper must fail the entire archive
+        rather than return success after omitting a live WAL database."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        db_path = hermes_home / "state.db"
+
+        writer = sqlite3.connect(db_path)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE events (value TEXT)")
+        writer.commit()
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("INSERT INTO events VALUES ('only-in-wal')")
+        writer.commit()
+        assert Path(f"{db_path}-wal").stat().st_size > 0
+
+        import hermes_cli.backup as backup_mod
+        real_connect = backup_mod.sqlite3.connect
+
+        class FailingBackupConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def backup(self, _destination):
+                raise sqlite3.OperationalError("forced backup failure")
+
+            def close(self):
+                self._connection.close()
+
+        def connect_with_failed_backup(database, *args, **kwargs):
+            connection = real_connect(database, *args, **kwargs)
+            if str(database).startswith(f"file:{db_path}"):
+                return FailingBackupConnection(connection)
+            return connection
+
+        monkeypatch.setattr(backup_mod.sqlite3, "connect", connect_with_failed_backup)
+        out_zip = tmp_path / "pre-update.zip"
+        try:
+            result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+        finally:
+            writer.close()
+
+        assert result is None
+        assert not out_zip.exists()
 
     @pytest.fixture
     def hermes_home(self, tmp_path):
@@ -2411,6 +2631,26 @@ class TestRestoreCronJobsIfEmptied:
 
         result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
         assert result is None
+
+    def test_bom_live_file_still_counted(self, tmp_path):
+        """A UTF-8 BOM on the live jobs.json (Windows editors) must not make
+        _count_cron_jobs report None — that would silently disable the
+        auto-restore safety net. utf-8-sig matches cron/jobs.load_jobs."""
+        from hermes_cli.backup import _count_cron_jobs, restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Migration empties the file AND a Windows editor leaves a BOM.
+        jobs_path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"jobs": []}).encode())
+        assert _count_cron_jobs(jobs_path) == 0  # not None
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["restored"] is True
+        assert result["job_count"] == 3
 
     def test_noop_when_live_file_unreadable(self, tmp_path):
         """An unparseable live file is left alone — that's a different failure

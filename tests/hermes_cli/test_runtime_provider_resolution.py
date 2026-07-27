@@ -1154,6 +1154,25 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["requested_provider"] == "nous"
 
 
+def test_disabled_named_custom_provider_is_not_compatibility_fallback(monkeypatch):
+    """Disabled modern entries stay unavailable through the legacy projection."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "route-key": {
+                    "name": "Route Key",
+                    "api": "https://disabled.example/v1",
+                    "enabled": False,
+                }
+            }
+        },
+    )
+
+    assert rp._get_named_custom_provider("custom:route-key") is None
+
+
 def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
     stale_token = _fake_invoke_jwt(ttl_seconds=-60)
     fresh_token = _fake_invoke_jwt(ttl_seconds=3600)
@@ -3407,7 +3426,9 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
         },
     )
 
-    resolved = rp._resolve_named_custom_runtime(requested_provider="custom:lmstudio")
+    # Exercise the public resolver: it is responsible for preserving the
+    # original named identity after the pool path canonicalizes to "custom".
+    resolved = rp.resolve_runtime_provider(requested="custom:lmstudio")
 
     assert resolved is not None
     assert resolved["extra_headers"] == {
@@ -3416,3 +3437,5 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+    assert resolved["provider"] == "custom"
+    assert resolved["requested_provider"] == "custom:lmstudio"

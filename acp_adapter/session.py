@@ -534,9 +534,15 @@ class SessionManager:
 
         model = row.get("model") or None
 
-        # Load conversation history.
+        # Load conversation history. repair_alternation: this restore feeds
+        # LIVE REPLAY — the loaded list becomes the resumed agent's working
+        # conversation. A durable ``user;user`` violation left in state.db would
+        # otherwise re-fire the pre-request defensive repair on every request
+        # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
-            history = db.get_messages_as_conversation(session_id)
+            history = db.get_messages_as_conversation(
+                session_id, repair_alternation=True
+            )
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []

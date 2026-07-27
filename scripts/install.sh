@@ -74,7 +74,7 @@ NO_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
-POSTINSTALL_MODE=false
+
 MANIFEST_MODE=false
 STAGE_NAME=""
 JSON_OUTPUT=false
@@ -150,10 +150,7 @@ while [[ $# -gt 0 ]]; do
             ENSURE_DEPS="$2"
             shift 2
             ;;
-        --postinstall)
-            POSTINSTALL_MODE=true
-            shift
-            ;;
+
         -h|--help)
             echo "Hermes Agent Installer"
             echo ""
@@ -190,9 +187,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --ensure DEPS  Install only specified deps (comma-separated)"
             echo "                   Supported: node, browser, ripgrep, ffmpeg"
             echo "                   Does NOT clone repo or create venv"
-            echo "  --postinstall  Run post-install setup only (for pip users)"
-            echo "                   Installs optional deps + runs hermes setup"
-            echo "                   Does NOT clone repo or create venv"
+
             exit 0
             ;;
         *)
@@ -1247,14 +1242,38 @@ clone_repo() {
 
                 if [ "$restore_now" = "yes" ]; then
                     log_info "Restoring local changes..."
-                    if git stash apply "$autostash_ref"; then
+                    local restore_output=""
+                    local restore_ok="yes"
+                    if restore_output="$(git stash apply "$autostash_ref" 2>&1)"; then
+                        restore_ok="yes"
+                    else
+                        restore_ok="no"
+                    fi
+                    local conflicted_files=""
+                    conflicted_files="$(git diff --name-only --diff-filter=U || true)"
+                    if [ "$restore_ok" = "yes" ] && [ -z "$conflicted_files" ]; then
                         git stash drop "$autostash_ref" >/dev/null
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
-                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                        log_info "Resolve manually with: git stash apply $autostash_ref"
-                        exit 1
+                        log_error "Update pulled new code, but restoring local changes hit conflicts."
+                        if [ -n "$restore_output" ]; then
+                            printf '%s\n' "$restore_output"
+                        fi
+                        if [ -n "$conflicted_files" ]; then
+                            printf '\nConflicted files:\n'
+                            while IFS= read -r file; do
+                                [ -n "$file" ] && printf '  • %s\n' "$file"
+                            done <<EOF
+$conflicted_files
+EOF
+                        fi
+                        printf '\n'
+                        log_info "Your stashed changes are preserved — nothing is lost."
+                        log_info "  Stash ref: $autostash_ref"
+                        git reset --hard HEAD >/dev/null 2>&1 || true
+                        log_info "Working tree reset to clean state."
+                        log_info "Restore your changes later with: git stash apply $autostash_ref"
                     fi
                 else
                     log_info "Skipped restoring local changes."
@@ -1601,7 +1620,8 @@ setup_path() {
     log_info "Setting up hermes command..."
 
     if [ "$USE_VENV" = true ]; then
-        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+        HERMES_BIN="$INSTALL_DIR/venv/bin/python"
+        HERMES_ENTRYPOINT="$INSTALL_DIR/hermes"
     else
         HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
         if [ -z "$HERMES_BIN" ]; then
@@ -1610,10 +1630,10 @@ setup_path() {
         fi
     fi
 
-    # Verify the entry point script was actually generated
-    if [ ! -x "$HERMES_BIN" ]; then
-        log_warn "hermes entry point not found at $HERMES_BIN"
-        log_info "This usually means the pip install didn't complete successfully."
+    # Verify the interpreter and the checked-in entrypoint needed by the launcher.
+    if [ ! -x "$HERMES_BIN" ] || { [ "$USE_VENV" = true ] && [ ! -f "$HERMES_ENTRYPOINT" ]; }; then
+        log_warn "Hermes launcher prerequisites not found"
+        log_info "This usually means the Python package install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
             log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
         else
@@ -1635,12 +1655,25 @@ setup_path() {
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
     rm -f "$command_link_dir/hermes"
-    cat > "$command_link_dir/hermes" <<EOF
+    if [ "$USE_VENV" = true ]; then
+        # uv-generated console scripts resolve themselves through `realpath`,
+        # which stock macOS does not provide. Run the checked-in entrypoint
+        # with the venv interpreter instead, so the public launcher remains
+        # independent of non-standard shell utilities.
+        cat > "$command_link_dir/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "\$@"
+EOF
+    else
+        cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
 EOF
+    fi
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
@@ -2372,6 +2405,48 @@ maybe_start_gateway() {
     fi
 }
 
+write_bootstrap_marker() {
+    # Writes $INSTALL_DIR/.hermes-bootstrap-complete, which tells the Hermes
+    # desktop app (apps/desktop/electron/main.ts) and the macOS launcher fast
+    # path (apps/bootstrap-installer) "a real install finished here -- don't
+    # re-run first-run bootstrap."
+    #
+    # Schema mirrors install.ps1's Write-BootstrapMarker and main.ts's
+    # writeBootstrapMarker(). Keep the three in lockstep:
+    #   schemaVersion 1 + pinnedCommit (length >= 7) are what the desktop
+    #   validator requires; desktopVersion is omitted because only the desktop
+    #   app knows its own version.
+    if [ ! -d "$INSTALL_DIR" ]; then
+        log_warn "Skipping bootstrap marker: $INSTALL_DIR doesn't exist"
+        return 0
+    fi
+
+    # Explicit --commit wins; otherwise read HEAD from the checkout we just
+    # installed. If neither resolves, skip the marker entirely rather than
+    # write one the desktop will reject -- an absent marker is a clean
+    # "bootstrap needed", a malformed one is a confusing half-state.
+    local pinned_commit="$INSTALL_COMMIT"
+    if [ -z "$pinned_commit" ]; then
+        pinned_commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || pinned_commit=""
+    fi
+
+    if [ -z "$pinned_commit" ]; then
+        log_warn "Skipping bootstrap marker: could not resolve HEAD in $INSTALL_DIR"
+        return 0
+    fi
+
+    local marker_path="$INSTALL_DIR/.hermes-bootstrap-complete"
+    local tmp_path="$marker_path.tmp"
+
+    # Atomic publish: the macOS launcher predicate only checks existence, so a
+    # torn write would arm the fast path against a half-written marker.
+    printf '{\n  "schemaVersion": 1,\n  "pinnedCommit": "%s",\n  "pinnedBranch": "%s",\n  "completedAt": "%s"\n}\n' \
+        "$pinned_commit" \
+        "$BRANCH" \
+        "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$tmp_path"
+    mv -f "$tmp_path" "$marker_path"
+}
+
 print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
@@ -2560,29 +2635,6 @@ ensure_mode() {
     done
 }
 
-postinstall_mode() {
-    print_banner
-    detect_os
-
-    log_info "Post-install mode: setting up Hermes for pip install"
-
-    check_node
-    check_network_prerequisites
-    install_system_packages
-
-    if [ "$HAS_NODE" = true ] && [ "$SKIP_BROWSER" = false ]; then
-        ensure_browser
-    fi
-
-    HERMES_CMD="$(command -v hermes 2>/dev/null || echo "")"
-    if [ -n "$HERMES_CMD" ]; then
-        log_info "Running hermes setup..."
-        "$HERMES_CMD" setup
-    else
-        log_warn "hermes command not found on PATH"
-        log_info "Try: python -m hermes_cli.main setup"
-    fi
-}
 
 # Clear the cached Electron download + any half-written unpacked output so the
 # next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
@@ -3028,6 +3080,7 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
+            write_bootstrap_marker
             # Code-scoped stamp: write next to the install tree, not into
             # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
             # bind-mounted into a Docker gateway too), so a stamp there gets
@@ -3112,6 +3165,8 @@ main() {
 
     print_success
 
+    write_bootstrap_marker
+
     # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
     # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
     # gateway too), so a stamp there gets clobbered by the container's 'docker'
@@ -3126,8 +3181,6 @@ elif [ -n "$STAGE_NAME" ]; then
     run_stage_protocol "$STAGE_NAME"
 elif [ -n "$ENSURE_DEPS" ]; then
     ensure_mode
-elif [ "$POSTINSTALL_MODE" = true ]; then
-    postinstall_mode
 else
     main
 fi

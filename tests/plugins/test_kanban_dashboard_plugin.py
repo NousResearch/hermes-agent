@@ -173,6 +173,67 @@ def test_create_board_rejects_invalid_project_directory(client, path):
     assert "project directory" in response.json()["detail"].lower()
 
 
+def test_patch_board_sets_project_directory(client, tmp_path):
+    """Board-level default_workdir must be editable after creation."""
+    kb.create_board("late-config")
+    project_dir = tmp_path / "late-project"
+    project_dir.mkdir()
+
+    response = client.patch(
+        "/api/plugins/kanban/boards/late-config",
+        json={"default_workdir": str(project_dir)},
+    )
+
+    assert response.status_code == 200, response.text
+    board = response.json()["board"]
+    assert board["default_workdir"] == str(project_dir.resolve())
+    # The recommendation flips from scratch to a persistent kind so the
+    # create-task dialog's workspace default follows the board setting.
+    assert board["default_workspace_kind"] == "dir"
+    assert kb.read_board_metadata("late-config")["default_workdir"] == str(
+        project_dir.resolve()
+    )
+
+
+def test_patch_board_clears_project_directory(client, tmp_path):
+    """Empty string clears default_workdir; omitting it leaves it unchanged."""
+    project_dir = tmp_path / "was-configured"
+    project_dir.mkdir()
+    kb.create_board("clearable", default_workdir=str(project_dir))
+
+    # Omitted key → unchanged.
+    r = client.patch(
+        "/api/plugins/kanban/boards/clearable",
+        json={"name": "Renamed Only"},
+    )
+    assert r.status_code == 200
+    assert r.json()["board"]["default_workdir"] == str(project_dir.resolve())
+
+    # Empty string → cleared, recommendation falls back to scratch.
+    r = client.patch(
+        "/api/plugins/kanban/boards/clearable",
+        json={"default_workdir": ""},
+    )
+    assert r.status_code == 200
+    board = r.json()["board"]
+    assert not board.get("default_workdir")
+    assert board["default_workspace_kind"] == "scratch"
+
+
+@pytest.mark.parametrize("path", ["relative/project", "~/missing-project"])
+def test_patch_board_rejects_invalid_project_directory(client, path):
+    """PATCH must validate default_workdir like board creation does."""
+    kb.create_board("strict")
+
+    response = client.patch(
+        "/api/plugins/kanban/boards/strict",
+        json={"default_workdir": path},
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"].lower()
+
+
 def test_new_board_dialog_collects_project_directory():
     """Board creation should expose the setting that controls safe task defaults."""
     bundle = (
@@ -1515,7 +1576,7 @@ def test_create_task_includes_warning_when_no_dispatcher(client, monkeypatch):
     # Force the dispatcher probe to report "not running".
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence",
-        lambda: (False, "No gateway is running — start `hermes gateway start`."),
+        lambda **kw: (False, "No gateway is running — start `hermes gateway start`."),
     )
     r = client.post(
         "/api/plugins/kanban/tasks",
@@ -1531,7 +1592,7 @@ def test_create_task_no_warning_when_dispatcher_up(client, monkeypatch):
     """Dispatcher running -> no `warning` field in the response."""
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence",
-        lambda: (True, ""),
+        lambda **kw: (True, ""),
     )
     r = client.post(
         "/api/plugins/kanban/tasks",
@@ -1546,7 +1607,7 @@ def test_create_task_no_warning_on_triage(client, monkeypatch):
     anyway until promoted)."""
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence",
-        lambda: (False, "oh no"),
+        lambda **kw: (False, "oh no"),
     )
     r = client.post(
         "/api/plugins/kanban/tasks",
@@ -1639,7 +1700,7 @@ def test_single_task_endpoint_survives_task_age_exception(client, monkeypatch):
 
 def test_create_task_probe_error_does_not_break_create(client, monkeypatch):
     """Probe failure must never break task creation."""
-    def _raise():
+    def _raise(**kw):
         raise RuntimeError("probe crashed")
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence", _raise,

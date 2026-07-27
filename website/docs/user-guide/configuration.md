@@ -743,11 +743,20 @@ All compression settings live in `config.yaml` (no environment variables).
 ```yaml
 compression:
   enabled: true                                     # Toggle compression on/off
+  progress_notices: false                           # Opt-in: deliver routine compression progress notices to chat platforms — see below
   threshold: 0.50                                   # Compress at this % of context limit
+  threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
+  idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
+  hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
+  hygiene_total_ceiling_seconds: 600                # Absolute cap on the hygiene wait even while tokens are still streaming
+  hygiene_failure_cooldown_seconds: 300             # Skip repeated failed hygiene attempts for this session
+  proactive_prune_tokens: 0                         # Opt-in tokens trigger for the no-LLM tool-result prune (0 = off; see below)
+  proactive_prune_min_result_chars: 8000            # Prune's summarize pass only touches tool results larger than this (clamped >= 200)
+  proactive_prune_min_reclaim_tokens: 4096          # Prune only commits when it reclaims at least this many tokens (0 = commit any)
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -761,9 +770,23 @@ auxiliary:
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.
 :::
 
+`progress_notices` (default `false`) controls whether **routine** compression progress statuses reach chat platforms (Telegram, Discord, Slack, etc.). By design, automatic compression is silent on chat surfaces — it runs in the background with server-side logging only. Set `progress_notices: true` to opt into seeing the routine lifecycle on chat platforms: the "Compacting context…" start notice, preflight/pre-API compression triggers, idle compaction, retry progress ("Compressed 30 → 12 messages, retrying…"), and the "Context compaction complete" notice. The gate is scoped to compression statuses only — unrelated operational noise (auxiliary model failures, provider rate-limit/retry chatter) stays suppressed either way. Compression **failure** notices and manual `/compress` feedback are always visible regardless of this setting. Editing this value on a running gateway takes effect on the next message.
+
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 
+`hygiene_timeout_seconds` is the gateway's **inactivity budget** for this pre-agent compression pass — not a total wall-clock cap. The compression summary call streams from the model, and each arriving token counts as forward progress: a slow reasoning model that is still generating keeps extending its own deadline, so slow-but-healthy summary models are never cut off mid-generation. Only when the summary model produces **no output** for this many seconds (backend down, hung connection, silent provider) does the gateway warn the user, continue the incoming message without compression, and record a temporary per-session failure cooldown instead of appearing stuck.
+
+`hygiene_total_ceiling_seconds` (default `600`) bounds the total wait even while tokens are still moving, so a degenerate trickle stream can't hold a turn hostage indefinitely. It is clamped to at least `hygiene_timeout_seconds`.
+
+`hygiene_failure_cooldown_seconds` controls that per-session cooldown after a hygiene compression timeout or abort. During the cooldown, the gateway skips repeated hygiene attempts for the same oversized session so every incoming message does not block on the same broken auxiliary backend. `/compress`, `/reset`, or a healthy later turn can still recover the session.
+
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
+
+`threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count — so compression never fires later than the user's preferred token number regardless of which model is active. This solves the problem where switching between models with different context windows (e.g. 1M → 400K) shifts the absolute trigger point. The cap is clamped to the model's context length, so setting it higher than the model supports is safe — the ratio-based threshold is used instead. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
+
+`idle_compact_after_seconds` is an **opt-in, time-based** trigger that complements the size-based `threshold`. Default `0` (disabled). When set above 0, a session that resumes after at least that many seconds of inactivity compacts its accumulated history up front, before the first reply — so a long-lived thread (e.g. a Telegram conversation you come back to hours later) doesn't re-read its full stale context on every subsequent turn. It never fires when the context is already at or below the post-compression target (`threshold × target_ratio`), and it honors the same failure-cooldown, anti-thrash, and per-session lock guards as every automatic compaction. Example: `idle_compact_after_seconds: 1800` compacts after 30 minutes idle.
+
+`proactive_prune_tokens` enables a deterministic, no-LLM prune of old tool-result payloads that runs independently of `threshold`. On large-window models the `threshold` compaction (≈50% of the window) rarely fires, so bulky tool outputs (terminal dumps, file reads, web extracts) ride along in history and get re-sent on every subsequent turn. When re-sent history exceeds `proactive_prune_tokens` (default `0` = off; try `48000` to enable), the prune dedupes identical results, summarizes older oversized ones, and truncates large tool-call arguments — protecting the most recent `protect_last_n` messages and never calling the model. Full outputs stay recoverable from the session store. `proactive_prune_min_result_chars` (default `8000`, clamped to ≥ 200) sets the size below which a tool result is left untouched. `proactive_prune_min_reclaim_tokens` (default `4096`) prevents a prune from committing unless it reclaims at least that many tokens — a committed prune rewrites already-sent history and invalidates the provider's prompt-cache prefix, so this gate keeps those cache breaks episodic and amortized (one meaningful break, like a compression boundary) instead of firing on every tool iteration. This runs only under the built-in `compressor` engine; other context engines inherit a no-op.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
@@ -831,13 +854,13 @@ See [Memory Providers](/user-guide/features/memory-providers) for the analogous 
 
 ## Iteration Budget
 
-When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
+When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 500 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.
 
-Instead, when the budget is actually exhausted (90/90), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
+Instead, when the budget is actually exhausted (500/500), Hermes injects one message asking the model to wrap up and allows a single **grace call** so it can deliver a final response. If that grace call still doesn't produce text, the agent is asked to summarise what it accomplished.
 
 ```yaml
 agent:
-  max_turns: 90                # Max iterations per conversation turn (default: 90)
+  max_turns: 500               # Max iterations per conversation turn (default: 500)
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
@@ -958,6 +981,22 @@ $ hermes model
 
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
 
+If you do not want Hermes to auto-generate titles after the first exchange, set
+`auxiliary.title_generation.enabled: false`. Manual titles still work through
+`/title` and `hermes sessions rename`.
+
+### Stream-only endpoints
+
+Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, web extraction) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:
+
+```yaml
+auxiliary:
+  stream_only_base_urls:
+    - "my-stream-only-proxy.example.com"
+```
+
+Matching auxiliary calls are sent with `stream=True` and the chunks (including tool-call deltas) are aggregated client-side — no behavior change for any other endpoint.
+
 ### Video Tutorial
 
 <div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
@@ -1070,6 +1109,7 @@ auxiliary:
   # Auto-generated session titles. Empty language follows the conversation;
   # set e.g. "English" or "Japanese" to pin titles to one language.
   title_generation:
+    enabled: true              # set false to disable auto-title generation
     provider: "auto"
     model: ""
     base_url: ""
@@ -1318,12 +1358,16 @@ native Anthropic provider already controls effort directly and is unaffected.
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
-/reasoning           # Show current effort level and display state
-/reasoning high      # Set reasoning effort to high
-/reasoning none      # Disable reasoning
-/reasoning show      # Show model thinking above each response
-/reasoning hide      # Hide model thinking
+/reasoning                # Show current effort level and display state
+/reasoning high           # Set reasoning effort to high (this session only)
+/reasoning high --global  # Set effort and persist to config.yaml
+/reasoning none           # Disable reasoning (this session only)
+/reasoning show           # Show model thinking above each response
+/reasoning hide           # Hide model thinking
 ```
+
+Effort changes are session-scoped by default; add `--global` to save the
+new level as your `agent.reasoning_effort` default.
 
 #### Per-Model Reasoning Overrides
 
@@ -1411,9 +1455,20 @@ tool_loop_guardrails:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+  loop_caps:
+    max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
+    max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
 ```
 
 `hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+
+### Per-turn runaway-loop caps
+
+Separate from the failure-based thresholds above, `loop_caps` sets hard ceilings on how many `web_search` calls and subagent spawns a single agent loop (turn) may make. The counters reset at the start of every turn, so a legitimate multi-turn session is never starved — but a single turn that spirals into an unbounded search or delegation loop is stopped. These are always on and fire regardless of `hard_stop_enabled`. A single turn issuing dozens of web searches or spawning dozens of subagents is already pathological, so the defaults are low. When a cap is reached, the offending tool call is blocked with an explanatory message and the turn stops cleanly instead of burning the rest of the budget. Set either value to `0` to disable that cap entirely.
+
+A single `delegate_task` batch counts each task toward `max_subagents` (a batch of 3 spends 3), so the cap tracks real subagents spawned rather than `delegate_task` invocations.
+
+This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
 
 ## TTS Configuration
 
@@ -1466,9 +1521,11 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
+  focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1479,6 +1536,8 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+  turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
+  spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
@@ -1486,6 +1545,33 @@ display:
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+### Per-turn summary and spinner token flow
+
+`display.turn_summary` (default `true`) prints one dim accounting line after each **interactive CLI** turn, summarising what that turn actually did:
+
+```
+⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands
+```
+
+The tally is observed from the tool-progress feed the CLI already receives, so it costs nothing extra. Details:
+
+- Wall time is the turn's real duration (`2m05s` past the one-minute mark).
+- Tool calls are grouped by verb (`edited`, `read`, `ran`, `searched`, …) with correct pluralisation; plugin/MCP tools without a curated verb collapse into `called N tools`.
+- `+X -Y` line deltas appear only when the tool result already reports a diff (currently `patch`). Hermes never shells out to git to compute them, so a `write_file` edit is counted without a delta.
+- **Failed tool calls are not counted** — a denied write never renders as a successful edit (see the [file-mutation verifier](#file-mutation-verifier) for the complementary warning).
+- Long turns cap at four verb segments plus a `+N more` tail so the line never wraps.
+- A fast turn with no tool calls prints nothing at all.
+
+`display.spinner_token_flow` (default `true`) appends the running turn's cumulative output tokens to the CLI spinner's live timer:
+
+```
+  ⚡ Reading cli.py  (  2.3s · ↓ 1.2k tok)
+```
+
+The count is per-turn (session totals are baselined at turn start) and updates as each API call in the turn reports usage. Nothing renders before the first usage report lands, so you never see a misleading `↓ 0 tok`.
+
+Both keys are display-only and CLI-only: they are suppressed in quiet mode, when `display.tool_progress` is `off`, in single-query/`-Q` batch runs, and in gateway/messaging surfaces (those use `display.runtime_footer` instead). Set either key to `false` to turn it off.
 
 ### File-mutation verifier
 
@@ -1542,6 +1628,18 @@ In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in mess
 
 Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
 
+### Focus view (`/focus`, CLI + TUI)
+
+`display.focus_view: true` enables **focus view** — a reduced-output display mode for when you want the answer, not the play-by-play. It is a thin layer over the same `tool_progress` machinery rather than a second suppression path:
+
+- turning it on pins `tool_progress` to `off` and stashes your previous mode in `display.focus_saved_tool_progress`;
+- `/focus off` restores that mode exactly, so a `/verbose verbose` setup survives a round trip;
+- each completed turn ends with a dim recovery line — `⋯ 7 tool lines hidden · /focus off to show` — counted against your *pre-focus* mode, so it never claims to have hidden lines you had already turned off;
+- a persistent `◉ focus` badge sits in the status bar (both the prompt_toolkit CLI and the Ink TUI) so the reduced mode is never invisible;
+- cycling `/verbose` while focus is on hands the mode back to `/verbose` and clears the badge.
+
+Focus view is **display-only**. It never edits conversation history, the system prompt, tool schemas, or any request payload — hidden detail is suppressed on screen, never discarded, and prompt caching is completely unaffected.
+
 ### Runtime-metadata footer (gateway only)
 
 When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
@@ -1584,6 +1682,8 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
 ## Privacy
 
@@ -1755,7 +1855,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
+    command: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader
@@ -1964,6 +2064,15 @@ Smart mode is particularly useful for reducing approval fatigue — it lets the 
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
 
+### Denial circuit breaker
+
+`approvals.denial_breaker_threshold` (default `3`) guards against the agent retrying variations of a command the smart-approval reviewer keeps denying — each retry burns another guardian LLM call. After that many consecutive denials in a session, the deny message escalates to a hard-stop instruction telling the agent to stop, report the blocked operation, and ask you to run it manually or `/approve`. Any approval resets the count; set `0` to disable:
+
+```yaml
+approvals:
+  denial_breaker_threshold: 3   # 0 disables the breaker
+```
+
 ### Deny rules
 
 `approvals.deny` is a list of glob patterns that block matching terminal commands unconditionally — even under `--yolo`, `/yolo`, or `mode: off`. It's the user-editable counterpart to the built-in hardline blocklist:
@@ -1976,6 +2085,18 @@ approvals:
 ```
 
 Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny) for details.
+
+### Custom smart-approval policy
+
+`approvals.smart_policy` lets you append your own rules to the smart-approval reviewer's instructions. When set, the text is added to the guardian LLM's system prompt (the trusted channel — never alongside the untrusted command text), so you can tighten or relax its judgment for your environment without editing code:
+
+```yaml
+approvals:
+  smart_policy: |
+    Always ESCALATE commands that modify anything under /etc.
+    APPROVE docker compose restarts in ~/deploys — they are routine here.
+```
+
 
 ## Checkpoints
 

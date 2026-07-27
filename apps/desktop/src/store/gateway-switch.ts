@@ -1,10 +1,13 @@
 import { atom } from 'nanostores'
 
-import { queryClient } from '@/lib/query-client'
+import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-sync'
+import { resetSidebarBatchCapability } from '@/hermes'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
+import { closeAllArtifactTabs } from '@/store/artifacts'
 import { resetSessionsLimit } from '@/store/layout'
 import {
+  $unreadFinishedSessionIds,
   setActiveSessionId,
-  setAttentionSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -12,13 +15,11 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
-  setSessionProfileTotals,
+  setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading,
-  setSessionsTotal,
-  setUnreadFinishedSessionIds,
-  setWorkingSessionIds
+  setSessionsLoading
 } from '@/store/session'
+import { clearAllSessionStates } from '@/store/session-states'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
@@ -38,16 +39,21 @@ export const $gatewaySwitching = atom(false)
  * alone so the user stays where they were (e.g. mid-Gateway settings).
  */
 export function wipeSessionListsForGatewaySwitch(): void {
+  // The next backend is a different runtime — don't carry the old one's
+  // "batched sidebar endpoint missing" capability verdict across the switch.
+  resetSidebarBatchCapability()
   setSessions([])
-  setSessionsTotal(0)
-  setSessionProfileTotals({})
+  setSessionProfilesTruncated({})
   setCronSessions([])
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  setWorkingSessionIds([])
-  setAttentionSessionIds([])
-  setUnreadFinishedSessionIds([])
+  // Clearing $sessionStates automatically clears $workingSessionIds and
+  // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
+  // $unreadFinishedSessionIds is separate, so wipe it explicitly.
+  clearAllSessionStates()
+  resetLiveRuntimeTracking()
+  $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
   resetSessionsLimit()
 
@@ -56,5 +62,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessages([])
   setFreshDraftReady(true)
 
-  void queryClient.invalidateQueries()
+  // Artifact tabs reference sessions on the previous backend; the registry
+  // itself survives (it's local presentation state) but open tabs must not.
+  closeAllArtifactTabs()
+
+  // Narrowed: account/marketplace/onboarding caches are global, not gateway-
+  // scoped, so a mode swap must not refetch them.
+  invalidateProfileScopedQueries()
 }

@@ -27,6 +27,7 @@
 
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
+import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
   type DoubleTapContext,
@@ -66,8 +67,11 @@ const snapRect = (el: HTMLElement): ZoneRect => {
   return { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
 }
 
+/** Chat surfaces the pointer can land on. Inactive tabs are excluded: they stay
+ *  mounted with their layout box intact, so their rect is identical to the
+ *  visible tab's and a hit-test alone would pick whichever came first. */
 function snapshotSurfaces(): SurfaceSnapshot[] {
-  return [...document.querySelectorAll<HTMLElement>('[data-session-anchor]')].map(el => ({
+  return queryAllVisible('[data-session-anchor]').map(el => ({
     anchor: el.dataset.sessionAnchor || 'workspace',
     composerTarget: el.dataset.composerTarget || 'main',
     rect: snapRect(el)
@@ -123,7 +127,7 @@ export function startSessionDrag(
       zones = snapshotZones()
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
-      composers = [...document.querySelectorAll<HTMLElement>('[data-slot="composer-root"]')].map(snapRect)
+      composers = queryAllVisible('[data-slot="composer-root"]').map(snapRect)
       zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
       source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the

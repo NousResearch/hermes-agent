@@ -7,8 +7,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
-import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import {
@@ -26,6 +26,7 @@ interface ModelVisibilityDialogProps {
   onOpenChange: (open: boolean) => void
   onOpenProviders: () => void
   open: boolean
+  profile?: string
   sessionId?: string | null
 }
 
@@ -34,6 +35,7 @@ export function ModelVisibilityDialog({
   onOpenChange,
   onOpenProviders,
   open,
+  profile = 'default',
   sessionId
 }: ModelVisibilityDialogProps) {
   const { t } = useI18n()
@@ -42,17 +44,8 @@ export function ModelVisibilityDialog({
   const stored = useStore($visibleModels)
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', sessionId || 'global'],
-    queryFn: (): Promise<ModelOptionsResponse> => {
-      if (gw && sessionId) {
-        return gw.request<ModelOptionsResponse>('model.options', {
-          session_id: sessionId,
-          explicit_only: true
-        })
-      }
-
-      return getGlobalModelOptions()
-    },
+    queryKey: modelOptionsQueryKey(profile, sessionId),
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway: gw, sessionId }),
     enabled: open
   })
 

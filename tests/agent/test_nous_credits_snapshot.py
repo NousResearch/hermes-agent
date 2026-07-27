@@ -143,7 +143,7 @@ def test_topup_line_is_org_pinned_when_slug_present():
     blob = "\n".join(_all_lines(snap))
     # The /usage top-up link auto-opens the modal and is org-pinned.
     assert "https://portal.example.test/orgs/acme/billing?topup=open" in blob
-    assert "/credits" in blob
+    assert "/topup" in blob
 
 
 def test_topup_line_falls_back_to_legacy_when_slug_null():

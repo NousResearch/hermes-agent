@@ -1,6 +1,8 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import threading
+import time
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -90,6 +92,21 @@ class MessagesMemoryProvider(FakeMemoryProvider):
 
     def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
+
+
+class BlockingPrefetchProvider(FakeMemoryProvider):
+    """External provider whose prefetch call blocks until released."""
+
+    def __init__(self, name="external"):
+        super().__init__(name=name)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def prefetch(self, query, *, session_id=""):
+        self.prefetch_queries.append(query)
+        self.started.set()
+        self.release.wait(timeout=5.0)
+        return self._prefetch_result
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +415,48 @@ class TestMemoryManager:
 
         result = mgr.prefetch_all("query")
         assert "external memory" in result
+
+    def test_external_prefetch_timeout_skips_stuck_provider(self):
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hy-memory")
+        external._prefetch_result = "late external memory"
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        started = time.monotonic()
+        result = mgr.prefetch_all("query")
+        elapsed = time.monotonic() - started
+
+        assert result == "builtin memory"
+        assert elapsed < 0.5
+        assert external.started.wait(timeout=1.0)
+        assert external.prefetch_queries == ["query"]
+
+        started = time.monotonic()
+        result = mgr.prefetch_all("query 2")
+        elapsed = time.monotonic() - started
+
+        assert result == "builtin memory"
+        assert elapsed < 0.2
+        assert external.prefetch_queries == ["query"]
+
+        external.release.set()
+
+        deadline = time.monotonic() + 1.0
+        while (
+            external.name in mgr._external_prefetch_threads
+            and mgr._external_prefetch_threads[external.name].is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        result = mgr.prefetch_all("query 3")
+
+        assert result == "builtin memory\n\nlate external memory"
+        assert external.prefetch_queries == ["query", "query 3"]
+        assert external.name not in mgr._external_prefetch_threads
 
     def test_system_prompt_failure_doesnt_block(self):
         mgr = MemoryManager()
@@ -1320,17 +1379,19 @@ class TestMemoryToolToolsetGate:
     These tests exercise the shared gate used by agent init and ACP refreshes.
     The gate condition is:
 
+        disabled_toolsets includes memory → skip injection
         enabled_toolsets is None        → no filter, inject (backward compat)
         selected toolsets include memory → user opted in, inject
         otherwise (incl. [])            → skip injection
     """
 
     @staticmethod
-    def _run_memory_injection(enabled_toolsets, memory_manager):
+    def _run_memory_injection(enabled_toolsets, memory_manager, disabled_toolsets=None):
         """Run the shared memory-tool injection helper against a fake agent."""
         fake_agent = SimpleNamespace(
             _memory_manager=memory_manager,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
             tools=[],
             valid_tool_names=set(),
         )
@@ -1366,6 +1427,18 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(["hermes-acp"], mgr)
         assert "hindsight_recall" in names
         assert any(t["function"]["name"] == "hindsight_recall" for t in tools)
+
+    @pytest.mark.parametrize("enabled_toolsets", [None, ["memory"], ["all"], ["hermes-acp"]])
+    def test_disabled_memory_toolset_blocks_injection(self, enabled_toolsets):
+        """An explicit memory disable wins over default or composite enablement."""
+        mgr = self._mgr_with_tools("hindsight_recall")
+        tools, names = self._run_memory_injection(
+            enabled_toolsets,
+            mgr,
+            disabled_toolsets=["memory"],
+        )
+        assert tools == []
+        assert names == set()
 
     def test_empty_toolsets_blocks_injection(self):
         """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""

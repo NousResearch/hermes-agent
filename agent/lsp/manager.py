@@ -710,7 +710,10 @@ class LSPService:
         if not self.enabled_for(file_path):
             return
         try:
-            diags = self._loop.run(self._snapshot_async(file_path), timeout=8.0)
+            # Outer join budget must exceed the inner wait budget or a
+            # slow-but-alive server gets falsely marked broken.
+            t = max(8.0, self._wait_timeout + 3.0)
+            diags = self._loop.run(self._snapshot_async(file_path), timeout=t)
             self._delta_baseline[os.path.abspath(file_path)] = diags or []
         except Exception as e:  # noqa: BLE001
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
@@ -759,7 +762,7 @@ class LSPService:
 
         try:
             t = timeout if timeout is not None else self._wait_timeout + 2.0
-            diags = self._loop.run(self._open_and_wait_async(file_path), timeout=t) or []
+            diags = self._loop.run(self._open_and_wait_async(file_path), timeout=t)
         except asyncio.TimeoutError as e:
             eventlog.log_timeout(server_id, file_path)
             logger.debug("LSP diagnostics timeout for %s: %s", file_path, e)
@@ -769,6 +772,17 @@ class LSPService:
             eventlog.log_server_error(server_id, file_path, e)
             logger.debug("LSP diagnostics fetch failed for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
+            return []
+
+        if diags is None:
+            # The server is alive but never produced diagnostics for the
+            # post-edit content within the wait budget (common for
+            # tsserver on large projects).  Report "no data" rather than
+            # whatever stale state is in the stores — surfacing the
+            # previous edit's errors as if they were current is the
+            # ghost-diagnostics bug.  The server is NOT marked broken:
+            # slow is not dead, and the next edit may well succeed.
+            eventlog.log_timeout(server_id, file_path, kind="fresh diagnostics")
             return []
 
         abs_path = os.path.abspath(file_path)
@@ -878,36 +892,56 @@ class LSPService:
                 version = await client.open_file(
                     file_path, language_id=language_id_for(file_path)
                 )
-                await client.wait_for_diagnostics(
+                fresh = await client.wait_for_diagnostics(
                     file_path, version, mode=self._wait_mode
                 )
-                return list(client.diagnostics_for(file_path))
             except Exception as exc:  # noqa: BLE001
                 logger.debug("snapshot open/wait failed: %s", exc)
                 return []
+            if not fresh:
+                # No fresh data for the pre-edit content — an empty baseline
+                # is safe: worst case the delta filter removes less, never
+                # more. Never seed the baseline from stale stores.
+                return []
+            return list(client.diagnostics_for(file_path, fresh_only=True))
 
-    async def _open_and_wait_async(self, file_path: str) -> List[Dict[str, Any]]:
+    async def _open_and_wait_async(
+        self, file_path: str
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Open + wait for fresh diagnostics.
+
+        Returns the fresh diagnostic list, or ``None`` when the server
+        never produced post-change data within the wait budget. The
+        distinction matters: ``[]`` means "server checked the new
+        content, it's clean", ``None`` means "no verdict" — the caller
+        must not substitute stale data for either.
+        """
         async with self._leased_client(file_path) as client:
             if client is None:
-                return []
+                return None
             try:
                 version = await client.open_file(
                     file_path, language_id=language_id_for(file_path)
                 )
                 await client.save_file(file_path)
-                await client.wait_for_diagnostics(
-                    file_path, version, mode=self._wait_mode
+                fresh = await client.wait_for_diagnostics(
+                    file_path,
+                    version,
+                    mode=self._wait_mode,
+                    timeout=self._wait_timeout,
                 )
-                return list(client.diagnostics_for(file_path))
             except Exception as exc:  # noqa: BLE001
                 logger.debug("open/wait failed for %s: %s", file_path, exc)
-                return []
+                return None
+            if not fresh:
+                return None
+            return list(client.diagnostics_for(file_path, fresh_only=True))
 
     async def _current_diags_async(self, file_path: str) -> List[Dict[str, Any]]:
         async with self._leased_client(file_path, spawn=False) as client:
             if client is None:
                 return []
-            return list(client.diagnostics_for(file_path))
+            return list(client.diagnostics_for(file_path, fresh_only=True))
 
     async def _acquire_lease(
         self, file_path: str, *, spawn: bool

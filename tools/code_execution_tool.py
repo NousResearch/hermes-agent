@@ -135,7 +135,10 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
 # match a safe prefix, the operational HERMES_ allowlist, or (on Windows) an
-# OS-essential name.
+# OS-essential name.  Delegate-task child context is also an exact-name
+# operational marker: without it, a sandbox script that spawns/imports Hermes
+# code can lose the DB-layer Kanban mutation guard while still inheriting
+# HERMES_HOME.
 #
 # NB: the broad "HERMES_" prefix was deliberately removed (#27303) — it leaked
 # HERMES_*-named config that lacks a secret substring (e.g. HERMES_BASE_URL,
@@ -166,6 +169,7 @@ _HERMES_CHILD_ALLOWED = frozenset({
     "HERMES_PROFILE",
     "HERMES_CONFIG",
     "HERMES_ENV",
+    "HERMES_DELEGATED_CHILD_CONTEXT",
 })
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.
@@ -261,6 +265,22 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             len(_dropped_hermes),
             ", ".join(sorted(_dropped_hermes)),
         )
+
+    # delegate_task children are marked with a ContextVar, not os.environ, while
+    # the execute_code sandbox crosses a process boundary. Bridge that context
+    # into the child env and strip dispatcher-owned Kanban variables after the
+    # normal secret/passthrough scrub so an explicit passthrough cannot re-grant
+    # a delegated child the parent's board mutation capability.
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_process_context,
+            scrub_kanban_env,
+        )
+
+        if is_delegated_child_process_context():
+            scrubbed = scrub_kanban_env(scrubbed)
+    except Exception:
+        pass
     return scrubbed
 
 
@@ -1736,6 +1756,8 @@ def _is_usable_python(python_path: str) -> bool:
     Cached so we don't fork a subprocess on every execute_code call.
     """
     try:
+        from agent.delegation_context import delegated_child_subprocess_env
+
         result = subprocess.run(
             [python_path, "-c",
              "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
@@ -1743,6 +1765,7 @@ def _is_usable_python(python_path: str) -> bool:
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL,
+            env=delegated_child_subprocess_env(),
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):

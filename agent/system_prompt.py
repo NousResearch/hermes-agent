@@ -12,9 +12,11 @@ Three tiers are joined with ``\\n\\n``:
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
   enforcement guidance + per-model operational guidance, skills prompt,
-  alibaba model-name workaround, environment hints, platform hints.
+  alibaba model-name workaround, environment hints, coding guidance,
+  platform hints.
 * ``context``  — caller-supplied ``system_message`` plus context files
-  (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
+  (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``,
+  plus the session's coding-workspace snapshot.
 * ``volatile`` — memory snapshot, USER.md profile, external memory
   provider block, timestamp/session/model/provider line.
 
@@ -46,6 +48,7 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
+from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 
 
@@ -144,14 +147,14 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
-    """Assemble the system prompt as three ordered parts.
+    """Assemble the system prompt as three ordered cache tiers.
 
     Returns a dict with three keys:
-      * ``stable``   — identity, tool guidance, skills prompt,
-        environment hints, platform hints, model-family operational
-        guidance.
-      * ``context``  — context files (AGENTS.md, .cursorrules, etc.)
-        and caller-supplied system_message.
+      * ``stable``   — the cross-session-stable prefix, through the coding
+        operating brief when a workspace snapshot follows.
+      * ``context``  — the workspace snapshot followed by the remaining
+        session-stable guidance, context files, and caller-supplied
+        system_message.
       * ``volatile`` — memory snapshot, user profile, external
         memory provider block, timestamp line.
 
@@ -344,24 +347,34 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(_env_hints)
 
     # Coding posture (base Hermes, any interactive coding surface in a code
-    # workspace — see agent/coding_context.py). The operating brief + the live
-    # git/workspace snapshot are built once here and cached for the session;
-    # the snapshot is never re-probed per turn (that would break the prompt
-    # cache), so the brief tells the model to re-check git before relying on it.
+    # workspace — see agent/coding_context.py). Keep the operating brief in
+    # the cross-session-stable prefix, while placing the live git/workspace
+    # snapshot behind its own cache boundary. The post-snapshot blocks must
+    # stay in their historical position after the workspace snapshot.
+    coding_workspace_parts: List[str] = []
+    coding_trailing_parts: List[str] = []
     if agent.valid_tool_names:
         try:
-            from agent.coding_context import coding_system_blocks
+            from agent.coding_context import coding_system_prompt_parts
 
-            stable_parts.extend(
-                coding_system_blocks(
-                    platform=agent.platform,
-                    cwd=resolve_context_cwd(),
-                    model=agent.model,
-                )
+            coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = coding_system_prompt_parts(
+                platform=agent.platform,
+                cwd=resolve_context_cwd(),
+                model=agent.model,
             )
+            stable_parts.extend(coding_prefix_parts)
         except Exception:
             # Coding-context probing must never block prompt build.
             pass
+
+    # Guidance assembled after the coding posture historically followed the
+    # workspace snapshot. With no snapshot, the coding tail instead remains
+    # directly after the coding prefix in the cacheable prefix.
+    if coding_workspace_parts:
+        post_workspace_parts: List[str] = []
+    else:
+        stable_parts.extend(coding_trailing_parts)
+        post_workspace_parts = stable_parts
 
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install
@@ -375,7 +388,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             from tools.env_probe import get_environment_probe_line
             _probe_line = get_environment_probe_line()
             if _probe_line:
-                stable_parts.append(_probe_line)
+                post_workspace_parts.append(_probe_line)
         except Exception:
             # Probe failure must never block prompt build.
             pass
@@ -393,20 +406,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     except Exception:
         active_profile = "default"
     if active_profile == "default":
-        stable_parts.append(
+        post_workspace_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "
-            "under ~/.hermes/profiles/<name>/. Each profile has its own "
+            "under " + str(get_hermes_home()) + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
             "skills/plugins/cron/memories unless the user explicitly directs "
             "you to."
         )
     else:
-        stable_parts.append(
+        post_workspace_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
+            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
+            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "
@@ -448,10 +461,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
     if _effective_hint:
-        stable_parts.append(_effective_hint)
+        post_workspace_parts.append(_effective_hint)
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
+
+    if coding_workspace_parts:
+        context_parts.extend(coding_workspace_parts)
+        context_parts.extend(coding_trailing_parts)
+        context_parts.extend(post_workspace_parts)
 
     # Note: ephemeral_system_prompt is NOT included here. It's injected at
     # API-call time only so it stays out of the cached/stored system prompt.
@@ -514,6 +532,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nModel: {agent.model}"
     if agent.provider:
         timestamp_line += f"\nProvider: {agent.provider}"
+    if agent.platform:
+        timestamp_line += f"\nPlatform: {agent.platform}"
     volatile_parts.append(timestamp_line)
 
     return {
@@ -540,6 +560,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    agent._cached_system_prompt_static = parts["stable"]
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.
@@ -556,6 +577,7 @@ def invalidate_system_prompt(agent: Any) -> None:
     so the rebuilt prompt captures any writes from this session.
     """
     agent._cached_system_prompt = None
+    agent._cached_system_prompt_static = None
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

@@ -171,6 +171,41 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
 
+/**
+ * Move a stashed composer draft from one session key onto another.
+ *
+ * Auto-compression rotates the live stored tip id (root → continuation) while
+ * the user may still be typing. Drafts keyed on the obsolete tip would otherwise
+ * vanish from the composer when selection follows the new tip. No-op unless both
+ * keys resolve, differ, and the source has content. Does not overwrite a
+ * non-empty destination draft.
+ */
+export function migrateSessionDraft(fromKey: string | null | undefined, toKey: string | null | undefined): boolean {
+  const from = draftKey(fromKey)
+  const to = draftKey(toKey)
+
+  if (!fromKey || !toKey || from === to) {
+    return false
+  }
+
+  const source = draftsBySession.get(from)
+
+  if (!source || (!source.text.trim() && source.attachments.length === 0)) {
+    return false
+  }
+
+  const dest = draftsBySession.get(to)
+
+  if (dest && (dest.text.trim() || dest.attachments.length > 0)) {
+    return false
+  }
+
+  stashSessionDraft(toKey, source.text, source.attachments)
+  clearSessionDraft(fromKey)
+
+  return true
+}
+
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }

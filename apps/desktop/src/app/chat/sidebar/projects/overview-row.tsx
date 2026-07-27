@@ -3,6 +3,7 @@ import { useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -135,17 +136,19 @@ export function ProjectOverviewRow({
             {project.label}
           </SidebarRowLink>
           {preview.length > 0 ? (
-            <button
-              aria-label={s.projects.toggle(project.label)}
-              className="flex flex-1 items-center self-stretch bg-transparent p-0"
-              onClick={toggleOpen}
-              type="button"
-            >
-              <DisclosureCaret
-                className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
-                open={open}
-              />
-            </button>
+            <Tip label={s.projects.toggle(project.label)}>
+              <button
+                aria-label={s.projects.toggle(project.label)}
+                className="flex flex-1 items-center self-stretch bg-transparent p-0"
+                onClick={toggleOpen}
+                type="button"
+              >
+                <DisclosureCaret
+                  className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+                  open={open}
+                />
+              </button>
+            </Tip>
           ) : (
             <span className="flex-1" />
           )}

@@ -148,13 +148,17 @@ from tools.browser_tool import cleanup_browser
 from agent.memory_manager import sanitize_context
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
+from agent.message_content import flatten_message_text
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
 )
 from agent.usage_pricing import normalize_usage
 # Re-exported for tests that monkeypatch these symbols on run_agent.
-from agent.context_compressor import ContextCompressor  # noqa: F401
+from agent.context_compressor import (  # noqa: F401
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+)
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
     DEFAULT_AGENT_IDENTITY,
@@ -225,15 +229,22 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
-    # verify-on-stop and pre_verify nudges append a synthetic assistant
-    # "done" plus a synthetic user nudge to keep the agent going one more
-    # turn before it can claim completion. Those messages exist only to
-    # drive the verification loop; persisting them poisons the resumed
-    # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
+    # verify-on-stop and pre_verify nudges append a synthetic user nudge to
+    # keep the agent going one more turn before it can claim completion.
+    # The nudge exists only to drive the verification loop; persisting it
+    # poisons the resumed transcript and breaks prompt-prefix cache reuse
+    # on later turns. The assistant candidate is NOT synthetic — it is
+    # persisted and emitted as an interim message (#65919).
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
     # kanban worker stop-guard: narrated exit without kanban_complete/block
     "_kanban_stop_synthetic",
+    # dropped tool-call re-prompt pair (finish_reason=tool_calls with an
+    # empty tool_calls array): the interim narration-only assistant turn
+    # and the "issue the actual tool call now" user nudge exist only to
+    # drive the bounded retry. Persisting them would replay the internal
+    # retry instruction as user-authored context on resume.
+    "_dropped_toolcall_nudge",
 )
 
 
@@ -426,7 +437,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 500,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -488,6 +499,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -496,6 +508,7 @@ class AIAgent:
             base_url=base_url,
             api_key=api_key,
             provider=provider,
+            requested_provider=requested_provider,
             api_mode=api_mode,
             acp_command=acp_command,
             acp_args=acp_args,
@@ -924,6 +937,49 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
 
+    def _warn_context_overflow_blocked(
+        self, reason: str, preflight_tokens: int, threshold_tokens: int
+    ) -> None:
+        """Surface a deduped warning when the context is over the compression
+        threshold but compression is blocked (summary-LLM cooldown or
+        anti-thrashing).
+
+        Without this signal the session keeps growing until the model silently
+        stops answering — the conversation hits the hard provider token limit
+        with no explanation. Centralised here so every caller that checks
+        ``should_compress_info`` (turn-context preflight, conversation-loop
+        guards) shares identical dedup/reset logic.
+
+        Dedup is on the *kind* of block (``cooldown`` / ``ineffective``), not the
+        exact countdown string, so a cooldown ticking down 30→29→… doesn't
+        re-fire the warning every turn. The dedup key is cleared when the block
+        clears (see ``_clear_context_overflow_warn``), so the warning can fire
+        again on the next blocked-over-threshold turn.
+        """
+        _warn_kind = (reason or "unknown").split(":", 1)[0]
+        _warn_key = ("ctx_overflow_blocked", _warn_kind)
+        if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
+            self._last_ctx_overflow_warn = _warn_key
+            from agent.conversation_compression import (
+                CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+            )
+            self._emit_warning(
+                CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+                    tokens=preflight_tokens,
+                    threshold=threshold_tokens,
+                    reason=reason,
+                )
+            )
+
+    def _clear_context_overflow_warn(self) -> None:
+        """Reset the dedup state for the blocked-overflow warning.
+
+        Call this whenever compression is no longer blocked while the context
+        is over threshold (e.g. the cooldown elapsed, or compression ran
+        successfully), so the warning can re-fire on the next blocked turn.
+        """
+        self._last_ctx_overflow_warn = None
+
     def _emit_notice(self, notice) -> None:
         """Fire a structured ``AgentNotice`` to the active driver (TUI / CLI).
 
@@ -1199,6 +1255,7 @@ class AIAgent:
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
+            "auth_mode": getattr(self, "auth_mode", "") or "",
         }
 
     def _check_compression_model_feasibility(self) -> None:
@@ -1705,8 +1762,23 @@ class AIAgent:
                 # blocks. A list override, however, is the original clean
                 # multimodal payload (for example before a queued /model note)
                 # and must replace the API-local list once the turn is final.
-                if override is not None and (
-                    not isinstance(msg.get("content"), list) or isinstance(override, list)
+                # Preflight compaction can re-anchor this index at a message
+                # whose content was MERGED with the compaction summary
+                # (merge-summary-into-tail).  That is not an accident:
+                # ``reanchor_current_turn_user_idx`` falls back to the last
+                # user row precisely BECAUSE the merge rewrote the content and
+                # the exact-match lookup misses.  Overwriting it with the clean
+                # text would drop the summary from the continuation history the
+                # next turn is built from — the same hazard the DB-write twin
+                # below already refuses (see the sibling guard in
+                # ``_flush_messages_to_session_db_unlocked``).
+                if (
+                    override is not None
+                    and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    and (
+                        not isinstance(msg.get("content"), list)
+                        or isinstance(override, list)
+                    )
                 ):
                     msg["content"] = override
                 if timestamp is not None:
@@ -1926,6 +1998,13 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                # api_content sidecar: the exact bytes sent to the API when
+                # they differ from the clean content (stamped by the turn
+                # prologue for prefetch/plugin injections). Written verbatim
+                # so replay can reproduce the sent prefix byte-for-byte.
+                _row_api_content = msg.get("api_content")
+                if not isinstance(_row_api_content, str):
+                    _row_api_content = None
                 _row_timestamp = msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
                 # (never to the live dict). A multimodal override is a complete
@@ -1941,12 +2020,55 @@ class AIAgent:
                     _ov_idx == _msg_idx or msg is pending_cli_message
                 )
                 if is_current_turn_user and msg.get("role") == "user":
-                    if _ov_content is not None and (
-                        not isinstance(content, list) or isinstance(_ov_content, list)
+                    # Preflight compaction can re-anchor the override index at
+                    # a message whose content was MERGED with the compaction
+                    # summary (merge-summary-into-tail). Overwriting that with
+                    # the clean gateway text would silently drop the summary
+                    # from the durable transcript. The wire is already
+                    # consistent — the merge popped the sidecar and the merged
+                    # content is what gets sent — so keep it.
+                    if (
+                        _ov_content is not None
+                        and (not isinstance(content, list) or isinstance(_ov_content, list))
+                        and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
                     ):
+                        # The live content is what the API call sends; the
+                        # override is the cleaned transcript value. If they
+                        # differ and no injection already stamped the sidecar,
+                        # keep the sent bytes in api_content so replay matches
+                        # the wire (#48677 divergence, closed for the cache
+                        # prefix too).
+                        if (
+                            _row_api_content is None
+                            and isinstance(content, str)
+                            and content != _ov_content
+                        ):
+                            _row_api_content = content
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
+                # Store the sidecar only when it actually differs.
+                if _row_api_content == content:
+                    _row_api_content = None
+                # Load-time sanitize divergence: get_messages_as_conversation
+                # replays user/assistant rows through
+                # ``sanitize_context(content).strip()``, so content that
+                # sanitize would rewrite (echoed/pasted <memory-context>
+                # fences or system notes) replays different bytes after a
+                # session reload even though THIS turn sent it verbatim.
+                # Capture the sent bytes in the sidecar so a reloaded session
+                # replays what was actually on the wire. Compared in wire form
+                # (both sides .strip()-ed — the api_messages build strips
+                # every outgoing content string) so plain surrounding
+                # whitespace doesn't grow redundant sidecars.
+                if (
+                    _row_api_content is None
+                    and role in ("user", "assistant")
+                    and isinstance(content, str)
+                    and content
+                    and sanitize_context(content).strip() != content.strip()
+                ):
+                    _row_api_content = content
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -1983,6 +2105,16 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
+                    api_content=_row_api_content,
+                    display_kind=(
+                        "hidden"
+                        if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                        and not msg.get("_compressed_summary_has_user_turn")
+                        else msg.get("display_kind")
+                    ),
+                    compression_lock_holder=getattr(
+                        self, "_active_compression_lock_holder", None
+                    ),
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
@@ -2234,6 +2366,13 @@ class AIAgent:
             if ray_id:
                 parts.append(f"Ray {ray_id}")
             return " — ".join(parts)
+
+        # GeminiAPIError (agent/gemini_native_adapter.py) already composes a
+        # clean one-liner and may have appended actionable guidance (free-tier
+        # 429, legacy Standard-key 401). Prefer its message over re-extracting
+        # the raw response body below, which would strip that guidance.
+        if type(error).__name__ == "GeminiAPIError":
+            return redact_sensitive_text(raw[:1000])
 
         # JSON body errors from OpenAI/Anthropic SDKs
         body = getattr(error, "body", None)
@@ -2752,8 +2891,33 @@ class AIAgent:
             if session_has_running_agent:
                 running_agent.interrupt(new_message.text)
         """
-        self._interrupt_requested = True
-        self._interrupt_message = message
+        # A hard stop and redirect share one lock so /stop cannot race with an
+        # accepted correction and accidentally turn itself into a retry.
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is not None:
+            with _redirect_lock:
+                self._interrupt_requested = True
+                self._interrupt_message = message
+                self._pending_redirect = None
+        else:
+            self._interrupt_requested = True
+            self._interrupt_message = message
+            self._pending_redirect = None
+
+        # Codex app-server owns its model/tool loop and watches a private
+        # interrupt event rather than Hermes' per-thread flag.
+        if getattr(self, "api_mode", None) == "codex_app_server":
+            _codex_session = getattr(self, "_codex_session", None)
+            _request_interrupt = getattr(_codex_session, "request_interrupt", None)
+            if callable(_request_interrupt):
+                try:
+                    _request_interrupt()
+                except Exception:
+                    logger.debug(
+                        "Failed to interrupt Codex app-server turn",
+                        exc_info=True,
+                    )
+
         # A cron turn performs its API request on the conversation thread to
         # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
         # path, its client is registered here so this cross-thread interrupt can
@@ -2806,10 +2970,29 @@ class AIAgent:
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
-    def clear_interrupt(self) -> None:
-        """Clear any pending interrupt request and the per-thread tool interrupt signal."""
-        self._interrupt_requested = False
-        self._interrupt_message = None
+    def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
+        """Clear the interrupt request and per-thread tool signal.
+
+        ``preserve_redirect`` is used only by the conversation loop after it
+        intentionally cancels a model request to rebuild that same logical
+        turn. Public hard-stop paths keep the default and clear everything.
+        """
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is not None:
+            with _redirect_lock:
+                if preserve_redirect and not self._pending_redirect:
+                    return False
+                self._interrupt_requested = False
+                self._interrupt_message = None
+                if not preserve_redirect:
+                    self._pending_redirect = None
+        else:
+            if preserve_redirect and not getattr(self, "_pending_redirect", None):
+                return False
+            self._interrupt_requested = False
+            self._interrupt_message = None
+            if not preserve_redirect:
+                self._pending_redirect = None
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
@@ -2838,6 +3021,7 @@ class AIAgent:
         if _steer_lock is not None:
             with _steer_lock:
                 self._pending_steer = None
+        return True
 
     def steer(self, text: str) -> bool:
         """
@@ -2874,6 +3058,118 @@ class AIAgent:
             else:
                 self._pending_steer = cleaned
         return True
+
+    def redirect(self, text: str) -> bool:
+        """Redirect the active turn without converting it into a new task.
+
+        During a normal Hermes model request this cancels only that request;
+        the conversation loop retains completed messages/tool results, records
+        the displayed partial reasoning as plain assistant context, appends the
+        correction as a real user message, and retries. During tool execution
+        it degrades to ``steer()`` so the tool can finish at a safe boundary.
+        Codex app-server has a native ``turn/steer`` operation and uses it
+        directly instead of cancelling.
+
+        Returns ``False`` when there is no live turn or the text is empty, so
+        surfaces can fall back to their existing next-turn queue.
+        """
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+
+        # Codex owns its internal reasoning/tool loop, so use its first-class
+        # active-turn steering protocol rather than interrupting the subprocess.
+        if getattr(self, "api_mode", None) == "codex_app_server":
+            _codex_session = getattr(self, "_codex_session", None)
+            _native_steer = getattr(_codex_session, "request_steer", None)
+            if callable(_native_steer):
+                _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+                if _redirect_lock is not None:
+                    with _redirect_lock:
+                        if self._interrupt_requested:
+                            return False
+                elif self._interrupt_requested:
+                    return False
+                try:
+                    return bool(_native_steer(cleaned))
+                except Exception:
+                    logger.debug("Codex app-server turn/steer failed", exc_info=True)
+                    return False
+
+        # Never kill a tool merely to deliver conversational guidance. The
+        # existing steer drain puts it on the final tool result before the next
+        # model decision, including delegate_task children.
+        if getattr(self, "_executing_tools", False):
+            return self.steer(cleaned)
+
+        _model_active = getattr(self, "_model_request_active", None)
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is None:
+            if _model_active is None or not _model_active.is_set():
+                return False
+            existing = getattr(self, "_pending_redirect", None)
+            if self._interrupt_requested and not existing:
+                return False
+            self._pending_redirect = (
+                f"{existing}\n\n[Additional user correction]\n{cleaned}"
+                if existing
+                else cleaned
+            )
+            self._interrupt_requested = True
+            self._interrupt_message = None
+        else:
+            with _redirect_lock:
+                if _model_active is None or not _model_active.is_set():
+                    # The response completed before we acquired the state lock.
+                    # Reject so the surface queues a new turn.
+                    return False
+                if self._interrupt_requested and not self._pending_redirect:
+                    return False
+                if self._pending_redirect:
+                    self._pending_redirect = (
+                        f"{self._pending_redirect}\n\n"
+                        f"[Additional user correction]\n{cleaned}"
+                    )
+                else:
+                    self._pending_redirect = cleaned
+                self._interrupt_requested = True
+                self._interrupt_message = None
+
+        # Interrupt only the model request. Do not fan out to tool workers or
+        # child agents as interrupt() does.
+        _execution_thread_id = getattr(self, "_execution_thread_id", None)
+        if _execution_thread_id is not None:
+            _set_interrupt(True, _execution_thread_id)
+            self._interrupt_thread_signal_pending = False
+        else:
+            self._interrupt_thread_signal_pending = True
+        _abort_active_request = getattr(self, "_active_request_abort", None)
+        if callable(_abort_active_request):
+            try:
+                _abort_active_request("redirect_abort")
+            except Exception:
+                logger.debug("Failed to abort request for redirect", exc_info=True)
+        return True
+
+    def _has_pending_redirect(self) -> bool:
+        """Return whether an active-turn redirect is waiting to be applied."""
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is None:
+            return bool(getattr(self, "_pending_redirect", None))
+        with _redirect_lock:
+            return bool(self._pending_redirect)
+
+    def _drain_pending_redirect(self) -> Optional[str]:
+        """Return and clear pending active-turn correction text."""
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is None:
+            text = getattr(self, "_pending_redirect", None)
+            self._pending_redirect = None
+            return text
+        with _redirect_lock:
+            text = self._pending_redirect
+            self._pending_redirect = None
+        return text
 
     def _drain_pending_steer(self) -> Optional[str]:
         """Return the pending steer text (if any) and clear the slot.
@@ -3543,11 +3839,16 @@ class AIAgent:
         except Exception:
             pass
 
-        # Close the OpenAI/httpx client to release sockets immediately.
+        # Retire the OpenAI/httpx client to release sockets immediately.
+        # #70773: eviction runs on the gateway's memory-manager thread — a
+        # cross-thread hard close of the shared client can release TLS FDs
+        # under a still-unwinding worker (FD-recycle → SQLite corruption).
+        # Retirement shuts the pooled sockets down (the memory/socket win we
+        # want here) and lets GC release the FDs once no thread holds them.
         try:
             client = getattr(self, "client", None)
             if client is not None:
-                self._close_openai_client(client, reason="cache_evict", shared=True)
+                self._retire_shared_openai_client(client, reason="cache_evict")
                 self.client = None
         except Exception:
             pass
@@ -3923,6 +4224,83 @@ class AIAgent:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
 
+    @staticmethod
+    def _uniquify_tool_call_ids(tool_calls: list) -> list:
+        """Ensure every tool call in a single assistant turn has a distinct id.
+
+        Some models/providers reuse one call id across different calls in a
+        single batch (observed with native Kimi Responses replays, Ollama-
+        compatible endpoints, and degraded models at long context; same bug
+        class as openclaw/openclaw#110518 / #110956). Duplicate ids are lossy
+        downstream: the pre-API sanitizer keeps only the first call/result
+        pair per id (#58327), so the later call's result silently vanishes
+        from every replayed payload, and strict providers (Anthropic
+        tool_use, DeepSeek) reject duplicate ids outright.
+
+        The first occurrence keeps its id; later collisions get a
+        deterministic ``<id>_d<n>`` suffix — never a random UUID, which would
+        break prompt-cache prefix stability across replays. Mutates the
+        entries in place (SDK models / SimpleNamespace / dicts) and returns
+        the same list. Blank/missing ids are left for the deterministic
+        fallback in ``build_assistant_message``.
+        """
+        seen: set = set()
+        for tc in tool_calls or []:
+            if isinstance(tc, dict):
+                raw = tc.get("call_id") or tc.get("id") or ""
+            else:
+                raw = getattr(tc, "call_id", None) or getattr(tc, "id", None) or ""
+            raw = raw.strip() if isinstance(raw, str) else ""
+            if not raw:
+                continue
+            # Composite Responses ids ("call_x|fc_y") collide on the call
+            # half — that's the pairing key providers enforce per turn.
+            cid = raw.split("|", 1)[0]
+            if not cid:
+                continue
+            if cid not in seen:
+                seen.add(cid)
+                continue
+            n = 2
+            new_id = f"{cid}_d{n}"
+            while new_id in seen:
+                n += 1
+                new_id = f"{cid}_d{n}"
+            seen.add(new_id)
+
+            def _renamed(value):
+                # Preserve a composite id's response-item half so the
+                # provider's real fc_/item id survives the rename.
+                if isinstance(value, str) and "|" in value:
+                    return f"{new_id}|{value.split('|', 1)[1]}"
+                return new_id
+
+            try:
+                if isinstance(tc, dict):
+                    if tc.get("id"):
+                        tc["id"] = _renamed(tc["id"])
+                    else:
+                        tc["id"] = new_id
+                    if tc.get("call_id"):
+                        tc["call_id"] = new_id
+                else:
+                    tc.id = _renamed(getattr(tc, "id", None))
+                    if getattr(tc, "call_id", None):
+                        tc.call_id = new_id
+            except Exception:
+                logger.warning(
+                    "Could not uniquify duplicate tool call id %s", cid
+                )
+                continue
+            _fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            _fn_name = (_fn.get("name") if isinstance(_fn, dict) else getattr(_fn, "name", None)) or "?"
+            logger.warning(
+                "Model reused tool call id %s within one turn; renamed the "
+                "duplicate to %s (tool=%s) to keep call/result pairing "
+                "lossless.", cid, new_id, _fn_name,
+            )
+        return tool_calls
+
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
         from agent.agent_runtime_helpers import repair_tool_call
@@ -4111,6 +4489,47 @@ class AIAgent:
                 exc,
             )
 
+    def _retire_shared_openai_client(self, client: Any, *, reason: str) -> None:
+        """Ownership-safe retirement of a replaced shared OpenAI client.
+
+        #70773 / #67142 / #29507: ``client.close()`` releases the pool's raw
+        FDs from the *calling* thread. The shared primary client has no single
+        owning thread — worker threads from stale-killed attempts may still be
+        unwinding their SSL BIOs, and the codex-direct / MoA paths stream on
+        the shared client itself. If we release an FD while another thread's
+        SSL layer still caches the raw integer fd, the kernel can recycle it
+        into an unrelated ``open()`` (e.g. ``kanban.db``) and the unwinding
+        TLS flush then writes an application-data record into that file — the
+        SQLite-header corruption documented in #29507/#70773.
+
+        Only an owner may release FDs, and a replaced shared client has none.
+        So nobody calls ``close()``: we ``shutdown()`` the pooled sockets
+        (FD-safe from any thread; unblocks in-flight readers with EOF/EPIPE)
+        and defer the actual FD release to garbage collection. Refcounting
+        guarantees the underlying sockets are only collected once every
+        thread that borrowed the client has unwound — GC *is* the ownership
+        handshake. In the common case (no borrower) the refcount hits zero on
+        this line and the FDs are released immediately anyway.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "Shared OpenAI client retired (%s, tcp_shutdown=%d, "
+                "fd_release=deferred_to_gc) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Shared OpenAI client retire failed (%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
@@ -4125,7 +4544,13 @@ class AIAgent:
                 )
                 return False
             self.client = new_client
-        self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
+        # #70773: never hard-close the replaced shared client from here — the
+        # caller may not be the thread whose request is still unwinding on the
+        # old pool (credential rotation and dead-connection cleanup run on the
+        # turn thread while stale-killed workers unwind; the codex-direct path
+        # streams on the shared client itself). Retire it instead: sockets are
+        # shut down (FD-safe), FD release deferred to GC.
+        self._retire_shared_openai_client(old_client, reason=f"replace:{reason}")
         return True
 
     def _ensure_primary_openai_client(self, *, reason: str) -> Any:
@@ -4254,6 +4679,103 @@ class AIAgent:
                 "OpenAI client abort failed (%s, shared=False) %s error=%s",
                 reason,
                 self._client_log_context(),
+                exc,
+            )
+
+    def _create_request_anthropic_client(self, *, reason: str) -> Any:
+        """Build a request-local Anthropic client for one in-flight call.
+
+        The shared ``_anthropic_client`` stays the long-lived primary, but the
+        stale/interrupt watchdog runs on the poll thread and must never call
+        ``close()`` on the client whose TLS socket a worker thread is still
+        reading: releasing that FD from a stranger thread lets the kernel
+        recycle it under a still-live SSL BIO, which then writes a TLS record
+        into an unrelated SQLite header (#29507 / #67142). A per-request client
+        lets the stranger thread ``shutdown()`` the socket while the owning
+        worker performs the SDK-level close from its own context — the same
+        ownership contract the OpenAI-wire path already uses.
+
+        Mirrors ``_rebuild_anthropic_client`` construction (direct + Bedrock,
+        1M-beta drop) but returns a fresh client instead of swapping the shared
+        one.
+        """
+        if self.api_mode == "anthropic_messages":
+            self._try_refresh_anthropic_client_credentials()
+        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
+        if getattr(self, "provider", None) == "bedrock":
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
+            client = build_anthropic_bedrock_client(region)
+        else:
+            from agent.anthropic_adapter import build_anthropic_client
+            client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+                timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=_drop_1m,
+            )
+        logger.debug(
+            "Anthropic request client created (%s, shared=False) provider=%s model=%s",
+            reason,
+            getattr(self, "provider", None),
+            getattr(self, "model", None),
+        )
+        return client
+
+    def _close_request_anthropic_client(self, client: Any, *, reason: str) -> None:
+        """Owner-thread full close of a request-local Anthropic client.
+
+        Force-closes the pool's TCP sockets first (CLOSE-WAIT hygiene, parity
+        with ``_close_openai_client``), then does the graceful SDK close. Safe
+        because the caller owns the connection.
+        """
+        if client is None:
+            return
+        try:
+            self._force_close_tcp_sockets(client)
+            client.close()
+            logger.info(
+                "Anthropic client closed (%s, shared=False) provider=%s model=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client close failed (%s, shared=False) provider=%s model=%s error=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+                exc,
+            )
+
+    def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort for request-local Anthropic clients.
+
+        Stranger threads (the interrupt-check / stale-stream detector loop)
+        must not call the SDK ``close()`` — that races the owning worker's live
+        SSL BIO and can recycle a TLS FD into a SQLite header (#29507 /
+        #67142). Only ``shutdown(SHUT_RDWR)`` the pool's sockets so the worker
+        unblocks and releases the FD from its own thread.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "Anthropic client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) provider=%s model=%s",
+                reason,
+                shutdown_count,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client abort failed (%s, shared=False) provider=%s model=%s error=%s",
+                reason,
+                getattr(self, "provider", None),
+                getattr(self, "model", None),
                 exc,
             )
 
@@ -4502,7 +5024,12 @@ class AIAgent:
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
-    def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+    def _apply_client_headers_for_base_url(
+        self,
+        base_url: str,
+        *,
+        apply_user_headers: bool = True,
+    ) -> None:
         from agent.auxiliary_client import (
             build_nvidia_nim_headers,
             build_or_headers,
@@ -4542,10 +5069,10 @@ class AIAgent:
             else:
                 self._client_kwargs.pop("default_headers", None)
 
-        # User-configured overrides win over URL/profile defaults — keep them
-        # applied across credential swaps and client rebuilds, not just at
-        # first construction.
-        self._apply_user_default_headers()
+        # User-configured overrides win over URL/profile defaults for the same
+        # route. A credential swap to another endpoint must not inherit them.
+        if apply_user_headers:
+            self._apply_user_default_headers()
 
         # Per-provider extra HTTP headers (providers.<name>.extra_headers /
         # custom_providers[].extra_headers) — applied last so the most
@@ -4596,6 +5123,12 @@ class AIAgent:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        self._credential_pool_entry_id = getattr(entry, "id", None)
+        from hermes_cli.route_identity import normalize_route_base_url
+
+        route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(
+            runtime_base
+        )
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
@@ -4606,21 +5139,43 @@ class AIAgent:
                 pass
 
             self._anthropic_api_key = runtime_key
-            self._anthropic_base_url = runtime_base
+            self._anthropic_base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
             self._anthropic_client = build_anthropic_client(
-                runtime_key, runtime_base,
+                runtime_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
-            self.base_url = runtime_base
+            self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
             return
 
         self.api_key = runtime_key
         self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
-        self._apply_client_headers_for_base_url(self.base_url)
+        self._client_kwargs.pop("ssl_verify", None)
+        self._client_kwargs.pop("ssl_ca_cert", None)
+        try:
+            from hermes_cli.config import (
+                apply_custom_provider_tls_to_client_kwargs,
+                get_compatible_custom_providers,
+                load_config_readonly,
+            )
+
+            apply_custom_provider_tls_to_client_kwargs(
+                self._client_kwargs,
+                str(self.base_url or ""),
+                get_compatible_custom_providers(load_config_readonly()),
+            )
+        except Exception:
+            logger.debug(
+                "custom-provider TLS resolution skipped on credential rotation",
+                exc_info=True,
+            )
+        self._apply_client_headers_for_base_url(
+            self.base_url,
+            apply_user_headers=not route_changed,
+        )
         self._replace_primary_openai_client(reason="credential_rotation")
 
     def _recover_with_credential_pool(
@@ -4642,15 +5197,18 @@ class AIAgent:
             return False
         return pool.has_available()
 
-    def _anthropic_messages_create(self, api_kwargs: dict):
-        if self.api_mode == "anthropic_messages":
+    def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):
+        # When a request-local client is supplied it was already credential-
+        # refreshed in ``_create_request_anthropic_client``; only the shared
+        # fallback path refreshes here.
+        if client is None and self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         # Defensive: strip Responses-only kwargs that can leak in under an
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
         from agent.anthropic_adapter import create_anthropic_message
         return create_anthropic_message(
-            self._anthropic_client,
+            client or self._anthropic_client,
             api_kwargs,
             log_prefix=getattr(self, "log_prefix", ""),
             prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
@@ -4729,9 +5287,16 @@ class AIAgent:
                         pass
                 self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
+        self._current_streamed_reasoning_text = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
+        # Single-writer guard (#65991): a superseded stream must not pollute the
+        # turn's accumulated text (which also feeds the interim-visible-text
+        # de-dup comparison), even when a caller reaches this directly (the
+        # tool-suppressed content path) rather than through _fire_stream_delta.
+        if self._stream_writer_superseded():
+            return
         if isinstance(text, str) and text:
             self._current_streamed_assistant_text = (
                 getattr(self, "_current_streamed_assistant_text", "") + text
@@ -4752,25 +5317,253 @@ class AIAgent:
         streamed = self._normalize_interim_visible_text(
             self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
         )
-        return bool(streamed) and streamed == visible_content
+        # Prefix match (not exact equality): the final response may be the
+        # streamed text plus a trailing delta, or the stream may have been
+        # partial when the verify nudge fired.  In both cases the streamed
+        # content is a prefix of the final — that's enough to mark it
+        # previewed (fails safe to a benign duplicate, never loses text).
+        # The reverse direction (streamed longer than final) is NOT matched:
+        # that could suppress a needed resend in the gateway path where
+        # already_streamed=True calls on_segment_break() instead of
+        # on_commentary() (#65919 review).
+        return bool(streamed) and visible_content.startswith(streamed)
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
-        """Surface a real mid-turn assistant commentary message to the UI layer."""
+    def _extract_codex_interim_visible_parts(
+        self,
+        assistant_msg: Dict[str, Any],
+    ) -> List[str]:
+        """Extract visible Codex commentary as one string per message item.
+
+        Codex Responses can keep user-facing mid-turn narration as structured
+        ``phase=commentary`` message items while final answer text remains in
+        assistant ``content``.  Non-streaming gateway surfaces need that
+        commentary through the interim assistant callback before tool calls run.
+        ``phase=analysis`` remains hidden because it is provider scratchpad.
+        """
+        if not getattr(self, "show_commentary", True):
+            # display.show_commentary=false — commentary stays on the
+            # reasoning channel (pre-commentary-channel behavior).
+            return []
+        items = assistant_msg.get("codex_message_items")
+        if not isinstance(items, list):
+            return []
+
+        messages: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            phase = item.get("phase")
+            if not isinstance(phase, str) or phase.strip().lower() != "commentary":
+                continue
+            content_parts = item.get("content")
+            if not isinstance(content_parts, list):
+                continue
+            item_parts: List[str] = []
+            for part in content_parts:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "output_text":
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    item_parts.append(text)
+            visible = "".join(item_parts).strip()
+            if visible:
+                visible = self._strip_think_blocks(visible).strip()
+                visible = redact_sensitive_text(visible)
+            if visible:
+                messages.append(visible)
+        return messages
+
+    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+        """Extract all visible Codex commentary for comparison/fallback."""
+        return "\n\n".join(
+            self._extract_codex_interim_visible_parts(assistant_msg)
+        ).strip()
+
+    def _interim_assistant_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+        """Return the exact assistant text eligible for interim delivery.
+
+        Prefer structured Codex commentary over top-level content. A Codex
+        response can contain both commentary and a partial/final-answer message
+        while tools are still pending; treating top-level content as progress
+        in that shape leaks the answer before the tool call runs.
+
+        Content may be a string or a structured parts list (e.g. after vision
+        turns or context compaction), so flatten it before stripping reasoning.
+        """
+        visible = self._extract_codex_interim_visible_text(assistant_msg)
+        if visible:
+            return visible
+        content = assistant_msg.get("content")
+        return self._strip_think_blocks(flatten_message_text(content)).strip()
+
+    def _interim_text_was_delivered(self, text: str) -> bool:
+        normalized = self._normalize_interim_visible_text(text)
+        if not normalized:
+            return False
+        return normalized in getattr(self, "_delivered_interim_texts", set())
+
+    def _record_delivered_interim_text(self, text: str) -> None:
+        normalized = self._normalize_interim_visible_text(text)
+        if normalized:
+            delivered = getattr(self, "_delivered_interim_texts", None)
+            if not isinstance(delivered, set):
+                delivered = set()
+                self._delivered_interim_texts = delivered
+            delivered.add(normalized)
+
+    def _fire_streamed_codex_commentary(self, text: str) -> None:
+        """Deliver a completed live Codex commentary message immediately."""
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None or not isinstance(text, str):
+            return
+        visible = self._strip_think_blocks(text).strip()
+        if visible:
+            visible = redact_sensitive_text(visible)
+        if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
+            return
+        try:
+            cb(visible, already_streamed=False)
+            self._record_delivered_interim_text(visible)
+        except Exception:
+            logger.debug("interim_assistant_callback error", exc_info=True)
+
+    def _emit_interim_assistant_message(
+        self, assistant_msg: Dict[str, Any]
+    ) -> None:
+        """Surface a real mid-turn assistant commentary message to the UI layer.
+
+        Does NOT set ``_response_was_previewed`` — that flag means "the final
+        response was already shown to the user," but this helper is called for
+        ordinary tool-call narration, intermediate acknowledgements, and
+        verification candidates alike. Setting it here would cause the CLI to
+        suppress a *different* final summary (e.g. from ``_handle_max_iterations``)
+        when the only streamed text was unrelated mid-turn commentary. (#65919
+        review: response-loss blocker)
+        """
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
             return
-        content = assistant_msg.get("content")
-        visible = self._strip_think_blocks(content or "").strip()
-        if not visible or visible == "(empty)":
+        commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
+        undelivered_parts: List[str] = []
+        pending_keys: set[str] = set()
+        for part in commentary_parts:
+            key = self._normalize_interim_visible_text(part)
+            if (
+                not key
+                or key in pending_keys
+                or self._interim_text_was_delivered(part)
+            ):
+                continue
+            pending_keys.add(key)
+            undelivered_parts.append(part)
+        visible = (
+            "\n\n".join(undelivered_parts).strip()
+            if commentary_parts
+            else self._interim_assistant_visible_text(assistant_msg)
+        )
+        if (
+            not visible
+            or visible == "(empty)"
+            or self._interim_text_was_delivered(visible)
+        ):
             return
         already_streamed = self._interim_content_was_streamed(visible)
         try:
             cb(visible, already_streamed=already_streamed)
+            if undelivered_parts:
+                for part in undelivered_parts:
+                    self._record_delivered_interim_text(part)
+            else:
+                self._record_delivered_interim_text(visible)
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
+    def _ensure_stream_writer_state(self) -> None:
+        """Lazily create the single-writer guard fields (#65991).
+
+        The fields are normally set in ``agent_init``, but agents constructed
+        via ``AIAgent.__new__`` (test doubles, legacy/partially-initialized
+        instances) skip that path. Claiming/checking the writer must not crash
+        those agents, so initialize the fields on first use.
+        """
+        if getattr(self, "_stream_writer_lock", None) is None:
+            self._stream_writer_lock = threading.Lock()
+        if not hasattr(self, "_stream_writer_token"):
+            self._stream_writer_token = 0
+        if getattr(self, "_stream_writer_tls", None) is None:
+            self._stream_writer_tls = threading.local()
+        if not hasattr(self, "_stream_writer_dropped"):
+            self._stream_writer_dropped = 0
+
+    def _claim_stream_writer(self) -> int:
+        """Claim exclusive ownership of the streaming delta sink for the calling
+        stream attempt and return its monotonic writer token (#65991).
+
+        Every streaming attempt (each provider path, each retry) calls this
+        right before it begins consuming its stream. Claiming bumps the shared
+        token, so any earlier attempt still alive on another thread is
+        immediately superseded: its cached token no longer matches and the sink
+        fences its late chunks out. The token is stored per-thread, so a thread
+        that never claimed (a non-streaming caller) is never treated as a
+        writer and can never be fenced.
+        """
+        self._ensure_stream_writer_state()
+        with self._stream_writer_lock:
+            self._stream_writer_token += 1
+            token = self._stream_writer_token
+        self._stream_writer_tls.token = token
+        return token
+
+    def _stream_writer_is_current(self, token: int) -> bool:
+        """True when ``token`` (from a prior _claim_stream_writer) is still the
+        active writer — i.e. no newer stream attempt has claimed the sink since
+        (#65991). Lets a stream loop bail out the instant it is superseded."""
+        return token == getattr(self, "_stream_writer_token", token)
+
+    def _stream_writer_superseded(self) -> bool:
+        """True when the calling thread claimed the delta sink but a newer
+        stream attempt has since claimed it — i.e. this thread is a stale
+        writer whose chunks must be dropped (#65991).
+
+        A thread that never claimed (``token is None``) is not a writer and is
+        never reported as superseded, so non-streaming delta callers are
+        unaffected.
+        """
+        tls = getattr(self, "_stream_writer_tls", None)
+        token = getattr(tls, "token", None) if tls is not None else None
+        if token is None:
+            return False
+        return token != getattr(self, "_stream_writer_token", token)
+
+    def _note_dropped_stream_writer(self, where: str) -> None:
+        """Record + log that a superseded stream's delta was discarded."""
+        try:
+            self._stream_writer_dropped = int(getattr(self, "_stream_writer_dropped", 0)) + 1
+        except Exception:
+            self._stream_writer_dropped = 1
+        # Log sparsely (first drop, then powers of two) so a chatty superseded
+        # stream can't flood the log, but a real provider problem is still
+        # visible. A silent discard would hide genuine failures.
+        _n = self._stream_writer_dropped
+        if _n == 1 or (_n & (_n - 1)) == 0:
+            logger.warning(
+                "Dropped delta from a superseded stream writer at %s "
+                "(discarded=%d this turn) — a stale stream tried to write into "
+                "the turn after a retry superseded it.",
+                where, _n,
+            )
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        # Single-writer guard (#65991): a superseded stream must not interleave
+        # its tokens into the turn alongside the retry that replaced it.
+        if self._stream_writer_superseded():
+            self._note_dropped_stream_writer("_fire_stream_delta")
+            return
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking
@@ -4824,12 +5617,26 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
+        # Single-writer guard (#65991): fence out a superseded stream's
+        # reasoning deltas the same way as content deltas.
+        if self._stream_writer_superseded():
+            self._note_dropped_stream_writer("_fire_reasoning_delta")
+            return
         cb = self.reasoning_callback
         if cb is not None:
             try:
                 cb(text)
             except Exception:
                 pass
+            else:
+                # Only checkpoint reasoning that a surface actually displayed.
+                # show_reasoning=false leaves the callback unset, so hidden
+                # provider thinking never becomes visible transcript content.
+                if isinstance(text, str) and text:
+                    self._current_streamed_reasoning_text = (
+                        getattr(self, "_current_streamed_reasoning_text", "")
+                        + text
+                    )
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
@@ -5734,7 +6541,18 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, force: bool = False) -> tuple:
+    def _compress_context(
+        self,
+        messages: list,
+        system_message: str,
+        *,
+        approx_tokens: int = None,
+        task_id: str = "default",
+        focus_topic: str = None,
+        force: bool = False,
+        defer_context_engine_notification: bool = False,
+        commit_fence=None,
+    ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
 
         ``force=True`` is passed by the manual ``/compress`` slash command
@@ -5743,11 +6561,43 @@ class AIAgent:
         ``force=False``.
         """
         from agent.conversation_compression import compress_context
-        return compress_context(
-            self, messages, system_message,
-            approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
-            force=force,
+        from agent.portal_tags import (
+            get_conversation_context,
+            reset_conversation_context,
+            set_conversation_context,
         )
+        # Out-of-turn compaction entry points — ``/compact`` (cli.py), the
+        # gateway ``/compress`` command and its hygiene sweep (both of which
+        # build a throwaway agent), and partial head compression — call this
+        # forwarder directly, outside ``run_conversation``'s ambient scope.
+        # With nothing ambient the summarizer's auxiliary call carries no
+        # conversation tag and no Portal sticky key, so it routes independently
+        # of the conversation it belongs to. Publish the root here as a
+        # fallback; in-turn callers already have it set to the same value, so
+        # this is a no-op for them.
+        #
+        # Note this does NOT keep the compaction turn's own prompt cache warm:
+        # compaction replaces the history with a summary and rebuilds the
+        # system prompt, so that request is a cold write on any endpoint. What
+        # it buys is the turns AFTER compaction reading the cache it wrote.
+        token = None
+        if get_conversation_context() is None:
+            root = self._conversation_root_id()
+            if root:
+                token = set_conversation_context(root)
+        try:
+            return compress_context(
+                self, messages, system_message,
+                approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
+                force=force,
+                defer_context_engine_notification=defer_context_engine_notification,
+                commit_fence=commit_fence,
+            )
+        finally:
+            # Restore whatever the caller had, so a compaction never leaks its
+            # tag into the surrounding scope.
+            if token is not None:
+                reset_conversation_context(token)
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -5985,21 +6835,28 @@ class AIAgent:
         acct_token = set_accounting_context(
             getattr(self, "_session_db", None), getattr(self, "session_id", None)
         )
-        try:
-            return run_conversation(
-                self,
-                user_message,
-                system_message,
-                conversation_history,
-                task_id,
-                stream_callback,
-                persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-                moa_config=moa_config,
-            )
-        finally:
-            reset_accounting_context(acct_token)
-            reset_conversation_context(token)
+        from agent.auxiliary_client import scoped_runtime_main
+
+        # The outer token restores the caller's Context even though turn setup
+        # replaces the value with the live runtime after fallback restoration.
+        # Keep the scope local instead of storing ContextVar tokens on the agent,
+        # which may be observed from another thread.
+        with scoped_runtime_main({}):
+            try:
+                return run_conversation(
+                    self,
+                    user_message,
+                    system_message,
+                    conversation_history,
+                    task_id,
+                    stream_callback,
+                    persist_user_message,
+                    persist_user_timestamp=persist_user_timestamp,
+                    moa_config=moa_config,
+                )
+            finally:
+                reset_accounting_context(acct_token)
+                reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

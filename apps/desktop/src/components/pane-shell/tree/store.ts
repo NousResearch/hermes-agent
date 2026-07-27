@@ -126,9 +126,42 @@ export function setTreePaneHidden(paneId: string, hidden: boolean) {
 
   $hiddenTreePanes.set(next)
 
-  // Unhiding is an intent to SEE the pane — front it in its group.
+  // Reactive unhides (e.g. `bindPaneVisibility('files', $hasWorkspace)`) are
+  // state-driven, not user intent — opening the side or fronting the tab in
+  // response to an environmental flag change would clobber an explicit user
+  // collapse (Cmd+J) and silently re-open the rail after every session create.
+  // Callers that want user-intent semantics (open the side, front the tab)
+  // must call `revealTreePane` explicitly. We still front the pane in its
+  // group so it's visible the next time the column is shown.
   if (!hidden) {
-    revealTreePane(paneId)
+    frontPaneInGroup(paneId)
+  }
+}
+
+/** Make `paneId` the active tab in its group without touching side collapse
+ *  or zone-minimized state — the safe "make it visible next time the column
+ *  is shown" primitive that reactive unhides need. */
+function frontPaneInGroup(paneId: string) {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, paneId) : null
+
+  if (!tree || !group || group.active === paneId) {
+    return
+  }
+
+  // Don't steal the active tab from a pane the user is already viewing. In the
+  // Focus layout `files` shares a group with `workspace`, so a reactive unhide
+  // (cwd arrives on the first reply) would otherwise yank the active tab off
+  // the new session onto files. Only take the active slot when the current
+  // active pane isn't itself showable — then fronting picks a valid tab.
+  if (group.active && !$hiddenTreePanes.get().has(group.active)) {
+    return
+  }
+
+  const next = setActivePaneOp(tree, group.id, paneId)
+
+  if (next !== tree) {
+    commit(next)
   }
 }
 
@@ -310,6 +343,13 @@ export function treePanesWithPrefix(prefix: string): string[] {
   return tree ? allPaneIds(tree).filter(id => id.startsWith(prefix)) : []
 }
 
+/** The main tab strip's "+": open a new session as its own tab (reusing an
+ *  already-open unused tab when one exists, so repeated clicks don't pile up
+ *  empty sessions). The app wiring registers the concrete action so this
+ *  generic renderer stays session-agnostic; null until wired (the "+" hides).
+ *  An atom so the strip re-renders when the action becomes available. */
+export const $newSessionTabAction = atom<(() => void) | null>(null)
+
 /** ⌘1…⌘9: activate the Nth tab of the FOCUSED zone (the interaction tracker's
  *  group), but only when it's a real tab strip (≥2 panes). Returns false so the
  *  caller falls back to its default (profile switch) — the number keys mean
@@ -342,7 +382,15 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
   }
 
   const idx = Math.max(0, panes.indexOf(group!.active ?? ''))
-  activateTreePane(group!.id, panes[(idx + direction + panes.length) % panes.length])
+  const nextId = panes[(idx + direction + panes.length) % panes.length]
+  activateTreePane(group!.id, nextId)
+
+  // Cycling onto a session/main tab must surface the name card — a zone that
+  // was double-tap-hidden stays headerless otherwise ("the one that cycles
+  // never gets it").
+  if (nextId === 'workspace' || nextId.startsWith('session-tile:')) {
+    setTreeGroupHeaderHidden(group!.id, false)
+  }
 
   return true
 }

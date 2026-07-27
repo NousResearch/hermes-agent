@@ -1,17 +1,7 @@
 import type * as React from 'react'
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
   DropdownMenu,
@@ -20,17 +10,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { SanitizedInput } from '@/components/ui/sanitized-input'
-import type { HermesGitBranch } from '@/global'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { gitRef } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
-import { copyPath, listRepoBranches, revealPath, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
+import { copyPath, revealPath } from '@/store/projects'
 
 import { SidebarCount, SidebarRowLead } from '../chrome'
 
-import { BaseBranchPicker } from './base-branch-picker'
+import { WorktreeDialog } from './worktree-dialog'
 
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
 // so plain end-truncation (`truncate`) hides exactly the suffix that tells two
@@ -50,31 +37,19 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
   )
 }
 
-interface BranchActionCopy {
-  branchCreateWorktree: string
-  branchOpenExisting: string
-  branchSwitchHome: string
-}
-
-const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
-  if (branch.checkedOut) {
-    return copy.branchOpenExisting
-  }
-
-  return branch.isDefault ? copy.branchSwitchHome : copy.branchCreateWorktree
-}
-
 // "+" affordance shared by repo and worktree headers — reveals on header hover.
 export function WorkspaceAddButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button
-      aria-label={label}
-      className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
-      onClick={onClick}
-      type="button"
-    >
-      <Codicon name="add" size="0.75rem" />
-    </button>
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </button>
+    </Tip>
   )
 }
 
@@ -92,14 +67,16 @@ export function WorkspaceShowMoreButton({
   const text = t.sidebar.showMoreIn(count, label)
 
   return (
-    <button
-      aria-label={text}
-      className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
-      onClick={onClick}
-      type="button"
-    >
-      <Codicon name="ellipsis" size="0.75rem" />
-    </button>
+    <Tip label={text}>
+      <button
+        aria-label={text}
+        className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="ellipsis" size="0.75rem" />
+      </button>
+    </Tip>
   )
 }
 
@@ -112,16 +89,18 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          aria-label={p.menu}
-          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
-          onClick={event => event.stopPropagation()}
-          type="button"
-        >
-          <Codicon name="kebab-vertical" size="0.75rem" />
-        </button>
-      </DropdownMenuTrigger>
+      <Tip label={p.menu}>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-label={p.menu}
+            className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100 data-[state=open]:opacity-100"
+            onClick={event => event.stopPropagation()}
+            type="button"
+          >
+            <Codicon name="kebab-vertical" size="0.75rem" />
+          </button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="w-48" sideOffset={6}>
         <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
           <Codicon name="folder-opened" size="0.875rem" />
@@ -148,203 +127,22 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
 // pick any local or remote-tracking branch via a filterable combobox.
 export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onStarted: (path: string) => void }) {
   const { t } = useI18n()
-  const s = t.sidebar
-  const p = s.projects
+  const p = t.sidebar.projects
   const [open, setOpen] = useState(false)
-  const [name, setName] = useState('')
-  const [pending, setPending] = useState(false)
-  const [convertMode, setConvertMode] = useState(false)
-  const [branches, setBranches] = useState<HermesGitBranch[]>([])
-  const [branchesLoading, setBranchesLoading] = useState(false)
-  const [selectedBase, setSelectedBase] = useState('')
-
-  const loadBranches = useCallback(async () => {
-    if (!repoPath) {
-      return
-    }
-
-    setBranchesLoading(true)
-
-    try {
-      setBranches(await listRepoBranches(repoPath))
-    } catch {
-      setBranches([])
-    } finally {
-      setBranchesLoading(false)
-    }
-  }, [repoPath])
-
-  const submit = async () => {
-    const branch = name.trim()
-
-    if (pending || !repoPath || !branch) {
-      return
-    }
-
-    setPending(true)
-
-    try {
-      // Pass the typed value as both the dir slug source and the branch, so the
-      // branch is exactly what the user named (the dir is slugified git-side).
-      const result = await startWorkInRepo(repoPath, { base: selectedBase || undefined, branch, name: branch })
-
-      if (result) {
-        onStarted(result.path)
-        setOpen(false)
-        setName('')
-      }
-    } catch (err) {
-      notifyError(err, p.startWorkFailed)
-    } finally {
-      setPending(false)
-    }
-  }
-
-  const convert = async (branch: HermesGitBranch) => {
-    if (pending || !repoPath || !branch) {
-      return
-    }
-
-    setPending(true)
-
-    try {
-      let result: null | { branch: string; path: string }
-
-      if (branch.worktreePath) {
-        result = { branch: branch.name, path: branch.worktreePath }
-      } else if (branch.isDefault) {
-        await switchBranchInRepo(repoPath, branch.name)
-        result = { branch: branch.name, path: repoPath }
-      } else {
-        result = await startWorkInRepo(repoPath, { existingBranch: branch.name })
-      }
-
-      if (result) {
-        onStarted(result.path)
-        setOpen(false)
-      }
-    } catch (err) {
-      notifyError(err, p.startWorkFailed)
-    } finally {
-      setPending(false)
-    }
-  }
-
-  const enterConvert = () => {
-    setConvertMode(true)
-    void loadBranches()
-  }
 
   return (
     <>
-      <button
-        aria-label={p.startWork}
-        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
-        onClick={() => {
-          setConvertMode(false)
-          setName('')
-          setSelectedBase('')
-          setOpen(true)
-        }}
-        type="button"
-      >
-        <Codicon name="git-branch" size="0.75rem" />
-      </button>
-      <Dialog onOpenChange={next => !pending && setOpen(next)} open={open}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
-            <DialogDescription>{convertMode ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
-          </DialogHeader>
-
-          {convertMode ? (
-            <Command
-              className="rounded-md border border-(--ui-stroke-tertiary)"
-              filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
-            >
-              <CommandInput autoFocus disabled={pending} placeholder={p.convertBranchPlaceholder} />
-              <CommandList className="max-h-64">
-                <CommandEmpty>{branchesLoading ? p.branchesLoading : p.noBranches}</CommandEmpty>
-                <CommandGroup>
-                  {branches.map(branch => (
-                    <CommandItem
-                      disabled={pending}
-                      key={branch.name}
-                      onSelect={() => void convert(branch)}
-                      value={branch.name}
-                    >
-                      <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="git-branch" size="0.8rem" />
-                      <span className="truncate">{branch.name}</span>
-                      <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
-                        {branchActionLabel(branch, p)}
-                      </span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </CommandList>
-            </Command>
-          ) : (
-            <>
-              <SanitizedInput
-                autoFocus
-                disabled={pending}
-                onKeyDown={event => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault()
-                    void submit()
-                  } else if (event.key === 'Escape') {
-                    setOpen(false)
-                  }
-                }}
-                onValueChange={setName}
-                placeholder={p.branchPlaceholder}
-                sanitize={gitRef}
-                value={name}
-              />
-              <BaseBranchPicker
-                disabled={pending}
-                onValueChange={setSelectedBase}
-                repoPath={repoPath}
-                value={selectedBase}
-              />
-            </>
-          )}
-
-          {convertMode ? (
-            <DialogFooter className="sm:justify-start">
-              <Button
-                className="px-0 text-(--ui-text-secondary) hover:text-foreground"
-                disabled={pending}
-                onClick={() => setConvertMode(false)}
-                type="button"
-                variant="link"
-              >
-                {t.common.cancel}
-              </Button>
-            </DialogFooter>
-          ) : (
-            <DialogFooter className="sm:justify-between">
-              <Button
-                className="px-0 text-(--ui-text-secondary) hover:text-foreground"
-                disabled={pending}
-                onClick={enterConvert}
-                type="button"
-                variant="link"
-              >
-                {p.convertBranchInstead}
-              </Button>
-              <div className="flex items-center gap-2">
-                <Button disabled={pending} onClick={() => setOpen(false)} type="button" variant="ghost">
-                  {t.common.cancel}
-                </Button>
-                <Button disabled={pending || !name.trim()} onClick={() => void submit()} type="button">
-                  {p.startWork}
-                </Button>
-              </div>
-            </DialogFooter>
-          )}
-        </DialogContent>
-      </Dialog>
+      <Tip label={p.startWork}>
+        <button
+          aria-label={p.startWork}
+          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
+          onClick={() => setOpen(true)}
+          type="button"
+        >
+          <Codicon name="git-branch" size="0.75rem" />
+        </button>
+      </Tip>
+      <WorktreeDialog onOpenChange={setOpen} onStarted={onStarted} open={open} repoPath={repoPath} />
     </>
   )
 }

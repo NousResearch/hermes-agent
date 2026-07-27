@@ -12,17 +12,22 @@ export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke
 const TAB =
   'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag]'
 
-const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 border-b not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
+// Stop 1px short: the strip's rule is an INSET shadow painted in the
+// container's own last pixel row, so a full-height tab covers it and reads as
+// overhanging the bar. The container owns the line; nothing redraws it.
+const TAB_HORIZONTAL =
+  'h-[calc(100%-1px)] min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
 
 const TAB_VERTICAL =
   'w-full max-h-48 justify-center not-first:border-t not-first:border-t-(--ui-stroke-quaternary) [writing-mode:vertical-rl]'
 
-const TAB_ACTIVE = 'text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
+// Full height, so the active tab alone covers that row and cuts the rule.
+const TAB_ACTIVE = 'h-full text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
 
-// Inactive = gutter. Hover = 4% translucent wash (VS Code/GitHub alpha hover),
-// not an opaque recolor — and never touch borders.
+// Inactive = gutter. Hover DARKENS: active is the lighter content surface, so a
+// lightening wash made the two nearly indistinguishable.
 const TAB_IDLE =
-  'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--theme-card-seed))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,var(--ui-base)_4%,transparent)] hover:text-(--ui-text-secondary)'
+  'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--theme-card-seed))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,#000_var(--ui-tab-hover-darken),transparent)] hover:text-(--ui-text-secondary)'
 
 interface PaneTabProps extends React.ComponentProps<'div'> {
   active?: boolean
@@ -66,9 +71,9 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
   },
   ref
 ) {
-  // Content-facing edge: horizontal cuts the bottom strip line; vertical cuts
-  // the side that faces the editor (left rail → right edge, right rail → left).
-  const edge = vertical ? (side === 'right' ? 'border-l' : 'border-r') : 'border-b'
+  // Vertical rails only. Horizontal tabs draw no bottom border — the strip owns
+  // that rule, and a per-tab border stacked a second translucent line over it.
+  const edge = vertical ? (side === 'right' ? 'border-l' : 'border-r') : undefined
 
   return (
     <div
@@ -76,7 +81,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         TAB,
         vertical ? TAB_VERTICAL : TAB_HORIZONTAL,
         edge,
-        active ? TAB_ACTIVE : cn(TAB_IDLE, `${edge}-(--ui-stroke-tertiary)`),
+        active ? TAB_ACTIVE : cn(TAB_IDLE, edge && `${edge}-(--ui-stroke-tertiary)`),
         className
       )}
       data-active={active}

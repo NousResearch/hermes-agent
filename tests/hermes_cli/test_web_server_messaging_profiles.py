@@ -108,11 +108,17 @@ class TestProfileScopedMessagingReads:
             yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
-            lambda: {
+            # Accepts path= : the profile-scoped read now passes the
+            # profile's own gateway_state.json explicitly rather than
+            # relying on process-level HERMES_HOME resolution (#71211).
+            lambda *a, **k: {
                 "gateway_state": "startup_failed",
                 "exit_reason": "all configured messaging platforms failed to connect",
                 "platforms": {},

@@ -34,26 +34,37 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
-# ACP Registry manifest must stay version-locked with pyproject.toml.
-# tests/acp/test_registry_manifest.py enforces this lockstep so the release
-# bump touches both files atomically.
-ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
-
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
 
-# Auto-extracted from noreply emails + manual overrides
-AUTHOR_MAP = {
+# FROZEN legacy mappings — do NOT add new entries here. New contributor
+# mappings live as one-file-per-email entries under contributors/emails/
+# (see contributors/README.md), which merge-conflict-free by construction.
+# This dict is kept only so existing history keeps resolving; the effective
+# AUTHOR_MAP below merges it with the directory (directory wins).
+LEGACY_AUTHOR_MAP = {
+    "declanbatesmith@outlook.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option)
+    "drbs2004@me.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option; historical merge email)
+    "122438640+ragingbulld@users.noreply.github.com": "ragingbulld",  # PR #65606 salvage (non-finite API wait deadlines; #65746)
+    "zzpigpinggai@users.noreply.github.com": "zzpigpinggai",  # PR #66017 salvage of #63617 (OpenRouter explicit-provider picker visibility)
+    "stellarisw@users.noreply.github.com": "StellarisW",  # PR #66222 salvage (Discord WebSocket liveness + systemd watchdog; #26656 follow-up)
+    "wx.xw@bytedance.com": "wxy-nlp",  # PR #66222 salvage (systemd event-loop watchdog co-author)
     "sam7894604@gmail.com": "sam7894604",  # PR #55803 salvage (discord: /reasoning slash choices)
     "bryan@users.noreply.github.com": "hydraxman",  # PR #62028 salvage (copilot xhigh) — regression-test commit authored under a bare-noreply local git identity; PR author is @hydraxman
     "antydizajn@gmail.com": "antydizajn",  # PR #36043 salvage (auxiliary: route custom:<name> through named-provider arm + Palantir Bearer auth)
     "252620095+briandevans@users.noreply.github.com": "briandevans",  # PR #64951 salvage (lmstudio: clamp max/ultra reasoning effort)
     "kar.iskakov@gmail.com": "karfly",  # PR #64012 salvage (gateway: surface extended reasoning efforts)
+    "enzo.eliott.adami@gmail.com": "enzo-adami",  # PR #66637 salvage (compression: preserve human intent and durable handoffs)
     "kimyeon30@naver.com": "rlaehddus302",  # PR #61985 salvage (gateway: secondary-adapter auth callback profile)
+    "burke@autreymail.com": "bautrey",  # PR #66479 salvage (gateway reliability hardening: Bedrock liveness, supervised watchers, launchd respawn throttle)
     "agungsubastian1963@gmail.com": "aguung",  # PR #64461 salvage (gateway: multiplex secret_scope for authz/Slack/webhooks)
     "jtstothard@gmail.com": "jtstothard",  # PR #63256 salvage (gateway: multiplex secondary adapter config validation)
+    "fjlaowan@proton.me": "fjlaowan1983",  # PR #11256 salvage (honcho: reject whitespace-only reasoning queries)
+    "RainbowAndSun@users.noreply.github.com": "RainbowAndSun",  # PR #62982 salvage (honcho: observer target in prefetch context)
+    "pi@hermes.local": "Elektrofussel",  # PR #61675 salvage (honcho: defaultHost + private-range local URL detection)
     "doogie@spark.local": "SAMBAS123",  # PR #64986 salvage (gateway: multiplex primary bot token scope)
+    "maartendormenatteysen@hotmail.com": "MaartenDMT",  # PR #65637 salvage (gateway: retry failed transcript appends and rebuild corrupted FTS)
     "emrekoca2003@gmail.com": "kocaemre",  # PR #36051 salvage (docs: audit round 3 code/doc reconciliation)
     "focusedmiqa@gmail.com": "m1qaweb",  # PR #29290 salvage (gateway: strip /queue prefix when idle)
     "13574+otsune@users.noreply.github.com": "otsune",  # PR #36019 salvage (kanban: attachment toolset + CLI)
@@ -70,7 +81,9 @@ AUTHOR_MAP = {
     "neo@neodeMac-mini.local": "neo-claw-bot",  # PR #58465 salvage (moa: drop empty user turns from advisory view)
     "2024104039@mails.szu.edu.cn": "pixel4039",  # PR #64420 salvage (streaming: retry zero-chunk streams)
     "marceloparra.hm@gmail.com": "marcelohildebrand",  # PR #42346 salvage (lmstudio: JIT load mode)
+    "qlskssk@gmail.com": "Soju06",  # agent turn-latency perf PRs
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
+    "wangzhe00zju@gmail.com": "flyingdoubleG",  # PR #18166 salvage (memory-provider tools honor disabled_toolsets in initial and MCP-refresh injection)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "gn00742754@gmail.com": "SemonCat",  # PR #56786 salvage (Slack Agent View manifests and Assistant APIs)
     "KCAYAAI@users.noreply.github.com": "KCAYAAI",  # PR #62248 partial salvage (resume typing after clarify reply)
@@ -87,6 +100,8 @@ AUTHOR_MAP = {
     "iganapolsky@gmail.com": "IgorGanapolsky",  # PR #62125 salvage (compaction anti-thrash threshold verification)
     "275853971+aeyeopsdev@users.noreply.github.com": "aeyeopsdev",  # PRs #36035/#36068 salvage (google-chat: http inbound without pubsub; clarify cards)
     "tturney1@gmail.com": "TheTom",  # PR #62696 salvage (gateway: expand @ context references under runtime/session model resolution)
+    "1822947159@qq.com": "ljy-2000",  # PR #62204 adopted in #62290
+    "xwolf.live@gmail.com": "vizi0uz",  # PR #59795 adopted in #62290
     "wilsonkinyuam@gmail.com": "WilsonKinyua",  # PR #62052 (tui: persist unflushed conversations on disconnect/restart)
     "humphreysun98@gmail.com": "HumphreySun98",  # PR #61142 salvage (web: null web/backend config value guards)
     "sonxi@nous.local": "17324393074",  # PR #53196 salvage (tools_config: known_plugin_toolsets null guard; commit under unlinked local identity)
@@ -314,6 +329,8 @@ AUTHOR_MAP = {
     "dkobi16@gmail.com": "Diyoncrz18",
     "arnaud@nolimitdevelopment.com": "ali-nld",
     "sswdarius@gmail.com": "necoweb3",
+    "wei-yujie@qq.com": "DNAlec",  # PR #61743 salvage (honor reset policy in #54878 stale-heal recovery)
+    "joelbrilliant1@gmail.com": "joelbrilliant",  # PR #58486 salvage (session-expiry cleanup must not end row as agent_close)
     "bassisho@Mac-mini-bassis.local": "hydracoco7",  # PR #61382 salvage (id-less cron job freeze)
     "AlexFucuson9@users.noreply.github.com": "AlexFucuson9",  # PR #61209 salvage (hygiene compression data loss)
     "email@adambig.gs": "adambiggs",  # PR #43819 salvage (holographic shared SQLite connection)
@@ -361,6 +378,19 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "juniperbevensee@users.noreply.github.com": "juniperbevensee",
+    "krowd3v@users.noreply.github.com": "krowd3v",
+    "dfein38347g@users.noreply.github.com": "dfein38347g",
+    "nicktaylor@TheWorldofNick-Lappy.local": "thegoodguysla",
+    "s96919@gmail.com": "s96919",
+    "rasitakyol@hotmail.com": "rasitakyol",
+    "thatgfsj@gmail.com": "Thatgfsj",
+    "141703117+seagpt@users.noreply.github.com": "seagpt",
+    "dr@nevernet.com": "davidrobertson",
+    "59045242+HaiderSultanArc@users.noreply.github.com": "HaiderSultanArc",
+    "jjadeo@gmail.com": "jjadeo-oss",
+    "94815906+juanfradb@users.noreply.github.com": "juanfradb",
+    "eva@100yen.org": "100yenadmin",
     "yakimenkoleksander228@gmail.com": "doxe0x",
     "a54983334@163.com": "Code-suphub",
     "78542984+Code-suphub@users.noreply.github.com": "Code-suphub",
@@ -892,6 +922,7 @@ AUTHOR_MAP = {
     "thomasjhon6666@gmail.com": "ThomassJonax",
     "focusflow.app.help@gmail.com": "yes999zc",
     "rob@atlas.lan": "rmoen",
+    "huajiang@tubi.tv": "thirstycrow",  # PR #23630 salvage (config-aware memory status labels)
     # Slack ephemeral slash-ack salvage (May 2026)
     "probepark@users.noreply.github.com": "probepark",
     # Slack batch salvage (May 2026)
@@ -961,6 +992,7 @@ AUTHOR_MAP = {
     "massivemassimo@users.noreply.github.com": "MassiveMassimo",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "keifergu@tencent.com": "keifergu",
+    "kshitij@kshitij.dev": "kshitijk4poor",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "SHL0MS@users.noreply.github.com": "SHL0MS",
     "abner.the.foreman@agentmail.to": "Abnertheforeman",
@@ -1145,6 +1177,7 @@ AUTHOR_MAP = {
     "jan@mg5.org": "mijanx",
     "incharge.automation@gmail.com": "inchargeautomation-lab",
     "danielrpike9@gmail.com": "Bartok9",
+    "kuangmi@deeparchi.com": "kuangmi-bit",
     "96944678+ymylive@users.noreply.github.com": "sweetcornna",
     "laflamme@illinoisalumni.org": "briancl2",
     "skozyuk@cruxexperts.com": "CruxExperts",
@@ -1966,6 +1999,8 @@ AUTHOR_MAP = {
     "andrewdmwalker@gmail.com": "capt-marbles",  # PR #38440 salvage (resolve xAI OAuth credentials across profiles; #43589)
     "infinitycrew39@gmail.com": "infinitycrew39",  # PR #47945 salvage (scope langfuse trace state by turn/request ids; #48292)
     "eurekaxun@163.com": "huangxun375-stack",  # PR #37251 / #48894 structured OpenViking sync
+    "koshaji@gmail.com": "koshaji",  # PR #49832 salvage (OpenViking runtime autostart shutdown drain)
+    "thor753@foxmail.com": "wgd753",  # PR #59454 salvage (OpenViking trusted-mode retry matching)
     "218421507+Sahil-SS9@users.noreply.github.com": "Sahil-SS9",  # PR #48466/#44919/#44909/#42209 salvage (cron/checkpoint/kanban/skill)
     "mango001@126.com": "max-chen",  # PR #51194 salvage (single-pass list_profiles alias map + skill-count cache; #54751)
     # v0.17.0 additions
@@ -2023,11 +2058,46 @@ AUTHOR_MAP = {
 }
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Directory-based mappings: contributors/emails/<email> → login
+# ──────────────────────────────────────────────────────────────────────
+CONTRIBUTORS_EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
+
+
+def _load_contributor_dir(directory: "Path | None" = None) -> dict:
+    """Load one-file-per-email mappings from contributors/emails/.
+
+    Filename = commit-author email, first non-comment line = GitHub login.
+    Additions never merge-conflict (each mapping is a distinct file), which
+    is why new entries go here instead of the frozen LEGACY_AUTHOR_MAP.
+    """
+    directory = directory or CONTRIBUTORS_EMAILS_DIR
+    mapping = {}
+    if not directory.is_dir():
+        return mapping
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    mapping[path.name] = line.lstrip("@")
+                    break
+        except OSError:
+            continue
+    return mapping
+
+
+# Effective map: frozen legacy dict + directory entries (directory wins).
+AUTHOR_MAP = {**LEGACY_AUTHOR_MAP, **_load_contributor_dir()}
+
+
 def git(*args, cwd=None):
     """Run a git command and return stdout."""
     result = subprocess.run(
         ["git"] + list(args),
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
     )
     if result.returncode != 0:
@@ -2041,7 +2111,7 @@ def git_result(*args, cwd=None):
     return subprocess.run(
         ["git"] + list(args),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
     )
 
@@ -2068,7 +2138,7 @@ def next_available_tag(base_tag: str) -> tuple[str, str]:
 
 def get_current_version():
     """Read current semver from __init__.py."""
-    content = VERSION_FILE.read_text()
+    content = VERSION_FILE.read_text(encoding="utf-8")
     match = re.search(r'__version__\s*=\s*"([^"]+)"', content)
     return match.group(1) if match else "0.0.0"
 
@@ -2098,7 +2168,7 @@ def bump_version(current: str, part: str) -> str:
 def update_version_files(semver: str, calver_date: str):
     """Update version strings in source files."""
     # Update __init__.py
-    content = VERSION_FILE.read_text()
+    content = VERSION_FILE.read_text(encoding="utf-8")
     content = re.sub(
         r'__version__\s*=\s*"[^"]+"',
         f'__version__ = "{semver}"',
@@ -2109,17 +2179,17 @@ def update_version_files(semver: str, calver_date: str):
         f'__release_date__ = "{calver_date}"',
         content,
     )
-    VERSION_FILE.write_text(content)
+    VERSION_FILE.write_text(content, encoding="utf-8")
 
     # Update pyproject.toml
-    pyproject = PYPROJECT_FILE.read_text()
+    pyproject = PYPROJECT_FILE.read_text(encoding="utf-8")
     pyproject = re.sub(
         r'^version\s*=\s*"[^"]+"',
         f'version = "{semver}"',
         pyproject,
         flags=re.MULTILINE,
     )
-    PYPROJECT_FILE.write_text(pyproject)
+    PYPROJECT_FILE.write_text(pyproject, encoding="utf-8")
 
     # Keep the desktop Electron app's package.json version in lockstep with the
     # Python package version. The desktop About panel reads the live Hermes
@@ -2135,70 +2205,6 @@ def update_version_files(semver: str, calver_date: str):
             count=1,
         )
         desktop_pkg.write_text(pkg_text, encoding="utf-8")
-
-    # Update ACP Registry manifest + npm launcher (must stay version-locked
-    # with pyproject — enforced by tests/acp/test_registry_manifest.py).
-    _update_acp_registry_versions(semver)
-
-
-def _update_acp_registry_versions(semver: str) -> None:
-    """Bump the ACP Registry manifest's version + uvx package pin in lockstep
-    with pyproject.
-
-    Skips silently if the manifest is missing — older release branches predate
-    the ACP Registry assets.
-    """
-    if ACP_REGISTRY_MANIFEST.exists():
-        manifest = json.loads(ACP_REGISTRY_MANIFEST.read_text(encoding="utf-8"))
-        manifest["version"] = semver
-        uvx = manifest.get("distribution", {}).get("uvx", {})
-        if "package" in uvx:
-            uvx["package"] = f"hermes-agent[acp]=={semver}"
-        # Preserve trailing newline + 2-space indent the file already uses.
-        ACP_REGISTRY_MANIFEST.write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-        )
-
-
-def build_release_artifacts(semver: str) -> list[Path]:
-    """Build sdist/wheel artifacts for the current release.
-
-    Tries ``uv build`` first (matching the CI workflow), falls back to
-    ``python -m build`` if uv is unavailable.
-    """
-    dist_dir = REPO_ROOT / "dist"
-    shutil.rmtree(dist_dir, ignore_errors=True)
-
-    # Prefer uv build (matches CI workflow), fall back to python -m build.
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        cmd = [uv_bin, "build", "--sdist", "--wheel"]
-    else:
-        cmd = [sys.executable, "-m", "build", "--sdist", "--wheel"]
-
-    result = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print("  ⚠ Could not build Python release artifacts.")
-        stderr = result.stderr.strip()
-        stdout = result.stdout.strip()
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
-        elif stdout:
-            print(f"    {stdout.splitlines()[-1]}")
-        print("    Install uv or the 'build' package to attach sdist/wheel assets.")
-        return []
-
-    artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file())
-    matching = [p for p in artifacts if semver in p.name]
-    if not matching:
-        print("  ⚠ Built artifacts did not match the expected release version.")
-        return []
-    return matching
 
 
 def resolve_author(name: str, email: str) -> str:
@@ -2539,8 +2545,6 @@ def main():
 
             # Commit version bump
             add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
-            if ACP_REGISTRY_MANIFEST.exists():
-                add_files.append(str(ACP_REGISTRY_MANIFEST))
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
@@ -2573,14 +2577,6 @@ def main():
             print("    Continue manually after fixing access:")
             print("    git push origin HEAD --tags")
 
-        # Build semver-named Python artifacts so downstream packagers
-        # (e.g. Homebrew) can target them without relying on CalVer tag names.
-        artifacts = build_release_artifacts(new_version)
-        if artifacts:
-            print("  ✓ Built release artifacts:")
-            for artifact in artifacts:
-                print(f"    - {artifact.relative_to(REPO_ROOT)}")
-
         # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog, encoding="utf-8")
@@ -2590,13 +2586,12 @@ def main():
             "--title", f"Hermes Agent v{new_version} ({calver_date})",
             "--notes-file", str(changelog_file),
         ]
-        gh_cmd.extend(str(path) for path in artifacts)
 
         gh_bin = shutil.which("gh")
         if gh_bin:
             result = subprocess.run(
                 gh_cmd,
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(REPO_ROOT),
             )
         else:
@@ -2615,9 +2610,9 @@ def main():
             print("    Tag was created locally. Create the release manually:")
             print(
                 f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})' "
-                f"--notes-file .release_notes.md {' '.join(str(path) for path in artifacts)}"
+                f"--notes-file .release_notes.md"
             )
-            print(f"\n  ✓ Release artifacts prepared for manual publish: v{new_version} ({tag_name})")
+            print(f"\n  ✓ Release v{new_version} ({tag_name}) prepared for manual publish.")
     else:
         print(f"\n{'='*60}")
         print("  Dry run complete. To publish, add --publish")

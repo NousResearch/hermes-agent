@@ -53,6 +53,7 @@ gateway:
     more:                  "... y {count} más"
     running_processes:     "**Procesos en segundo plano en ejecución:** {count}"
     async_jobs:            "**Tareas asíncronas del gateway:** {count}"
+    background_delegations: "**Delegaciones en segundo plano:** {count}"
     none:                  "No hay agentes activos ni tareas en ejecución."
     state_starting:        "iniciando"
     state_running:         "en ejecución"
@@ -124,6 +125,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nModo actual: `{mode}`\\n\\nElige una opción:"
+    choice_fast:           "fast — Priority Processing activado"
+    choice_normal:         "normal — procesamiento estándar"
 
   footer:
     status:                "📎 Pie de ejecución: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
@@ -194,6 +198,11 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` no es compatible. Usa `/reasoning <level> --global` para cambiar el valor global por defecto."
     reset_done:                "🧠 ✓ Anulación de razonamiento de la sesión borrada; volviendo a la configuración global."
     unknown_arg:               "⚠️ Argumento desconocido: `{arg}`\n\n**Niveles válidos:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualización:** show, hide\n**Persistir:** añade `--global` para guardar más allá de esta sesión"
+    picker_title:              "🧠 **Ajustes de razonamiento**\\n\\n**Esfuerzo:** `{level}`\\n**Alcance:** {scope}\\n**Visualización:** {display}\\n\\nElige una opción:"
+    choice_none:               "none — desactivar razonamiento"
+    choice_reset:              "reset — borrar el ajuste de sesión"
+    choice_show:               "mostrar razonamiento en respuestas"
+    choice_hide:               "ocultar razonamiento en respuestas"
     set_global:                "🧠 ✓ Esfuerzo de razonamiento ajustado a `{effort}` (guardado en la configuración)\n_(se aplica en el próximo mensaje)_"
     set_global_save_failed:    "🧠 ✓ Esfuerzo de razonamiento ajustado a `{effort}` (solo en la sesión — error al guardar la configuración)\n_(se aplica en el próximo mensaje)_"
     set_session:               "🧠 ✓ Esfuerzo de razonamiento ajustado a `{effort}` (solo en la sesión — añade `--global` para persistir)\n_(se aplica en el próximo mensaje)_"
@@ -267,9 +276,32 @@ gateway:
     restored:              "✅ Restaurado al checkpoint {hash}: {reason}\nSe guardó automáticamente un snapshot previo al rollback."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "Los checkpoints no están activados, así que no hay línea base de sesión.\nActívalos en config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nEl /diff normal sigue funcionando — usa git directamente."
+    no_changes:            "Sin cambios."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "No se pudo guardar el canal principal: {error}"
     success:               "✅ Canal principal establecido en **{name}** (ID: {chat_id}).\nLas tareas cron y los mensajes entre plataformas se entregarán aquí."
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
 
   status:
     header:                "📊 **Estado de Hermes Gateway**"
@@ -287,7 +319,7 @@ gateway:
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**Tokens de API acumulados (reenviados en cada llamada):** {tokens}"
+    tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
     agent_running:         "**Agente activo:** {state}"
     state_yes:             "Sí ⚡"
     state_no:              "No"

@@ -52,6 +52,43 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
     assert parts[0]["thoughtSignature"] == "sig-123"
 
 
+def test_build_native_request_emits_sentinel_for_cross_provider_tool_call():
+    """Cross-provider tool_calls (xAI/Anthropic -> Gemini fallback) carry no
+    Gemini thoughtSignature.  Without a sentinel, Gemini 3 thinking models
+    reject the request with 400 INVALID_ARGUMENT.  The native adapter must
+    emit the same ``skip_thought_signature_validator`` sentinel that the
+    Cloud Code Assist adapter already uses for the same scenario.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}',
+                        },
+                        # No extra_content — this tool_call originated from a
+                        # non-Gemini provider during fallback.
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert parts[0]["functionCall"]["name"] == "get_weather"
+    assert parts[0]["thoughtSignature"] == "skip_thought_signature_validator"
+
+
 def test_build_native_request_uses_original_function_name_for_tool_result():
     from agent.gemini_native_adapter import build_gemini_request
 

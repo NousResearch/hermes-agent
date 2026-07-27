@@ -32,6 +32,10 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.provider = "openrouter"
     agent.platform = "cli"
     agent._session_db = session_db
+    # MagicMock attributes are truthy by default; the static-prefix
+    # reconstruction is gated on _use_prompt_caching, so default it off
+    # for the legacy restore tests (the reconstruction tests enable it).
+    agent._use_prompt_caching = False
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
 
@@ -259,6 +263,91 @@ class TestPromptStabilityInvariant:
         assert agent._cached_system_prompt == stored
         # Byte-level check
         assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Cross-session static prefix reconstruction (issue #68191 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestStaticPrefixReconstructionOnRestore:
+    """The two-block cache layout must survive session restore.
+
+    Gateway surfaces construct a fresh AIAgent per turn and restore the
+    persisted prompt from the session DB; the cross-session-stable prefix
+    (``_cached_system_prompt_static``) is only set on fresh builds, so
+    without reconstruction the wire layout silently degrades to the legacy
+    single-breakpoint layout after turn 1 (flagged on PR #68258 review).
+    """
+
+    def test_restore_reconstructs_static_prefix_when_it_matches(self):
+        stable = "STATIC IDENTITY AND GUIDANCE"
+        stored = stable + "\n\nper-session context\n\nvolatile tail"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt_static = None
+
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": stable, "context": "", "volatile": ""},
+        ):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        # Restored prompt bytes untouched; static prefix reconstructed.
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt_static == stable
+
+    def test_restore_leaves_static_unset_on_prefix_mismatch(self):
+        """Stable-tier drift (skills edited since persist) → no static prefix,
+        legacy layout, restored bytes still authoritative."""
+        stored = "OLD STATIC HEAD\n\nper-session context"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt_static = None
+
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": "NEW STATIC HEAD", "context": "", "volatile": ""},
+        ):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt_static is None
+
+    def test_restore_survives_parts_builder_exception(self):
+        """Prefix reconstruction is fail-open: a parts-builder crash must not
+        break the byte-identical restore."""
+        stored = "Stored prompt — must survive"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt_static = None
+
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            side_effect=RuntimeError("boom"),
+        ):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        assert agent._cached_system_prompt == stored
+        assert agent._cached_system_prompt_static is None
 
 
 if __name__ == "__main__":

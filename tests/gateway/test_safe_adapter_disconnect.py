@@ -77,3 +77,47 @@ async def test_safe_disconnect_times_out_and_continues(bare_runner, monkeypatch,
 
     adapter.disconnect.assert_awaited_once()
     assert "Timed out after 0.0s while disconnecting feishu adapter" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_safe_disconnect_detaches_cancellation_swallowing_disconnect(
+    bare_runner, monkeypatch, caplog
+):
+    """A disconnect that catches cancellation cannot block fatal recovery.
+
+    ``asyncio.wait_for`` cancels its child at the deadline but then waits for
+    it to finish.  A half-closed transport can catch that cancellation while
+    unwinding, so the runner must detach the old close task and continue to the
+    reconnect queue instead of waiting indefinitely.
+    """
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    adapter = MagicMock()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def swallow_cancellation():
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+        finished.set()
+
+    adapter.disconnect = AsyncMock(side_effect=swallow_cancellation)
+    operation = asyncio.create_task(
+        bare_runner._safe_adapter_disconnect(adapter, Platform.FEISHU)
+    )
+    await started.wait()
+    done, _pending = await asyncio.wait({operation}, timeout=0.2)
+    try:
+        assert operation in done
+        assert "Timed out after 0.0s while disconnecting feishu adapter" in caplog.text
+    finally:
+        # The implementation must detach rather than abandon the old task.
+        # Release it here so this test leaves no cancellation-swallowing task
+        # behind when it runs against the pre-fix implementation.
+        release.set()
+        await asyncio.wait({operation}, timeout=0.2)
+        await asyncio.wait_for(finished.wait(), timeout=0.2)

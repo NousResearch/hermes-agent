@@ -502,7 +502,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "",
+               source_id: Optional[str] = None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -511,10 +512,18 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
     (so pair it with ``name_override`` when installing from a URL that has
     no frontmatter).
+
+    ``source_id`` pins resolution to a single source adapter (e.g. ``clawhub``).
+    Callers that already know a skill's provenance -- notably ``do_update``,
+    which reads it from the lockfile -- should pass it so a bare, slash-less
+    identifier cannot be fuzzy-resolved to a same-named skill in a different
+    registry. Skill names are not namespaced across registries, so an
+    unconstrained resolve can silently change a skill's provenance.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
+        _source_matches,
     )
     from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
 
@@ -524,6 +533,18 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Resolve which source adapter handles this identifier
     auth = GitHubAuth()
     sources = create_source_router(auth)
+
+    if source_id:
+        pinned = [src for src in sources if _source_matches(src, source_id)]
+        if pinned:
+            sources = pinned
+        else:
+            c.print(
+                f"[bold red]Error:[/] no source adapter for '{source_id}'. "
+                f"Refusing to resolve '{identifier}' against other registries "
+                f"(that would change the skill's provenance).\n"
+            )
+            return
 
     # If identifier looks like a short name (no slashes), resolve it via search
     if "/" not in identifier:
@@ -1058,7 +1079,20 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
         c.print(f"[bold]Updating:[/] {entry['name']}")
-        do_install(entry["identifier"], category=category, force=True, console=c)
+        # Pin the update to the source registry recorded in the lockfile.
+        # Without this, a bare (slash-less) identifier such as "reddit" falls
+        # through to _resolve_short_name()'s fuzzy catalog search inside
+        # do_install, which can match a same-named skill in a DIFFERENT
+        # registry and install that instead -- overwriting the user's files
+        # and rewriting the lock's `source`. An update must never change a
+        # skill's provenance.
+        do_install(
+            entry["identifier"],
+            category=category,
+            force=True,
+            console=c,
+            source_id=entry.get("source", "") or None,
+        )
 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
@@ -1461,6 +1495,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     # Validate the skill
     import yaml
     skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
+    skill_md = skill_md.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
     fm = {}
     if skill_md.startswith("---"):
         import re

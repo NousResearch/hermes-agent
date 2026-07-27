@@ -5,7 +5,7 @@ import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
-import { $sidebarWorkspaceCollapsedIds, toggleWorkspaceNodeCollapsed } from '@/store/layout'
+import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { $worktreeRefreshToken } from '@/store/projects'
 
 import { sessionRecency, type SidebarProjectTree } from './workspace-groups'
@@ -75,6 +75,39 @@ export function sortProjectsForOverview(
   })
 }
 
+// Layer the user's manual drag-order over the deterministic sort.
+//
+// This can't just be `orderByIds`: that surfaces every id missing from the saved
+// order at the TOP, which is right for sessions (a new chat should not sink) but
+// wrong here. The overview also lists repos found by the disk scan that have
+// zero Hermes sessions, and those arrive continuously — so once the user dragged
+// anything, every freshly-scanned checkout jumped above the projects they
+// actually work in.
+//
+// Fresh projects keep their place in the deterministic sort instead: ones with
+// real activity go on top (a project you just started still surfaces), and
+// zero-session discoveries sink below the hand-ordered list.
+export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: string[]): SidebarProjectTree[] {
+  if (!orderIds.length) {
+    return projects
+  }
+
+  const byId = new Map(projects.map(project => [project.id, project]))
+  const ordered = orderIds.map(id => byId.get(id)).filter((p): p is SidebarProjectTree => Boolean(p))
+  const seen = new Set(ordered.map(project => project.id))
+  const fresh = projects.filter(project => !seen.has(project.id))
+
+  if (!fresh.length) {
+    return ordered
+  }
+
+  return [
+    ...fresh.filter(project => project.sessionCount > 0),
+    ...ordered,
+    ...fresh.filter(project => project.sessionCount <= 0)
+  ]
+}
+
 // Project drill-in lanes are git-driven: source them from `git worktree list` so
 // linked worktrees still appear even when their sessions aren't in the recents
 // payload currently loaded in memory.
@@ -123,14 +156,13 @@ export function useRepoWorktreeMap(
 // Persisted open/collapse for a repo/worktree node. Lets a project's folder
 // layout auto-restore when you enter it, and survive reloads.
 //
-// The persisted set is an OVERRIDE of `defaultOpen`, not an absolute "collapsed"
-// list: XOR lets one store serve both polarities. A default-open node (repo,
-// populated lane) lists collapses; a default-collapsed node (an EMPTY lane — no
-// sessions yet) instead records an explicit expand. So empty worktree/branch
-// lanes start collapsed and only open when the user clicks in.
+// State is stored as the RESOLVED boolean per node (see `$sidebarWorkspaceNodeOpen`),
+// so a node whose `defaultOpen` flips — an empty worktree/branch lane defaults
+// collapsed, then defaults open once it holds a session — keeps whatever the
+// user explicitly chose instead of having it silently reinterpreted. An absent
+// id follows `defaultOpen`, so empty lanes still start collapsed until opened.
 export function useWorkspaceNodeOpen(id: string, defaultOpen = true): [boolean, () => void] {
-  const collapsed = useStore($sidebarWorkspaceCollapsedIds)
-  const overridden = collapsed.includes(id)
+  const state = useStore($sidebarWorkspaceNodeOpen)
 
-  return [defaultOpen ? !overridden : overridden, () => toggleWorkspaceNodeCollapsed(id)]
+  return [state[id] ?? defaultOpen, () => toggleWorkspaceNodeCollapsed(id, defaultOpen)]
 }

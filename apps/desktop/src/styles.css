@@ -5,6 +5,22 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
+/* Blanket reduced-motion override: kill ALL CSS animations and transitions
+   when the user (or the E2E test harness via prefers-reduced-motion) requests
+   it. Per-component @media rules below handle specific cases; this catches
+   everything else so overlays and loading bars resolve instantly instead of
+   being caught mid-fade by a screenshot. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
@@ -301,6 +317,10 @@
        :root.dark bumps the alpha since a dark card swallows shadow. Removed on
        focus (the focus border carries the state). */
     --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 10%, transparent);
+    /* Hovered inactive tab: deepen it AWAY from the lighter active surface, so
+       hover can never be mistaken for selected. Dark mode needs more — black
+       over a dark gutter shows less. */
+    --ui-tab-hover-darken: 2.5%;
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
     --dt-composer-ring: var(--ui-base);
@@ -331,7 +351,8 @@
     --radius-scalar: 0.6;
 
     /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
-       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing. */
+       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing.
+       These are the defaults; each chat surface re-declares the calc against its own measurements (see below). */
     --status-stack-measured-height: 0px;
     --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 
@@ -429,6 +450,7 @@
     --backdrop-invert-mul: 0;
     /* Dark mode: a dark card needs a stronger black inset to show the recess. */
     --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 38%, transparent);
+    --ui-tab-hover-darken: 6%;
     /* Dark needs a lighter resting border than light mode. */
     --dt-input-border: 4%;
 
@@ -495,6 +517,32 @@
 
 .dither {
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
+}
+
+/* Inline content links: a small tinted chip instead of an underline. Tint is
+   currentColor-relative (the old `decoration-current/20` idiom), so text and
+   fill share a hue on every theme from one `color` declaration. */
+.link-chip {
+  --link-chip-tint: 8%;
+
+  /* `ch`/`em` so the chip tracks the text at any size. Block padding is
+     asymmetric because an inline box's content area is ascent+descent — equal
+     padding paints the glyphs high. Keep it small: `padding-block` doesn't grow
+     the line box, so an over-padded chip creeps into the line above. */
+  padding: 0.05ch 0.5ch 0.2ch;
+  border-radius: 0.25rem;
+  color: var(--dt-primary);
+  background: color-mix(in srgb, currentColor var(--link-chip-tint), transparent);
+  /* Explicit: the base layer underlines every `a` (see the :where(a, …) reset). */
+  text-decoration: none;
+  /* A wrapped link gets a chip per line fragment, not one ragged box. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-color 0.12s ease;
+}
+
+.link-chip:hover {
+  --link-chip-tint: 15%;
 }
 
 /* Hover-reveal suppression — the shared, declarative escape hatch.
@@ -593,14 +641,19 @@
   --arc-c2: var(--dt-background);
   --arc-angle: 160deg;
   --arc-width: 0.078125rem;
-  --arc-inset: -0.125rem;
+  /* How far the ring stands off its host, per side. */
+  --arc-standoff: 0.125rem;
+  /* An outset ring is only concentric when its radius grows by the standoff
+     (r = r_host + gap); `border-radius: inherit` leaves the corner pinched.
+     Defaults to the shared `rounded-md`; a host on another radius sets it. */
+  --arc-radius: var(--radius-md);
   --arc-duration: 2.23s;
 
   pointer-events: none;
   position: absolute;
   overflow: hidden;
-  border-radius: inherit;
-  inset: var(--arc-inset);
+  border-radius: calc(var(--arc-radius) + var(--arc-standoff));
+  inset: calc(var(--arc-standoff) * -1);
   padding: var(--arc-width);
   mask:
     linear-gradient(#000 0 0) content-box,
@@ -700,6 +753,23 @@
   --arc-c1: #4f8cff;
   --arc-c2: #ff8c42;
   --arc-duration: 3.27s;
+}
+
+/* Sidebar session row — a thin, clipped, single-line host, so it differs twice
+   from the default ring:
+
+   1. Flush, not outset. The sidebar scroller is `overflow-x-hidden` and rows sit
+      `gap-px` apart, so an outset ring loses its left/right runs to the clip.
+
+   2. A visible tail. `--arc-c2` defaults to `--dt-background` — invisible
+      against the sidebar. With c0 a transparent sentinel and c2 invisible, only
+      the bright c1 stop survives each pass, and the gradient has three of them:
+      three moving dots instead of an arc. Tying c2 to c1 gives each spike a
+      falloff. (`arc-nous` already overrides c2, so the hero is unaffected.) */
+.arc-border.arc-row,
+:root.dark .arc-border.arc-row {
+  --arc-standoff: 0rem;
+  --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -824,6 +894,7 @@ text-* variant utilities. */ .btn-arc {
 /* `[data-state='open']` keeps the trigger looking focused while its dropdown is
    open — Radix moves focus into the list, so the trigger itself loses :focus. */
 .desktop-input-chrome:focus,
+.desktop-input-chrome:focus-within,
 .desktop-input-chrome[data-state='open'] {
   border-color: var(--dt-composer-ring);
   box-shadow: none;
@@ -1450,12 +1521,14 @@ text-* variant utilities. */ .btn-arc {
   height: 0.875rem;
 }
 
-/* Live thinking preview window. Pairs with the ResizeObserver in
-   ThinkingDisclosure that pins scrollTop to the bottom — older lines fade
-   into the top mask while the latest tokens settle in below. */
-.thinking-preview {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
+/* Re-declare the clearance calc on every chat surface. `:root` computes it
+   once against the ROOT measurements, so scoping only the inputs would leave
+   every thread reading the same substituted value. Redeclaring here makes each
+   surface resolve the calc against its own composer + status-stack heights,
+   falling back to the root defaults until this surface publishes its first
+   measurement. See surface-vars.ts. */
+[data-chat-surface] {
+  --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 }
 
 /* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.
@@ -1789,35 +1862,14 @@ text-* variant utilities. */ .btn-arc {
 
 /* Pet generation progress bar — determinate (hatch rows: done/total) or         */
 /* indeterminate (drafts, which return together so a % would just snap).         */
-.pet-progress {
-  position: relative;
-  height: 0.25rem;
-  width: 100%;
-  overflow: hidden;
-  border-radius: 9999px;
-  background: color-mix(in srgb, var(--ui-accent) 15%, transparent);
-}
-
-.pet-progress__fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  height: 100%;
-  border-radius: 9999px;
-  background: var(--ui-accent);
-  transition: width 320ms ease;
-}
-
-.pet-progress__indeterminate {
-  position: absolute;
-  top: 0;
-  bottom: 0;
+/* Sliding indeterminate block for the `accent` Progress variant (pet hatch
+   flow). Color/positioning come from the primitive; this owns the animation. */
+.progress-slide {
   width: 40%;
-  border-radius: 9999px;
-  background: var(--ui-accent);
-  animation: pet-progress-slide 1.15s ease-in-out infinite;
+  animation: progress-slide 1.15s ease-in-out infinite;
 }
 
-@keyframes pet-progress-slide {
+@keyframes progress-slide {
   0% {
     left: -42%;
   }
@@ -1827,7 +1879,7 @@ text-* variant utilities. */ .btn-arc {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pet-progress__indeterminate {
+  .progress-slide {
     animation: none;
     left: 0;
     width: 100%;

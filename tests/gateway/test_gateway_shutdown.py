@@ -119,6 +119,26 @@ async def test_gateway_stop_drains_running_agents_before_disconnect():
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_cancels_secondary_reconnects_before_session_drain():
+    runner, _adapter = make_restart_runner()
+    order: list[str] = []
+
+    async def _cancel_secondary_reconnects() -> None:
+        order.append("secondary_reconnect_cancel")
+
+    async def _notify_sessions() -> None:
+        order.append("notify_sessions")
+
+    runner._cancel_secondary_profile_reconnect_tasks = _cancel_secondary_reconnects
+    runner._notify_active_sessions_of_shutdown = _notify_sessions
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert order[:2] == ["secondary_reconnect_cancel", "notify_sessions"]
+
+
+@pytest.mark.asyncio
 async def test_gateway_stop_interrupts_after_drain_timeout():
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05

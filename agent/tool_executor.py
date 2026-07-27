@@ -53,6 +53,28 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+def _ensure_file_checkpoint(
+    agent,
+    function_name: str,
+    function_args: dict,
+    effective_task_id: str,
+) -> None:
+    """Checkpoint the same workspace path that the file tool will mutate."""
+    file_path = function_args.get("path", "")
+    if not file_path:
+        return
+
+    # File tools resolve relative paths against the task's live/session cwd,
+    # which can differ from the Hermes process cwd (notably in Docker).  Resolve
+    # through that same path pipeline before asking the checkpoint manager to
+    # discover the project root.
+    from tools.file_tools import _resolve_path_for_task
+
+    resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
+    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
+    agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+
+
 def _budget_for_agent(agent) -> BudgetConfig:
     """Resolve a tool-result BudgetConfig scaled to the agent's context window.
 
@@ -409,8 +431,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
-                        function_name = _underlying
-                        function_args = _underlying_args
+                        # Probe-validate before unwrapping (ironclaw#5149):
+                        # missing required args return the parameter schema
+                        # instead of dispatching into an opaque failure.
+                        _probe_err = _ts.validate_deferred_call_args(_underlying, _underlying_args)
+                        if _probe_err is not None:
+                            _ts_scope_block = _probe_err
+                        else:
+                            function_name = _underlying
+                            function_args = _underlying_args
                     else:
                         _ts_scope_block = json.dumps({
                             "error": (
@@ -502,10 +531,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             # Checkpoint for file-mutating tools
             if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
                 try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
-                        work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                    _ensure_file_checkpoint(
+                        agent,
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                    )
                 except Exception:
                     pass
 
@@ -940,7 +971,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
         agent._current_tool = None
-        agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
+        _status_suffix = " (error)" if is_error else ""
+        agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         if not blocked and agent.tool_complete_callback:
             try:
@@ -1088,8 +1120,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
-                        function_name = _underlying
-                        function_args = _underlying_args
+                        # Probe-validate before unwrapping (ironclaw#5149):
+                        # missing required args return the parameter schema
+                        # instead of dispatching into an opaque failure.
+                        _probe_err = _ts.validate_deferred_call_args(_underlying, _underlying_args)
+                        if _probe_err is not None:
+                            # This path wraps _block_msg in {"error": ...} —
+                            # flatten the probe payload to one plain string.
+                            try:
+                                _probe = json.loads(_probe_err)
+                                _ts_scope_block = (
+                                    f"{_probe.get('error', '')} Parameters schema: "
+                                    f"{json.dumps(_probe.get('parameters', {}), ensure_ascii=False)}. "
+                                    f"{_probe.get('hint', '')}"
+                                ).strip()
+                            except Exception:
+                                _ts_scope_block = _probe_err
+                        else:
+                            function_name = _underlying
+                            function_args = _underlying_args
                     else:
                         _ts_scope_block = (
                             f"'{_underlying}' is not available in this session. "
@@ -1188,12 +1237,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Checkpoint: snapshot working dir before file-mutating tools
         if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
             try:
-                file_path = function_args.get("path", "")
-                if file_path:
-                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
-                    agent._checkpoint_mgr.ensure_checkpoint(
-                        work_dir, f"before {function_name}"
-                    )
+                _ensure_file_checkpoint(
+                    agent,
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                )
             except Exception:
                 pass  # never block tool execution
 
@@ -1335,6 +1384,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 return _clarify_tool(
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
+                    multi_select=next_args.get("multi_select", False),
                     callback=agent.clarify_callback,
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
@@ -1631,7 +1681,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
         agent._current_tool = None
-        agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+        _status_suffix = " (error)" if _is_error_result else ""
+        agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
         if agent.verbose_logging:
             logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")

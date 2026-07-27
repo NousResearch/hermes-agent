@@ -130,7 +130,7 @@ halo).
 
 ## Going deeper — the cua-driver skill pack
 
-Hermes intentionally keeps its skill (`skills/computer-use/SKILL.md`)
+Hermes intentionally keeps its skill (`skills/autonomous-ai-agents/computer-use/SKILL.md`)
 focused on the Hermes-side `computer_use` action vocabulary — the
 single source of truth the agent loads. For the deeper material —
 platform-specific deep dives, recording semantics, browser page
@@ -449,7 +449,7 @@ autostart pattern — see
 
 ## See also
 
-- **Hermes-side skill** — `skills/computer-use/SKILL.md` — teaches the
+- **Hermes-side skill** — `skills/autonomous-ai-agents/computer-use/SKILL.md` — teaches the
   Hermes `computer_use` action vocabulary; this is what the agent loads.
 - **cua-driver skill pack** — for platform-specific deep dives
   (macOS no-foreground contract, Windows UIA + Session 0, Linux AT-SPI

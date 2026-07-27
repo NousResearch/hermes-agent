@@ -135,15 +135,17 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     llm_def = LLM_PROVIDERS[llm_id]
     llm_model = flags.get("oss_llm_model") or llm_def["default_model"]
     llm_config: dict[str, Any] = {"model": llm_model}
-    if "default_url" in llm_def:
-        llm_config["ollama_base_url"] = flags.get("oss_llm_url") or llm_def["default_url"]
+    llm_url = flags.get("oss_llm_url") or llm_def.get("default_url")
+    if llm_url and llm_def.get("base_url_key"):
+        llm_config[llm_def["base_url_key"]] = llm_url
 
     embedder_id = flags.get("oss_embedder", "openai")
     embedder_def = EMBEDDER_PROVIDERS[embedder_id]
     embedder_model = flags.get("oss_embedder_model") or embedder_def["default_model"]
     embedder_config: dict[str, Any] = {"model": embedder_model}
-    if "default_url" in embedder_def:
-        embedder_config["ollama_base_url"] = flags.get("oss_embedder_url") or embedder_def["default_url"]
+    embedder_url = flags.get("oss_embedder_url") or embedder_def.get("default_url")
+    if embedder_url and embedder_def.get("base_url_key"):
+        embedder_config[embedder_def["base_url_key"]] = embedder_url
     dims = KNOWN_DIMS.get(embedder_model)
     if dims:
         embedder_config["embedding_dims"] = dims
@@ -191,7 +193,14 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        # Read as UTF-8 (BOM-tolerant), matching the canonical .env readers in
+        # hermes_cli/config.py. read_text() with no encoding falls back to the
+        # system locale (cp1252/GBK on Windows): it mangles or crashes on
+        # non-ASCII values while copying existing lines through, and a BOM'd
+        # first line would fail the key match and get duplicated.
+        existing_lines = env_path.read_text(
+            encoding="utf-8-sig"
+        ).splitlines()
 
     updated_keys: set[str] = set()
     new_lines: list[str] = []
@@ -206,7 +215,7 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
         if k not in updated_keys:
             new_lines.append(f"{k}={v}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def _save_mem0_json(hermes_home: str, data: dict) -> None:
@@ -219,7 +228,7 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
         except Exception:
             pass
     existing.update(data)
-    config_path.write_text(json.dumps(existing, indent=2) + "\n")
+    config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -239,7 +248,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text())
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -360,7 +369,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text())
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -491,7 +500,12 @@ def _prompt_api_key(label: str, env_var: str, hermes_home: str) -> str:
     if not existing:
         env_path = Path(hermes_home) / ".env"
         if env_path.exists():
-            for line in env_path.read_text().splitlines():
+            # BOM-tolerant read matching the canonical .env readers in
+            # hermes_cli/config.py; a Notepad BOM on the first line would
+            # otherwise defeat the startswith() key match below.
+            for line in env_path.read_text(
+                encoding="utf-8-sig", errors="replace"
+            ).splitlines():
                 if line.startswith(f"{env_var}="):
                     existing = line.split("=", 1)[1].strip()
                     break
@@ -523,7 +537,7 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
         try:
             result = subprocess.run(
                 ["docker", "inspect", _PGVECTOR_CONTAINER, "--format", "{{.State.Status}}"],
-                capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and "exited" in result.stdout:
                 print(f"  Found stopped container '{_PGVECTOR_CONTAINER}', restarting...")

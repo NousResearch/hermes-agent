@@ -1315,6 +1315,31 @@ class TestTypingLifecycle:
         assert adapter._typing_messages["spaces/S"] == "spaces/S/messages/THINK"
 
     @pytest.mark.asyncio
+    async def test_send_typing_uses_configured_status_text(self, adapter):
+        # typing_status_text replaces the default working-state marker text.
+        adapter.config.typing_status_text = "is pouncing… 🐾"
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True,
+                                        "message_id": "spaces/S/messages/THINK",
+                                        "error": None})()
+        )
+        await adapter.send_typing("spaces/S")
+        body = adapter._create_message.await_args.args[1]
+        assert body["text"] == "is pouncing… 🐾"
+
+    @pytest.mark.asyncio
+    async def test_send_typing_default_status_text(self, adapter):
+        # Unset config keeps the built-in marker text.
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True,
+                                        "message_id": "spaces/S/messages/THINK",
+                                        "error": None})()
+        )
+        await adapter.send_typing("spaces/S")
+        body = adapter._create_message.await_args.args[1]
+        assert body["text"] == "Hermes is thinking…"
+
+    @pytest.mark.asyncio
     async def test_send_typing_skips_when_already_tracking(self, adapter):
         adapter._typing_messages["spaces/S"] = "spaces/S/messages/EXIST"
         adapter._create_message = AsyncMock()

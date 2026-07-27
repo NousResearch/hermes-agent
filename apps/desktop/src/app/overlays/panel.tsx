@@ -5,10 +5,11 @@ import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
+import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { OverlayView } from './overlay-view'
+import { OVERLAY_TOP_CLEARANCE, OverlayView } from './overlay-view'
 
 // Overlay "panel" primitive — the centered, capped card + framed chrome lifted
 // straight from the trace / agents overlay so every non-settings overlay (cron,
@@ -46,13 +47,9 @@ export function Panel({
   return (
     <OverlayView
       closeLabel={closeLabel}
-      // Top pad aligns the header title's center with the floating close button
-      // (which sits at 0.1875rem + titlebar/2, -translate-y-1/2). The X is
-      // absolute so it costs no layout space — the header rides up next to it.
-      contentClassName={cn(
-        'flex h-full min-h-0 flex-col px-4 pb-4 pt-[calc(var(--titlebar-height)/2-0.4375rem)] sm:px-5',
-        contentClassName
-      )}
+      // Header title rides up next to the floating close button — see
+      // OVERLAY_TOP_CLEARANCE, the shared clearance every overlay column uses.
+      contentClassName={cn('flex h-full min-h-0 flex-col px-4 pb-4 sm:px-5', OVERLAY_TOP_CLEARANCE, contentClassName)}
       onClose={onClose}
       rootClassName={cn('flex h-full w-full flex-col', className)}
     >
@@ -70,7 +67,11 @@ interface PanelHeaderProps {
 
 export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
   return (
-    <header className="mb-3 flex shrink-0 items-start justify-between gap-3">
+    // The overlay's close (X) is absolutely positioned at right-3 and costs no
+    // layout space, so header actions would otherwise slide right up against it.
+    // Reserve clearance (button footprint from the card edge + a small gap) on
+    // the right whenever actions are present.
+    <header className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
@@ -216,17 +217,18 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          aria-label={label}
-          className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
-          size="icon"
-          title={label}
-          variant="ghost"
-        >
-          <Codicon name="kebab-vertical" size="0.875rem" />
-        </Button>
-      </DropdownMenuTrigger>
+      <Tip label={label}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-label={label}
+            className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="kebab-vertical" size="0.875rem" />
+          </Button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" className="w-40" sideOffset={6}>
         {items.map(item => (
           <DropdownMenuItem
@@ -353,38 +355,45 @@ export function PanelAddButton({
   onClick: () => void
 }) {
   return (
-    <Button
-      aria-label={label}
-      className="h-7 w-full shrink-0 justify-center text-muted-foreground/70 hover:bg-(--ui-row-hover-background) hover:text-foreground"
-      onClick={onClick}
-      size="sm"
-      title={label}
-      variant="ghost"
-    >
-      <Codicon name={icon} size="0.875rem" />
-    </Button>
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className="h-7 w-full shrink-0 justify-center text-muted-foreground/70 hover:bg-(--ui-row-hover-background) hover:text-foreground"
+        onClick={onClick}
+        size="sm"
+        variant="ghost"
+      >
+        <Codicon name={icon} size="0.875rem" />
+      </Button>
+    </Tip>
   )
 }
 
-// Visible ghost action for a detail header (cron pause/resume/trigger, …).
+// Visible action for a detail header (cron pause/resume/trigger, …). Ghost by
+// default; `primary` promotes the header's main action to a filled button.
 export function PanelAction({
   children,
   disabled,
   icon,
-  onClick
+  onClick,
+  primary
 }: {
   children: ReactNode
   disabled?: boolean
   icon: string
   onClick: () => void
+  primary?: boolean
 }) {
   return (
     <Button
-      className="gap-1.5 text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-foreground"
+      className={cn(
+        'gap-1.5',
+        !primary && 'text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-foreground'
+      )}
       disabled={disabled}
       onClick={onClick}
       size="sm"
-      variant="ghost"
+      variant={primary ? 'default' : 'ghost'}
     >
       <Codicon name={icon} size="0.875rem" />
       {children}

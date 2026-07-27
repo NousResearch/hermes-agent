@@ -4,10 +4,12 @@ import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
   hydrateFullConfig,
+  type McpRevState,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
-  normalizeStatusBar
+  normalizeStatusBar,
+  syncMcpReload
 } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
@@ -369,6 +371,103 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     // bell is still applied (defaults to false on null), so the setter
     // runs — we specifically only skip voiceRecordKey.
     expect(setBell).toHaveBeenCalledWith(false)
+  })
+})
+
+// Review on #20379 (finding 1): an MCP config revision must never be acked
+// before the server confirms it was LOADED. The old poll advanced its
+// accepted revision first and fired reload.mcp second — a reload that failed
+// (quietRpc → null) left the revision recorded as applied, and no subsequent
+// poll retried it until an unrelated MCP edit.
+describe('syncMcpReload (revision-aware ack)', () => {
+  const gwOk = (payload: unknown) =>
+    ({ request: vi.fn(() => Promise.resolve(payload)), on: vi.fn(), off: vi.fn() }) as any
+
+  const freshState = (accepted = 'rev-a'): McpRevState => ({ accepted, inFlight: false })
+
+  it('advances accepted only after the server confirms the reload', async () => {
+    const gw = gwOk({ status: 'reloaded', loaded_rev: 'rev-b' })
+    const state = freshState()
+    const onReloaded = vi.fn()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded)
+
+    expect(gw.request).toHaveBeenCalledWith('reload.mcp', { confirm: true, rev: 'rev-b', session_id: 's1' })
+    expect(state.accepted).toBe('rev-b')
+    expect(onReloaded).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT advance accepted when the reload RPC fails — next poll retries', async () => {
+    const gw = { request: vi.fn(() => Promise.reject(new Error('flapping server'))), on: vi.fn(), off: vi.fn() } as any
+    const state = freshState()
+    const onReloaded = vi.fn()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded)
+
+    // The exact failure sequence from the review: reload fails, revision
+    // must remain un-acked so the next tick retries it.
+    expect(state.accepted).toBe('rev-a')
+    expect(state.inFlight).toBe(false)
+    expect(onReloaded).not.toHaveBeenCalled()
+
+    // Next poll tick: the server recovered — the SAME revision goes through.
+    gw.request = vi.fn(() => Promise.resolve({ status: 'reloaded', loaded_rev: 'rev-b' }))
+    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded)
+    expect(state.accepted).toBe('rev-b')
+    expect(onReloaded).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not advance on confirm_required (reload did not happen)', async () => {
+    const gw = gwOk({ message: 'confirm first', status: 'confirm_required' })
+    const state = freshState()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state)
+
+    expect(state.accepted).toBe('rev-a')
+  })
+
+  it('records the server-reported loaded_rev, not the requested rev', async () => {
+    // A config edit raced the reload: the server re-hashed after discovery
+    // and loaded rev-c. Recording rev-c (not rev-b) makes the next poll a
+    // no-op instead of an immediate redundant reload.
+    const gw = gwOk({ status: 'reloaded', loaded_rev: 'rev-c' })
+    const state = freshState()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state)
+
+    expect(state.accepted).toBe('rev-c')
+  })
+
+  it('is a no-op when the revision is already accepted or empty', async () => {
+    const gw = gwOk({ status: 'reloaded' })
+    const state = freshState()
+
+    await syncMcpReload(gw, 's1', 'rev-a', state)
+    await syncMcpReload(gw, 's1', '', state)
+
+    expect(gw.request).not.toHaveBeenCalled()
+  })
+
+  it('does not stack requests while one is in flight', async () => {
+    let resolveFirst!: (v: unknown) => void
+
+    const gw = {
+      request: vi.fn(() => new Promise(res => (resolveFirst = res))),
+      on: vi.fn(),
+      off: vi.fn()
+    } as any
+
+    const state = freshState()
+
+    const first = syncMcpReload(gw, 's1', 'rev-b', state)
+
+    // Second tick while the first RPC is outstanding: swallowed.
+    await syncMcpReload(gw, 's1', 'rev-b', state)
+    expect(gw.request).toHaveBeenCalledTimes(1)
+
+    resolveFirst({ status: 'reloaded', loaded_rev: 'rev-b' })
+    await first
+    expect(state.accepted).toBe('rev-b')
   })
 })
 

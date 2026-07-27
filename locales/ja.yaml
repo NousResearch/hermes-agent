@@ -53,6 +53,7 @@ gateway:
     more:                  "... 他に {count} 件"
     running_processes:     "**実行中のバックグラウンドプロセス:** {count}"
     async_jobs:            "**ゲートウェイ非同期ジョブ:** {count}"
+    background_delegations: "**バックグラウンド委任:** {count}"
     none:                  "アクティブなエージェントや実行中のタスクはありません。"
     state_starting:        "起動中"
     state_running:         "実行中"
@@ -124,6 +125,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\n現在のモード: `{mode}`\\n\\nオプションを選択:"
+    choice_fast:           "fast — Priority Processing オン"
+    choice_normal:         "normal — 標準処理"
 
   footer:
     status:                "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"
@@ -194,6 +198,11 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` はサポートされていません。グローバルのデフォルトを変更するには `/reasoning <level> --global` を使用してください。"
     reset_done:                "🧠 ✓ セッションの推論オーバーライドをクリアしました。グローバル設定にフォールバックします。"
     unknown_arg:               "⚠️ 不明な引数: `{arg}`\n\n**有効なレベル:** none, minimal, low, medium, high, xhigh, max, ultra\n**表示:** show, hide\n**永続化:** セッションを越えて保存するには `--global` を追加"
+    picker_title:              "🧠 **推論設定**\\n\\n**強度:** `{level}`\\n**スコープ:** {scope}\\n**表示:** {display}\\n\\nオプションを選択:"
+    choice_none:               "none — 推論を無効化"
+    choice_reset:              "reset — セッション上書きをクリア"
+    choice_show:               "返信に推論を表示"
+    choice_hide:               "返信の推論を非表示"
     set_global:                "🧠 ✓ 推論強度を `{effort}` に設定しました (設定に保存)\n_(次のメッセージから有効)_"
     set_global_save_failed:    "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 設定の保存に失敗)\n_(次のメッセージから有効)_"
     set_session:               "🧠 ✓ 推論強度を `{effort}` に設定しました (セッションのみ — 永続化するには `--global` を追加)\n_(次のメッセージから有効)_"
@@ -270,9 +279,32 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ チェックポイント {hash} に復元しました: {reason}\nロールバック前のスナップショットが自動的に保存されました。"
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "チェックポイントが有効になっていないため、セッションのベースラインがありません。\nconfig.yaml で有効にしてください:\n```\ncheckpoints:\n  enabled: true\n```\n通常の /diff は引き続き使えます — git を直接使用します。"
+    no_changes:            "変更はありません。"
+    failed:                "{error}"
+
   set_home:
     save_failed:           "ホームチャンネルを保存できませんでした: {error}"
     success:               "✅ ホームチャンネルを **{name}** (ID: {chat_id}) に設定しました。\nCron ジョブとプラットフォーム間メッセージはここに配信されます。"
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
 
   status:
     header:                "📊 **Hermes ゲートウェイ状態**"
@@ -290,7 +322,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**トークン:** {tokens}"
+    tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
     agent_running:         "**エージェント実行中:** {state}"
     state_yes:             "はい ⚡"
     state_no:              "いいえ"

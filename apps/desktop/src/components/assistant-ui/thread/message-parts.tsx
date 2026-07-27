@@ -14,11 +14,20 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { useI18n } from '@/i18n'
+import { generatedImageFromResult } from '@/lib/generated-images'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 
-const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
+const ImageGenerateTool: FC<ToolCallMessagePartProps> = props => {
+  const { args, result } = props
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
+
+  // The image card owns successful generations. Failed or malformed results
+  // still need the normal tool row: it extracts the error text and gives the
+  // user an honest, expandable failure rather than silently dropping the call.
+  if (result !== undefined && !generatedImageFromResult(result)) {
+    return <ToolFallback {...props} />
+  }
 
   return (
     <div className="mt-1.5">
@@ -65,9 +74,7 @@ const ThinkingDisclosure: FC<{
   const isPreview = pending && userOpen === null
 
   // While the preview is live, pin the scroll container to the bottom on
-  // every content growth so the latest tokens are always visible. Combined
-  // with the top mask in styles.css, this reads as text settling in from
-  // below while older lines fade out at the top.
+  // every content growth so the latest tokens are always visible.
   useEffect(() => {
     if (!isPreview) {
       return
@@ -84,7 +91,8 @@ const ThinkingDisclosure: FC<{
       el.scrollTop = el.scrollHeight
     }
 
-    pin()
+    // No sync pin(): the observer's guaranteed initial delivery runs it with
+    // layout already clean (still before paint), avoiding a forced reflow.
     const observer = new ResizeObserver(pin)
     observer.observe(content)
 
@@ -124,7 +132,7 @@ const ThinkingDisclosure: FC<{
             // and inherits the disclosure-level opacity fade defined in
             // styles.css (~0.67 at rest, 1 on hover/focus).
             'mt-0.5 w-full min-w-0 max-w-full overflow-hidden wrap-anywhere pb-1',
-            isPreview && 'thinking-preview max-h-40'
+            isPreview && 'max-h-40'
           )}
           ref={scrollRef}
         >
@@ -190,6 +198,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
     <MarkdownTextContent
       containerClassName="text-xs leading-snug text-muted-foreground/85"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+      disableArtifacts
       isRunning={status.type === 'running' || messageRunning}
       text={text.trimStart()}
     />

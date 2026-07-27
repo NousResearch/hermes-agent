@@ -70,12 +70,14 @@ def _make_compressor():
     c.last_rough_tokens_when_real_prompt_fit = 0
     c.awaiting_real_usage_after_compression = False
     c._previous_summary = None
+    c._summary_has_user_turn = None
     return c
 
 
 def _simulate_cron_session_state(c):
     """Simulate per-session state that a cron compaction would leave behind."""
     c._previous_summary = "Cron session summary that must not leak"
+    c._summary_has_user_turn = False
     c._last_summary_error = "Cron session summary error"
     c._last_summary_dropped_count = 5
     c._last_summary_fallback_used = True
@@ -166,6 +168,7 @@ def test_on_session_end_matches_on_session_reset_surface():
 
     per_session_attrs = [
         "_previous_summary",
+        "_summary_has_user_turn",
         "_last_summary_error",
         "_last_summary_dropped_count",
         "_last_summary_fallback_used",

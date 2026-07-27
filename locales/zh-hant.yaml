@@ -53,6 +53,7 @@ gateway:
     more:                  "... 還有 {count} 個"
     running_processes:     "**執行中的背景程序：** {count}"
     async_jobs:            "**閘道非同步任務：** {count}"
+    background_delegations: "**背景委派：** {count}"
     none:                  "沒有作用中的代理或執行中的任務。"
     state_starting:        "啟動中"
     state_running:         "執行中"
@@ -124,6 +125,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\n目前模式：`{mode}`\\n\\n請選擇："
+    choice_fast:           "fast — 開啟 Priority Processing"
+    choice_normal:         "normal — 標準處理"
 
   footer:
     status:                "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"
@@ -194,6 +198,11 @@ gateway:
     reset_global_unsupported:  "⚠️ 不支援 `/reasoning reset --global`。請使用 `/reasoning <level> --global` 變更全域預設值。"
     reset_done:                "🧠 ✓ 已清除本工作階段的推理覆寫；回退至全域設定。"
     unknown_arg:               "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh, max, ultra\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
+    picker_title:              "🧠 **推理設定**\\n\\n**強度：** `{level}`\\n**範圍：** {scope}\\n**顯示：** {display}\\n\\n請選擇："
+    choice_none:               "none — 停用推理"
+    choice_reset:              "reset — 清除工作階段覆寫"
+    choice_show:               "在回覆中顯示推理"
+    choice_hide:               "在回覆中隱藏推理"
     set_global:                "🧠 ✓ 推理強度已設定為 `{effort}`（已儲存到設定）\n_（下一則訊息生效）_"
     set_global_save_failed:    "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 設定儲存失敗）\n_（下一則訊息生效）_"
     set_session:               "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 加上 `--global` 可持久化）\n_（下一則訊息生效）_"
@@ -270,9 +279,32 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ 已還原至檢查點 {hash}：{reason}\n已自動儲存回復前的快照。"
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "檢查點未啟用，因此沒有工作階段基準線。\n在 config.yaml 中啟用:\n```\ncheckpoints:\n  enabled: true\n```\n一般 /diff 仍然可用 — 它直接使用 git。"
+    no_changes:            "沒有變更。"
+    failed:                "{error}"
+
   set_home:
     save_failed:           "無法儲存主頻道：{error}"
     success:               "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
 
   status:
     header:                "📊 **Hermes 閘道狀態**"
@@ -290,7 +322,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**Token 數：** {tokens}"
+    tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
     agent_running:         "**代理執行中：** {state}"
     state_yes:             "是 ⚡"
     state_no:              "否"

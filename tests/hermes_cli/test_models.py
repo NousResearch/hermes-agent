@@ -683,6 +683,44 @@ class TestLocalOllamaModelDiscovery:
             assert _credential_fingerprint("ollama")
         probe_ollama.assert_not_called()
 
+    def test_ollama_cache_fingerprint_changes_when_configured_api_key_changes(self):
+        from hermes_cli.models import _credential_fingerprint
+
+        provider_config = {
+            "base_url": "http://127.0.0.1:11434",
+            "api_key": "ollama-key-a",
+        }
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"providers": {"ollama": provider_config}},
+        ):
+            first = _credential_fingerprint("ollama")
+            provider_config["api_key"] = "ollama-key-b"
+            second = _credential_fingerprint("ollama")
+
+        assert first != second
+
+    def test_ollama_cache_fingerprint_changes_when_key_env_value_changes(self, monkeypatch):
+        from hermes_cli.models import _credential_fingerprint
+
+        monkeypatch.setenv("TEST_OLLAMA_API_KEY", "ollama-key-a")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "providers": {
+                    "ollama": {
+                        "base_url": "http://127.0.0.1:11434",
+                        "key_env": "TEST_OLLAMA_API_KEY",
+                    }
+                }
+            },
+        ):
+            first = _credential_fingerprint("ollama")
+            monkeypatch.setenv("TEST_OLLAMA_API_KEY", "ollama-key-b")
+            second = _credential_fingerprint("ollama")
+
+        assert first != second
+
     def test_clear_provider_models_cache_clears_ollama_native_tags_cache(self):
         import hermes_cli.models as models
 

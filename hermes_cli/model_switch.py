@@ -1641,6 +1641,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    ollama_headers: dict[str, str] = {}
     validation_headers: dict[str, str] = {}
     suppress_ollama_headers = False
 
@@ -1712,10 +1713,28 @@ def switch_model(
         if current_provider == "custom" and current_base_url:
             try:
                 from hermes_cli.models import should_use_ollama_native_catalog
+                ollama_headers = _get_ollama_request_headers()
+                ollama_config = _get_provider_config_dict("ollama")
+                configured_ollama_base = str(
+                    ollama_config.get("base_url")
+                    or ollama_config.get("api")
+                    or ollama_config.get("url")
+                    or ""
+                ).strip()
+                if configured_ollama_base and not _same_ollama_native_root(
+                    current_base_url, configured_ollama_base
+                ):
+                    ollama_headers = {}
+                    suppress_ollama_headers = True
+                elif not configured_ollama_base:
+                    # Without an explicit configured root there is no safe
+                    # origin to associate provider-level Ollama headers with.
+                    ollama_headers = {}
+                    suppress_ollama_headers = True
                 keep_current_ollama_endpoint = should_use_ollama_native_catalog(
                     current_provider,
                     current_base_url,
-                    headers=_get_ollama_request_headers(),
+                    headers=ollama_headers,
                 )
             except (ImportError, OSError, RuntimeError, TypeError, ValueError):
                 keep_current_ollama_endpoint = False
@@ -1727,7 +1746,7 @@ def switch_model(
             api_key = current_api_key or "no-key-required"
             base_url = current_base_url
             api_mode = determine_api_mode(current_provider, base_url)
-            validation_headers = _get_ollama_request_headers()
+            validation_headers = ollama_headers
         else:
             try:
                 runtime = resolve_runtime_provider(

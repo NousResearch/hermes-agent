@@ -3570,6 +3570,11 @@ def _credential_fingerprint(provider: str) -> str:
             "providers.ollama.base_url="
             f"{provider_cfg.get('base_url', '') or provider_cfg.get('api', '') or provider_cfg.get('url', '')}"
         )
+        parts.append(f"providers.ollama.api_key={provider_cfg.get('api_key', '')}")
+        key_env = provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or ""
+        parts.append(f"providers.ollama.key_env={key_env}")
+        if key_env:
+            parts.append(f"{key_env}={_os.environ.get(str(key_env), '')}")
         model_cfg = _get_model_config_dict()
         parts.append(
             "model.provider="

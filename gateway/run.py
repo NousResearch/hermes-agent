@@ -326,8 +326,7 @@ def _non_conversational_metadata(
 
 def _seed_hygiene_system_prompt(
     agent: Any,
-    session_db: Any,
-    session_id: str,
+    session_row: Optional[Dict[str, Any]],
 ) -> bool:
     """Keep gateway hygiene from rebuilding a live session's system prompt.
 
@@ -340,22 +339,10 @@ def _seed_hygiene_system_prompt(
     turn will rebuild either form with its fully initialized providers.
     """
     stored_prompt = ""
-    if session_db is not None and session_id:
-        try:
-            session_row = session_db.get_session(session_id)
-            if isinstance(session_row, dict):
-                raw_prompt = session_row.get("system_prompt")
-                if isinstance(raw_prompt, str) and raw_prompt.strip():
-                    stored_prompt = raw_prompt
-        except Exception as exc:
-            logger.warning(
-                "Session hygiene could not restore the system prompt for "
-                "session %s: %s. Preserving an empty prompt so the live "
-                "turn rebuilds it with its configured providers.",
-                session_id,
-                exc,
-                exc_info=True,
-            )
+    if isinstance(session_row, dict):
+        raw_prompt = session_row.get("system_prompt")
+        if isinstance(raw_prompt, str) and raw_prompt.strip():
+            stored_prompt = raw_prompt
 
     agent._cached_system_prompt = stored_prompt
     return bool(stored_prompt)
@@ -13671,6 +13658,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             ]
 
                             if len(_hyg_msgs) >= 4:
+                                try:
+                                    _hyg_session_row = await self._session_db.get_session(
+                                        session_entry.session_id
+                                    )
+                                except Exception as exc:
+                                    _hyg_session_row = None
+                                    logger.warning(
+                                        "Session hygiene could not restore the system "
+                                        "prompt for session %s: %s. Preserving an empty "
+                                        "prompt so the live turn rebuilds it with its "
+                                        "configured providers.",
+                                        session_entry.session_id,
+                                        exc,
+                                        exc_info=True,
+                                    )
                                 _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
@@ -13684,8 +13686,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 )
                                 _seed_hygiene_system_prompt(
                                     _hyg_agent,
-                                    _hyg_session_db,
-                                    session_entry.session_id,
+                                    _hyg_session_row,
                                 )
                                 # If compression must rebuild instead of retaining
                                 # the cached prompt, make the persisted result

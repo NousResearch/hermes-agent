@@ -833,6 +833,107 @@ class TestWebServerEndpoints:
         ]
         assert calls[-1][0] == ["brv", "--version"]
 
+    def test_post_memory_provider_setup_routes_pip_through_lazy_deps(self, monkeypatch):
+        """NS-605: dashboard pip installs must use the environment-aware
+        lazy_deps pipeline (durable-target redirect on immutable hosted
+        images), never a direct `pip install --python sys.executable`."""
+        import subprocess as _subprocess
+
+        import hermes_cli.web_server as web_server
+        from tools import lazy_deps as ld
+
+        # honcho declares pip_dependencies: [honcho-ai]; force it missing.
+        monkeypatch.setattr(web_server, "_dependency_importable", lambda dep: False)
+
+        installed = []
+
+        def fake_install_specs(specs, *, timeout=300):
+            installed.append(tuple(specs))
+            return ld.InstallSpecsResult(
+                ok=True, command="uv pip install --target /opt/data/lazy-packages honcho-ai",
+                stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(ld, "install_specs", fake_install_specs)
+
+        # Any direct pip/uv subprocess from the memory-provider pip path is
+        # a regression; external-dep checks may still run subprocess, so only
+        # trip on pip-flavored commands.
+        real_run = _subprocess.run
+
+        def guarded_run(command, **kwargs):
+            flat = command if isinstance(command, str) else " ".join(map(str, command))
+            assert "pip install" not in flat, f"direct pip call leaked: {flat}"
+            return real_run(command, **kwargs)
+
+        monkeypatch.setattr(web_server.subprocess, "run", guarded_run)
+
+        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
+        assert pip_rows and pip_rows[0]["status"] == "installed"
+        assert "--target /opt/data/lazy-packages" in pip_rows[0]["command"]
+        assert installed == [("honcho-ai",)]
+
+    def test_post_memory_provider_setup_reports_blocked_install_reason(self, monkeypatch):
+        """When installs are gated off (sealed venv, no durable target),
+        the dashboard surfaces the actionable reason instead of a raw
+        permission error."""
+        import hermes_cli.web_server as web_server
+        from tools import lazy_deps as ld
+
+        monkeypatch.setattr(web_server, "_dependency_importable", lambda dep: False)
+        monkeypatch.setattr(
+            ld, "install_specs",
+            lambda specs, *, timeout=300: ld.InstallSpecsResult(
+                ok=False, blocked=True,
+                reason=(
+                    "runtime installs are disabled on this deployment: the "
+                    "agent environment is immutable and no writable install "
+                    "target is configured (HERMES_LAZY_INSTALL_TARGET)"
+                ),
+            ),
+        )
+
+        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
+        assert pip_rows and pip_rows[0]["status"] == "failed"
+        assert "immutable" in pip_rows[0]["stderr"]
+
+    def test_post_memory_provider_setup_recheck_clears_stale_missing_state(self, monkeypatch):
+        """After a successful install, the same response's status block must
+        reflect the new availability (no restart, no stale 'missing deps')."""
+        import hermes_cli.web_server as web_server
+        from tools import lazy_deps as ld
+
+        installed_now = {"flag": False}
+
+        def fake_importable(dep):
+            return installed_now["flag"]
+
+        monkeypatch.setattr(web_server, "_dependency_importable", fake_importable)
+
+        def fake_install_specs(specs, *, timeout=300):
+            installed_now["flag"] = True  # install makes the package importable
+            return ld.InstallSpecsResult(ok=True, command="uv pip install honcho-ai")
+
+        monkeypatch.setattr(ld, "install_specs", fake_install_specs)
+
+        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        status = data["status"]
+        assert status is not None
+        assert status["setup"]["dependencies_installed"] is True
+
     def test_post_unknown_memory_provider_setup_returns_404(self):
         resp = self.client.post("/api/memory/providers/nope/setup", json={"values": {}})
 

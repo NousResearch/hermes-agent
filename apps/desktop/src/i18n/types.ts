@@ -2036,6 +2036,9 @@ export interface Translations {
       toggleApprovalMode: string
       toggleBackendVersion: string
       toggleCommandCenter: string
+      toggleContextUsage: string
+      toggleRunningTimer: string
+      toggleSessionTimer: string
       toggleTerminal: string
       toggleVersion: string
       toggleWorkspace: string

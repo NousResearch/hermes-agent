@@ -493,6 +493,7 @@ export function useStatusbarItems({
         id: 'running-timer',
         label: copy.turnRunning,
         title: copy.currentTurnElapsed,
+        toggleLabel: copy.toggleRunningTimer,
         variant: 'text'
       },
       {
@@ -511,6 +512,7 @@ export function useStatusbarItems({
           />
         ),
         title: copy.openContextUsage,
+        toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
       },
       {
@@ -519,6 +521,7 @@ export function useStatusbarItems({
         id: 'session-timer',
         label: copy.session,
         title: copy.runtimeSessionElapsed,
+        toggleLabel: copy.toggleSessionTimer,
         variant: 'text'
       },
       {

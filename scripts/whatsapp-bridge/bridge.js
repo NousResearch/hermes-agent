@@ -525,8 +525,12 @@ async function startSocket() {
 
       const chatId = msg.key.remoteJid;
       const senderId = msg.key.participant || chatId;
-      const senderPn = msg.key.senderPn || '';
-      const resolvedSenderId = senderPn || senderId;
+      // Baileys v7 carries the other form of the sender here (group: key.participantAlt,
+      // DM: key.remoteJidAlt). A LID sender's phone twin makes a phone allowlist match with no
+      // lid-mapping file yet (#63415, #72529) and is the identity Python sees, so first
+      // contacts key the same session they will once the mapping exists.
+      const senderAltId = normalizeWhatsAppId(msg.key.participantAlt || msg.key.remoteJidAlt || '');
+      const resolvedSenderId = senderAltId.endsWith('@s.whatsapp.net') ? senderAltId : senderId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = resolvedSenderId.replace(/@.*/, '');
       emitDebugEvent({
@@ -629,13 +633,14 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedSender(senderId, senderPn, ALLOWED_USERS, SESSION_DIR)) {
+        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
               reason: 'allowlist_mismatch',
               chatId,
               senderId,
+              senderAltId,
             }));
           } catch {}
           continue;

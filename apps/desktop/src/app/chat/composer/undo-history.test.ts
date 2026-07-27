@@ -193,7 +193,11 @@ describe('caret offsets in composerPlainText coordinates', () => {
   })
 
   it('counts a chip as its whole @kind:value text', () => {
-    editor.append(document.createTextNode('see '), refChipElement('file', '`src/a.ts`'), document.createTextNode(' now'))
+    editor.append(
+      document.createTextNode('see '),
+      refChipElement('file', '`src/a.ts`'),
+      document.createTextNode(' now')
+    )
 
     const chipText = '@file:`src/a.ts`'
     // Caret at the very end = everything before it.

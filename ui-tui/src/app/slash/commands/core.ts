@@ -564,9 +564,7 @@ export const coreCommands: SlashCommand[] = [
       // `/focus status` reports without writing, matching the CLI surface.
       if (mode === 'status' || mode === 'show' || mode === '?') {
         return ctx.transcript.sys(
-          current
-            ? 'focus view on — only your prompt and the final response'
-            : 'focus view off'
+          current ? 'focus view on — only your prompt and the final response' : 'focus view off'
         )
       }
 
@@ -584,9 +582,7 @@ export const coreCommands: SlashCommand[] = [
 
       queueMicrotask(() =>
         ctx.transcript.sys(
-          next
-            ? 'focus view enabled — just your prompt and the final response'
-            : 'focus view disabled'
+          next ? 'focus view enabled — just your prompt and the final response' : 'focus view disabled'
         )
       )
     }

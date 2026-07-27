@@ -271,14 +271,9 @@ declare global {
       // searches that window (not the primary). `onFoundInPage` returns the
       // unsubscribe fn; the renderer wires it via `initFindInPageListener`
       // in store/find-in-page.ts and tears it down when the FindBar unmounts.
-      findInPage: (
-        query: string,
-        options?: { forward?: boolean; findNext?: boolean }
-      ) => Promise<{ count: number }>
+      findInPage: (query: string, options?: { forward?: boolean; findNext?: boolean }) => Promise<{ count: number }>
       stopFindInPage: () => Promise<void>
-      onFoundInPage: (
-        callback: (result: { activeMatchOrdinal: number; count: number }) => void
-      ) => () => void
+      onFoundInPage: (callback: (result: { activeMatchOrdinal: number; count: number }) => void) => () => void
     }
   }
 }

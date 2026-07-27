@@ -1,11 +1,6 @@
 import { type RefObject, useCallback, useEffect, useMemo } from 'react'
 
-import {
-  caretOffsetInEditor,
-  composerPlainText,
-  placeCaretAtOffset,
-  renderComposerContents
-} from '../rich-editor'
+import { caretOffsetInEditor, composerPlainText, placeCaretAtOffset, renderComposerContents } from '../rich-editor'
 import { type ComposerSnapshot, createComposerUndoHistory } from '../undo-history'
 
 interface UseComposerUndoArgs {

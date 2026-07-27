@@ -9,12 +9,7 @@ import { EventEmitter } from 'node:events'
 
 import { describe, test } from 'vitest'
 
-import {
-  formatFoundInPage,
-  installFoundInPageForwarder,
-  performFind,
-  stopFind
-} from './find-in-page'
+import { formatFoundInPage, installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 
 // Minimal webContents stub. The Electron.WebContents type is huge, so we
 // model just the slice the helpers touch (`isDestroyed`, `findInPage`,
@@ -90,10 +85,10 @@ describe('formatFoundInPage', () => {
   })
 
   test('null / undefined inputs still produce a well-formed payload', () => {
-    assert.deepEqual(
-      formatFoundInPage(null as unknown as { activeMatchOrdinal?: number; matches?: number }),
-      { activeMatchOrdinal: 0, count: 0 }
-    )
+    assert.deepEqual(formatFoundInPage(null as unknown as { activeMatchOrdinal?: number; matches?: number }), {
+      activeMatchOrdinal: 0,
+      count: 0
+    })
     assert.deepEqual(formatFoundInPage(undefined), { activeMatchOrdinal: 0, count: 0 })
   })
 })
@@ -102,33 +97,25 @@ describe('performFind', () => {
   test('forwards the query and options to webContents.findInPage', () => {
     const wc = makeFakeWebContents()
     performFind(asWC(wc), 'hello', { forward: true, findNext: false })
-    assert.deepEqual(wc.calls.find, [
-      { query: 'hello', options: { forward: true, findNext: false } }
-    ])
+    assert.deepEqual(wc.calls.find, [{ query: 'hello', options: { forward: true, findNext: false } }])
   })
 
   test('defaults forward to true when omitted', () => {
     const wc = makeFakeWebContents()
     performFind(asWC(wc), 'x', { findNext: true })
-    assert.deepEqual(wc.calls.find, [
-      { query: 'x', options: { forward: true, findNext: true } }
-    ])
+    assert.deepEqual(wc.calls.find, [{ query: 'x', options: { forward: true, findNext: true } }])
   })
 
   test('defaults findNext to false when omitted', () => {
     const wc = makeFakeWebContents()
     performFind(asWC(wc), 'x', { forward: false })
-    assert.deepEqual(wc.calls.find, [
-      { query: 'x', options: { forward: false, findNext: false } }
-    ])
+    assert.deepEqual(wc.calls.find, [{ query: 'x', options: { forward: false, findNext: false } }])
   })
 
   test('treats null / non-object options as "all defaults"', () => {
     const wc = makeFakeWebContents()
     performFind(asWC(wc), 'x', null)
-    assert.deepEqual(wc.calls.find, [
-      { query: 'x', options: { forward: true, findNext: false } }
-    ])
+    assert.deepEqual(wc.calls.find, [{ query: 'x', options: { forward: true, findNext: false } }])
   })
 
   test('coerces a non-string query to string (defensive against bad renderer payloads)', () => {
@@ -178,18 +165,14 @@ describe('installFoundInPageForwarder', () => {
     // Drive the fake's emit directly — this exercises the same code path
     // as Electron's actual `webContents.emit('found-in-page', …)`.
     wc.emit('found-in-page', {}, { activeMatchOrdinal: 2, matches: 5 })
-    assert.deepEqual(wc.calls.send, [
-      { channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 2, count: 5 } }
-    ])
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 2, count: 5 } }])
   })
 
   test('handles missing fields without throwing', () => {
     const wc = makeFakeWebContents()
     installFoundInPageForwarder(asWC(wc))
     wc.emit('found-in-page', {}, {})
-    assert.deepEqual(wc.calls.send, [
-      { channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 0, count: 0 } }
-    ])
+    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 0, count: 0 } }])
   })
 
   test('skips send when webContents is destroyed at fire time', () => {

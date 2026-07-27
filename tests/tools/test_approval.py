@@ -93,11 +93,53 @@ class TestDetectDangerousRm:
             "rm ~/projects -rf",
             "sudo rm build/ -rf",
             "rm one two three -rf",
+            'rm "/srv/data" -rf',
+            "rm 'build' -rf",
+            'rm "foo"/bar -rf',
+            r'rm "foo\"bar" -rf',
+            r'rm foo\"bar -rf',
+            'MODE=test /bin/rm "my build" -rf',
+            'rm.exe "my build" -fR',
+            "$(rm build/ -rf)",
+            "(rm build/ -rf)",
         ):
             is_dangerous, key, desc = detect_dangerous_command(cmd)
             assert is_dangerous is True, f"{cmd!r} should require approval"
-            assert "delete" in desc.lower()
+            assert desc == "recursive delete (flags after operands)"
 
+    def test_rm_operand_walk_character_budget_fails_closed_quickly(self):
+        cmd = 'rm "a"'
+        for _ in range(400):
+            cmd = 'rm "a" $(' + cmd + ')'
+        cmd += ";"
+
+        started = time.perf_counter()
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        elapsed = time.perf_counter() - started
+
+        assert is_dangerous is True
+        assert desc == "recursive delete (flags after operands)"
+        assert elapsed < 2.0
+
+    def test_rm_flags_after_operands_no_false_positives(self):
+        for cmd in (
+            # after a bare `--`, -rf-looking tokens are literal filenames
+            "rm -- -weird-r-file",
+            "rm -f -- -r-file",
+            # a later pipeline/command segment's flags don't belong to rm
+            "rm foo | grep -r bar",
+            "rm foo; ls -lart",
+            # long options whose `r` is not whitespace-anchored
+            "npm rm somepkg --registry=https://registry.npmjs.org",
+            "rm old.log --verbose",
+            # plain multi-operand deletes and data contexts stay safe
+            "rm build/file.txt other.txt",
+            'rm "operand -rf" other.txt',
+            'echo rm "x y" -r',
+            'git commit -m "rm x" --amend',
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"{cmd!r} should be safe, got: {desc}"
 
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):

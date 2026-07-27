@@ -1960,6 +1960,66 @@ def _iter_shell_command_word_spans(command: str):
             break
 
 
+_RM_RECURSIVE_SHORT_OPTION_RE = re.compile(r"-[a-z]*r[a-z]*", re.IGNORECASE)
+_RM_LAUNCHER_SUFFIXES = (".exe", ".bat", ".cmd")
+# Measured at 8_192 chars: shape-A N=100/200/400 took 0.054/0.109/0.220s,
+# versus 0.037/0.130/0.486s at 98fe6d0a8.
+_MAX_RM_OPERAND_WALK_CHARS = 8_192
+
+
+def _is_rm_command_word(word: str) -> bool:
+    """Whether a command word names ``rm``, however it is spelled.
+
+    The regex rules anchor on a bare ``\brm``, which also fires inside
+    ``/bin/rm`` and ``rm.exe``; the walk keeps that reach so those spellings
+    are covered the same way."""
+    name = _strip_optional_shell_quotes(
+        _deobfuscate_shell_word_for_detection(word) or word
+    )
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in _RM_LAUNCHER_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name == "rm"
+
+
+def _has_recursive_rm_flag(command: str) -> bool:
+    """Return whether a command-position rm has a recursive option."""
+    operand_walk_chars_remaining = _MAX_RM_OPERAND_WALK_CHARS
+    # Reuse the existing candidate walker, including its assignment-prefix and
+    # recognized-wrapper handling; do not parse a separate wrapper chain here.
+    for _, command_word_end, command_word in _iter_shell_command_word_spans(command):
+        if not _is_rm_command_word(command_word):
+            continue
+
+        pos = command_word_end
+        while True:
+            word_start, word_end, word = _read_shell_word(command, pos)
+            operand_walk_chars_remaining -= word_end - pos
+            if operand_walk_chars_remaining <= 0:
+                # Parser work limits fail closed rather than hiding a later flag.
+                return True
+            if word_start == word_end or "\n" in command[pos:word_start]:
+                break
+            command_ended = False
+            while word and word[-1] in ")`":
+                command_ended = True
+                word = word[:-1]
+            deobfuscated = _deobfuscate_shell_word_for_detection(word)
+            if deobfuscated == "--":
+                break
+            if (
+                _RM_RECURSIVE_SHORT_OPTION_RE.fullmatch(deobfuscated)
+                or deobfuscated.lower() == "--recursive"
+            ):
+                return True
+            if command_ended:
+                break
+            pos = word_end
+    return False
+
+
 def _command_detection_variants(command: str):
     normalized = _normalize_command_for_detection(command)
     # Quote-aware grep parsing hides only structurally identified pattern
@@ -2052,6 +2112,12 @@ def detect_dangerous_command(command: str) -> tuple:
             if pattern_re.search(command_lower):
                 pattern_key = description
                 return (True, pattern_key, description)
+        if _has_recursive_rm_flag(command_variant):
+            description = "recursive delete (flags after operands)"
+            return (True, description, description)
+    if _has_recursive_rm_flag(command):
+        description = "recursive delete (flags after operands)"
+        return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

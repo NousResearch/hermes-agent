@@ -293,6 +293,22 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
+    def test_trace_upload_hub_at_core_locked_version_is_current(self, monkeypatch):
+        """#60783 regression: refresh must not churn the shared hub install.
+
+        huggingface-hub arrives in the venv via the core lock (transformers /
+        sentence-transformers for local Hindsight, faster-whisper, tokenizers).
+        With the LAZY_DEPS pin held in lockstep with uv.lock, the version the
+        core installs satisfies the trace-upload spec, so the `hermes update`
+        lazy-refresh pass reports "current" instead of reinstalling — the
+        downgrade that used to break the Hindsight daemon can't happen.
+        """
+        spec = ld.LAZY_DEPS["tool.trace_upload"][0]
+        pinned = ld._specifier_from_spec(spec).lstrip("=")
+        self._fake_version(monkeypatch, {"huggingface-hub": pinned})
+        assert ld._is_satisfied(spec) is True
+        assert ld.feature_missing("tool.trace_upload") == ()
+
 
 # ---------------------------------------------------------------------------
 # active_features + refresh_active_features (Piece A — hermes update wiring)

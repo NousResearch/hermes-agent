@@ -237,3 +237,41 @@ class TestOrgPullIsWiredIn:
                     assert not banned.search(line), (
                         f"{path.name}:{i} leaks internal jargon to users: {line.strip()}"
                     )
+
+
+class TestOrgSharingIsDiscoverable:
+    """`hermes sync` must point users at the org-sharing command.
+
+    Without this, there is no path from "I want to share this with my team"
+    to `hermes skills propose` — sync looks like the only sharing surface
+    while being personal-only.
+    """
+
+    def test_sync_usage_block_mentions_propose(self):
+        import pathlib
+
+        main_src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "hermes_cli"
+            / "main.py"
+        ).read_text(encoding="utf-8")
+        usage_start = main_src.index(
+            "usage: hermes sync <status|pull|push|now|enable|disable|device>"
+        )
+        usage_block = main_src[usage_start : usage_start + 1200]
+        assert "hermes skills propose" in usage_block, (
+            "`hermes sync` usage must point at the org-sharing command."
+        )
+
+    def test_sync_parser_epilog_mentions_propose(self):
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[2]
+            / "hermes_cli"
+            / "subcommands"
+            / "sync.py"
+        ).read_text(encoding="utf-8")
+        assert "hermes skills propose" in src, (
+            "`hermes sync --help` must point at the org-sharing command."
+        )

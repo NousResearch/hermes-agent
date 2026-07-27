@@ -436,7 +436,14 @@ class HomeChannel:
     # authorization boundary and resolves them against its authoritative stores.
     user_id: Optional[str] = None
     scope_id: Optional[str] = None
-    
+    # The SessionSource.chat_type ("dm", "group", "channel", "thread") observed
+    # when /sethome ran. build_session_key() keys DMs on a wholly different
+    # shape from group/thread, so a consumer that wakes a session against this
+    # home channel (e.g. the kanban dashboard's home-channel subscribe) needs
+    # this to route to the SAME session /sethome was run in, instead of
+    # defaulting to "group" and building the wrong key (#56580).
+    chat_type: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "platform": self.platform.value,
@@ -449,8 +456,10 @@ class HomeChannel:
             result["user_id"] = self.user_id
         if self.scope_id:
             result["scope_id"] = self.scope_id
+        if self.chat_type:
+            result["chat_type"] = self.chat_type
         return result
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
         return cls(
@@ -460,6 +469,7 @@ class HomeChannel:
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
             user_id=str(data["user_id"]) if data.get("user_id") else None,
             scope_id=str(data["scope_id"]) if data.get("scope_id") else None,
+            chat_type=str(data["chat_type"]) if data.get("chat_type") else None,
         )
 
 

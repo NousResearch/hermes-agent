@@ -35,6 +35,7 @@ class TestHomeChannelRoundtrip:
             name="general",
             user_id="user-123",
             scope_id="guild-456",
+            chat_type="dm",
         )
         d = hc.to_dict()
         restored = HomeChannel.from_dict(d)
@@ -44,6 +45,15 @@ class TestHomeChannelRoundtrip:
         assert restored.name == "general"
         assert restored.user_id == "user-123"
         assert restored.scope_id == "guild-456"
+        assert restored.chat_type == "dm"
+
+    def test_to_dict_omits_chat_type_when_unset(self):
+        """Legacy/env-var-sourced homes have no chat_type — the key must be
+        absent (not null), matching thread_id/user_id/scope_id's convention."""
+        hc = HomeChannel(platform=Platform.DISCORD, chat_id="999", name="general")
+
+        assert "chat_type" not in hc.to_dict()
+        assert HomeChannel.from_dict(hc.to_dict()).chat_type is None
 
     def test_relay_only_slack_home_hydrates_disabled_with_provenance(self):
         config = GatewayConfig(

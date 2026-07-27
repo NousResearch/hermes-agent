@@ -1780,6 +1780,43 @@ def test_home_subscribe_creates_notify_sub_row(client, with_home_channels):
     assert subs[0]["notifier_profile"] == "default"
 
 
+def test_home_subscribe_carries_chat_type_from_sethome(client, kanban_home, monkeypatch):
+    """A home channel set via /sethome in a DM carries its chat_type into the
+    notify_sub row, so the gateway notifier's wake path builds the DM-shaped
+    session key instead of defaulting to "group" (#56580 follow-up: the
+    dashboard's home-subscribe endpoint was the one add_notify_sub call site
+    that never threaded chat_type through, because HomeChannel itself never
+    persisted it)."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc:fake")
+    (kanban_home / "config.yaml").write_text(
+        "platforms:\n"
+        "  telegram:\n"
+        "    enabled: true\n"
+        "    home_channel:\n"
+        "      platform: telegram\n"
+        "      chat_id: '555'\n"
+        "      name: Ops DM\n"
+        "      chat_type: dm\n",
+        encoding="utf-8",
+    )
+
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, t["id"])
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["chat_id"] == "555"
+    assert subs[0]["chat_type"] == "dm"
+
+
 def test_home_subscribe_flips_subscribed_flag_in_subsequent_get(client, with_home_channels):
     """After subscribe, the GET endpoint reports subscribed=true for that
     platform and false for the others."""

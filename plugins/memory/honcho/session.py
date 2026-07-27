@@ -559,19 +559,25 @@ class HonchoSessionManager:
         aborts CPython during Py_FinalizeEx — daemon threads are abandoned,
         not killed, and the interpreter tears down around them; gh-97940).
         """
-        if self._closed:
-            return
-        self._closed = True
+        # Atomically mark closed AND snapshot the tracked prefetch threads
+        # under the registration lock. A concurrent prefetch_context() holds
+        # the same lock across its closed-check/register/start sequence, so
+        # it either completes registration before this snapshot (and its
+        # thread is joined below) or observes _closed afterwards and never
+        # starts a thread. Without the atomicity a prefetch could pass the
+        # closed-check, then register+start after the snapshot — a lost
+        # thread left blocked in HTTP recv at teardown (TOCTOU → SIGABRT).
+        with self._prefetch_threads_lock:
+            if self._closed:
+                return
+            self._closed = True
+            prefetch_snapshot = list(self._context_prefetch_threads)
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)
             self._async_thread.join(timeout=10)
         # Join context-prefetch threads, but keep references to any that
         # don't join within the timeout so a later shutdown phase can retry.
-        # Snapshot under lock so a concurrent prefetch_context() can't
-        # add a thread after we've snapshotted (TOCTOU → lost thread → SIGABRT).
-        with self._prefetch_threads_lock:
-            prefetch_snapshot = list(self._context_prefetch_threads)
         alive = []
         for t in prefetch_snapshot:
             if t.is_alive():
@@ -708,23 +714,30 @@ class HonchoSessionManager:
         a synchronous HTTP round-trip blocking every response.
         """
         if self._closed:
-            return
+            return  # fast path; the authoritative check is under the lock below
+
         def _run():
             result = self.get_prefetch_context(session_key, user_message)
             if result:
                 self.set_context_result(session_key, result)
 
         t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
-        # Track so shutdown() can join it before interpreter teardown.
-        # Prune completed threads to avoid unbounded list growth in long-lived
-        # sessions (e.g. gateway runs for days/weeks with many turns).
-        # Lock against concurrent shutdown() which snapshots the same list.
+        # Check-closed, register, and start atomically under the same lock
+        # shutdown() uses to mark closed + snapshot the thread list: either
+        # this thread makes it into shutdown()'s snapshot (and is joined
+        # there), or _closed is already set and the thread is never started.
+        # Also prune completed threads to avoid unbounded list growth in
+        # long-lived sessions (e.g. gateway runs for days/weeks with many
+        # turns). Thread.start() is cheap and _run never touches this lock,
+        # so starting inside the critical section cannot deadlock.
         with self._prefetch_threads_lock:
+            if self._closed:
+                return
             self._context_prefetch_threads = [
                 th for th in self._context_prefetch_threads if th.is_alive()
             ]
             self._context_prefetch_threads.append(t)
-        t.start()
+            t.start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
         """Store a prefetched context result in a thread-safe way."""

@@ -111,6 +111,89 @@ class TestCloseHonchoHttpClientWarnings:
         mock_http.close.assert_called_once()
 
 
+def _bare_manager():
+    """A HonchoSessionManager with just the shutdown/prefetch plumbing."""
+    from plugins.memory.honcho.session import HonchoSessionManager
+
+    manager = HonchoSessionManager.__new__(HonchoSessionManager)
+    manager._closed = False
+    manager._prefetch_threads_lock = threading.Lock()
+    manager._context_prefetch_threads = []
+    manager._async_queue = None
+    manager._async_thread = None
+    return manager
+
+
+class TestShutdownPrefetchRace:
+    """shutdown() vs prefetch_context() — no thread may start after close."""
+
+    def test_prefetch_after_shutdown_is_noop(self):
+        """A prefetch attempted after shutdown must not start or track a thread."""
+        manager = _bare_manager()
+        manager.shutdown()
+
+        with patch.object(threading.Thread, "start") as mock_start:
+            manager.prefetch_context("key")
+
+        mock_start.assert_not_called()
+        assert manager._context_prefetch_threads == []
+
+    def test_shutdown_interleaved_mid_prefetch_blocks_registration(self):
+        """Deterministic TOCTOU: shutdown() lands between prefetch_context()'s
+        fast closed-check and its registration. The lock-guarded re-check must
+        prevent the thread from being started or tracked."""
+        from plugins.memory.honcho import session as session_mod
+
+        manager = _bare_manager()
+        created: list[threading.Thread] = []
+        real_thread = threading.Thread
+
+        def racing_thread(*args, **kwargs):
+            # Fires after prefetch_context() has already passed its fast
+            # `if self._closed` check — the exact TOCTOU window.
+            manager.shutdown()
+            t = real_thread(*args, **kwargs)
+            created.append(t)
+            return t
+
+        with patch.object(session_mod.threading, "Thread", side_effect=racing_thread):
+            manager.prefetch_context("key")
+
+        assert manager._closed is True
+        assert created, "prefetch_context should have constructed its thread"
+        assert created[0].ident is None, (
+            "prefetch thread must never be started once shutdown() has run"
+        )
+        assert manager._context_prefetch_threads == [], (
+            "prefetch thread must not be tracked after shutdown()'s snapshot"
+        )
+
+    def test_prefetch_before_shutdown_lands_in_snapshot(self):
+        """A prefetch registered before shutdown() must be joined by it."""
+        manager = _bare_manager()
+        release = threading.Event()
+        # Instance-level stubs: keep the worker alive until released so the
+        # thread is still running when shutdown() takes its snapshot.
+        manager.get_prefetch_context = lambda *a, **k: release.wait(timeout=5) and None
+        manager.set_context_result = lambda *a, **k: None
+
+        manager.prefetch_context("key")
+        assert len(manager._context_prefetch_threads) == 1
+        worker = manager._context_prefetch_threads[0]
+        release.set()
+        manager.shutdown()
+
+        assert not worker.is_alive(), "shutdown() must join tracked prefetch threads"
+
+    def test_shutdown_is_idempotent(self):
+        """A second shutdown() must return early without re-joining."""
+        manager = _bare_manager()
+        manager.shutdown()
+        assert manager._closed is True
+        manager.shutdown()  # must not raise or deadlock
+        assert manager._closed is True
+
+
 class TestShutdownJoinPrefetchThreads:
     """Verify shutdown actually joins prefetch threads."""
 

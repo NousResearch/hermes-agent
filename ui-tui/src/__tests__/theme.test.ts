@@ -653,3 +653,31 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(color.statusCritical).toBe(fromSkin({ ui_error: '#dd2222' }, {}).color.error)
   })
 })
+
+describe('themeToneHex', () => {
+  it('resolves a tone to the literal color it paints as', async () => {
+    const { themeToneHex } = await importThemeWithCleanEnv()
+
+    // 232+ is the grayscale ramp (8 + (n-232)*10); 16-231 is the 6x6x6 cube.
+    expect(themeToneHex('ansi256(238)')).toBe('#444444')
+    expect(themeToneHex('ansi256(161)')).toBe('#d7005f')
+    // An authored hex is already literal.
+    expect(themeToneHex('#e77fa3')).toBe('#e77fa3')
+    // No paintable color ⇒ '', which releases the terminal default.
+    expect(themeToneHex('')).toBe('')
+    expect(themeToneHex('ansi256(999)')).toBe('')
+    expect(themeToneHex('inherit')).toBe('')
+  })
+
+  it('makes every tone paintable on a quantizing terminal', async () => {
+    // The contract OSC-10 depends on: whatever the palette normalizer does to
+    // a tone, themeToneHex still yields a literal `#rrggbb`. Asserted over the
+    // whole palette so a new tone can't silently regress the default paint.
+    const { fromSkin, themeToneHex } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal' })
+    const { color } = fromSkin({ background: '#f6f9fd', ui_text: '#4a4550' }, {})
+
+    for (const tone of Object.values(color)) {
+      expect(themeToneHex(tone)).toMatch(/^#[0-9a-f]{6}$/i)
+    }
+  })
+})

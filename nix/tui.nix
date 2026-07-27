@@ -8,7 +8,7 @@ let
     ];
   };
 
-  packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/ui-tui/package.json"));
+  packageJson = builtins.fromJSON (builtins.readFile ../ui-tui/package.json);
   version = packageJson.version;
 in
 pkgs.buildNpmPackage (npm // {

@@ -10,7 +10,7 @@ let
     ];
   };
 
-  packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/web/package.json"));
+  packageJson = builtins.fromJSON (builtins.readFile ../web/package.json);
   version = packageJson.version;
 in
 pkgs.buildNpmPackage (npm // {

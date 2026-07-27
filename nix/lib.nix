@@ -161,19 +161,12 @@ let
     ++ map (d: repoRoot + "/${d}/package.json") workspaceMemberDirs
   );
 
-  # npm deps source: just what importNpmLock needs (root manifests +
-  # workspace member package.jsons).  Much smaller than the full repo,
-  # so changing source files won't invalidate the npmDeps derivation.
-  npmDepsSrc = lib.fileset.toSource {
-    root = repoRoot;
-    fileset = npmWorkspaceFiles;
-  };
-
   # npm dependencies for the workspace, shared by all members. importNpmLock
   # resolves each package from the lockfile's own `integrity` hashes, so the
   # lockfile is the single source of truth — no separate dependency hash to
-  # keep in sync with it.
-  npmDeps = pkgs.importNpmLock.importNpmLock { npmRoot = npmDepsSrc; };
+  # keep in sync with it. importNpmLock reads the manifests during evaluation,
+  # so use the original flake source rather than a lazy fileset.toSource path.
+  npmDeps = pkgs.importNpmLock.importNpmLock { npmRoot = repoRoot; };
 
   # Build a per-package npm source: workspace resolution files + the
   # package's own directory tree(s).  Source ROOT is always the repo

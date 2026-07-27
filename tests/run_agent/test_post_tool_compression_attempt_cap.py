@@ -151,36 +151,39 @@ def _run_tool_loop(agent, n_tool_iterations: int):
 
 
 class TestPostToolCompressionAttemptCap:
-    def test_post_tool_compression_capped_at_default_three(self, agent):
-        """7 tool iterations under constant pressure → exactly 3 compactions.
+    def test_post_tool_compression_allowed_beyond_default_cap(self, agent):
+        """7 tool iterations under constant pressure → all 7 compactions run.
 
-        Before the fix the post-tool gate re-fired after every tool response
-        (7 compactions here); the shared per-turn counter caps it at the
-        resolved default of 3.
+        Each maintenance compaction is followed by a successful model
+        response, so the consecutive-failure counter resets.  The per-turn
+        anti-thrash budget no longer acts as a lifetime success quota
+        (#72451).
         """
         assert agent.max_compression_attempts == 3  # config default
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=7)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 3, (
-            f"post-tool compression must stop at the per-turn cap (3), "
-            f"got {len(compress_calls)} compactions"
+        assert len(compress_calls) == 7, (
+            "effective maintenance compactions must run every time after "
+            f"a successful model response; got {len(compress_calls)}"
         )
 
-    def test_post_tool_compression_honors_configured_cap(self, agent):
-        """A raised compression.max_attempts cap lets more rounds run."""
+    def test_post_tool_compression_honors_configured_cap_for_failures(self, agent):
+        """A raised compression.max_attempts cap lets more consecutive-failure
+        rounds run, but successful cycles still reset."""
         agent.max_compression_attempts = 5
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=8)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 5
+        assert len(compress_calls) == 8
 
     def test_post_tool_compression_shares_counter_with_pre_api_gate(self, agent):
-        """Pre-API compactions consume the same per-turn budget.
+        """Pre-API and post-tool sites still share one counter.
 
-        Let the pre-API pressure gate fire once (defer disabled for the first
-        check), then keep the pressure on through tool iterations: the
-        combined total must still respect the cap.
+        Both sites increment ``compression_attempts`` and both benefit from
+        the reset after a successful model response.  The combined total is
+        not artificially capped at ``max_compression_attempts`` when each
+        cycle succeeds (#72451).
         """
         # First pre-API check does not defer → pre-API gate fires once;
         # afterwards defer again so only the post-tool gate keeps firing.
@@ -191,9 +194,10 @@ class TestPostToolCompressionAttemptCap:
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=7)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 3, (
-            "pre-API and post-tool compactions must share one per-turn "
-            f"attempt budget, got {len(compress_calls)} total compactions"
+        assert len(compress_calls) == 8, (
+            "pre-API and post-tool share one counter but successful "
+            "model responses reset it; expected 1 pre-API + 7 post-tool "
+            f"= 8 compactions, got {len(compress_calls)}"
         )
 
     def test_cap_is_per_turn_not_per_session(self, agent):
@@ -202,5 +206,5 @@ class TestPostToolCompressionAttemptCap:
         agent.client.chat.completions.create.side_effect = None
         _result, second = _run_tool_loop(agent, n_tool_iterations=5)
 
-        assert len(first) == 3
-        assert len(second) == 3
+        assert len(first) == 5
+        assert len(second) == 5

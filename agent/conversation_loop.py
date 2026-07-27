@@ -5196,6 +5196,15 @@ def run_conversation(
             agent._persist_session(messages, conversation_history)
             break
 
+        # Reset the compression attempt counter after a successful model
+        # response so that effective maintenance compactions do not
+        # permanently consume the per-turn anti-thrash budget.  Consecutive
+        # failures (compression → provider still rejects → re-compress) are
+        # still capped because they never reach this point — the loop
+        # restarts with ``restart_with_compressed_messages`` before the
+        # response guard fires.  (#72451)
+        compression_attempts = 0
+
         try:
             _transport = agent._get_transport()
             _normalize_kwargs = {}

@@ -847,39 +847,13 @@ def _peel_moa_guidance(
 ) -> List[Dict[str, Any]]:
     """Remove MoA reference guidance previously attached by ``_attach_reference_guidance``.
 
-    Redecoration must run on the base transcript so the last cache breakpoint
-    does not land on the turn-varying guidance block; callers then rebase via
-    ``rebase_prepared_request`` (#72626).
+    Thin wrapper over :func:`agent.moa_loop.peel_reference_guidance` (kept
+    adjacent to the attach so the forward/inverse shapes evolve together).
+    Lazy import mirrors the module's other moa_loop touchpoints.
     """
-    if not guidance or not messages:
-        return messages
-    guidance_text = str(guidance)
-    last = messages[-1]
-    if not isinstance(last, dict) or last.get("role") != "user":
-        return messages
-    content = last.get("content")
-    if content == guidance_text:
-        return list(messages[:-1])
-    suffix = "\n\n" + guidance_text
-    if isinstance(content, str) and content.endswith(suffix):
-        peeled = dict(last)
-        peeled["content"] = content[: -len(suffix)]
-        return [*messages[:-1], peeled]
-    if isinstance(content, list) and content:
-        last_part = content[-1]
-        if isinstance(last_part, dict) and last_part.get("type", "text") == "text":
-            text = last_part.get("text") or ""
-            if text == suffix or text == guidance_text:
-                peeled = dict(last)
-                peeled["content"] = list(content[:-1])
-                return [*messages[:-1], peeled]
-            if text.endswith(suffix):
-                new_part = dict(last_part)
-                new_part["text"] = text[: -len(suffix)]
-                peeled = dict(last)
-                peeled["content"] = [*content[:-1], new_part]
-                return [*messages[:-1], peeled]
-    return messages
+    from agent.moa_loop import peel_reference_guidance
+
+    return peel_reference_guidance(messages, guidance)
 
 
 def _redecorate_prompt_cache_for_provider(

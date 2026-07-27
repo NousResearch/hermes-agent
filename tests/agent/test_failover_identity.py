@@ -410,3 +410,62 @@ class TestRedecoratePromptCacheOnPolicyChange:
         # redecorated (stripped) messages, not the stale decorated list.
         assert _count_cache_markers(new_prepared["messages"]) == 0
         assert new_prepared["messages"] == out
+
+
+class TestPeelReferenceGuidanceRoundTrip:
+    """peel must invert every attach shape — the two live adjacent in
+    moa_loop.py precisely so this contract can't drift silently."""
+
+    _GUIDANCE = "[Mixture of Agents reference context]\nAdvice body."
+
+    def _round_trip(self, base):
+        import copy
+
+        from agent.moa_loop import _attach_reference_guidance, peel_reference_guidance
+
+        attached = copy.deepcopy(base)
+        _attach_reference_guidance(attached, self._GUIDANCE)
+        assert attached != base, "attach must change the transcript"
+        return peel_reference_guidance(attached, self._GUIDANCE)
+
+    def test_string_merge_shape(self):
+        base = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+        ]
+        assert self._round_trip(base) == base
+
+    def test_list_part_shape(self):
+        base = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "task", "cache_control": {"type": "ephemeral"}}],
+            },
+        ]
+        assert self._round_trip(base) == base
+
+    def test_appended_user_message_shape(self):
+        # No trailing user turn — attach appends a separate user message.
+        base = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "done"},
+        ]
+        assert self._round_trip(base) == base
+
+    def test_guidance_only_part_drops_message_not_empty_residue(self):
+        # If the guidance part is the only content left after peeling, the
+        # whole message goes — an empty-content user turn must never remain.
+        from agent.moa_loop import peel_reference_guidance
+
+        messages = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "ok"},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": self._GUIDANCE}],
+            },
+        ]
+        peeled = peel_reference_guidance(messages, self._GUIDANCE)
+        assert peeled == messages[:-1]

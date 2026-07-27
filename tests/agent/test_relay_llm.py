@@ -690,6 +690,90 @@ def test_stream_finishes_after_relay_post_processing_failure(
     assert "preserving the provider result" in caplog.text
 
 
+def test_stream_flushes_buffered_provider_chunks_after_relay_failure(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+    raw_chunks = [{"delta": "first"}, {"delta": "second"}]
+
+    async def fail_with_buffered_chunk(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        async def generate():
+            upstream = callback(request)
+            first = await anext(upstream)
+            observe_chunk(first)
+            yield first
+            second = await anext(upstream)
+            observe_chunk(second)
+            with pytest.raises(StopAsyncIteration):
+                await anext(upstream)
+            finalizer()
+            raise RuntimeError("simulated buffered Relay failure")
+
+        return generate()
+
+    monkeypatch.setattr(relay.llm, "stream_execute", fail_with_buffered_chunk)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(raw_chunks),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-buffered-failure",
+        },
+    )
+
+    assert list(stream) == raw_chunks
+    assert turn.logical_llm_calls == {}
+
+
+def test_stream_constructor_flushes_provider_chunks_after_relay_failure(
+    relay_turn, monkeypatch
+):
+    relay, turn = relay_turn
+    raw_chunks = [{"delta": "first"}, {"delta": "second"}]
+
+    async def fail_during_stream_setup(
+        _name,
+        request,
+        callback,
+        observe_chunk,
+        finalizer,
+        **_kwargs,
+    ):
+        upstream = callback(request)
+        async for chunk in upstream:
+            observe_chunk(chunk)
+        finalizer()
+        raise RuntimeError("simulated Relay setup failure")
+
+    monkeypatch.setattr(relay.llm, "stream_execute", fail_during_stream_setup)
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter(raw_chunks),
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "complete"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-setup-failure",
+        },
+    )
+
+    assert list(stream) == raw_chunks
+    assert turn.logical_llm_calls == {}
+
+
 def test_stream_does_not_swallow_interrupt_after_provider_success(
     relay_turn, monkeypatch
 ):

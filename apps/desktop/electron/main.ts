@@ -377,9 +377,9 @@ if (IS_WINDOWS) {
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
 // Keep the renderer running at full speed while the window is in the background
-// or occluded. The chat transcript streams to screen through a
-// requestAnimationFrame-gated flush; Chromium pauses rAF (and clamps timers)
-// for backgrounded/occluded renderers, so without these the live answer stalls
+// or occluded. The chat transcript streams to screen through a bounded timer
+// flush; Chromium clamps timers for backgrounded/occluded renderers, so without
+// these the live answer stalls
 // whenever the window loses focus (switching to your editor mid-turn, detached
 // devtools, another window covering it) and only paints on refocus or refresh.
 // `backgroundThrottling: false` on the BrowserWindow covers the blurred case;
@@ -4939,6 +4939,8 @@ function getNativeOverlayWidth() {
 function getWindowState(win = mainWindow) {
   return {
     isFullscreen: Boolean(win?.isFullScreen?.()),
+    isMinimized: Boolean(win?.isMinimized?.()),
+    isVisible: Boolean(win?.isVisible?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition()
   }
@@ -8898,9 +8900,9 @@ function createWindow() {
     show: false,
     backgroundColor: getWindowBackgroundColor(),
     // Shared with the secondary session windows (chatWindowWebPreferences) so
-    // both keep `backgroundThrottling: false` — the chat transcript streams via
-    // a requestAnimationFrame-gated flush that Chromium pauses for blurred
-    // windows, stalling the live answer until refocus. See session-windows.ts.
+    // both keep `backgroundThrottling: false` — the chat transcript uses a
+    // bounded timer flush that Chromium clamps for blurred windows, stalling
+    // the live answer until refocus. See session-windows.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -8968,6 +8970,10 @@ function createWindow() {
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
+  mainWindow.on('minimize', () => sendWindowStateChanged())
+  mainWindow.on('restore', () => sendWindowStateChanged())
+  mainWindow.on('hide', () => sendWindowStateChanged())
+  mainWindow.on('show', () => sendWindowStateChanged())
 
   // Reopen where the user left off. resized/moved settle once per drag; close is
   // the cross-platform backstop, flushed synchronously before the window is gone.

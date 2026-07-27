@@ -104,7 +104,20 @@ export function useStatusbarItems({
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
-  const subagentsBySession = useStore($subagentsBySession)
+
+  // The indicator must speak the same scope as the Spawn-tree panel it opens:
+  // every session's subagents, never background system actions. Only two
+  // COUNTS are read, so select scalars — a whole-map `useStore` re-ran this
+  // hook (rebuilding all ~9 statusbar items) on every subagent progress tick
+  // in ANY session, including background ones.
+  const subagentsRunning = useStoreSelector($subagentsBySession, bySession =>
+    Object.values(bySession).reduce((sum, items) => sum + activeSubagentCount(items), 0)
+  )
+
+  const subagentsFailed = useStoreSelector($subagentsBySession, bySession =>
+    Object.values(bySession).reduce((sum, items) => sum + failedSubagentCount(items), 0)
+  )
+
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const backendUpdateStatus = useStore($backendUpdateStatus)
@@ -130,7 +143,6 @@ export function useStatusbarItems({
   // reports new usage — far rarer than a delta — so its reference is a valid
   // bail-out key on its own.
   const focusedUsage = useStoreSelector($focusedSessionState, state => state?.usage ?? null)
-  const sessions = useStore($sessions)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
 
@@ -144,15 +156,19 @@ export function useStatusbarItems({
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
   // A tile's session-start comes from its stored row (the cache only knows
-  // runtime state); seconds → ms.
-  const focusedRow = focusedStoredSessionId
-    ? sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))
-    : null
+  // runtime state); seconds → ms. Only this ONE scalar is read off
+  // `$sessions`, so select it — a whole-list `useStore` re-ran the hook on
+  // every session-list write (title updates, poll refreshes, archives).
+  const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
+    focusedStoredSessionId
+      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
+      : null
+  )
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
-    : focusedRow?.started_at
-      ? focusedRow.started_at * 1000
+    : focusedRowStartedAt
+      ? focusedRowStartedAt * 1000
       : null
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
@@ -179,18 +195,6 @@ export function useStatusbarItems({
     ),
     [gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
   )
-
-  // The indicator must speak the same scope as the Spawn-tree panel it opens:
-  // every session's subagents, never background system actions (gateway
-  // restarts, toolset installs) which surface in their own panels.
-  const { subagentsFailed, subagentsRunning } = useMemo(() => {
-    const lists = Object.values(subagentsBySession)
-
-    return {
-      subagentsFailed: lists.reduce((sum, items) => sum + failedSubagentCount(items), 0),
-      subagentsRunning: lists.reduce((sum, items) => sum + activeSubagentCount(items), 0)
-    }
-  }, [subagentsBySession])
 
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'

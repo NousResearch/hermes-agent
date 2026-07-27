@@ -188,6 +188,31 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     return preferences
 
 
+def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
+    """Merge Portal ``tags`` / ``session_id`` onto an Anthropic Messages kwargs dict.
+
+    The Nous provider profile is only consulted by the OpenAI-wire transport;
+    anthropic_messages callers must merge it themselves. Passes ``session_id``
+    only — not ``provider_preferences`` (those become a top-level ``provider``
+    routing object on the OpenAI wire). Never blocks a turn on tagging.
+    """
+    if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
+        return anthropic_kwargs
+    try:
+        from providers import get_provider_profile
+
+        nous_profile = get_provider_profile("nous")
+        if nous_profile is not None:
+            anthropic_kwargs.setdefault("extra_body", {}).update(
+                nous_profile.build_extra_body(
+                    session_id=getattr(agent, "session_id", None)
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — never block a turn on tagging
+        logger.debug("Nous Portal extra_body merge failed: %s", exc)
+    return anthropic_kwargs
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -1023,7 +1048,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
         if ephemeral_out is not None:
             agent._ephemeral_max_output_tokens = None  # consume immediately
-        return _transport.build_kwargs(
+        anthropic_kwargs = _transport.build_kwargs(
             model=agent.model,
             messages=anthropic_messages,
             tools=tools_for_api,
@@ -1036,6 +1061,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
         )
+        # Nous Portal reads ``tags`` and ``session_id`` as top-level body fields
+        # on its Messages route the same way it does on /chat/completions, but
+        # the profile hook that produces them is only consulted by the
+        # OpenAI-wire transport. Merge them here so Messages traffic keeps
+        # product attribution and sticky routing.
+        return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.
@@ -1701,6 +1732,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
+        elif fb_provider in {"nous", "nous-portal", "nousresearch"}:
+            # Portal is dual-wire: anthropic/* must land on /v1/messages.
+            # resolve_provider_client still returns an OpenAI client for
+            # Nous; the anthropic_messages branch below rebuilds the native
+            # client from that credential + base_url.
+            from hermes_cli.providers import nous_api_mode
+
+            fb_api_mode = nous_api_mode(fb_model)
         elif (
             fb_provider == "anthropic"
             or fb_base_url.rstrip("/").lower().endswith("/anthropic")
@@ -2127,7 +2166,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _ant_kw = _tsum.build_kwargs(model=agent.model, messages=api_messages, tools=None,
                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                is_oauth=agent._is_anthropic_oauth,
-                               preserve_dots=agent._anthropic_preserve_dots())
+                               preserve_dots=agent._anthropic_preserve_dots(),
+                               base_url=getattr(agent, "_anthropic_base_url", None))
+                _ant_kw = _merge_nous_portal_messages_extra_body(agent, _ant_kw)
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
@@ -2157,7 +2198,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _ant_kw2 = _tretry.build_kwargs(model=agent.model, messages=api_messages, tools=None,
                                 is_oauth=agent._is_anthropic_oauth,
                                 max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
-                                preserve_dots=agent._anthropic_preserve_dots())
+                                preserve_dots=agent._anthropic_preserve_dots(),
+                                base_url=getattr(agent, "_anthropic_base_url", None))
+                _ant_kw2 = _merge_nous_portal_messages_extra_body(agent, _ant_kw2)
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()

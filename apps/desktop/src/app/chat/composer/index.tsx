@@ -299,6 +299,7 @@ export function ChatBar({
   // this API; keyup uses triggerKeyConsumedRef to skip its refresh.
   const {
     argStageEmpty,
+    ascendTriggerPath,
     closeTrigger,
     commitTypedSlashDirective,
     refreshTrigger,
@@ -556,8 +557,20 @@ export function ChatBar({
         const item = triggerItems[triggerActive]
 
         if (item) {
-          replaceTriggerWithChip(item)
+          // Tab means "go deeper" on a folder; Enter means "I want this one".
+          // Everything else treats them alike.
+          replaceTriggerWithChip(item, { descend: event.key === 'Tab' })
         }
+
+        return
+      }
+
+      // Backspace climbs out of an `@` path one segment at a time, mirroring
+      // Tab's one-key descent. Only when the caret sits at the end of the
+      // token — mid-token editing keeps normal character deletion.
+      if (event.key === 'Backspace' && !event.metaKey && !event.altKey && ascendTriggerPath()) {
+        event.preventDefault()
+        triggerKeyConsumedRef.current = true
 
         return
       }

@@ -16190,24 +16190,54 @@ def _(rid, params: dict) -> dict:
             and "/" not in path_part
             and prefix_tag != "folder"
         ):
-            ranked: list[tuple[tuple[int, int], str, str]] = []
-            for rel in _list_repo_files(root):
-                basename = os.path.basename(rel)
-                if basename.startswith(".") and not path_part.startswith("."):
-                    continue
-                rank = _fuzzy_basename_rank(basename, path_part)
-                if rank is None:
-                    continue
-                ranked.append((rank, rel, basename))
+            ranked: list[tuple[tuple[int, int], str, str, bool]] = []
+            walked_dirs: set[str] = set()
+            seen: set[str] = set()
+            want_hidden = path_part.startswith(".")
 
-            ranked.sort(key=lambda r: (r[0], len(r[1]), r[1]))
+            def _consider(rel: str, name: str, is_dir: bool) -> None:
+                if rel in seen or (name.startswith(".") and not want_hidden):
+                    return
+                rank = _fuzzy_basename_rank(name, path_part)
+                if rank is not None:
+                    seen.add(rel)
+                    ranked.append((rank, rel, name, is_dir))
+
+            # Seed with root's immediate children. `_list_repo_files` is capped
+            # at _FUZZY_CACHE_MAX_FILES, and outside a git repo the fallback
+            # walk can burn that whole budget on one deep subtree before ever
+            # reaching a sibling — which is why `@Desk` in a non-repo $HOME
+            # found nothing. One listdir keeps the top level always reachable.
+            try:
+                for entry in os.listdir(root):
+                    if entry not in _FUZZY_FALLBACK_EXCLUDES:
+                        _consider(entry, entry, os.path.isdir(os.path.join(root, entry)))
+            except OSError:
+                pass
+
+            for rel in _list_repo_files(root):
+                _consider(rel, os.path.basename(rel), False)
+
+                # Directories are only implied by the file listing, so rank each
+                # ancestor too. Without this a bare `@Desktop` finds nothing —
+                # a folder with no name-matching file inside it is invisible to
+                # a file-only scan, which is the "can't @ a folder by name" bug.
+                parent = os.path.dirname(rel)
+                while parent and parent not in walked_dirs:
+                    walked_dirs.add(parent)
+                    _consider(parent, os.path.basename(parent), True)
+                    parent = os.path.dirname(parent)
+
+            # Same rank tier: folders first, so `@Desktop` leads with the folder
+            # rather than a file that merely fuzzy-matches the same letters.
+            ranked.sort(key=lambda r: (r[0], not r[3], len(r[1]), r[1]))
             tag = prefix_tag or "file"
-            for _, rel, basename in ranked[:30]:
+            for _, rel, basename, is_dir in ranked[:30]:
                 items.append(
                     {
-                        "text": f"@{tag}:{rel}",
-                        "display": basename,
-                        "meta": os.path.dirname(rel),
+                        "text": f"@{'folder' if is_dir else tag}:{rel}{'/' if is_dir else ''}",
+                        "display": basename + ("/" if is_dir else ""),
+                        "meta": "dir" if is_dir else os.path.dirname(rel),
                     }
                 )
 

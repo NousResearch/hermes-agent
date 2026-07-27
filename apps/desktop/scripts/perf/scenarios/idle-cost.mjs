@@ -202,7 +202,13 @@ const round = (n, places = 1) => Math.round(n * 10 ** places) / 10 ** places
 
 export default {
   name: 'idle-cost',
-  tier: 'ci',
+  // NOT 'ci': the drag fps this reports (~0.6fps, p95 814ms) contradicts a
+  // direct single-clock probe of the same gesture on the same build (57fps),
+  // and I could not reconcile the two — ruled out sash selection, tile setup,
+  // counter residue, and a 20s soak. Its RENDER attribution and idle commit
+  // rate are trustworthy and are what this scenario is for; the interaction
+  // fps is reported for investigation, not gated on, until that is explained.
+  tier: 'report',
   description: 'Busy-but-silent tiles: idle commit rate, and fps while resizing / typing.',
   async run(cdp, opts = {}) {
     const tiles = Number(opts.tiles ?? 5)

@@ -139,10 +139,12 @@ export function useComposerTrigger({
   // Space/Tab — neither should dead-end on a popover.
   const argStageEmpty = trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
 
-  const slashFreeTextArgStage =
-    trigger?.kind === '/' &&
-    slashArgStage(trigger.query) &&
-    ['mixed', 'text'].includes(desktopSlashCommandArgumentMode(slashCommandToken(trigger.query)) ?? '')
+  const slashArgumentMode =
+    trigger?.kind === '/' && slashArgStage(trigger.query)
+      ? desktopSlashCommandArgumentMode(slashCommandToken(trigger.query))
+      : null
+
+  const slashFreeTextArgStage = slashArgumentMode === 'mixed' || slashArgumentMode === 'text'
 
   const closeTrigger = () => {
     setTrigger(null)

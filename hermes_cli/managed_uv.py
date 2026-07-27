@@ -138,8 +138,13 @@ class _RepairLock:
 def _report_runtime_repair_failure(repair: RuntimeRepairResult) -> None:
     if repair.backup_venv is None:
         print(
-            "  ⚠ Managed Python runtime was not replaced; "
+            "  ℹ Managed Python runtime was not replaced; "
             f"the existing venv is unchanged ({repair.detail})."
+        )
+        print(
+            "    Sessions stay protected meanwhile: Hermes keeps databases "
+            "out of WAL mode on this SQLite build. The next `hermes update` "
+            "will retry."
         )
         return
     print(f"  ✗ Managed Python runtime cutover needs manual recovery: {repair.detail}")
@@ -874,6 +879,64 @@ def _windows_runtime_holders() -> tuple[bool, str]:
     return False, ""
 
 
+def _uv_version_string(uv_bin: str) -> str:
+    """Return ``uv --version`` output, or ``""`` when it cannot be read."""
+    try:
+        result = subprocess.run(
+            [uv_bin, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=15,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
+    """Re-bootstrap the managed uv binary to refresh its Python catalog.
+
+    The managed uv is installed with ``UV_UNMANAGED_INSTALL``, which disables
+    ``uv self update`` by design — so its embedded python-build-standalone
+    download catalog stays frozen at bootstrap age.  python-build-standalone
+    re-releases existing CPython patch versions with newer SQLite (e.g. the
+    3.11.15 build was re-cut with SQLite 3.53.x), so a stale catalog can make
+    every provisioning attempt resolve to a vulnerable build even though a
+    fixed build of the SAME patch version exists (issue #72093).  The
+    patch-retry loop cannot recover from that: the fixed build carries no
+    newer version number to retry with.
+
+    Re-running the official installer is the only supported refresh path for
+    unmanaged installs.  Only the Hermes-managed binary is ever refreshed;
+    a caller-supplied foreign uv path is left alone.
+
+    Returns ``True`` when the binary's version actually changed — i.e. a
+    provisioning retry can now see a different catalog.  ``False`` means a
+    retry would resolve identically and is not worth the download cycle.
+    """
+    managed = managed_uv_path()
+    try:
+        if Path(uv_bin).resolve() != managed.resolve():
+            return False
+    except OSError:
+        return False
+    before = _uv_version_string(uv_bin)
+    try:
+        _install_uv(managed)
+    except Exception as exc:
+        logger.warning("managed uv refresh failed: %s", exc)
+        return False
+    after = _uv_version_string(uv_bin)
+    if not after:
+        return False
+    return after != before
+
+
 def repair_vulnerable_runtime(
     uv_bin: str,
     *,
@@ -948,6 +1011,19 @@ def repair_vulnerable_runtime(
             project_root=root,
             current=current,
         )
+        if provisioned is None:
+            # Likely a stale managed-uv catalog: python-build-standalone
+            # re-releases the same patch versions with fixed SQLite, but a
+            # frozen catalog keeps resolving the old vulnerable build and the
+            # patch-retry loop has no newer number to try (issue #72093).
+            # Refresh the managed binary and retry once.
+            if _refresh_managed_uv_catalog(uv_bin):
+                print("  → Managed uv refreshed; retrying provisioning...")
+                provisioned = _install_safe_python_generation(
+                    uv_bin,
+                    project_root=root,
+                    current=current,
+                )
         if provisioned is None:
             return RuntimeRepairResult(
                 "failed",

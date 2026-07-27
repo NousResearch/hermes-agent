@@ -13,6 +13,7 @@ hermes_bootstrap.harden_import_path()
 import json
 import logging
 import signal
+import threading
 import time
 import traceback
 
@@ -184,18 +185,49 @@ def _log_signal(signum: int, frame) -> None:
 # with hasattr so ``python -m tui_gateway.entry`` (spawned by
 # ``hermes --tui``) imports cleanly there.  SIGBREAK (Windows' Ctrl+Break)
 # is installed when available as a weaker equivalent of SIGHUP.
-if hasattr(signal, "SIGPIPE"):
-    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
-if hasattr(signal, "SIGTERM"):
-    signal.signal(signal.SIGTERM, _log_signal)
+#
+# signal.signal() is only legal in the MAIN thread. On the Desktop/WebSocket
+# agent-build path, server._build() runs in a daemon thread and does
+# ``from tui_gateway.entry import ensure_mcp_discovery_started`` as the first
+# import of entry (entry.main() is never run there), which used to raise
+# "ValueError: signal only works in main thread of the main interpreter" and
+# abort MCP discovery startup.  Install each handler only when we're in the
+# main thread: handlers are process-global, so a main-thread import anywhere
+# in the process still installs them for everyone, and an off-thread import
+# (Desktop build path) simply no-ops instead of crashing the import.  This
+# preserves the original SIG_IGN/SIG_DFL behavior on the classic TUI/serve
+# path while fixing the off-thread import crash.
+
+
+def _install_signal(signame, handler):
+    """Install a signal handler if legal in this thread.
+
+    signal.signal() raises ValueError outside the main thread; skip silently
+    there so a worker-thread import of this module (Desktop build path) does
+    not abort.  On any main-thread import the handler is installed as before.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    sig = getattr(signal, signame, None)
+    if sig is None:
+        return  # Windows: SIGPIPE/SIGHUP absent
+    try:
+        signal.signal(sig, handler)
+    except (ValueError, OSError, RuntimeError):
+        # Not in the main thread despite the check, or handler rejected.
+        # Skip rather than crash the import (see above).
+        pass
+
+
+_install_signal("SIGPIPE", signal.SIG_IGN)
+_install_signal("SIGTERM", _log_signal)
 if hasattr(signal, "SIGHUP"):
-    signal.signal(signal.SIGHUP, _log_signal)
+    _install_signal("SIGHUP", _log_signal)
 elif hasattr(signal, "SIGBREAK"):
     # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
     # Route it through the same handler so kills are diagnosable.
-    signal.signal(signal.SIGBREAK, _log_signal)
-if hasattr(signal, "SIGINT"):
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    _install_signal("SIGBREAK", _log_signal)
+_install_signal("SIGINT", signal.SIG_IGN)
 
 
 def _log_exit(reason: str) -> None:

@@ -1694,10 +1694,11 @@ def pull_org_skills(
     if "org_id" not in identity:
         raise SyncInertError("no organisation context available")
     org_id = identity["org_id"]
-    base_url = resolve_sync_base_url()
-    if not base_url:
-        raise SyncInertError("no sync base URL configured")
-    client = client or HSPClient(base_url, identity["api_key"])
+    if client is None:
+        base_url = resolve_sync_base_url()
+        if not base_url:
+            raise SyncInertError("no sync base URL configured")
+        client = HSPClient(base_url, identity["api_key"])
 
     caps = client.capabilities()
     _check_version(caps)
@@ -1806,10 +1807,11 @@ def propose_skill(
     """
     identity = identity or resolve_org_identity()
     org_id = identity["org_id"]
-    base_url = resolve_sync_base_url()
-    if not base_url:
-        raise SyncInertError("no sync base URL configured")
-    client = client or HSPClient(base_url, identity["api_key"])
+    if client is None:
+        base_url = resolve_sync_base_url()
+        if not base_url:
+            raise SyncInertError("no sync base URL configured")
+        client = HSPClient(base_url, identity["api_key"])
 
     caps = client.capabilities()
     _check_version(caps)

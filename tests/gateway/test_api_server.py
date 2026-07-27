@@ -690,32 +690,26 @@ class TestCapabilitiesEndpoint:
         )
         calls = []
 
-        async def _to_thread(func, *args, **kwargs):
+        async def _run_plugin_sync(func, *args, timeout, **kwargs):
             calls.append(func)
             return func(*args, **kwargs)
 
         app = _create_app(adapter)
-        with patch(
-            "gateway.platforms.api_server.asyncio.to_thread",
-            new=_to_thread,
-        ):
+        with patch.object(adapter, "_run_plugin_sync", new=_run_plugin_sync):
             async with TestClient(TestServer(app)) as cli:
                 response = await cli.get("/v1/capabilities")
 
         assert response.status == 200
-        assert calls == [_registry]
+        assert calls.count(_registry) == 1
 
     @pytest.mark.asyncio
     async def test_command_registry_timeout_preserves_core_capabilities(self, adapter):
-        async def _never_returns(func, *args, **kwargs):
-            await asyncio.Event().wait()
+        async def _times_out(func, *args, timeout, **kwargs):
+            raise asyncio.TimeoutError
 
         app = _create_app(adapter)
         with (
-            patch(
-                "gateway.platforms.api_server.asyncio.to_thread",
-                new=_never_returns,
-            ),
+            patch.object(adapter, "_run_plugin_sync", new=_times_out),
             patch(
                 "gateway.platforms.api_server._PLUGIN_COMMAND_REGISTRY_TIMEOUT_SECONDS",
                 0.01,
@@ -868,6 +862,79 @@ class TestCapabilitiesEndpoint:
         assert called is False
 
     @pytest.mark.asyncio
+    async def test_plugin_command_rejects_non_url_safe_route_name(self, adapter, monkeypatch):
+        lookup_called = False
+
+        def _commands():
+            nonlocal lookup_called
+            lookup_called = True
+            return {}
+
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_commands", _commands)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/v1/commands/bad.name",
+                json={"args": ""},
+            )
+
+        assert response.status == 404
+        assert lookup_called is False
+
+    @pytest.mark.asyncio
+    async def test_timed_out_sync_commands_do_not_accumulate_worker_threads(
+        self, adapter, monkeypatch
+    ):
+        release = threading.Event()
+        lock = threading.Lock()
+        calls = 0
+
+        def _handler(raw):
+            nonlocal calls
+            with lock:
+                calls += 1
+            release.wait(timeout=2)
+            return raw
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_commands",
+            lambda: {
+                "bounded": {
+                    "handler": _handler,
+                    "api_executable": True,
+                }
+            },
+        )
+        app = _create_app(adapter)
+
+        try:
+            with (
+                patch("gateway.platforms.api_server.PLUGIN_SYNC_MAX_WORKERS", 2),
+                patch("gateway.platforms.api_server._PLUGIN_COMMAND_TIMEOUT_SECONDS", 0.05),
+                patch(
+                    "gateway.platforms.api_server._PLUGIN_COMMAND_REGISTRY_TIMEOUT_SECONDS",
+                    0.05,
+                ),
+            ):
+                async with TestClient(TestServer(app)) as cli:
+                    first = await asyncio.gather(
+                        cli.post("/v1/commands/bounded", json={"args": "one"}),
+                        cli.post("/v1/commands/bounded", json={"args": "two"}),
+                    )
+                    assert [response.status for response in first] == [500, 500]
+
+                    third = await cli.post(
+                        "/v1/commands/bounded",
+                        json={"args": "three"},
+                    )
+                    assert third.status == 500
+
+            with lock:
+                assert calls == 2
+        finally:
+            release.set()
+
+    @pytest.mark.asyncio
     async def test_sync_plugin_command_runs_off_event_loop(self, adapter, monkeypatch):
         def _handler(raw):
             return f"ok:{raw}"
@@ -883,15 +950,12 @@ class TestCapabilitiesEndpoint:
         )
         calls = []
 
-        async def _to_thread(func, *args, **kwargs):
+        async def _run_plugin_sync(func, *args, timeout, **kwargs):
             calls.append(func)
             return func(*args, **kwargs)
 
         app = _create_app(adapter)
-        with patch(
-            "gateway.platforms.api_server.asyncio.to_thread",
-            new=_to_thread,
-        ):
+        with patch.object(adapter, "_run_plugin_sync", new=_run_plugin_sync):
             async with TestClient(TestServer(app)) as cli:
                 response = await cli.post(
                     "/v1/commands/status",
@@ -1093,7 +1157,7 @@ class TestCapabilitiesEndpoint:
             response = await adapter._handle_capabilities(request)
 
         assert response.status == 200
-        assert calls == [adapter._plugin_manager.get_api_server_capabilities]
+        assert calls.count(adapter._plugin_manager.get_api_server_capabilities) == 1
 
     @pytest.mark.asyncio
     async def test_profile_capabilities_do_not_leak_default_plugin_metadata(self, adapter):

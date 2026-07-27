@@ -1039,6 +1039,13 @@ class TestPluginCommandEnumeration:
                 "plugin": "local-plugin",
                 "api_executable": False,
             },
+            "bad/name": {
+                "handler": lambda _a: "nope",
+                "description": "Unreachable command",
+                "category": "Plugin",
+                "plugin": "bad-plugin",
+                "api_executable": True,
+            },
         })
 
         registry = api_plugin_command_registry()
@@ -1057,6 +1064,7 @@ class TestPluginCommandEnumeration:
         }
         assert "status" not in by_name
         assert "local-only" not in by_name
+        assert "bad/name" not in by_name
         assert "handler" not in by_name["joke"]
         assert is_gateway_known_command("definitely-not-registered") is False
 

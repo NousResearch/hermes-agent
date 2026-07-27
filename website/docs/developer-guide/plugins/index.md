@@ -865,6 +865,13 @@ messaging-session context; those opted-in commands are advertised by
 `POST /v1/commands/{name}` request whose JSON body is
 `{"args": "raw command arguments"}`.
 
+API-executable command names must normalize to one URL-safe path segment:
+1–64 lowercase ASCII letters, digits, underscores, or hyphens, beginning with
+a letter or digit. Names containing `/`, `.`, Unicode characters, or other
+punctuation are rejected during registration. A command name may have only one
+plugin owner; a second plugin attempting to claim an existing name is rejected
+without replacing the original handler.
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
@@ -883,7 +890,7 @@ messaging-session context; those opted-in commands are advertised by
 | Handler receives | Raw args string | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
 
-**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
+**Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence. Duplicate names across plugins raise `ValueError`; the first registered plugin retains ownership.
 
 **Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
 

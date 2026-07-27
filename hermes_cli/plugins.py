@@ -279,6 +279,7 @@ def _get_enabled_plugins() -> Optional[set]:
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 _API_PLUGIN_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_API_EXECUTABLE_COMMAND_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 
 def is_safe_api_server_plugin_id(plugin_id: str) -> bool:
@@ -287,6 +288,11 @@ def is_safe_api_server_plugin_id(plugin_id: str) -> bool:
         _API_PLUGIN_ID_SEGMENT_RE.fullmatch(segment)
         for segment in plugin_id.split("/")
     )
+
+
+def is_api_executable_plugin_command_name(name: Any) -> bool:
+    """Whether *name* is one URL-safe API command path segment."""
+    return isinstance(name, str) and bool(_API_EXECUTABLE_COMMAND_NAME_RE.fullmatch(name))
 
 
 @dataclass
@@ -620,6 +626,11 @@ class PluginContext:
                 self.manifest.name,
             )
             return
+        if api_executable and not is_api_executable_plugin_command_name(clean):
+            raise ValueError(
+                "API-executable plugin command name must be a URL-safe single path segment "
+                "of 1-64 lowercase ASCII letters, digits, underscores, or hyphens"
+            )
 
         # Reject if it conflicts with a built-in command
         try:
@@ -633,6 +644,13 @@ class PluginContext:
                 return
         except Exception:
             pass  # If commands module isn't available, skip the check
+
+        existing = self._manager._plugin_commands.get(clean)
+        if existing is not None:
+            owner = str(existing.get("plugin") or "unknown")
+            raise ValueError(
+                f"Plugin command '/{clean}' is already registered by plugin '{owner}'"
+            )
 
         self._manager._plugin_commands[clean] = {
             "handler": handler,
@@ -2614,6 +2632,7 @@ def get_api_executable_plugin_commands() -> Dict[str, dict]:
         name: entry
         for name, entry in (get_plugin_commands() or {}).items()
         if isinstance(name, str)
+        and is_api_executable_plugin_command_name(name)
         and isinstance(entry, dict)
         and entry.get("api_executable") is True
         and callable(entry.get("handler"))

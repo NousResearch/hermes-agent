@@ -358,6 +358,11 @@ advertised as `endpoints.plugin_command`. Local-only plugin commands and
 gateway built-ins are omitted because the API server does not own their
 interactive messaging-session context. Handler callables are never serialized.
 
+API-executable names are restricted to one URL-safe path segment: 1–64
+lowercase ASCII letters, digits, underscores, or hyphens, beginning with a
+letter or digit. This keeps advertised names and executable routes identical;
+malformed names are neither advertised nor resolved by the endpoint.
+
 In multiplex mode, the process-global command registry belongs to the default
 profile that owns the listener. Named-profile capability responses therefore
 omit `commands` and `endpoints.plugin_command`, and named-profile command
@@ -382,7 +387,10 @@ Malformed JSON, non-object request bodies, and non-string `args` return 400.
 Commands that are absent or no longer registered return 404. Plugin failures
 return a generic 500 response and are logged server-side without exposing the
 exception to the client. Synchronous handlers and registry discovery run off
-the API event loop, and both lookup and execution have bounded timeouts.
+the API event loop on the adapter's bounded plugin executor, and both lookup
+and execution have bounded timeouts. A timed-out synchronous callback retains
+its worker slot until it actually exits, preventing hung plugins from growing
+an unbounded thread or work queue.
 
 ### GET /health
 

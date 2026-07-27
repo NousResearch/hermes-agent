@@ -3247,6 +3247,13 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
         name = str(request.match_info.get("name") or "").lower().lstrip("/")
+        from hermes_cli.plugins import is_api_executable_plugin_command_name
+
+        if not is_api_executable_plugin_command_name(name):
+            return web.json_response(
+                _openai_error("Command not found", code="command_not_found"),
+                status=404,
+            )
         try:
             body = await request.json()
         except Exception:
@@ -3269,8 +3276,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return (get_api_executable_plugin_commands() or {}).get(name)
 
         try:
-            entry = await asyncio.wait_for(
-                asyncio.to_thread(_resolve_command),
+            entry = await self._run_plugin_sync(
+                _resolve_command,
                 timeout=_PLUGIN_COMMAND_REGISTRY_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
@@ -3297,12 +3304,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 if inspect.iscoroutinefunction(handler):
                     result = handler(raw_args)
                 else:
-                    result = await asyncio.to_thread(handler, raw_args)
+                    result = await self._run_plugin_sync(
+                        handler,
+                        raw_args,
+                        timeout=_PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                    )
                 if inspect.isawaitable(result):
                     result = await result
                 if result is None or isinstance(result, str):
                     return result
-                return await asyncio.to_thread(str, result)
+                return await self._run_plugin_sync(
+                    str,
+                    result,
+                    timeout=_PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                )
 
             normalized_result = await asyncio.wait_for(
                 _invoke_command(),

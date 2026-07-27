@@ -933,6 +933,34 @@ class TestPluginCommands:
 
         assert mgr._plugin_commands["remote-action"]["api_executable"] is True
 
+    @pytest.mark.parametrize(
+        "name",
+        ["category/action", "bad.name", "café", "x" * 65],
+    )
+    def test_api_executable_command_requires_url_safe_single_segment(self, name):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        with pytest.raises(ValueError, match="URL-safe single path segment"):
+            ctx.register_command(name, lambda args: args, api_executable=True)
+
+        assert mgr._plugin_commands == {}
+
+    def test_register_command_rejects_duplicate_plugin_ownership(self):
+        mgr = PluginManager()
+        first_handler = lambda args: f"first:{args}"
+        PluginContext(PluginManifest(name="plugin-a", source="user"), mgr).register_command(
+            "shared-plugin-command", first_handler
+        )
+
+        with pytest.raises(ValueError, match="already registered by plugin 'plugin-a'"):
+            PluginContext(
+                PluginManifest(name="plugin-b", source="user"), mgr
+            ).register_command("shared-plugin-command", lambda args: f"second:{args}")
+
+        assert mgr._plugin_commands["shared-plugin-command"]["handler"] is first_handler
+        assert mgr._plugin_commands["shared-plugin-command"]["plugin"] == "plugin-a"
+
     def test_register_command_rejects_non_boolean_api_execution_flag(self):
         mgr = PluginManager()
         manifest = PluginManifest(name="test-plugin", source="user")

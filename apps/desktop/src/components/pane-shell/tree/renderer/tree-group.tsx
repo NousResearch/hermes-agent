@@ -16,12 +16,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DecodeText } from '@/components/ui/decode-text'
 import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS } from '@/components/ui/drop-affordance'
-import {
-  PANE_TAB_STRIP_LINE_LEFT,
-  PANE_TAB_STRIP_LINE_RIGHT,
-  PaneTab,
-  PaneTabLabel
-} from '@/components/ui/pane-tab'
+import { PANE_TAB_STRIP_LINE_LEFT, PANE_TAB_STRIP_LINE_RIGHT, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'

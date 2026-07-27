@@ -11,8 +11,8 @@ import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/mar
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
-import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
+import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -89,14 +89,23 @@ const ThinkingDisclosure: FC<{
     }
   }, [elapsed, pending, watching])
 
-  // The timer counts whole seconds, so a block that finished inside one reports
-  // "0s" — accurate and useless. Say it was quick and leave the number out.
-  const thoughtLabel =
-    pending || thoughtFor === null
-      ? t.assistant.thread.thinking
-      : thoughtFor < 1
-        ? t.assistant.thread.thoughtBriefly
-        : t.assistant.thread.thoughtFor(formatElapsed(thoughtFor))
+  // Three ways a finished block can report itself. With a measured duration it
+  // says so, unless the timer's whole seconds round it to "0s" — accurate and
+  // useless — in which case it just says it was quick. With no duration at all
+  // (rehydrated history, or reasoning that arrived already complete so we never
+  // saw it run) it still has to read as finished; a turn that ended must not go
+  // on saying "Thinking".
+  let thoughtLabel = t.assistant.thread.thinking
+
+  if (!pending) {
+    if (thoughtFor === null) {
+      thoughtLabel = t.assistant.thread.thought
+    } else if (thoughtFor < 1) {
+      thoughtLabel = t.assistant.thread.thoughtBriefly
+    } else {
+      thoughtLabel = t.assistant.thread.thoughtFor(formatElapsed(thoughtFor))
+    }
+  }
 
   // While the preview is live, pin the scroll container to the bottom on
   // every content growth so the latest tokens are always visible.
@@ -144,24 +153,10 @@ const ThinkingDisclosure: FC<{
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
     >
-      <DisclosureRow onToggle={() => setUserOpen(!open)} open={open}>
-        <span className="flex min-w-0 items-baseline gap-1.5">
-          <span
-            className={cn(
-              'text-[length:var(--conversation-tool-font-size)] font-medium leading-(--conversation-line-height) text-(--ui-text-secondary)',
-              pending && 'shimmer text-foreground/55'
-            )}
-          >
-            {thoughtLabel}
-          </span>
-          {pending && (
-            <ActivityTimerText
-              className="text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)"
-              seconds={elapsed}
-            />
-          )}
-        </span>
-      </DisclosureRow>
+      <ScaffoldRow onToggle={() => setUserOpen(!open)} open={open}>
+        <span className={cn(SCAFFOLD_LABEL_CLASS, pending && 'shimmer')}>{thoughtLabel}</span>
+        {pending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
+      </ScaffoldRow>
       {open && (
         <div
           className={cn(

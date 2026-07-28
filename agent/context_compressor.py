@@ -1354,6 +1354,28 @@ class ContextCompressor(ContextEngine):
         previous = telemetry.get("aux_call_duration_ms") or 0
         telemetry["aux_call_duration_ms"] = previous + max(0, int(duration_ms))
 
+    def _emit_init_summary_once(self) -> None:
+        """Emit the informative startup line once, on first resolution.
+
+        Deferred out of ``__init__`` (#32221): the line reports resolved token
+        budgets, so emitting it there would force the synchronous
+        ``get_model_context_length()`` probe during construction. Reads via
+        the properties below are safe here because
+        ``_resolved_context_length`` is already set.
+        """
+        if not getattr(self, "_log_init_summary", False):
+            return
+        self._log_init_summary = False
+        logger.info(
+            "Context compressor initialized: model=%s context_length=%d "
+            "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+            "provider=%s base_url=%s",
+            self.model, self._resolved_context_length, self.threshold_tokens,
+            self.threshold_percent * 100, self.summary_target_ratio * 100,
+            self.tail_token_budget,
+            self.provider or "none", self.base_url or "none",
+        )
+
     def _resolve_context_length(self) -> int:
         """Resolve and cache the model's context length on first access."""
         if self._resolved_context_length is None:
@@ -1374,21 +1396,7 @@ class ContextCompressor(ContextEngine):
             self.threshold_percent = self._effective_threshold_percent(
                 self._resolved_context_length, self._base_threshold_percent,
             )
-            if self._log_init_summary:
-                # Emit once, on first resolution, so the informative startup
-                # line survives without forcing a synchronous probe in
-                # __init__ (#32221). Reads via the properties below are safe
-                # here because _resolved_context_length is already set.
-                self._log_init_summary = False
-                logger.info(
-                    "Context compressor initialized: model=%s context_length=%d "
-                    "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                    "provider=%s base_url=%s",
-                    self.model, self._resolved_context_length, self.threshold_tokens,
-                    self.threshold_percent * 100, self.summary_target_ratio * 100,
-                    self.tail_token_budget,
-                    self.provider or "none", self.base_url or "none",
-                )
+            self._emit_init_summary_once()
         return self._resolved_context_length
 
     @property
@@ -1397,19 +1405,42 @@ class ContextCompressor(ContextEngine):
 
     @context_length.setter
     def context_length(self, value: int) -> None:
+        # No-op guard: repeated assignment of the SAME window (e.g. the codex
+        # app-server usage callback re-reports the window on every response)
+        # must not invalidate the derived budgets — that would wipe runtime
+        # corrections applied directly to threshold_tokens/tail_token_budget
+        # (see conversation_compression's aux-context threshold sync), which
+        # persisted on main's eager-init behavior.
+        if value == getattr(self, "_resolved_context_length", None):
+            return
         self._resolved_context_length = value
+        # Re-apply the small-context floor (raise-only) for the genuinely new
+        # window so the invalidated budgets below recompute coherently —
+        # percent and tokens must derive from the same window. Skipped on
+        # bare test instances built via object.__new__ that never ran
+        # __init__ (no _base_threshold_percent).
+        _base = getattr(self, "_base_threshold_percent", None)
+        if _base is not None:
+            self.threshold_percent = self._effective_threshold_percent(
+                value, _base,
+            )
         self._threshold_tokens = None
         self._tail_token_budget = None
         self._max_summary_tokens = None
+        self._emit_init_summary_once()
 
     @property
     def threshold_tokens(self) -> int:
         if self._threshold_tokens is None:
+            # Resolve the window FIRST (may apply the small-context floor to
+            # threshold_percent as a side effect) so the percent read below
+            # is the floored value regardless of argument evaluation order.
+            _ctx = self.context_length
             # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even
             # if the percentage would suggest a lower value (#14690 handles
             # the degenerate small-window case inside the helper).
             self._threshold_tokens = self._compute_threshold_tokens(
-                self.context_length, self.threshold_percent, self.max_tokens,
+                _ctx, self.threshold_percent, self.max_tokens,
             )
             # Apply absolute token cap (compression.threshold_tokens) —
             # takes the lower of the ratio-based threshold and the cap.
@@ -2082,9 +2113,10 @@ class ContextCompressor(ContextEngine):
         # threshold floor and the absolute threshold cap both need the
         # resolved window, so they are applied on first resolution (see
         # _resolve_context_length / the threshold_tokens property) instead
-        # of here. The pre-floor value is kept so update_model() can
-        # re-derive for a new window (switching small -> large must drop
-        # back to the configured value).
+        # of here. update_model() re-derives the floor for a new window from
+        # _config_threshold_percent (the raw config value snapshotted above),
+        # so switching small -> large correctly drops back to the configured
+        # value.
         self._config_context_length = config_context_length
         self._configured_threshold_percent = self.threshold_percent
         self._resolved_context_length: int | None = None

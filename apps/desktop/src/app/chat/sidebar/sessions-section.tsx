@@ -14,7 +14,7 @@ import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
-import { SidebarCount, SidebarDateDivider } from './chrome'
+import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import {
   EnteredProjectContent,
   ProjectOverviewRow,
@@ -56,7 +56,7 @@ function SidebarSectionHeader({
     <>
       {icon}
       <SidebarPanelLabel>{label}</SidebarPanelLabel>
-      {meta && <SidebarCount>{meta}</SidebarCount>}
+      {meta && <SidebarSectionMeta>{meta}</SidebarSectionMeta>}
     </>
   )
 

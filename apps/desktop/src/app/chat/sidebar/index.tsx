@@ -1223,7 +1223,6 @@ export function ChatSidebar({
                   )
                 }
                 label={s.results}
-                labelMeta={String(searchResults.length)}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
@@ -1458,7 +1457,6 @@ export function ChatSidebar({
                         platformName={group.label}
                       />
                     }
-                    labelMeta={String(shownSessions.length)}
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}

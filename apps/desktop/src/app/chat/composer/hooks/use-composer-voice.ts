@@ -116,6 +116,14 @@ export function useComposerVoice({
     await onSubmit(text)
   }
 
+  const wakePausedRef = useRef(false)
+  // Resolves once the in-flight wake.pause round-trip completes (mic released by
+  // the wake listener). The conversation awaits this before opening its own mic
+  // so the two never contend for the device — on Windows especially, opening the
+  // capture device while the wake listener still holds it makes getUserMedia
+  // fail and the conversation never starts listening.
+  const wakePauseBarrierRef = useRef<Promise<void> | null>(null)
+
   const conversation = useVoiceConversation({
     busy,
     consumePendingResponse,
@@ -128,7 +136,10 @@ export function useComposerVoice({
     onStopWord: () => setVoiceConversationActive(false),
     onSubmit: submitVoiceTurn,
     onTranscribeAudio,
-    pendingResponse: pendingTurnResponse
+    pendingResponse: pendingTurnResponse,
+    // Before the conversation opens the mic, wait for any in-flight wake.pause
+    // to finish releasing the capture device (see wakePauseBarrierRef).
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
   })
 
   // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
@@ -158,14 +169,13 @@ export function useComposerVoice({
     }
   }, [disabled, target, voiceConversationActive, voiceStartRequest])
 
-  const wakePausedRef = useRef(false)
-
   const resumeWakeIfPaused = useCallback(() => {
     if (!wakePausedRef.current) {
       return
     }
 
     wakePausedRef.current = false
+    wakePauseBarrierRef.current = null
     // Reconcile, don't just resume: the wake word is a persistent setting, so
     // ending a voice chat must re-arm the listener whenever config says
     // enabled — including when the raw resume loses the mic-release race.
@@ -176,10 +186,16 @@ export function useComposerVoice({
   // it guards resumeWakeIfPaused from resuming a detector another surface owns.
   const pauseWakeForVoice = useCallback(() => {
     wakePausedRef.current = true
-    void $gateway
-      .get()
-      ?.request('wake.pause', {})
-      .catch(() => undefined)
+    const barrier = (async () => {
+      try {
+        await $gateway.get()?.request('wake.pause', {})
+      } catch {
+        // No wake listener / older backend — nothing held the mic.
+      }
+    })()
+    wakePauseBarrierRef.current = barrier
+
+    return barrier
   }, [])
 
   useEffect(() => {

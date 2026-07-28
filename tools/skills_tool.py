@@ -1617,7 +1617,7 @@ def skill_view(
                         "Your edits are kept locally\n"
                         "> and are never overwritten by org updates; share "
                         "them back with\n"
-                        "> `hermes skills propose` (or automatically, if your "
+                        "> `hermes sync propose` (or automatically, if your "
                         "org enables it).\n\n"
                     )
                     rendered_content = header + rendered_content

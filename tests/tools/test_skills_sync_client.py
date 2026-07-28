@@ -1,13 +1,13 @@
-"""Tests for tools/skills_sync_client.py — the HSP/1 sync client.
+"""Tests for tools/skills_sync_client.py — the Skill Sync client.
 
 Covers, against the frozen contract (~/src/specs/collective-wisdom/
-hsp-1-contract.md):
+the sync wire contract):
   * content addressing (full 64-hex) + canonical JSON (§2.1, §2.5)
   * the DEV-PHASE gate (tool_gateway_admin) making sync inert
   * the M1-D opt-in default (nothing syncs without the sync flag)
   * object building (blob/tree/commit, exec mode, size limit)
   * push (upload + CAS), pull (materialize), and the three-way merge / 409
-    conflict paths — all against an in-process mock HSP server.
+    conflict paths — all against an in-process mock sync server.
 
 The mock server implements the contract §3/§4 endpoint shapes with an
 in-memory object store + ref table. No live server, no network.
@@ -25,7 +25,7 @@ import tools.skills_sync_client as ssc
 
 
 # ---------------------------------------------------------------------------
-# In-process mock HSP/1 server (contract §3-§4)
+# In-process mock sync server (read + write endpoints)
 # ---------------------------------------------------------------------------
 
 class _MockState:
@@ -237,7 +237,7 @@ def _jwt(claims: dict) -> str:
 
 class TestAddressing:
     def test_full_64_hex_address(self):
-        addr = ssc.hsp_address(b"")
+        addr = ssc.wire_address(b"")
         # sha256 of empty is the well-known e3b0... digest, full 64 hex.
         assert addr == (
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -245,9 +245,9 @@ class TestAddressing:
         assert len(addr.split(":", 1)[1]) == 64
 
     def test_address_differs_from_local_truncated_namespace(self):
-        # OI-5: HSP full-64-hex must NOT equal the local truncated 16-hex form.
+        # The wire full-64-hex must NOT equal the local truncated 16-hex form.
         data = b"hello world"
-        full = ssc.hsp_address(data)
+        full = ssc.wire_address(data)
         truncated = "sha256:" + hashlib.sha256(data).hexdigest()[:16]
         assert full != truncated
         assert len(full.split(":")[1]) == 64
@@ -460,7 +460,7 @@ def synced_env(tmp_path, monkeypatch):
 class TestEndToEnd:
     def test_capabilities_version_check(self, mock_server):
         base, state = mock_server
-        client = ssc.HSPClient(base, "tok")
+        client = ssc.SyncClient(base, "tok")
         caps = client.capabilities()
         assert caps["hsp_version"] == "1"
         ssc._check_version(caps)  # no raise
@@ -468,14 +468,14 @@ class TestEndToEnd:
     def test_version_mismatch_raises(self, mock_server):
         base, state = mock_server
         state.hsp_version = "2"
-        client = ssc.HSPClient(base, "tok")
-        with pytest.raises(ssc.HSPError):
+        client = ssc.SyncClient(base, "tok")
+        with pytest.raises(ssc.SyncError):
             ssc._check_version(client.capabilities())
 
     def test_push_uploads_and_cas(self, mock_server, synced_env):
         base, state = mock_server
         home, skills, identity = synced_env
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         result = ssc.push_skills(client, identity=identity)
         assert result["ok"] is True
         # HEAD ref advanced to our commit
@@ -491,7 +491,7 @@ class TestEndToEnd:
     def test_push_then_pull_materializes(self, mock_server, synced_env, tmp_path, monkeypatch):
         base, state = mock_server
         home, skills, identity = synced_env
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         ssc.push_skills(client, identity=identity)
 
         # Simulate a fresh device: new skills dir, same server, same opt-in.
@@ -513,7 +513,7 @@ class TestEndToEnd:
     def test_push_idempotent_reupload(self, mock_server, synced_env):
         base, state = mock_server
         home, skills, identity = synced_env
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         r1 = ssc.push_skills(client, identity=identity)
         n_objects = len(state.objects)
         # push again with no local change -> same head, objects already_present
@@ -525,7 +525,7 @@ class TestEndToEnd:
     def test_conflict_nonoverlap_merges(self, mock_server, synced_env, monkeypatch):
         base, state = mock_server
         home, skills, identity = synced_env
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         # First push establishes a base head we record locally.
         first = ssc.push_skills(client, identity=identity)
         # Inject a divergent server head: change beta server-side so the next
@@ -543,7 +543,7 @@ class TestEndToEnd:
     def test_conflict_true_overlap_writes_conflict_ref(self, mock_server, synced_env, monkeypatch):
         base, state = mock_server
         home, skills, identity = synced_env
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         ssc.push_skills(client, identity=identity)
 
         # Build a DIFFERENT server-side head for the SAME skill (alpha) so the
@@ -642,7 +642,7 @@ class TestSyncManifest:
         # plane content. Read it back via read_manifest_of_root.
         base, state = mock_server
         home, skills, identity = synced_env
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
 
         objs, root_hash, skill_map = ssc.snapshot_profile(["alpha", "beta"])
         client.put_objects(objs.objects)
@@ -661,7 +661,7 @@ class TestSyncManifest:
         # becomes opted in locally on pull, even if this device had it disabled.
         base, state = mock_server
         home, skills, identity = synced_env
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
 
         # Device A pushes alpha+beta (manifest enables both).
         ssc.push_skills(client, identity=identity)
@@ -857,7 +857,7 @@ class TestOrgEndToEnd:
         base, state = mock_server
         home, skills, identity = synced_env
         identity = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         result = ssc.propose_skill("alpha", client, identity=identity)
         assert result["ok"] is True
         assert result.get("merged") is True
@@ -871,7 +871,7 @@ class TestOrgEndToEnd:
         home, skills, identity = synced_env
         # Seed an org HEAD as admin first.
         admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         seeded = ssc.propose_skill("alpha", client, identity=admin_ident)
 
         # Member edits beta and proposes: server converts to 202.
@@ -896,7 +896,7 @@ class TestOrgEndToEnd:
         base, state = mock_server
         home, skills, identity = synced_env
         admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         ssc.propose_skill("alpha", client, identity=admin_ident)
         ssc.propose_skill("beta", client, identity=admin_ident)
 
@@ -913,7 +913,7 @@ class TestOrgEndToEnd:
         base, state = mock_server
         home, skills, identity = synced_env
         admin_ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         ssc.propose_skill("alpha", client, identity=admin_ident)
 
         result = ssc.pull_org_skills(client, identity=admin_ident)
@@ -927,7 +927,7 @@ class TestOrgEndToEnd:
         base, state = mock_server
         home, skills, identity = synced_env
         ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         result = ssc.pull_org_skills(client, identity=ident)
         assert result["ok"] is True
         assert result["head"] is None
@@ -938,7 +938,7 @@ class TestOrgEndToEnd:
         home, skills, identity = synced_env
         state.org_feature = False
         ident = {**identity, "org_id": "org-1", "org_role": "ADMIN"}
-        client = ssc.HSPClient(base, identity["api_key"])
+        client = ssc.SyncClient(base, identity["api_key"])
         with pytest.raises(ssc.SyncInertError):
             ssc.propose_skill("alpha", client, identity=ident)
 

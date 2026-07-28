@@ -287,6 +287,13 @@
     --ui-text-secondary: color-mix(in srgb, var(--ui-base) 74%, transparent);
     --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 54%, transparent);
     --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 36%, transparent);
+    /* Transcript scaffolding — thinking headers, settled tool runs, the live
+       activity ticker. One colour for all of them (see `ScaffoldRow`), pitched
+       between the secondary and tertiary greys those lines used to pick
+       individually, and dimmed once more by the fade rule below so the prose
+       reading column stays primary. */
+    --conversation-scaffold-text: color-mix(in srgb, var(--ui-base) 64%, transparent);
+    --conversation-scaffold-meta: color-mix(in srgb, var(--ui-base) 44%, transparent);
     --ui-stroke-primary: color-mix(
       in srgb,
       var(--ui-accent) var(--theme-stroke-primary-accent-mix),
@@ -402,10 +409,6 @@
     /* Tight gap between tool rows inside a single action group, so a back-to-back
        run still reads as one cohesive sequence. */
     --tool-row-gap: 0.375rem;
-    /* Height of the bounded, auto-scrolling window a long adjacent tool-call run
-       collapses into (see `.tool-group-scroll`). Sized to show a few rows before
-       the scroll + top fade kick in. */
-    --tool-group-scroll-max-h: 6.75rem;
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
@@ -1413,15 +1416,18 @@ text-* variant utilities. */ .btn-arc {
   background: transparent !important;
 }
 
-/* Fade scaffolding so the prose reading column stays primary. Two targets:
-   a thinking disclosure fades as one block, and each *individual* tool row
-   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
-   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
-   context, so a child row can never be more opaque than the group — that made
-   it impossible to keep one row lit (an open diff) while its siblings faded.
-   With the fade per-row, each row hovers/focuses independently. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
+/* Fade scaffolding so the prose reading column stays primary. Each surface
+   opts in with `data-conversation-scaffold` — thinking header, tool row, run
+   summary, live status line — instead of being named by its own selector here.
+   Spelling them out individually is how the status line came to sit a shade
+   brighter than the rows either side of it.
+
+   Marked per surface and never on a container: opacity opens a stacking
+   context, so nothing inside a faded parent can be more opaque than it, and
+   one row (an open diff) could not stay lit while its siblings dimmed. Hence
+   the tool group wrapper carries no mark and each row inside it carries its
+   own — no two marked elements nest, so the fade never compounds. */
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -1429,8 +1435,7 @@ text-* variant utilities. */ .btn-arc {
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 
@@ -1496,22 +1501,31 @@ text-* variant utilities. */ .btn-arc {
 /* Conversation block rhythm. assistant-ui renders each range as a direct child
    of the message content with no per-part wrapper, so adjacency rules cover
    every pairing — first block needs no reset, nested tool rows are untouched.
-   Two tiers: scaffolding (tool / thinking) gets a roomy block gap so it reads
-   as separate from the reply; consecutive prose collapses to a tight paragraph
-   rhythm so split-out text parts don't look like a big gap. */
-/* Scaffolding adjacent to anything → roomy block gap. */
+
+   One gap between top-level blocks, whatever they are. Spelling out which
+   *pairs* qualified meant the live status line (not tool, thinking or prose)
+   fell through every branch and carried its own half-size margin instead. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], .aui-md),
-[data-slot='aui_assistant-message-content']
-  > .aui-md
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md)
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md) {
   margin-top: var(--turn-block-gap);
 }
 
-/* Prose ↔ prose → tight paragraph rhythm, matching in-block paragraph spacing. */
+/* Except prose ↔ prose: one reading column that happens to arrive as several
+   parts, so it keeps the in-block paragraph rhythm. Same specificity as the
+   rule above and deliberately after it. */
 [data-slot='aui_assistant-message-content'] > .aui-md + .aui-md {
   margin-top: var(--paragraph-gap);
+}
+
+/* A streaming turn is sealed into several assistant bubbles as it goes
+   (`message.interim`) and rehydrates into fewer, so the same two blocks are
+   sometimes siblings inside one bubble and sometimes split across two. The
+   flex gap between bubbles is the turn gap — half the block gap — which made
+   the rhythm visibly tighten and then relax as a turn settled. Top it up so
+   the column ticks at one interval either way. */
+[data-slot='aui_turn-pair'] > [data-slot='aui_assistant-message-root'] + [data-slot='aui_assistant-message-root'] {
+  margin-top: calc(var(--turn-block-gap) - var(--conversation-turn-gap));
 }
 
 /* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */
@@ -1565,32 +1579,33 @@ text-* variant utilities. */ .btn-arc {
   --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 }
 
-/* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.
-   ToolGroupSlot pins the newest call to the bottom (unless the user scrolls
-   up), so a back-to-back run stays compact instead of pushing the reply off
-   screen. A thin scrollbar keeps the affordance discoverable. */
-.tool-group-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--ui-stroke-tertiary) transparent;
+/* A live tool run, shown as one line. `ToolRunTicker` stacks the run's rows
+   into a reel and offsets it by the newest row's index, so each new action
+   slides the one before it up and out of a single-line window — the run reads
+   as one line ticking over in place rather than a list growing down the page.
+   Rows are clipped to a uniform line box so the offset stays exact whatever a
+   row contains. */
+.tool-ticker {
+  height: var(--conversation-line-height);
+  overflow: hidden;
 }
 
-/* Break out of the fixed window the moment any row inside is expanded: the
-   user is now reading a diff/output, so let it grow to full height instead of
-   peering at it through a ~2-row viewport. Collapsing the row drops it back
-   into the compact, auto-scrolling window. Beats a larger fixed cap since an
-   open row already bounds its own payload with an inner scroll. */
-.tool-group-scroll:has([data-tool-row][data-tool-open]) {
-  max-height: none;
-  -webkit-mask-image: none;
-  mask-image: none;
+.tool-ticker__reel {
+  transform: translateY(calc(var(--tool-ticker-index, 0) * var(--conversation-line-height) * -1));
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Top gradient — only applied once the user is scrolled down off the top, so
-   the oldest visible call fades up under the fade while the first row stays
-   fully legible when scrolled all the way up. */
-.tool-group-scroll--faded {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
+.tool-ticker__row {
+  display: flex;
+  height: var(--conversation-line-height);
+  align-items: center;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-ticker__reel {
+    transition: none;
+  }
 }
 
 @keyframes code-card-stream-enter {

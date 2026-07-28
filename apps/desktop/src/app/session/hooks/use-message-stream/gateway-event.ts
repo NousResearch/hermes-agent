@@ -50,6 +50,7 @@ import {
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
@@ -104,6 +105,28 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
     action: { label: billingCtaLabel(block, ctaCopy), onClick: () => runBillingRecovery(block) }
   })
 }
+
+/**
+ * Events that retire a "drafting a tool call" claim.
+ *
+ * `tool.generating` opens the claim and nothing closes it — a draft can be
+ * abandoned without ever reaching `tool.start`, so enumerating the ways one
+ * *ends* left the label on screen for the rest of the turn. Inverted: the
+ * claim only covers what the model is emitting right now, and any other output
+ * from the session proves it moved on. Same rule the TUI applies to its
+ * transient trail lines (`turnController.pruneTransient`).
+ */
+const DRAFT_SUPERSEDING_EVENT_TYPES = new Set([
+  'error',
+  'message.complete',
+  'message.delta',
+  'message.start',
+  'reasoning.delta',
+  'thinking.delta',
+  'tool.complete',
+  'tool.progress',
+  'tool.start'
+])
 
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
@@ -241,6 +264,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // whole turn to complete.
       if (sessionId && COMPACTION_RESUME_EVENT_TYPES.has(event.type) && compactedTurnRef.current.has(sessionId)) {
         setSessionCompacting(sessionId, false)
+      }
+
+      if (sessionId && DRAFT_SUPERSEDING_EVENT_TYPES.has(event.type)) {
+        setSessionDraftingTool(sessionId, '')
       }
 
       if (event.type === 'gateway.ready') {
@@ -677,7 +704,26 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (storedId && nextTitle) {
           setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
         }
-      } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
+      } else if (event.type === 'tool.generating') {
+        // Announced while the model is still emitting the call's JSON, so it
+        // carries a name and nothing else — no id, no args. Materializing a row
+        // from it strands an argless placeholder whenever the bubble is sealed
+        // before the real `tool.start` arrives, because the two can no longer be
+        // reconciled across the boundary. It's a status, so say it as one.
+        // A stopped turn can still emit a frame or two before the backend
+        // notices, and naming a tool we will never run leaves the label up
+        // until something else retires it. `mutateStream` drops late tool rows
+        // on the same condition; the status line has to agree with it.
+        if (!sessionId || sessionInterrupted(sessionId)) {
+          return
+        }
+
+        setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: false, toolRunning: true })
+        }
+      } else if (event.type === 'tool.start' || event.type === 'tool.progress') {
         if (!sessionId) {
           return
         }

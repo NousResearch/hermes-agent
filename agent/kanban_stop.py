@@ -13,6 +13,7 @@ loop continues instead of exiting.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
@@ -47,23 +48,61 @@ def _tool_call_name(tc: Any) -> str:
     return str(getattr(tc, "name", "") or "")
 
 
-def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
-    if not messages:
+def _tool_call_id(tc: Any) -> str:
+    if isinstance(tc, dict):
+        return str(tc.get("id") or "")
+    return str(getattr(tc, "id", "") or "")
+
+
+def is_successful_terminal_result(tool_name: str, content: Any) -> bool:
+    """Return whether a terminal kanban tool actually reached ``ok=true``."""
+    if tool_name not in _TERMINAL_KANBAN_TOOLS or not isinstance(content, str):
         return False
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        if role == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                if _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS:
-                    return True
-        elif role == "tool":
-            name = str(msg.get("name") or "")
-            if name in _TERMINAL_KANBAN_TOOLS:
-                return True
-    return False
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("ok") is True
+
+
+def terminal_success_for_tool_calls(
+    messages: Iterable[dict] | None,
+    tool_calls: Iterable[Any] | None,
+) -> bool:
+    """Match successful terminal results to assistant calls by id and name."""
+    expected = {
+        (_tool_call_id(tool_call), _tool_call_name(tool_call))
+        for tool_call in (tool_calls or [])
+        if _tool_call_id(tool_call)
+        and _tool_call_name(tool_call) in _TERMINAL_KANBAN_TOOLS
+    }
+    if not expected:
+        return False
+    return any(
+        (
+            str(message.get("tool_call_id") or ""),
+            str(message.get("name") or ""),
+        )
+        in expected
+        and is_successful_terminal_result(
+            str(message.get("name") or ""),
+            message.get("content"),
+        )
+        for message in (messages or [])
+        if isinstance(message, dict) and message.get("role") == "tool"
+    )
+
+
+def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
+    """True only after a matching terminal kanban tool succeeded."""
+    message_list = list(messages or [])
+    tool_calls = [
+        tool_call
+        for message in message_list
+        if isinstance(message, dict) and message.get("role") == "assistant"
+        for tool_call in (message.get("tool_calls") or [])
+    ]
+    return terminal_success_for_tool_calls(message_list, tool_calls)
 
 
 def build_kanban_stop_nudge(
@@ -103,6 +142,8 @@ def build_kanban_stop_nudge(
 
 __all__ = [
     "build_kanban_stop_nudge",
+    "is_successful_terminal_result",
     "kanban_stop_nudge_enabled",
     "session_called_kanban_terminal",
+    "terminal_success_for_tool_calls",
 ]

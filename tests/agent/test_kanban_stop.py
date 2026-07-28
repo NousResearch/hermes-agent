@@ -6,8 +6,10 @@ import pytest
 
 from agent.kanban_stop import (
     build_kanban_stop_nudge,
+    is_successful_terminal_result,
     kanban_stop_nudge_enabled,
     session_called_kanban_terminal,
+    terminal_success_for_tool_calls,
 )
 
 
@@ -74,7 +76,12 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
                 }
             ],
         },
-        {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "done"},
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": '{"ok": true}',
+        },
     ]
     assert session_called_kanban_terminal(messages) is True
     assert build_kanban_stop_nudge(messages=messages) is None
@@ -83,9 +90,78 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
 def test_no_nudge_after_kanban_block(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     messages = [
-        {"role": "tool", "name": "kanban_block", "tool_call_id": "1", "content": "blocked"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_block", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_block",
+            "tool_call_id": "1",
+            "content": '{"ok": true}',
+        },
     ]
     assert build_kanban_stop_nudge(messages=messages) is None
+
+
+@pytest.mark.parametrize("content", ["not json", '{"ok": false}', '{"error": "no"}'])
+def test_failed_terminal_result_keeps_nudge(clear_kanban_env, content):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "call-1",
+            "content": content,
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
+
+
+def test_terminal_result_matches_call_id_and_name():
+    calls = [
+        {
+            "id": "current",
+            "type": "function",
+            "function": {"name": "kanban_complete", "arguments": "{}"},
+        }
+    ]
+    assert is_successful_terminal_result("kanban_complete", '{"ok": true}')
+    assert not terminal_success_for_tool_calls(
+        [
+            {
+                "role": "tool",
+                "name": "kanban_block",
+                "tool_call_id": "current",
+                "content": '{"ok": true}',
+            },
+            {
+                "role": "tool",
+                "name": "kanban_complete",
+                "tool_call_id": "earlier",
+                "content": '{"ok": true}',
+            },
+        ],
+        calls,
+    )
 
 
 def test_nudge_budget_exhausted(clear_kanban_env):

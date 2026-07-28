@@ -31,6 +31,7 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
+from agent.kanban_stop import is_successful_terminal_result
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -51,6 +52,9 @@ from tools.tool_result_storage import (
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+_ConcurrentToolResult = tuple[Any, Any, Any, float, bool, bool, Any]
+_KANBAN_TERMINAL_HALT_CODE = "kanban_terminal_success"
 
 
 def _ensure_file_checkpoint(
@@ -596,7 +600,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
-    results = [None] * num_tools
+    results: list[Optional[_ConcurrentToolResult]] = [None] * num_tools
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
@@ -970,7 +974,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
-            if _is_multimodal_tool_result(function_result):
+            if isinstance(function_result, dict) and _is_multimodal_tool_result(
+                function_result
+            ):
                 # Append the hint to the text summary part so the model
                 # still sees it; don't touch the image blocks.
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
@@ -1074,8 +1080,29 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
 
+def _append_terminal_skips(agent, tool_calls, messages: list) -> bool:
+    """Preserve one tool result per call after a terminal kanban success."""
+    for tool_call in tool_calls:
+        tool_name = tool_call.function.name
+        messages.append(
+            make_tool_result_message(
+                tool_name,
+                f"[Tool execution skipped — {tool_name} was not started because "
+                "the kanban task reached a terminal state]",
+                tool_call.id,
+                effect_disposition="none",
+            )
+        )
+        if not _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"terminal skip result {tool_name}",
+        ):
+            return False
+    return True
 
-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+
+def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> Optional[bool]:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 
     ``finalize=False`` skips the end-of-batch aggregate budget enforcement
@@ -1084,6 +1111,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+    terminal_state_reached = False
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
@@ -1341,17 +1369,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     from hermes_state import format_session_db_unavailable
                     return json.dumps({"success": False, "error": format_session_db_unavailable()})
                 from tools.session_search_tool import session_search as _session_search
-                return _session_search(
-                    query=next_args.get("query", ""),
-                    role_filter=next_args.get("role_filter"),
-                    limit=next_args.get("limit", 3),
-                    session_id=next_args.get("session_id"),
-                    around_message_id=next_args.get("around_message_id"),
-                    window=next_args.get("window", 5),
-                    sort=next_args.get("sort"),
-                    db=session_db,
-                    current_session_id=agent.session_id,
-                )
+                search_args: dict[str, Any] = {
+                    "query": next_args.get("query", ""),
+                    "limit": next_args.get("limit", 3),
+                    "window": next_args.get("window", 5),
+                    "db": session_db,
+                    "current_session_id": agent.session_id,
+                }
+                for optional_key in (
+                    "role_filter",
+                    "session_id",
+                    "around_message_id",
+                    "sort",
+                ):
+                    if next_args.get(optional_key) is not None:
+                        search_args[optional_key] = next_args[optional_key]
+                return _session_search(**search_args)
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
@@ -1368,14 +1401,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 target = next_args.get("target", "memory")
                 operations = next_args.get("operations")
                 from tools.memory_tool import memory_tool as _memory_tool
-                result = _memory_tool(
-                    action=next_args.get("action"),
-                    target=target,
-                    content=next_args.get("content"),
-                    old_text=next_args.get("old_text"),
-                    operations=operations,
-                    store=agent._memory_store,
-                )
+                memory_args: dict[str, Any] = {
+                    "target": target,
+                    "operations": operations,
+                    "store": agent._memory_store,
+                }
+                for optional_key in ("action", "content", "old_text"):
+                    if next_args.get(optional_key) is not None:
+                        memory_args[optional_key] = next_args[optional_key]
+                result = _memory_tool(**memory_args)
                 # Mirror successful built-in memory writes to external
                 # providers. All gating/op-expansion lives behind the manager
                 # interface (MemoryManager.notify_memory_tool_write).
@@ -1713,7 +1747,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
         if subdir_hints:
-            if _is_multimodal_tool_result(function_result):
+            if isinstance(function_result, dict) and _is_multimodal_tool_result(
+                function_result
+            ):
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
@@ -1723,6 +1759,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
         messages.append(tool_message)
+        _terminal_success = is_successful_terminal_result(
+            function_name,
+            tool_message.get("content"),
+        )
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
             agent,
@@ -1790,6 +1830,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 response_preview = _fr_str[:agent.log_prefix_chars] + "..." if len(_fr_str) > agent.log_prefix_chars else _fr_str
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
 
+        if _terminal_success:
+            terminal_state_reached = True
+            agent._set_tool_guardrail_halt(
+                ToolGuardrailDecision(
+                    action="halt",
+                    code=_KANBAN_TERMINAL_HALT_CODE,
+                    message="The kanban task reached a terminal state.",
+                    tool_name=function_name,
+                    count=1,
+                )
+            )
+            if not _append_terminal_skips(
+                agent,
+                assistant_message.tool_calls[i:],
+                messages,
+            ):
+                return
+            break
+
         if agent._interrupt_requested and i < len(assistant_message.tool_calls):
             remaining = len(assistant_message.tool_calls) - i
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
@@ -1822,6 +1881,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # applied to sequential execution as well.
     if finalize and num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+    return terminal_state_reached
 
 
 
@@ -1856,23 +1916,40 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    segments = list(segments)
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
         segment_message = SimpleNamespace(tool_calls=list(calls))
+        terminal_state_reached = False
         if kind == "parallel":
             execute_tool_calls_concurrent(
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
             )
         else:
-            execute_tool_calls_sequential(
-                agent, segment_message, messages, effective_task_id, api_call_count,
-                finalize=False,
+            terminal_state_reached = bool(
+                execute_tool_calls_sequential(
+                    agent,
+                    segment_message,
+                    messages,
+                    effective_task_id,
+                    api_call_count,
+                    finalize=False,
+                )
             )
 
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        if terminal_state_reached:
+            remaining_calls = [
+                tool_call
+                for _, later_calls in segments[segment_index + 1 :]
+                for tool_call in later_calls
+            ]
+            if not _append_terminal_skips(agent, remaining_calls, messages):
+                return
+            break
 
     # ── Whole-turn finalize (budget + /steer) ─────────────────────────
     total_tools = len(assistant_message.tool_calls)

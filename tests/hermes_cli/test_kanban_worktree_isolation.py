@@ -38,13 +38,20 @@ def kanban_home(tmp_path, monkeypatch):
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(
         [
-            "git", "-C", str(cwd),
-            "-c", "user.name=Test User",
-            "-c", "user.email=test@example.com",
-            "-c", "commit.gpgsign=false",
+            "git",
+            "-C",
+            str(cwd),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
             *args,
         ],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -53,7 +60,9 @@ def _make_repo(tmp_path: Path) -> Path:
     repo.mkdir()
     subprocess.run(
         ["git", "init", "-b", "main", str(repo)],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", "README.md")
@@ -64,6 +73,12 @@ def _make_repo(tmp_path: Path) -> Path:
 def _add_worktree(repo: Path, target: Path, branch: str) -> Path:
     _git(repo, "worktree", "add", str(target), "-b", branch, "HEAD")
     return target
+
+
+def _must_task(conn, task_id):
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    return task
 
 
 def test_decompose_worktree_children_get_own_workspace(kanban_home):
@@ -136,7 +151,7 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
             workspace_kind="worktree",
             workspace_path=str(occupied),  # inherited shared/stale path
         )
-        task = kb.get_task(conn, tid)
+        task = _must_task(conn, tid)
 
     workspace, branch = kb._resolve_worktree_workspace(task)
     assert workspace == (repo / ".worktrees" / tid).resolve()
@@ -145,7 +160,9 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert (occupied / "README.md").exists()
     head = subprocess.run(
         ["git", "-C", str(occupied), "rev-parse", "--abbrev-ref", "HEAD"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     assert head == "wt/sibling"
 
@@ -165,7 +182,7 @@ def test_resolve_worktree_same_branch_still_reuses(kanban_home, tmp_path):
             (str(own), tid),
         )
         conn.commit()
-        task = kb.get_task(conn, tid)
+        task = _must_task(conn, tid)
 
     workspace, branch = kb._resolve_worktree_workspace(task)
     assert workspace == own.resolve()
@@ -189,7 +206,7 @@ def test_resolve_worktree_own_path_on_foreign_branch_keeps_legacy_reuse(
             (str(own), tid),
         )
         conn.commit()
-        task = kb.get_task(conn, tid)
+        task = _must_task(conn, tid)
 
     # The fallback target would be the occupied path itself, so the
     # legacy reuse applies rather than failing dispatch.

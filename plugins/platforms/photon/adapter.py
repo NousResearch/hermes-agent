@@ -262,6 +262,11 @@ def _sidecar_error_from_response(
     error = str(data.get("error") or text[:200] or "sidecar error")
     error_class = str(data.get("error_class") or "sidecar_error")
     retryable = bool(data.get("retryable"))
+    if error_class == "target_not_allowed":
+        # Structured code path: replace whatever the sidecar echoed with the
+        # canonical user-facing explanation — never raw upstream error text.
+        error = _TARGET_NOT_ALLOWED_MESSAGE
+        retryable = False
     return PhotonSidecarError(
         path=path,
         status_code=status_code,
@@ -269,6 +274,14 @@ def _sidecar_error_from_response(
         error_class=error_class,
         retryable=retryable,
     )
+
+# User-facing explanation for the Spectrum "Target not allowed for this
+# project" AuthenticationError. Shared/free-tier lines can only reply to
+# conversations the target initiated; they cannot open new outbound threads.
+_TARGET_NOT_ALLOWED_MESSAGE = (
+    "shared/free-tier Photon lines cannot initiate outbound sends to new "
+    "targets — upgrade to a dedicated line or use another delivery channel"
+)
 
 def _coerce_port(value: Any, default: int) -> int:
     try:
@@ -1752,6 +1765,21 @@ class PhotonAdapter(BasePlatformAdapter):
             return False
         return any(pat in lowered for pat in _PHOTON_RETRYABLE_PATTERNS)
 
+    @staticmethod
+    def _is_permanent_sidecar_failure(result: SendResult) -> bool:
+        """True when the sidecar classified the failure as permanent.
+
+        ``auth_or_config`` and ``target_not_allowed`` cannot be fixed by
+        retrying or by the plain-text fallback resend — attempting either
+        just double-sends a doomed request (issue #50971).
+        """
+        raw = result.raw_response
+        return (
+            isinstance(raw, dict)
+            and raw.get("retryable") is False
+            and raw.get("error_class") in ("auth_or_config", "target_not_allowed")
+        )
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -1777,12 +1805,12 @@ class PhotonAdapter(BasePlatformAdapter):
         if result.success:
             return result
 
-        sidecar_failure = result.raw_response
-        if (
-            isinstance(sidecar_failure, dict)
-            and sidecar_failure.get("error_class") == "auth_or_config"
-            and sidecar_failure.get("retryable") is False
-        ):
+        if self._is_permanent_sidecar_failure(result):
+            # Permanent failure classes: retrying cannot succeed and the
+            # unconditional plain-text fallback below would double-send the
+            # same doomed request. Return the structured failure as-is
+            # (with the user-facing explanation already attached for
+            # target_not_allowed in _sidecar_send).
             return result
 
         error_str = result.error or ""
@@ -1807,6 +1835,10 @@ class PhotonAdapter(BasePlatformAdapter):
                 if result.success:
                     return result
                 error_str = result.error or ""
+                if self._is_permanent_sidecar_failure(result):
+                    # A retry surfaced a permanent class — don't fall through
+                    # to the plain-text resend either.
+                    return result
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break
             else:
@@ -2037,6 +2069,32 @@ def _cache_inbound_attachment(
 # is not co-resident.  Reuses a live sidecar already listening on the
 # configured port (cron processes cannot spawn the sidecar themselves).
 
+def _standalone_error(resp: Any) -> Dict[str, Any]:
+    """Build the structured error dict for a failed standalone sidecar call.
+
+    Mirrors ``_sidecar_error_from_response``: parse the sidecar body
+    independently, carry the error class + retryability, and swap in the
+    canonical user-facing message for ``target_not_allowed`` (never the raw
+    upstream text).
+    """
+    try:
+        data = resp.json() or {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    error_class = str(data.get("error_class") or "sidecar_error")
+    retryable = bool(data.get("retryable"))
+    if error_class == "target_not_allowed":
+        error = _TARGET_NOT_ALLOWED_MESSAGE
+        retryable = False
+    elif resp.status_code != 200:
+        error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+    else:
+        error = str(data.get("error") or "sidecar reported failure")
+    return {"error": error, "error_class": error_class, "retryable": retryable}
+
+
 async def _standalone_send(
     pconfig: PlatformConfig,
     chat_id: str,
@@ -2097,10 +2155,10 @@ async def _standalone_send(
                     f"{base}/send", json=send_body, headers=headers,
                 )
                 if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
+                    return _standalone_error(resp)
                 data = resp.json() or {}
                 if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                    return _standalone_error(resp)
                 last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
@@ -2125,10 +2183,10 @@ async def _standalone_send(
                     f"{base}/send-attachment", json=att_body, headers=headers,
                 )
                 if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
+                    return _standalone_error(resp)
                 data = resp.json() or {}
                 if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                    return _standalone_error(resp)
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

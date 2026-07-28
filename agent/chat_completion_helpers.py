@@ -1392,7 +1392,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # the same trick the reasoning_content pad uses above (#15250, #17400).
     # Tool-call turns are exempt: ``content: ""`` alongside ``tool_calls``
     # is accepted everywhere and normalizing it would alter cache keys.
-    if not _san_content and not assistant_tool_calls:
+    # codex_responses is exempt too: empty assistant content is a designed
+    # first-class state there (commentary-phase messages persist with
+    # content:"" while their text is delivered via the interim callback),
+    # and the Responses wire has no "assistant must not be empty"
+    # validation.  A codex session later replayed through a strict
+    # chat-completions provider is still repaired by the send-time pad,
+    # which keys on the ACTIVE api_mode at replay time.
+    if (
+        not _san_content
+        and not assistant_tool_calls
+        and getattr(agent, "api_mode", None) != "codex_responses"
+    ):
         _san_content = " "
 
     msg = {

@@ -24,7 +24,6 @@ vi.mock('@/i18n', () => ({
       sidebar: {
         projects: { menuAppearance: 'Appearance', noColor: 'No color' },
         row: {
-          actionsFor: (title: string) => `Actions for ${title}`,
           archive: 'Archive',
           branchFrom: 'Branch from here',
           copyId: 'Copy ID',
@@ -33,10 +32,11 @@ vi.mock('@/i18n', () => ({
           hideTabBar: 'Hide tab bar',
           pin: 'Pin',
           rename: 'Rename',
-          renameDesc: 'Rename this session',
+          renameDesc: 'Leave empty to clear.',
           renameFailed: 'Rename failed',
           renameTitle: 'Rename session',
           renamed: 'Renamed',
+          sessionActions: 'Session actions',
           unpin: 'Unpin',
           untitledPlaceholder: 'Untitled'
         }
@@ -74,7 +74,7 @@ vi.mock('@/store/windows', () => ({
 function renderMenu() {
   return render(
     <SessionActionsMenu sessionId="s1" title="My session">
-      <button aria-label="Actions for My session" type="button">
+      <button aria-label="Session actions" type="button">
         ⋮
       </button>
     </SessionActionsMenu>
@@ -85,7 +85,7 @@ describe('SessionActionsMenu', () => {
   it('opens the dropdown on click without a tooltip on the kebab', async () => {
     renderMenu()
 
-    const trigger = screen.getByRole('button', { name: 'Actions for My session' })
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
 
     expect(trigger.closest('[data-slot="tooltip-trigger"]')).toBeNull()
 

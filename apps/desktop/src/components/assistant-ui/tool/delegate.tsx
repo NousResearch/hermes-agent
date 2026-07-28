@@ -149,7 +149,7 @@ export const DelegateTool: FC<Pick<ToolPart, 'args' | 'result' | 'toolCallId'>> 
   }
 
   return (
-    <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)" data-slot="tool-block">
+    <div className="grid min-w-0 gap-(--tool-row-gap)" data-delegate-card="" data-slot="tool-block">
       {rows.map(row => (
         <DelegateRowView key={row.id} row={row} />
       ))}

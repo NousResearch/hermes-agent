@@ -1638,37 +1638,14 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Pad a textless assistant turn's empty content to a single space.
-        # Strict providers (Moonshot/Kimi via OpenRouter: "the message at
-        # position N with role 'assistant' must not be empty") reject the
-        # replay with HTTP 400 — and the session is poisoned for every
-        # subsequent turn.  This is the DURABLE repair for ALREADY-poisoned
-        # persisted sessions: the partial-stream-stub rows older builds
-        # wrote (content:'' finish_reason:'length') are rebuilt to '' on
-        # every reload — ``_rows_to_conversation`` strips whitespace, so a
-        # DB-side pad can't survive — and only a SEND-time pad repairs
-        # them.  It must run AFTER the whitespace-normalization pass above
-        # (which would strip the pad back to '') and after
-        # _drop_thinking_only_and_merge_users (which can leave a textless
-        # turn), but BEFORE apply_anthropic_cache_control rewrites content
-        # into list blocks.  Tool-call turns are exempt: ``content: ''``
-        # alongside ``tool_calls`` is accepted everywhere and normalizing
-        # it would alter prompt-cache keys.  codex_responses is exempt:
-        # empty assistant content is a designed first-class state there
-        # (commentary-phase turns persist with content:'') and the
-        # Responses wire has no empty-content validation.  Keying on the
-        # ACTIVE api_mode means a codex-written empty turn is still
-        # repaired the moment the session replays through a strict
-        # chat-completions provider.
-        if getattr(agent, "api_mode", None) != "codex_responses":
-            for am in api_messages:
-                if (
-                    am.get("role") == "assistant"
-                    and not am.get("tool_calls")
-                    and isinstance(am.get("content"), str)
-                    and not am["content"].strip()
-                ):
-                    am["content"] = " "
+        # NOTE (empty-content class fix): no send-time pad loop here.  The
+        # single owner for "never send a turn strict wire validation rejects
+        # as empty" is ``repair_empty_non_final_messages``, which runs inside
+        # ``_sanitize_api_messages`` above — the unconditional pre-send
+        # chokepoint shared with the summary path.  Its placeholder is
+        # non-whitespace, so it survives the whitespace-normalization pass
+        # regardless of ordering (a single-space pad here previously had to
+        # be sequenced after normalization to survive, forking the concept).
 
         # Apply Anthropic prompt caching for Claude models on native
         # Anthropic, OpenRouter, and third-party Anthropic-compatible

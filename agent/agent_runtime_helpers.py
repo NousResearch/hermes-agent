@@ -2819,6 +2819,18 @@ def _msg_has_payload(msg: Dict[str, Any]) -> bool:
         return True
     if msg.get("reasoning") or msg.get("reasoning_details"):
         return True
+    # Codex Responses item carriers: a commentary-phase assistant turn
+    # persists with content:"" by DESIGN — its text lives in
+    # ``codex_message_items`` (delivered via the interim callback) and the
+    # structured items are replayed for prefix-cache hits.  Same for
+    # ``codex_reasoning_items``.  These turns are never wire-empty on any
+    # api_mode: the codex transport replays the items, and the
+    # chat-completions transport strips the carriers only after this repair
+    # pass has already run.  Treat them as payload so the repair never
+    # rewrites a designed-empty codex turn (July 2026: a write-time pad that
+    # ignored this broke codex commentary replay in CI).
+    if msg.get("codex_message_items") or msg.get("codex_reasoning_items"):
+        return True
     return False
 
 

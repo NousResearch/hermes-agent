@@ -716,11 +716,11 @@ class TestEmptyPartialStreamStubNotPersisted:
 
 
 class TestBuildAssistantMessageEmptyContentPad:
-    """Regression layer 2 (chat_completion_helpers.build_assistant_message):
-    never serialize a textless assistant turn with ``content: ""`` — pad to
-    a single space, the same trick as the reasoning_content pad (#15250).
-    Tool-call turns are exempt (``content: ""`` + ``tool_calls`` is accepted
-    everywhere)."""
+    """Layer 2 was consolidated into the class owner: the builder stores
+    textless turns AS-IS (no write-time pad — a pad here broke codex
+    commentary turns and forked the concept).  Wire safety is owned by
+    ``repair_empty_non_final_messages`` inside ``sanitize_api_messages``.
+    These tests pin the builder's store-as-is contract."""
 
     def _agent_for_builder(self):
         from run_agent import AIAgent
@@ -738,24 +738,24 @@ class TestBuildAssistantMessageEmptyContentPad:
             )
         return a
 
-    def test_empty_content_padded_to_space(self):
+    def test_empty_content_stored_as_is(self):
         from agent.chat_completion_helpers import build_assistant_message
         from tests.run_agent.test_run_agent import _mock_assistant_msg
 
         agent = self._agent_for_builder()
         msg = build_assistant_message(agent, _mock_assistant_msg(content=""), "stop")
-        assert msg["content"] == " ", (
-            "Textless assistant turn must be padded to a single space — "
-            "Moonshot/Kimi reject empty assistant content with HTTP 400."
+        assert msg["content"] == "", (
+            "Builder must store textless turns as-is — wire repair is owned "
+            "by repair_empty_non_final_messages at the send boundary."
         )
 
-    def test_none_content_padded_to_space(self):
+    def test_none_content_stored_as_empty(self):
         from agent.chat_completion_helpers import build_assistant_message
         from tests.run_agent.test_run_agent import _mock_assistant_msg
 
         agent = self._agent_for_builder()
         msg = build_assistant_message(agent, _mock_assistant_msg(content=None), "stop")
-        assert msg["content"] == " "
+        assert msg["content"] == ""
 
     def test_tool_call_turn_content_left_empty(self):
         from agent.chat_completion_helpers import build_assistant_message
@@ -767,10 +767,7 @@ class TestBuildAssistantMessageEmptyContentPad:
             _mock_assistant_msg(content="", tool_calls=[_mock_tool_call()]),
             "tool_calls",
         )
-        assert msg["content"] == "", (
-            "Tool-call turns are exempt from the pad: content:'' alongside "
-            "tool_calls is accepted by every provider."
-        )
+        assert msg["content"] == ""
         assert msg["tool_calls"]
 
     def test_non_empty_content_unchanged(self):
@@ -787,11 +784,12 @@ class TestSendTimeEmptyAssistantPad:
     -stream-stub row written by an older build (content:'' ,
     finish_reason:'length') is rebuilt to content:'' on every reload —
     ``_rows_to_conversation`` strips whitespace, so a DB-side pad cannot
-    survive.  The send-time pad in conversation_loop's api_messages loop
-    must therefore repair the empty textless assistant turn at the
-    serialization boundary, so a RESUMED poisoned session replays
-    cleanly against strict providers (Moonshot/Kimi HTTP 400 "message ...
-    with role 'assistant' must not be empty")."""
+    survive.  The class owner ``repair_empty_non_final_messages`` (inside
+    ``sanitize_api_messages``, the pre-send chokepoint) must repair the
+    empty textless assistant turn at the serialization boundary, so a
+    RESUMED poisoned session replays cleanly against strict providers
+    (Moonshot/Kimi HTTP 400 "message ... with role 'assistant' must not
+    be empty" / Anthropic "all messages must have non-empty content")."""
 
     def _run_one_turn_with_history(self, loop_agent, history):
         from tests.run_agent.test_run_agent import _mock_response
@@ -809,7 +807,7 @@ class TestSendTimeEmptyAssistantPad:
         kwargs = loop_agent.client.chat.completions.create.call_args_list[0]
         return kwargs.kwargs.get("messages") or kwargs.args[0].get("messages")
 
-    def test_poisoned_resumed_history_padded_on_send(self, loop_agent):
+    def test_poisoned_resumed_history_repaired_on_send(self, loop_agent):
         # Byte-shape of a persisted poisoned session:
         # user -> assistant('' , finish_reason='length', NO tool_calls) -> user.
         poisoned = [
@@ -822,7 +820,7 @@ class TestSendTimeEmptyAssistantPad:
             m for m in sent
             if m.get("role") == "assistant"
             and not m.get("tool_calls")
-            and m.get("content") == ""
+            and not (m.get("content") or "").strip()
         ]
         assert empties == [], (
             "A resumed session carrying a persisted empty partial-stream "
@@ -834,7 +832,7 @@ class TestSendTimeEmptyAssistantPad:
              and not m.get("tool_calls")),
             None,
         )
-        assert stub is not None and stub["content"] == " "
+        assert stub is not None and stub["content"] == "[response interrupted]"
 
     def test_tool_call_turn_not_padded_on_send(self, loop_agent):
         history = [
@@ -864,18 +862,16 @@ class TestSendTimeEmptyAssistantPad:
 
 
 class TestSendTimePadMultimodalSafety:
-    """Regression: the send-time pad must skip non-string (list) assistant
+    """Regression: the send-time repair must skip non-string (list) assistant
     content instead of crashing — a forked session whose new user turn
     attaches an image hit AttributeError: 'list' object has no attribute
-    'strip' inside the pad loop.
+    'strip' inside an earlier pad loop.
 
-    Note: current main flattens multimodal assistant list-content to a
-    plain string upstream of the send boundary, so the list shape rarely
-    survives to the pad loop in this path — but other builders/callers can
-    still produce list content, and the ``isinstance(str)`` guard must hold
-    regardless of upstream flattening.  This test drives a multimodal
+    The repair is now owned by ``repair_empty_non_final_messages``, whose
+    ``_msg_has_payload`` treats a list with any typed block as payload —
+    multimodal turns are never rewritten.  This test drives a multimodal
     history through the loop and asserts (a) no crash, and (b) the
-    assistant turn's text is neither dropped nor replaced by the pad.
+    assistant turn's text is neither dropped nor replaced.
     """
 
     def test_multimodal_assistant_content_not_touched(self, loop_agent):
@@ -917,27 +913,23 @@ class TestSendTimePadMultimodalSafety:
             )
         else:
             assert "I see an image" in (c or ""), (
-                "Flattened multimodal assistant text must survive the pad loop."
+                "Flattened multimodal assistant text must survive the repair."
             )
-        assert c != " ", "The pad must never replace real multimodal content."
 
-    def test_pad_loop_skips_list_content_directly(self):
-        """Unit-shape check: the pad predicate itself must skip list content
-        (the exact AttributeError shape) and pad only textless str turns."""
+    def test_repair_owner_skips_list_content_directly(self):
+        """Unit-shape check against the REAL owner: multimodal list content
+        (the exact AttributeError shape) passes through untouched; a textless
+        str turn is repaired; tool-call turns are exempt."""
+        from agent.agent_runtime_helpers import repair_empty_non_final_messages
         api_messages = [
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
             {"role": "assistant", "content": ""},
             {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "user", "content": "trailing turn keeps the above non-final"},
         ]
-        # Mirror of the send-boundary pad in conversation_loop.
-        for am in api_messages:
-            if (
-                am.get("role") == "assistant"
-                and not am.get("tool_calls")
-                and isinstance(am.get("content"), str)
-                and not am["content"].strip()
-            ):
-                am["content"] = " "
-        assert api_messages[0]["content"] == [{"type": "text", "text": "hi"}]
-        assert api_messages[1]["content"] == " "
-        assert api_messages[2]["content"] == ""
+        out = repair_empty_non_final_messages(api_messages)
+        assert out[0]["content"] == [{"type": "text", "text": "hi"}]
+        assert out[1]["content"] == "[response interrupted]"
+        assert out[2]["content"] == ""
+        # input list untouched (repair is copy-on-write)
+        assert api_messages[1]["content"] == ""

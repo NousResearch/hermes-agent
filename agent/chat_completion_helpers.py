@@ -1373,31 +1373,16 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         from agent.redact import redact_sensitive_text
         _san_content = redact_sensitive_text(_san_content)
 
-    # Defence-in-depth: never serialize a TEXTLESS assistant turn with an
-    # empty content string.  Providers with strict validation (Moonshot/Kimi
-    # via OpenRouter: "the message at position N with role 'assistant' must
-    # not be empty") reject the replay with HTTP 400, which permanently
-    # poisons the persisted session — every subsequent turn re-sends the
-    # offending message.  Reachable via the partial-stream-stub path when a
-    # stream drops before delivering any text (the loop now skips that case,
-    # but other callers of this builder get the same guarantee).  A single
-    # space satisfies non-empty validation without fabricating content —
-    # the same trick the reasoning_content pad uses above (#15250, #17400).
-    # Tool-call turns are exempt: ``content: ""`` alongside ``tool_calls``
-    # is accepted everywhere and normalizing it would alter cache keys.
-    # codex_responses is exempt too: empty assistant content is a designed
-    # first-class state there (commentary-phase messages persist with
-    # content:"" while their text is delivered via the interim callback),
-    # and the Responses wire has no "assistant must not be empty"
-    # validation.  A codex session later replayed through a strict
-    # chat-completions provider is still repaired by the send-time pad,
-    # which keys on the ACTIVE api_mode at replay time.
-    if (
-        not _san_content
-        and not assistant_tool_calls
-        and getattr(agent, "api_mode", None) != "codex_responses"
-    ):
-        _san_content = " "
+    # NOTE (empty-content class fix): textless assistant turns are NOT padded
+    # here.  The single owner for "never send a turn strict wire validation
+    # rejects as empty" is ``repair_empty_non_final_messages`` in
+    # agent_runtime_helpers, which runs inside ``sanitize_api_messages`` — the
+    # unconditional pre-send chokepoint for both the main loop and the summary
+    # path.  Padding at write time was tried (a single-space pad, later a
+    # placeholder) and rejected: it forked the concept across three sites,
+    # broke codex commentary turns (content:'' is a designed state there), and
+    # a DB-side pad can't survive ``_rows_to_conversation``'s whitespace strip
+    # anyway.  Repair belongs at the send boundary, once.
 
     msg = {
         "role": "assistant",
@@ -3944,29 +3929,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     result["error"],
                 )
                 _stub_finish_reason = FINISH_REASON_LENGTH
-            # Never persist a content-less, tool-call-less assistant stub.
-            # When a stream dies before any text arrives (and no partial tool
-            # calls were captured), _partial_text is None → the stub becomes an
-            # empty assistant message.  The Anthropic message schema (and the
-            # litellm/Bedrock proxies in front of it) reject any request whose
-            # transcript contains an empty non-final message:
-            #   "all messages must have non-empty content except for the
-            #    optional final assistant message"  (400 INVALID_REQUEST_BODY)
-            # Once such a stub lands mid-transcript, EVERY subsequent turn 400s
-            # until it scrolls out of context — and the 400 gets misread as a
-            # context-overflow "Cannot compress further" loop.  Substitute a
-            # minimal, honest placeholder so the message is always API-valid
-            # and the continuation prompt still reads as an interrupted turn.
-            if not _partial_text:
-                _partial_text = "[response interrupted]"
-                logger.warning(
-                    "Empty partial-stream stub (0 chars recovered, no tool "
-                    "call) — substituting placeholder content so the assistant "
-                    "message is not persisted empty (would otherwise 400 every "
-                    "later request with 'messages must have non-empty content' "
-                    "/ INVALID_REQUEST_BODY). error=%s",
-                    result["error"],
-                )
+            # NOTE (empty-content class fix): the stub is deliberately allowed
+            # to carry empty content here.  The conversation loop's truncation
+            # path detects an EMPTY partial-stream stub (PARTIAL_STREAM_STUB_ID
+            # + no content) and skips appending it to history entirely — only
+            # the continuation nudge is sent.  Substituting placeholder text at
+            # this site was tried and reverted: it defeats that guard (the stub
+            # no longer looks empty), gets appended to history, and the
+            # placeholder leaks into the stitched final response via
+            # truncated_response_parts.  Transcripts that already carry a
+            # persisted empty turn are healed at the send boundary by
+            # ``repair_empty_non_final_messages`` (the single owner).
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,

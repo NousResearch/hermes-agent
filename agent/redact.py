@@ -1329,21 +1329,33 @@ class StreamingSecretSanitizer:
     the retained bytes are meant to recognize.
     """
 
-    def __init__(self, *, token_candidates_only: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        token_candidates_only: bool = False,
+        embedded_prefixes: bool = True,
+    ) -> None:
         self._pending = ""
         self._pending_parts: list[str] = []
+        self._pending_length = 0
         self._pending_json_stage: str | None = None
         self._pending_env_stage: str | None = None
         self._pending_env_quote = ""
         self._token_candidates_only = token_candidates_only
+        self._embedded_prefixes = embedded_prefixes
 
     @property
     def pending(self) -> str:
         return self._pending + "".join(self._pending_parts)
 
+    @property
+    def pending_length(self) -> int:
+        return self._pending_length
+
     def _replace_pending(self, text: str) -> None:
         self._pending = text
         self._pending_parts = []
+        self._pending_length = len(text)
         self._pending_json_stage = _pending_json_stage(text)
         env_state = _pending_env_stage(text)
         if env_state is None:
@@ -1356,6 +1368,7 @@ class StreamingSecretSanitizer:
         text = self.pending
         self._pending = ""
         self._pending_parts = []
+        self._pending_length = 0
         self._pending_json_stage = None
         self._pending_env_stage = None
         self._pending_env_quote = ""
@@ -1369,9 +1382,11 @@ class StreamingSecretSanitizer:
                 return True
             if text.isspace():
                 self._pending_parts.append(text)
+                self._pending_length += len(text)
                 return True
         elif stage == "value" and '"' not in text:
             self._pending_parts.append(text)
+            self._pending_length += len(text)
             return True
 
         env_stage = self._pending_env_stage
@@ -1396,8 +1411,21 @@ class StreamingSecretSanitizer:
             return True
         return False
 
-    def feed(self, text: str, *, final: bool = False) -> str:
+    def feed_with_metadata(
+        self,
+        text: str,
+        *,
+        final: bool = False,
+    ) -> tuple[str, str | None, int, int]:
+        """Feed text and snapshot retained history only on a transition.
+
+        The second tuple item is ``None`` when an already validated JSON
+        candidate advanced incrementally without emitting. Callers that need
+        event-boundary metadata can therefore avoid joining retained chunks on
+        every streaming update.
+        """
         incoming = str(text or "")
+        pending_before_length = self._pending_length
         if (
             not final
             and (
@@ -1406,8 +1434,9 @@ class StreamingSecretSanitizer:
             )
             and self._extend_incremental_candidate(incoming)
         ):
-            return ""
-        combined = self._consume_pending() + incoming
+            return "", None, pending_before_length, self._pending_length
+        pending_before = self._consume_pending()
+        combined = pending_before + incoming
         if self._token_candidates_only and not final:
             full_known_start = _known_prefix_candidate_start(
                 combined,
@@ -1463,9 +1492,21 @@ class StreamingSecretSanitizer:
             visible, pending = split_incomplete_sensitive_suffix(
                 combined,
                 final=final,
+                embedded_prefixes=self._embedded_prefixes,
             )
         self._replace_pending(pending)
-        return sanitize_terminal_secret_text(visible)
+        return (
+            sanitize_terminal_secret_text(visible),
+            pending_before,
+            pending_before_length,
+            self._pending_length,
+        )
+
+    def feed(self, text: str, *, final: bool = False) -> str:
+        visible, _pending_before, _before_length, _after_length = (
+            self.feed_with_metadata(text, final=final)
+        )
+        return visible
 
     def flush(self) -> str:
         return self.feed("", final=True)

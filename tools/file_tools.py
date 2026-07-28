@@ -2572,7 +2572,7 @@ PATCH_SCHEMA = {
             },
             "new_string": {
                 "type": "string",
-                "description": "REQUIRED when mode='replace'. Replacement text. Pass empty string '' to delete the matched text.",
+                "description": "REQUIRED when mode='replace'. Changed replacement text; it must differ from old_string. Pass empty string '' to delete the matched text.",
             },
             "replace_all": {
                 "type": "boolean",

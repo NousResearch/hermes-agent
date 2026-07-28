@@ -628,7 +628,7 @@ async def test_standalone_send_classifies_target_not_allowed(
     monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
 
     result = await photon_adapter._standalone_send(
-        PlatformConfig(name="photon", enabled=True), "space-1", "hello",
+        PlatformConfig(enabled=True, extra={}), "space-1", "hello",
     )
 
     assert result.get("error") == photon_adapter._TARGET_NOT_ALLOWED_MESSAGE

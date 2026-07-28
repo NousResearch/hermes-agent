@@ -320,6 +320,41 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_email_subject_reaches_smtp_message(self):
+        email_platform = Platform("email")
+        email_cfg = SimpleNamespace(
+            enabled=True,
+            token=None,
+            extra={"address": "hermes@example.com", "smtp_host": "smtp.example.com"},
+        )
+        config = SimpleNamespace(
+            platforms={email_platform: email_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        smtp = MagicMock()
+
+        with patch.dict(os.environ, {"EMAIL_PASSWORD": "secret"}), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("smtplib.SMTP", return_value=smtp), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "email:andy@example.com",
+                        "message": "done",
+                        "subject": "[Hermes][Test] Subject",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        sent_message = smtp.send_message.call_args.args[0]
+        assert sent_message["Subject"] == "[Hermes][Test] Subject"
+        assert sent_message.get_payload(decode=True).decode("utf-8") == "done"
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

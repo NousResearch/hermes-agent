@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
@@ -31,8 +32,10 @@ vi.mock('./model', () => ({
 
 // ProjectMenu (the kebab) has its own dedicated test file — stub it here so
 // this file only exercises overview-row's own Tip usage (the disclosure
-// toggle) plus the WorkspaceAddButton wiring.
+// toggle) plus the WorkspaceAddButton wiring. ProjectContextMenu (the row's
+// right-click wrapper) is stubbed as a pass-through so the row still renders.
 vi.mock('./project-menu', () => ({
+  ProjectContextMenu: ({ children }: { children: ReactNode }) => children,
   ProjectMenu: () => null
 }))
 

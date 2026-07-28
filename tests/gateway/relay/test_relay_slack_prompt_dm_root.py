@@ -289,15 +289,16 @@ async def test_typing_flat_mode_status_anchors_to_trigger_ts_by_default():
 
 
 @pytest.mark.asyncio
-async def test_typing_flat_mode_opt_out_drops_anchor():
-    """flat_dm_status: false restores the fully-anchorless flat posture."""
-    adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
-    adapter.config.extra = {
-        "slack": {"reply_in_thread": False, "flat_dm_status": False}
-    }
-    await adapter.send_typing("D1", metadata=None)
-    typing = [f for f in stub.sent if f["op"] == "typing"]
-    assert typing and "thread_id" not in typing[-1]["metadata"]
+async def test_typing_anchors_unconditionally_in_both_modes():
+    """Liveliness is not a preference: the status anchors whenever an inbound
+    ts exists, regardless of reply_in_thread. Placement safety comes from the
+    QA-6/7 send-side anchor strip, not from suppressing the status."""
+    for extra in ({}, {"slack": {"reply_in_thread": False}}):
+        adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
+        adapter.config.extra = extra
+        await adapter.send_typing("D1", metadata=None)
+        typing = [f for f in stub.sent if f["op"] == "typing"]
+        assert typing and typing[-1]["metadata"].get("thread_id") == "1700.0042"
 
 
 @pytest.mark.asyncio

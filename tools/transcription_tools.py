@@ -235,7 +235,7 @@ def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[st
         converted_path,
     ]
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
         return converted_path, None
     except subprocess.CalledProcessError as exc:
         details = exc.stderr.strip() or exc.stdout.strip() or str(exc)

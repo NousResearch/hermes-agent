@@ -35,6 +35,11 @@ def test_rollout_rejects_incorrect_confirmation_when_supplied():
         )
 
 
+def test_rollout_rejects_non_object_body():
+    with pytest.raises(MutationRequestError, match="body must be an object"):
+        validate_mutation_request("gateway-restart", ["RESTART"])
+
+
 def test_enforcement_requires_confirmation_and_idempotency_key():
     with pytest.raises(MutationRequestError, match="confirmation"):
         validate_mutation_request(

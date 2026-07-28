@@ -3916,7 +3916,7 @@ async def _service_mutation_request(request: Request, action: str, target: str):
     try:
         body = await request.json()
     except Exception:
-        body = {}
+        body = None
     try:
         return validate_mutation_request(action, body, require_confirmation=True)
     except MutationRequestError as exc:

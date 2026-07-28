@@ -74,10 +74,13 @@ export function ConfirmDialog({
     setError(null)
 
     if (dismissOnConfirm) {
+      setStatus('saving')
+
       try {
         await onConfirm()
         onClose()
       } catch (err) {
+        setStatus('idle')
         setError(err instanceof Error ? err.message : t.errors.genericFailure)
       }
 

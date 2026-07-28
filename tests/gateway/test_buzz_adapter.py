@@ -705,6 +705,43 @@ class TestBuzzAdapterLifecycle:
         assert adapter.is_connected is False
 
     @pytest.mark.asyncio
+    async def test_disconnect_releases_scoped_lock(self, monkeypatch):
+        """The identity lock taken in connect() must be released on disconnect."""
+        import gateway.status as gateway_status
+
+        released = []
+        monkeypatch.setattr(
+            gateway_status,
+            "release_scoped_lock",
+            lambda platform, key: released.append((platform, key)),
+        )
+        adapter = _make_adapter()
+        adapter._lock_key = "wss://relay.example:" + SELF_PUBKEY
+        await adapter.disconnect()
+        assert released == [("buzz", "wss://relay.example:" + SELF_PUBKEY)]
+        assert adapter._lock_key is None
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
+        """A second profile using the same relay+pubkey must fail fast."""
+        import gateway.status as gateway_status
+
+        monkeypatch.setattr(
+            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+        )
+        adapter = _make_adapter()
+        adapter.cli_path = "/fake/buzz"
+        monkeypatch.setattr(_buzz_mod, "_resolve_private_key", lambda extra=None: "nsec1test")
+        cli = _ScriptedCli()
+        cli.script(
+            "users", "get",
+            [{"pubkey": SELF_PUBKEY, "display_name": "Chip"}],
+        )
+        adapter._run_cli = cli
+        assert await adapter.connect() is False
+        assert adapter._lock_key is None
+
+    @pytest.mark.asyncio
     async def test_get_chat_info_uses_cached_names(self):
         adapter = _make_adapter()
         adapter._channel_names[CHANNEL] = "general"

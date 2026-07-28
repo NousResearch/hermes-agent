@@ -6,6 +6,8 @@ import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 
+import { isSkillItem } from '../composer-utils'
+
 import { useSlashCompletions } from './use-slash-completions'
 
 const CATALOG = {
@@ -78,5 +80,19 @@ describe('useSlashCompletions', () => {
     const work = items.find(item => (item.metadata as { command?: string })?.command === '/work')
 
     expect((work?.metadata as { group?: string })?.group).toBe('Skills')
+  })
+
+  // A `/` typed mid-message is a reference dropped into prose, so the trigger
+  // filters the list to skills (use-composer-trigger). A bare mid-message `/`
+  // resolves to the same empty query as an opening `/`, so that filter runs
+  // over the catalog — which listed no skill-group rows at all, leaving the
+  // inline popover empty. Asserted through isSkillItem, the real predicate.
+  it('leaves only skills for a mid-message slash', async () => {
+    const request = vi.fn().mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const inline = (await completions(api, '')).filter(isSkillItem)
+
+    expect(inline.map(item => (item.metadata as { command?: string })?.command)).toEqual(['/work'])
   })
 })

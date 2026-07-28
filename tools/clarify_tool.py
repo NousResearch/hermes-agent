@@ -30,8 +30,6 @@ from typing import Any, Callable, Dict, List, Optional
 MAX_CHOICES = 4
 
 # -- Rich-option validation constants ----------------------------------------
-
-# -- Rich-option validation constants ----------------------------------------
 MAX_OPTIONS = 25
 MAX_LABEL_LEN = 80
 MAX_VALUE_LEN = 100
@@ -84,71 +82,6 @@ def _flatten_choice(c) -> str:
     if isinstance(c, (list, tuple)):
         return " ".join(_flatten_choice(x) for x in c).strip()
     return str(c).strip()
-
-
-def clarify_tool(
-    question: str,
-    choices: Optional[List[str]] = None,
-    callback: Optional[Callable] = None,
-) -> str:
-    """
-    Ask the user a question, optionally with multiple-choice options.
-
-    Args:
-        question: The question text to present.
-        choices:  Up to 4 predefined answer choices. When omitted the
-                  question is purely open-ended.
-        callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
-                  Injected by the agent runner (cli.py / gateway).
-
-    Returns:
-        JSON string with the user's response.
-    """
-    if not question or not question.strip():
-        return tool_error("Question text is required.")
-
-    question = question.strip()
-
-    # Validate and trim choices
-    if choices is not None:
-        if not isinstance(choices, list):
-            return tool_error("choices must be a list of strings.")
-        # LLMs sometimes emit dict-shaped choices (e.g. [{"description": "..."}])
-        # instead of bare strings. _flatten_choice unwraps them to their
-        # user-facing text here — the single platform-agnostic entry point —
-        # so the CLI panel, Discord buttons, and Telegram list all render clean
-        # text and the resolved answer is never a raw Python dict repr.
-        choices = [s for s in (_flatten_choice(c) for c in choices) if s]
-        if len(choices) > MAX_CHOICES:
-            choices = choices[:MAX_CHOICES]
-        if not choices:
-            choices = None  # empty list → open-ended
-
-    if callback is None:
-        return json.dumps(
-            {"error": "Clarify tool is not available in this execution context."},
-            ensure_ascii=False,
-        )
-
-    try:
-        user_response = callback(question, choices)
-    except Exception as exc:
-        return json.dumps(
-            {"error": f"Failed to get user input: {exc}"},
-            ensure_ascii=False,
-        )
-
-    return json.dumps({
-        "question": question,
-        "choices_offered": choices,
-        "user_response": str(user_response).strip(),
-    }, ensure_ascii=False)
-
-
-def check_clarify_requirements() -> bool:
-    """Clarify tool has no external requirements -- always available."""
-    return True
 
 
 # =============================================================================
@@ -403,7 +336,8 @@ def clarify_tool(
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
-        choices = [str(c).strip() for c in choices if str(c).strip()]
+        # Flatten dict-shaped choices to user-facing labels (see _flatten_choice).
+        choices = [s for s in (_flatten_choice(c) for c in choices) if s]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:

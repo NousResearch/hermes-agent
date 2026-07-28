@@ -29,6 +29,7 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
+import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { setCronFocusJobId } from '@/store/cron'
@@ -669,6 +670,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         const payload = event.payload as
           | { profile?: null | string; start_new_session?: boolean }
           | undefined
+
+        // Audible confirmation that the wake registered, before voice capture
+        // starts. Gated by the shared sound-mute toggle.
+        playWakeSound()
 
         // Multi-profile routing: a wake phrase enrolled by another profile
         // re-homes the gateway to that profile first (live swap — same path

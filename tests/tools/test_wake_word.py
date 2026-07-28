@@ -348,6 +348,86 @@ def test_explicit_framework_overrides_platform_default(monkeypatch):
     assert downloaded == [ww._bundled_wakeword_path("onnx")]
 
 
+# ── ambient-speech rejection: consecutive-frame confirmation ──────────────────
+
+def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
+    """Build a real _OpenWakeWordEngine whose predict() replays ``scores``."""
+    seq = iter(scores)
+
+    class _ScriptedModel:
+        def __init__(self, wakeword_models, inference_framework="onnx"):
+            self.models = {"hey_hermes": object()}
+
+        def predict(self, frame):
+            return {"hey_hermes": next(seq)}
+
+        def reset(self):
+            pass
+
+    oww = types.ModuleType("openwakeword")
+    oww.utils = types.SimpleNamespace(download_models=lambda names=[]: None)
+    model_mod = types.ModuleType("openwakeword.model")
+    model_mod.Model = _ScriptedModel
+    monkeypatch.setitem(sys.modules, "openwakeword", oww)
+    monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
+    return ww._OpenWakeWordEngine({"provider": "openwakeword", **cfg_wake})
+
+
+def test_confirmation_frames_reject_single_frame_spike(monkeypatch):
+    # A lone over-threshold frame (ambient phoneme) must NOT fire with the
+    # default 3-frame confirmation; the streak resets on the next quiet frame.
+    eng = _openwakeword_engine_with_scores(
+        monkeypatch,
+        {"sensitivity": 0.5, "confirmation_frames": 3},
+        [0.9, 0.0, 0.0, 0.9, 0.0],
+    )
+    assert [eng.process(None) for _ in range(5)] == [False, False, False, False, False]
+
+
+def test_confirmation_frames_fire_on_sustained_phrase(monkeypatch):
+    # Three consecutive over-threshold frames (a real utterance) fire exactly
+    # once, on the third frame.
+    eng = _openwakeword_engine_with_scores(
+        monkeypatch,
+        {"sensitivity": 0.5, "confirmation_frames": 3},
+        [0.9, 0.9, 0.9, 0.0],
+    )
+    assert [eng.process(None) for _ in range(4)] == [False, False, True, False]
+
+
+def test_confirmation_frames_one_restores_single_frame_behavior(monkeypatch):
+    # confirmation_frames=1 is the old behavior: fire on the first frame.
+    eng = _openwakeword_engine_with_scores(
+        monkeypatch,
+        {"sensitivity": 0.5, "confirmation_frames": 1},
+        [0.9, 0.0],
+    )
+    assert eng.process(None) is True
+
+
+def test_confirmation_streak_resets_on_engine_reset(monkeypatch):
+    # A pause (reset) between two over-threshold frames must not let a
+    # pre-pause frame count toward the post-resume streak.
+    eng = _openwakeword_engine_with_scores(
+        monkeypatch,
+        {"sensitivity": 0.5, "confirmation_frames": 2},
+        [0.9, 0.9, 0.9],
+    )
+    assert eng.process(None) is False  # streak = 1
+    eng.reset()                        # streak -> 0
+    assert eng.process(None) is False  # streak = 1 again, not 2
+    assert eng.process(None) is True   # streak = 2 -> fire
+
+
+def test_confirmation_frames_config_clamped(monkeypatch):
+    assert ww._confirmation_frames({"confirmation_frames": 0}) == 1
+    assert ww._confirmation_frames({"confirmation_frames": 99}) == 10
+    assert ww._confirmation_frames({"confirmation_frames": "x"}) == ww._DEFAULT_CONFIRMATION_FRAMES
+    assert ww._confirmation_frames({}) == ww._DEFAULT_CONFIRMATION_FRAMES
+
+
 def test_macos_tflite_refuses_silent_onnx_downgrade(monkeypatch):
     # openWakeWord silently falls back to onnx when no tflite runtime imports.
     # On macOS ARM64 that lands on the broken backend, so we must raise instead

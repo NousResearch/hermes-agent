@@ -49,6 +49,13 @@ SAMPLE_RATE = 16000
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
 
+# Ambient-speech rejection: openWakeWord scores one ~80ms frame at a time, and a
+# stray phoneme in background conversation can spike a single frame over the
+# threshold. A real utterance of the phrase holds the score high across several
+# consecutive frames, so we require N-in-a-row above threshold before firing.
+# This is the primary lever against unintended triggers on ambient talk.
+_DEFAULT_CONFIRMATION_FRAMES = 3
+
 # Dead-mic detection: an int16 stream whose peak stays at/below this for this
 # many consecutive seconds is flagged as silent. macOS grants the *app* mic
 # permission per-process — a backend spawned without the entitlement gets a
@@ -72,6 +79,7 @@ _DEFAULTS: Dict[str, Any] = {
     "provider": "openwakeword",
     "phrase": "hey hermes",
     "sensitivity": 0.5,
+    "confirmation_frames": _DEFAULT_CONFIRMATION_FRAMES,
     "start_new_session": True,
 }
 
@@ -164,6 +172,21 @@ def _sensitivity(cfg: Dict[str, Any]) -> float:
     except (TypeError, ValueError):
         s = 0.5
     return min(max(s, 0.0), 1.0)
+
+
+def _confirmation_frames(cfg: Dict[str, Any]) -> int:
+    """How many consecutive over-threshold frames are required to fire.
+
+    ``1`` restores the old single-frame behaviour; higher values reject
+    ambient-speech blips at the cost of a few tens of ms of extra latency.
+    Clamped to a sane 1..10.
+    """
+    raw = _get(cfg, "confirmation_frames")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = _DEFAULT_CONFIRMATION_FRAMES
+    return min(max(n, 1), 10)
 
 
 def wake_phrase(cfg: Optional[Dict[str, Any]] = None) -> str:
@@ -305,6 +328,8 @@ class _OpenWakeWordEngine(_Engine):
         if not framework:
             framework = default_inference_framework()
         self._threshold = _sensitivity(cfg)
+        self._confirm_needed = _confirmation_frames(cfg)
+        self._confirm_streak = 0
 
         # openWakeWord silently downgrades tflite -> onnx when no tflite runtime
         # imports (model.py). On macOS ARM64 that lands on the backend whose
@@ -348,11 +373,22 @@ class _OpenWakeWordEngine(_Engine):
 
     def process(self, frame) -> bool:
         scores = self._model.predict(frame)
-        return any(score >= self._threshold for score in scores.values())
+        over = any(score >= self._threshold for score in scores.values())
+        # Require N consecutive over-threshold frames: a real phrase holds the
+        # score high across frames, a stray ambient phoneme spikes just one.
+        if over:
+            self._confirm_streak += 1
+            if self._confirm_streak >= self._confirm_needed:
+                self._confirm_streak = 0
+                return True
+            return False
+        self._confirm_streak = 0
+        return False
 
     def reset(self) -> None:
         # Clears openWakeWord's rolling feature/prediction buffer so stale audio
         # captured before a pause can't re-fire the moment we resume.
+        self._confirm_streak = 0
         try:
             self._model.reset()
         except Exception:

@@ -170,6 +170,27 @@ CREDITS_USAGE_BANDS: tuple[tuple[float, str, int], ...] = (
 )
 CREDITS_USAGE_KEY = "credits.usage"  # single key for the escalating usage notice
 
+# Minimum subscription balance that counts as "grant not yet spent" for the
+# grant_spent crossing gate (see evaluate_credits_notices). 1¢: portal-seeded
+# states derive micros from float dollars and can carry sub-cent residue where
+# the inference headers report exactly 0 — without this floor such a seed
+# opens the gate and the first header re-creates the at-open nag.
+GRANT_UNSPENT_MIN_MICROS = 10_000
+
+
+def new_credits_latch() -> dict:
+    """Fresh notice latch in the shape :func:`evaluate_credits_notices` expects.
+
+    The policy owns this schema — every producer (agent build, lazy re-init,
+    tests) must build the latch through here so a new gate key lands everywhere
+    at once instead of drifting across hand-rolled literals."""
+    return {
+        "active": set(),
+        "seen_below_90": False,
+        "usage_band": None,
+        "seen_grant_unspent": False,
+    }
+
 
 # ── AgentNotice (out-of-band notice payload; driver-agnostic) ────────────────
 
@@ -250,7 +271,8 @@ def evaluate_credits_notices(
 ) -> tuple[list[AgentNotice], list[str]]:
     """Reconcile credits notices against the latch. Mutates ``latch`` IN PLACE.
 
-    latch = {"active": set[str], "seen_below_90": bool, "usage_band": Optional[int]}.
+    latch = {"active": set[str], "seen_below_90": bool, "usage_band": Optional[int],
+    "seen_grant_unspent": bool}.
 
     ``model_is_free``: True when the session's active model is a Nous free-tier
     model (see :func:`is_free_tier_model`). Suppresses the ``credits.depleted``
@@ -277,6 +299,18 @@ def evaluate_credits_notices(
     if uf is not None and uf < _lowest_band:
         latch["seen_below_90"] = True  # gate opened: usage-band notices may now fire
 
+    # Grant-spent crossing gate: grant_spent may fire only after this session
+    # has OBSERVED the grant meaningfully unspent (≥1¢ left — see
+    # GRANT_UNSPENT_MIN_MICROS). Opening at grant-spent is a steady STATE, not
+    # an event — /usage carries it; only a live in-session crossing announces.
+    # Unlike seen_below_90, seeds must NOT prime this gate.
+    if (
+        uf is not None
+        and uf < 1.0
+        and state.subscription_micros >= GRANT_UNSPENT_MIN_MICROS
+    ):
+        latch["seen_grant_unspent"] = True
+
     active = latch["active"]
 
     # ── Conditions ───────────────────────────────────────────────────────────
@@ -288,12 +322,20 @@ def evaluate_credits_notices(
                 current_band = band
     # Top-up suppression: when the account holds purchased (top-up) credits,
     # the subscription-cap gauge is the wrong denominator — warning "90% used"
-    # at a user sitting on $50 of top-up is noise. Suppress the usage band
-    # entirely; /usage still reports the full balance breakdown. A top-up
-    # landing mid-session flips current_band → None and the clear path below
-    # removes any showing band line.
+    # at a user sitting on $50 of top-up is noise (and it previously stuck
+    # PERMANENTLY alongside grant_spent at >=100%). Suppress the usage band
+    # entirely; the cap-reached case is covered by the grant_spent info notice
+    # below, which already names the remaining top-up balance. A top-up landing
+    # mid-session flips current_band → None and the clear path below removes
+    # any showing band line.
     if state.purchased_micros > 0:
         current_band = None
+    grant_cond = (
+        state.denominator_kind == "subscription_cap"
+        and uf is not None
+        and uf >= 1.0
+        and state.purchased_micros > 0
+    )
     depleted_cond = not state.paid_access
 
     # ── usage gauge (escalating single notice: 50 → 75 → 90) ──────────────────
@@ -331,6 +373,33 @@ def evaluate_credits_notices(
             )
             active.add(CREDITS_USAGE_KEY)
         latch["usage_band"] = target_band
+
+    # ── grant_spent ──────────────────────────────────────────────────────────
+    # The crossing gate guards only the SHOW and is CONSUMED by it — one
+    # announcement per crossing. A header flicker (uf → None → back to 1.0)
+    # clears the sticky line via grant_cond but cannot re-announce; only a
+    # renewal that re-opens the gate (a fresh ≥1¢ observation) arms the next
+    # announcement. .get(): default closed for any hand-built latch missing
+    # the key, so a first observation can never fire this notice.
+    if (
+        grant_cond
+        and "credits.grant_spent" not in active
+        and latch.get("seen_grant_unspent", False)
+    ):
+        to_show.append(
+            AgentNotice(
+                text=f"• Grant spent · ${state.purchased_usd} top-up left",
+                level="info",
+                kind=CREDITS_NOTICE_KIND,
+                key="credits.grant_spent",
+                id="credits.grant_spent",
+            )
+        )
+        active.add("credits.grant_spent")
+        latch["seen_grant_unspent"] = False
+    elif "credits.grant_spent" in active and not grant_cond:
+        to_clear.append("credits.grant_spent")
+        active.discard("credits.grant_spent")
 
     # ── depleted ─────────────────────────────────────────────────────────────
     # Suppressed while the active model is free: inference still works there,
@@ -603,7 +672,8 @@ _DEV_FIXTURES: dict[str, dict] = {
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
         denominator_kind="subscription_cap", paid_access=True,
     ),
-    "grant_exhausted": dict(  # cap reached + purchased>0 → no notice (gauge suppressed by top-up)
+    "grant_exhausted": dict(  # uf == 1.0 + purchased>0 → SILENT at open (crossing-gated);
+    # flip healthy → grant_exhausted via the fixture-file path to see credits.grant_spent
         remaining_micros=12_340_000, remaining_usd="12.34",
         subscription_micros=0, subscription_usd="0.00",
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
@@ -717,6 +787,9 @@ def _hydrate_seed_state(agent, state) -> None:
         agent._credits_session_start_micros = state.remaining_micros
     _latch = getattr(agent, "_credits_latch", None)
     if isinstance(_latch, dict) and state.used_fraction is not None:
+        # Prime ONLY seen_below_90 (open-high band warnings are wanted at open).
+        # Never prime seen_grant_unspent here: a seed observing grant-spent is a
+        # steady state, and priming it would revive the every-session nag.
         _latch["seen_below_90"] = True
     emit = getattr(agent, "_emit_credits_notices", None)
     if callable(emit):

@@ -175,8 +175,8 @@ export function clearAgentNotice(key: string | undefined): void {
 
 // Only these two credit notices are urgent enough to break through as a native
 // OS notification (when Hermes is backgrounded). The escalating usage line
-// (`credits.usage`) stays an in-app toast only — it isn't worth interrupting
-// the user's OS for.
+// (`credits.usage`) and the grant-spent notice stay in-app toasts only — they
+// aren't worth interrupting the user's OS for.
 const NATIVE_NOTICE_KEYS = new Set(['credits.depleted', 'credits.restored'])
 
 /**

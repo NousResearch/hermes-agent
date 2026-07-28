@@ -178,8 +178,9 @@ voice = [
 # "Hey Hermes" wake word — on-device hotword detection. All engines are
 # optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
 # open-vocabulary phrases (any typed phrase, zero training), Porcupine is
-# the premium alternative. Lazy-installed on first /wake; mirrored in
-# tools/lazy_deps.py.
+# the premium alternative. Desktop installs ([--include-desktop]) eager-install
+# [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
+# first /wake; mirrored in tools/lazy_deps.py.
 wake = [
   "openwakeword==0.6.0",
   "onnxruntime==1.27.0",

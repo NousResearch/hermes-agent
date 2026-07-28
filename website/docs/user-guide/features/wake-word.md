@@ -40,8 +40,9 @@ By default the phrase is **"hey hermes"** — a model for it ships with Hermes, 
 it works out of the box with no training. (On first use, openWakeWord downloads
 its shared feature-extraction models — a small one-time fetch.)
 
-Both are lazy-installed the first time you enable the wake word. To install ahead
-of time:
+Both are lazy-installed the first time you enable the wake word (desktop
+installs made with `--include-desktop` pre-install them, so the ear works
+instantly). To install ahead of time:
 
 ```bash
 cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"

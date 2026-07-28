@@ -301,22 +301,19 @@ function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disa
   )
 }
 
-// "Hey Hermes" wake-word toggle. States: listening (accent-highlighted, like
-// the auto-speak toggle above), off (muted ear-off), paused-for-voice (shown
-// disabled while a voice conversation holds the mic — the one legitimate
-// pause), and hidden — only when the feature can't run AND isn't enabled in
-// config. `enabled` keeps the ear mounted through transient refusals and busy
-// agent turns, so a persistent setting never silently vanishes mid-session.
-// Backend refusals ({started:false, reason}) keep the toggle off and surface
-// the reason/hint in the tooltip.
+// "Hey Hermes" wake-word toggle. ALWAYS rendered — the ear never hides. A
+// user must always be able to click it to turn passive listening on; if the
+// backend can't start (missing STT/TTS, deps still installing, no mic
+// permission, etc.) the click surfaces the reason in the tooltip and the
+// toggle stays off. States: listening (accent-highlighted), off (muted
+// ear-off), and paused-for-voice (disabled while a voice conversation holds
+// the mic — the one time wake genuinely must not listen). Backend refusals
+// ({started:false, reason}) keep the toggle off and put the reason/hint in
+// the tooltip.
 function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolean; pausedForVoice?: boolean }) {
   const { t } = useI18n()
   const c = t.composer
   const wake = useStore($wakeWord)
-
-  if (!wake.available && !wake.enabled) {
-    return null
-  }
 
   const phrase = wake.phrase || 'hey hermes'
   const label = pausedForVoice

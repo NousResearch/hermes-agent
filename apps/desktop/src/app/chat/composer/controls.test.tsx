@@ -100,11 +100,22 @@ describe('wake-word ear visibility', () => {
     expect(screen.getByLabelText('Wake word: "hey hermes" — off')).toBeTruthy()
   })
 
-  it('hides only when unavailable AND not enabled in config', () => {
+  it('stays visible (never hides) even when unavailable and not enabled', () => {
     applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey hermes' })
     renderControls()
 
-    expect(screen.queryByLabelText(/Wake word/)).toBeNull()
+    // The ear ALWAYS shows so the user can click to enable; a failed start
+    // surfaces its reason in the tooltip rather than hiding the control.
+    expect(screen.getByLabelText('Wake word: "hey hermes" — off')).toBeTruthy()
+  })
+
+  it('surfaces the backend refusal reason in the tooltip, still visible', () => {
+    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey hermes' })
+    applyWakeStartResult({ hint: 'run `hermes tools` (Voice section)', reason: 'unavailable', started: false })
+    renderControls()
+
+    const ear = screen.getByLabelText('Wake word: "hey hermes" — off')
+    expect(ear).toBeTruthy()
   })
 
   it('shows a disabled paused ear inside the voice-conversation pill', () => {

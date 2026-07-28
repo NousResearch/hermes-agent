@@ -69,7 +69,12 @@ def validate_mutation_request(
     """Validate optional rollout fields or require the complete contract."""
 
     spec = MUTATION_SPECS[action]
-    payload = body if isinstance(body, dict) else {}
+    if body is None:
+        payload = {}
+    elif not isinstance(body, Mapping):
+        raise MutationRequestError("body must be an object")
+    else:
+        payload = body
     confirmation = payload.get("confirmation")
     idempotency_key = payload.get("idempotency_key")
 

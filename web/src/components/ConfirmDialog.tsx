@@ -41,11 +41,21 @@ export function ConfirmDialog({
   };
 
   useEffect(() => {
+    if (!open) {
+      // Prop-driven closure can bypass the Cancel/Confirm handlers.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setTypedValue("");
+    }
+  }, [open]);
+
+  useEffect(() => {
     if (!open) return;
 
     const prevActive = document.activeElement as HTMLElement | null;
     dialogRef.current
-      ?.querySelector<HTMLButtonElement>("[data-confirm]")
+      ?.querySelector<HTMLElement>(
+        typedConfirmation ? "[data-confirm-input]" : "[data-confirm]",
+      )
       ?.focus();
 
     const onKey = (e: KeyboardEvent) => {
@@ -64,7 +74,7 @@ export function ConfirmDialog({
       document.body.style.overflow = prevOverflow;
       prevActive?.focus?.();
     };
-  }, [open, cancel]);
+  }, [open, cancel, typedConfirmation]);
 
   if (!open) return null;
 
@@ -120,6 +130,7 @@ export function ConfirmDialog({
             <input
               autoComplete="off"
               className="border border-border bg-background px-3 py-2 text-foreground"
+              data-confirm-input
               onChange={(event) => setTypedValue(event.target.value)}
               value={typedValue}
             />

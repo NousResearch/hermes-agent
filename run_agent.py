@@ -3627,6 +3627,7 @@ class AIAgent:
         desc: str,
         *,
         provenance: Optional[ActivityProvenance] = None,
+        force_persist: bool = False,
     ) -> None:
         """Update the last-activity timestamp and description (thread-safe).
 
@@ -3643,10 +3644,14 @@ class AIAgent:
         ``provenance`` defaults to ``unknown`` (the ordinary agent activity
         clock). Named values are for special writers (e.g. compression);
         ordinary call sites should leave the default.
+
+        ``force_persist`` bypasses the 60s SessionDB rate limit so a
+        terminal stamp (e.g. compression completed) is not dropped.
         """
         from agent.session_activity import (
             bound_activity_description,
             normalize_activity_provenance,
+            reset_session_activity_persist_window,
         )
 
         self._last_activity_ts = time.time()
@@ -3668,6 +3673,8 @@ class AIAgent:
                 # covers import-time failures (kanban_tools unavailable,
                 # etc.) on niche deployment surfaces.
                 pass
+        if force_persist:
+            reset_session_activity_persist_window(self)
         self._persist_session_activity_if_due()
 
     def _persist_session_activity_if_due(self) -> None:

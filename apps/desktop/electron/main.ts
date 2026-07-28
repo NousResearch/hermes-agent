@@ -115,7 +115,9 @@ import {
   switchBranch
 } from './git-worktree-ops'
 import {
-  DATA_URL_READ_MAX_BYTES,
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
@@ -960,7 +962,7 @@ app.setAboutPanelOptions({
 
 // Custom scheme for streaming local media (video/audio) into the renderer.
 // Reading large media through `readFileDataUrl` failed: it base64-loads the
-// whole file into memory and is hard-capped at DATA_URL_READ_MAX_BYTES (16 MB),
+// whole file into memory and is hard-capped (default 16 MB, Settings → Chat),
 // so any non-trivial video silently refused to load. Streaming via a protocol
 // handler removes the size cap and gives the <video> element seekable,
 // range-aware playback. Must be registered before the app is ready.
@@ -10052,9 +10054,56 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   return true
 })
 
+// Data-URL file load cap (composer attach + local previews). Main owns the
+// persisted MB value so every IPC read honours Settings → Chat without the
+// renderer having to pass maxBytes on each call. Default is 16 MB; clamp
+// lives in hardening.ts.
+const DATA_URL_READ_MAX_CONFIG_PATH = path.join(app.getPath('userData'), 'data-url-read-max.json')
+
+function readPersistedDataUrlReadMaxMb() {
+  try {
+    return clampDataUrlReadMaxMb(JSON.parse(fs.readFileSync(DATA_URL_READ_MAX_CONFIG_PATH, 'utf8')).maxMb)
+  } catch {
+    return DATA_URL_READ_DEFAULT_MAX_MB
+  }
+}
+
+let dataUrlReadMaxMb = readPersistedDataUrlReadMaxMb()
+
+function persistDataUrlReadMaxMb(maxMb) {
+  const next = clampDataUrlReadMaxMb(maxMb)
+  dataUrlReadMaxMb = next
+
+  try {
+    fs.mkdirSync(path.dirname(DATA_URL_READ_MAX_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(DATA_URL_READ_MAX_CONFIG_PATH, JSON.stringify({ maxMb: next }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[data-url-read-max] write failed: ${error.message}`)
+  }
+
+  return next
+}
+
+ipcMain.handle('hermes:data-url-read-max:get', () => ({
+  maxMb: dataUrlReadMaxMb,
+  // Keep the default bytes constant visible for tests / diagnostics.
+  defaultMaxMb: DATA_URL_READ_DEFAULT_MAX_MB,
+  maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb)
+}))
+
+ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
+  const next = persistDataUrlReadMaxMb(maxMb)
+
+  return {
+    maxMb: next,
+    defaultMaxMb: DATA_URL_READ_DEFAULT_MAX_MB,
+    maxBytes: dataUrlReadMaxBytesFromMb(next)
+  }
+})
+
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   const { resolvedPath } = await resolveReadableFileForIpc(filePath, {
-    maxBytes: DATA_URL_READ_MAX_BYTES,
+    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
     purpose: 'File preview'
   })
 

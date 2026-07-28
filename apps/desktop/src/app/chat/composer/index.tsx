@@ -724,12 +724,21 @@ export function ChatBar({
         return
       }
 
-      // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
-      // never a stray Enter after sending. With a payload, submitDraft queues it.
-      // Gate on the live DOM payload (not the render-lagged composer state) so a
-      // message typed fast / via IME while busy still reaches submitDraft() and
-      // gets queued instead of being mistaken for an empty Enter.
+      // Empty Enter while busy. With prompts queued this is the double-send:
+      // the first Enter put the words in the queue, a second sends them now
+      // (promote + interrupt + drain on settle), mirroring the idle empty-Enter
+      // drain above. With nothing queued it stays a no-op — interrupting is
+      // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
+      // DOM payload (not the render-lagged composer state) so a message typed
+      // fast / via IME while busy still reaches submitDraft() and gets queued
+      // instead of being mistaken for an empty Enter.
       if (busy && !hasLivePayload) {
+        const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
+
+        if (head) {
+          sendQueuedNow(head.id)
+        }
+
         return
       }
 

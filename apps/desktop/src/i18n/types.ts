@@ -3098,6 +3098,8 @@ export interface Translations {
       copyPath: string
       removeFromSidebar: string
       createdInPreviousContext: string
+      hiddenFromSidebar: string
+      undoHide: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string

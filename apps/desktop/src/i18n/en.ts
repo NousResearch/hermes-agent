@@ -3675,6 +3675,8 @@ export const en: Translations = {
       removeFromSidebar: 'Hide from sidebar',
       createdInPreviousContext:
         "Project created on the previous connection or profile. Switch back to find it; IDEA.md wasn't written.",
+      hiddenFromSidebar: 'Hidden from sidebar',
+      undoHide: 'Undo',
       createFailed: 'Could not create project',
       staleBackend:
         'Update the Hermes backend to create projects — your backend is older than this desktop app (Settings → Updates → Backend).',

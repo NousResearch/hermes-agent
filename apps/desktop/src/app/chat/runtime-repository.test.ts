@@ -49,10 +49,6 @@ describe('useRuntimeMessageRepository', () => {
       ])
     )
 
-    expect(feedToRepository(result.current).map(item => item.id)).toEqual([
-      'user-1',
-      'assistant-stream-1',
-      'user-2'
-    ])
+    expect(feedToRepository(result.current).map(item => item.id)).toEqual(['user-1', 'assistant-stream-1', 'user-2'])
   })
 })

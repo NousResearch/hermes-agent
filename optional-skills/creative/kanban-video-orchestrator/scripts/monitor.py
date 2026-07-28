@@ -36,7 +36,7 @@ def kanban_list(tenant: str) -> list[dict]:
     try:
         out = subprocess.run(
             ["hermes", "kanban", "list", "--tenant", tenant, "--json"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', check=False,
         )
         if out.returncode == 0 and out.stdout.strip().startswith("["):
             return json.loads(out.stdout)
@@ -45,7 +45,7 @@ def kanban_list(tenant: str) -> list[dict]:
     # Fallback: textual parse of `hermes kanban list`
     out = subprocess.run(
         ["hermes", "kanban", "list", "--tenant", tenant],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding='utf-8', errors='replace', check=False,
     )
     rows = []
     for line in out.stdout.splitlines():
@@ -69,7 +69,7 @@ def kanban_list(tenant: str) -> list[dict]:
 def kanban_show(task_id: str) -> dict | None:
     out = subprocess.run(
         ["hermes", "kanban", "show", task_id, "--json"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding='utf-8', errors='replace', check=False,
     )
     if out.returncode != 0:
         return None

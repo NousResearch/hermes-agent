@@ -140,7 +140,7 @@ class TestSyncSessionKeyAfterAutoCompress:
                 self.session_id = "pre-compress-key"
                 self._cached_system_prompt = ""
 
-            def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
                 # Simulate what _compress_context does: rotate session_id
                 self.session_id = "post-compress-key"
                 return {

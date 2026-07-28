@@ -102,7 +102,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_MODEL` | Override model name at process level (used by cron scheduler; prefer `config.yaml` for normal use) |
 | `VOICE_TOOLS_OPENAI_KEY` | Preferred OpenAI key for OpenAI speech-to-text and text-to-speech providers |
 | `HERMES_LOCAL_STT_COMMAND` | Optional local speech-to-text command template. Supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders |
-| `HERMES_LOCAL_STT_LANGUAGE` | Default language passed to `HERMES_LOCAL_STT_COMMAND` or auto-detected local `whisper` CLI fallback (default: `en`) |
+| `HERMES_LOCAL_STT_LANGUAGE` | Default language hint for STT. Used by the `local` (faster-whisper) provider, `HERMES_LOCAL_STT_COMMAND`, the local `whisper` CLI fallback (default: `en`), Groq, and xAI when no per-provider `language` is set in `config.yaml` |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
 | `HERMES_GIT_BASH_PATH` | **Windows only.** Override `bash.exe` discovery for the terminal tool. Points at any bash — full Git-for-Windows install, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically to the PortableGit it provisioned. See the [Windows (Native) Guide](../user-guide/windows-native.md#how-hermes-runs-shell-commands-on-windows) |
 | `HERMES_DISABLE_WINDOWS_UTF8` | **Windows only.** Set to `1` to disable the UTF-8 stdio shim (`configure_windows_stdio()`) and fall back to the console's locale code page. Useful for bisecting encoding bugs; rarely the right setting in normal operation |
@@ -251,6 +251,23 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_LOCAL_PERSISTENT` | Enable persistent shell for local backend (default: `false`) |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH backend (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
+## Egress proxy (sandbox-injected)
+
+These env vars are NOT set on the host — they're injected into Docker sandboxes by the [Egress proxy](../user-guide/egress/iron-proxy.md) integration when `proxy.enabled: true`. Docker is the only wired backend in this release.
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_EGRESS_PROXY` | Set to `1` inside a sandbox when the egress proxy is active. Agent code can check this to know it's running behind a TLS-intercepting proxy. |
+| Provider env vars (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, …) | Set to opaque proxy tokens, not real upstream secrets, so existing SDKs keep reading the standard env names. iron-proxy swaps those tokens for the real upstream secret at the network boundary. |
+| `HERMES_PROXY_TOKEN_<ENV_NAME>` | Diagnostic alias for each minted provider mapping. E.g. `HERMES_PROXY_TOKEN_OPENROUTER_API_KEY=hermes-proxy-openrouter-…`. Same token value as the standard provider env var. |
+| `HTTPS_PROXY` / `HTTP_PROXY` | `HTTPS_PROXY` points at `http://host.docker.internal:<tunnel_port>` for CONNECT/MITM. `HTTP_PROXY` points at `<tunnel_port + 1>` for plain-HTTP forwarding. |
+| `NO_PROXY` | `127.0.0.1,localhost,::1` so loopback dev servers inside the sandbox bypass the proxy. |
+| `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` | Path to the mounted Hermes egress CA cert inside the sandbox (`/etc/ssl/certs/hermes-egress-ca.crt`). Lets the language runtimes trust iron-proxy's MITM-minted leaf certs. |
+| `NODE_OPTIONS` | Appended with `--use-openssl-ca` (your existing flags are preserved) so Node.js routes through the OpenSSL store the other CA-bundle vars control. Narrows the [Node.js asymmetric CA caveat](../user-guide/egress/iron-proxy.md#nodejs-asymmetric-ca-caveat). |
+| `HERMES_IRON_PROXY_NONCE` | Set on the iron-proxy daemon process itself (NOT inside the sandbox). Used by `_pid_alive` to confirm a candidate PID still refers to *our* managed binary across PID recycling. |
+
+These are set automatically by the Docker terminal backend when `proxy.enabled: true` AND the daemon is running. You don't set them yourself; the relevant operator-facing knobs are in `~/.hermes/config.yaml` under the `proxy:` section — see [Egress proxy → Configuration](../user-guide/egress/iron-proxy.md#configuration).
+
 ## Messaging
 
 | Variable | Description |
@@ -299,6 +316,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
 | `SLACK_ALLOW_ALL_USERS` | Allow any Slack user to trigger the bot (dev only). |
+| `SLACK_ALLOW_BOTS` | Accept messages from other Slack bots: `none` (default), `mentions`, or `all`. The bot always ignores its own messages. |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
 | `GOOGLE_CHAT_PROJECT_ID` | GCP project hosting the Pub/Sub topic (falls back to `GOOGLE_CLOUD_PROJECT`) |
@@ -715,7 +733,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 90) |
+| `HERMES_MAX_ITERATIONS` | Max tool-calling iterations per conversation (default: 500) |
 | `HERMES_INFERENCE_MODEL` | Override model name at process level (takes priority over `config.yaml` for the session). Also settable via `-m`/`--model` flag. |
 | `HERMES_YOLO_MODE` | Set to `1` to bypass dangerous-command approval prompts. Equivalent to `--yolo`. |
 | `HERMES_ACCEPT_HOOKS` | Auto-approve any unseen shell hooks declared in `config.yaml` without a TTY prompt. Equivalent to `--accept-hooks` or `hooks_auto_accept: true`. |
@@ -730,6 +748,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
 | `CODEX_HOME` | When [Codex app-server runtime](../user-guide/features/codex-app-server-runtime) is enabled, override the directory Codex CLI reads its config + auth from (default: `~/.codex`). Hermes' migration writes the managed block to `<CODEX_HOME>/config.toml`. |
 | `HERMES_KANBAN_TASK` | Set by the kanban dispatcher when spawning a worker (task UUID). Workers and the spawned `hermes-tools` MCP subprocess inherit it so kanban tools gate correctly. Don't set manually. |
+| `HERMES_ACP_SKIP_CONFIGURED_MCP` | Set by an [ACP host](../user-guide/features/acp#host-integration) on the Hermes subprocess it spawns. `1` skips starting the globally configured `config.yaml` MCP servers before the ACP JSON-RPC loop, for hosts that pass the session's MCP servers through `session/new` themselves. Servers supplied by the ACP session are still registered; any other value keeps the default. Don't set manually. |
 | `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `1800`) |
 | `HERMES_API_CALL_STALE_TIMEOUT` | Non-streaming stale-call timeout in seconds (default: `90`). Auto-disabled for local providers when left unset, and may scale upward for very large contexts. Also configurable via `providers.<id>.stale_timeout_seconds` or `providers.<id>.models.<model>.stale_timeout_seconds` in `config.yaml`. |
 | `HERMES_STREAM_READ_TIMEOUT` | Streaming socket read timeout in seconds (default: `120`). Auto-increased to `HERMES_API_TIMEOUT` for local providers. Increase if local LLMs time out during long code generation. |

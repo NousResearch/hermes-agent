@@ -31,8 +31,12 @@ def _fake_completed_process(stdout: str) -> MagicMock:
 
 
 def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-super-secret-should-not-leak")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "«redacted:sk-…»")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+        lambda: "/resolved/cua-driver",
+    )
 
     captured = {}
 
@@ -56,6 +60,10 @@ def test_cli_fallback_applies_telemetry_policy(monkeypatch):
     """The env should also go through cua_driver_child_env(), like every
     other cua-driver spawn site, not just _sanitize_subprocess_env alone."""
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+        lambda: "/resolved/cua-driver",
+    )
     captured = {}
 
     def fake_run(cmd, **kwargs):

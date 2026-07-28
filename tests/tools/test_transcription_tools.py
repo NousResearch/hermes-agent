@@ -311,6 +311,116 @@ class TestTranscribeGroq:
         assert result["success"] is False
         assert "Permission denied" in result["error"]
 
+    def test_language_hint_omitted_when_unset(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}):
+            from tools.transcription_tools import _transcribe_groq
+            _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert "language" not in kwargs
+
+    def test_language_hint_from_config(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hola"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_tools._load_stt_config",
+                 return_value={"groq": {"language": "es"}},
+             ):
+            from tools.transcription_tools import _transcribe_groq
+            _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert kwargs["language"] == "es"
+
+    def test_language_hint_from_env_when_config_missing(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "hu")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "szia"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}):
+            from tools.transcription_tools import _transcribe_groq
+            _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert kwargs["language"] == "hu"
+
+    def test_language_config_overrides_env(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "hu")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hello"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_tools._load_stt_config",
+                 return_value={"groq": {"language": "en"}},
+             ):
+            from tools.transcription_tools import _transcribe_groq
+            _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert kwargs["language"] == "en"
+
+    def test_language_whitespace_treated_as_unset(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_tools._load_stt_config",
+                 return_value={"groq": {"language": "   "}},
+             ):
+            from tools.transcription_tools import _transcribe_groq
+            _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert "language" not in kwargs
+
+    def test_null_groq_subsection_is_safe(self, monkeypatch, sample_wav):
+        """`stt.groq: null` in YAML yields None; must not raise, auto-detect stays intact."""
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_tools._load_stt_config",
+                 return_value={"groq": None},
+             ):
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert "language" not in kwargs
+
 
 # ============================================================================
 # _transcribe_openai — additional tests
@@ -1209,6 +1319,7 @@ class TestTranscribeXAI:
 
         assert result["success"] is False
         assert "empty transcript" in result["error"]
+        assert result["no_speech"] is True  # live voice loops treat this as silence
 
     def test_permission_error(self, monkeypatch, sample_ogg, mock_xai_http_module):
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
@@ -1453,6 +1564,7 @@ class TestTranscribeElevenLabs:
 
         assert result["success"] is False
         assert "empty transcript" in result["error"]
+        assert result["no_speech"] is True  # live voice loops treat this as silence
 
 
 # ============================================================================

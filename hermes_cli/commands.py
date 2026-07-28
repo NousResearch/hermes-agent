@@ -118,6 +118,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
+    CommandDef("egress", "Show Docker egress proxy status", "Session",
+               args_hint="[status]", subcommands=("status",)),
+    CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
+               aliases=("ctx",), args_hint="[all]", subcommands=("all",)),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -131,7 +135,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model (persists by default)", "Configuration",
+    CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--global|--session] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
@@ -141,23 +145,35 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
+    CommandDef("battery", "Toggle a color-coded battery indicator in the status bar",
+               "Configuration", cli_only=True, args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
     CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
                cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status"), aliases=("ts",)),
+    CommandDef("diff", "Show git changes in the working directory", "Info",
+               args_hint="[staged|all|session] [--stat] [path...]",
+               subcommands=("staged", "all", "session")),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose -> log",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
+    CommandDef("focus", "Toggle focus view — show only your prompt and the final response",
+               "Configuration", cli_only=True, args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
     CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
                "Configuration", args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
+    CommandDef("approvals", "Show or set the persistent dangerous-command approval mode",
+               "Configuration", args_hint="[manual|smart|off]",
+               subcommands=("manual", "smart", "off")),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
-               args_hint="[level|show|hide|full|clamp]",
-               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp")),
+               args_hint="[level|show|hide|full|clamp] [--global]",
+               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
     CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
-               args_hint="[normal|fast|status]",
-               subcommands=("normal", "fast", "status", "on", "off")),
+               args_hint="[normal|fast|status] [--global]",
+               subcommands=("normal", "fast", "status", "on", "off", "--global")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
@@ -191,6 +207,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True, aliases=("generate-pet",), args_hint="[description]"),
     CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
                "Tools & Skills", args_hint="<what to learn from>"),
+    CommandDef("init", "Generate or update AGENTS.md project instructions from a repo scan",
+               "Tools & Skills", args_hint="[notes]"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
@@ -558,6 +576,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "new",
     "stop",
     "status",
+    "egress",
     "resume",
     "sessions",
     "model",
@@ -964,7 +983,8 @@ def discord_skill_commands_by_category(
 
     Skills whose directory is nested at least 2 levels under a scan root
     (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
-    category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
+    category.  Root-level skills (e.g. ``some-skill/SKILL.md`` directly under a
+    scan root) are returned as
     *uncategorized*.
 
     Scan roots include the local ``SKILLS_DIR`` **and** any configured
@@ -1164,7 +1184,21 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug"})
+#   - egress: Docker-only proxy status; reachable as /hermes egress on Slack.
+#   - init: repo-scan AGENTS.md bootstrap — a cwd-centric dev command that is
+#     rare from Slack; reachable as /hermes init. Without this entry, adding
+#     /init clamps /version off the native list and breaks Telegram parity.
+#   - version: low-frequency info command; reachable as /hermes version on
+#     Slack. Demoted when /context claimed a native slot (context is a
+#     recurring inspection surface; version is a one-off lookup); the demotion
+#     also absorbs the native slot /approvals now consumes at the 50-cap.
+#   - diff: git working-tree diff; reached via /hermes diff on Slack so it
+#     doesn't displace an existing native slash at the 50-command cap.
+#   - update: low-frequency self-update maintenance command; reached via
+#     /hermes update on Slack. Demoted to free the native slot /approvals now
+#     claims — without this entry /approvals tips the registry past the 50-cap
+#     and silently clamps /update off, breaking Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

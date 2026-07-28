@@ -134,6 +134,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
@@ -424,6 +425,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         monkeypatch.setattr("tools.voice_mode.shutil.which", lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record" if cmd == "termux-microphone-record" else None)
         monkeypatch.setattr("tools.voice_mode._termux_api_app_installed", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (_ for _ in ()).throw(ImportError("no audio libs")))
@@ -775,6 +777,37 @@ class TestTranscribeRecording:
         assert result["success"] is True
         assert result["transcript"] == ""
         assert result["filtered"] is True
+
+    def test_no_speech_failure_maps_to_silent_success(self):
+        """Provider "empty transcript" errors are silence, not failure — the
+        voice loop should re-listen quietly instead of showing an error."""
+        mock_transcribe = MagicMock(return_value={
+            "success": False,
+            "transcript": "",
+            "error": "ElevenLabs STT returned empty transcript",
+            "no_speech": True,
+        })
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording("/tmp/test.wav")
+
+        assert result["success"] is True
+        assert result["transcript"] == ""
+        assert result["no_speech"] is True
+
+    def test_real_failures_still_fail(self):
+        mock_transcribe = MagicMock(return_value={
+            "success": False,
+            "transcript": "",
+            "error": "xAI STT API error (HTTP 500): boom",
+        })
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording("/tmp/test.wav")
+
+        assert result["success"] is False
 
     def test_does_not_filter_real_speech(self):
         mock_transcribe = MagicMock(return_value={
@@ -1476,3 +1509,126 @@ class TestSilenceCallbackLock:
         recorder.cancel()
         with recorder._lock:
             assert recorder._on_silence_stop is None
+
+
+# ============================================================================
+# listen_for_speech — VAD barge-in monitor
+# ============================================================================
+
+class _FakeInputStream:
+    """Context-manager InputStream serving a fixed sequence of RMS levels."""
+
+    def __init__(self, np, levels):
+        self._np = np
+        self._levels = list(levels)
+        self.reads = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, frames):
+        level = self._levels[min(self.reads, len(self._levels) - 1)]
+        self.reads += 1
+        return self._np.full((frames, 1), level, dtype=self._np.int16), False
+
+
+class TestListenForSpeech:
+    """listen_for_speech: calibration → sustained-speech trigger → barge-in."""
+
+    CALIB_BLOCKS = 14   # 400ms / 30ms
+    TRIP_BLOCKS = 10    # 300ms / 30ms
+
+    def _run(self, mock_sd, levels, should_stop=None, **kwargs):
+        np = pytest.importorskip("numpy")
+        stream = _FakeInputStream(np, levels)
+        mock_sd.InputStream.return_value = stream
+        from tools.voice_mode import listen_for_speech
+        stops = iter([False] * 200 + [True] * 10_000)
+        return listen_for_speech(should_stop or (lambda: next(stops)), **kwargs), stream
+
+    def test_sustained_speech_triggers(self, mock_sd):
+        levels = [0] * self.CALIB_BLOCKS + [5000] * 50
+        heard, _ = self._run(mock_sd, levels)
+        assert heard is True
+
+    def test_brief_spike_does_not_trigger(self, mock_sd):
+        levels = [0] * self.CALIB_BLOCKS + [5000] * (self.TRIP_BLOCKS - 2) + [0] * 500
+        heard, _ = self._run(mock_sd, levels)
+        assert heard is False
+
+    def test_should_stop_wins_over_silence(self, mock_sd):
+        """TTS finishing (should_stop) ends the monitor without a trigger —
+        the default _run stopper flips True after 200 silent reads."""
+        heard, stream = self._run(mock_sd, [0] * 500)
+        assert heard is False
+        assert stream.reads <= 201
+
+    def test_returns_false_when_audio_unavailable(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode._import_audio", MagicMock(side_effect=OSError("no audio")))
+        from tools.voice_mode import listen_for_speech
+        assert listen_for_speech(lambda: False) is False
+
+    def test_loud_floor_raises_trigger(self, mock_sd):
+        """Speaker bleed during calibration bakes into the floor — playback-level
+        audio after calibration must NOT trip (only louder speech does)."""
+        levels = [2000] * self.CALIB_BLOCKS + [2000] * 100
+        heard, _ = self._run(mock_sd, levels)
+        assert heard is False
+
+
+class TestListenForSpeechCapture:
+    """capture=True: the barge monitor records the interruption with pre-roll,
+    so the utterance is complete from its first syllable — nothing is lost
+    between detection and a recorder restart."""
+
+    CALIB_BLOCKS = 14   # 400ms / 30ms
+    LOUD_BLOCKS = 30    # speech: trips after 10, keeps talking
+    BLOCK = 480         # 16000 * 0.03
+
+    def _run(self, mock_sd, monkeypatch, levels, should_stop=None, **kwargs):
+        np = pytest.importorskip("numpy")
+        stream = _FakeInputStream(np, levels)
+        mock_sd.InputStream.return_value = stream
+        written = {}
+        monkeypatch.setattr(
+            "tools.voice_mode.AudioRecorder._write_wav",
+            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/barge.wav"),
+        )
+        from tools.voice_mode import listen_for_speech
+        stops = iter([False] * 200 + [True] * 10_000)
+        path = listen_for_speech(
+            should_stop or (lambda: next(stops)), capture=True, **kwargs
+        )
+        return path, written.get("audio"), stream
+
+    def test_captured_utterance_includes_speech_onset(self, mock_sd, monkeypatch):
+        """Every loud block — including the ones BEFORE detection tripped —
+        must land in the WAV. That pre-roll is the whole point."""
+        triggered = []
+        levels = [0] * self.CALIB_BLOCKS + [5000] * self.LOUD_BLOCKS + [0] * 500
+        path, audio, _ = self._run(
+            mock_sd, monkeypatch, levels,
+            should_stop=lambda: False,
+            on_trigger=lambda: triggered.append(True),
+        )
+        assert path == "/tmp/barge.wav"
+        assert triggered == [True]
+        assert int((audio == 5000).sum()) == self.LOUD_BLOCKS * self.BLOCK
+
+    def test_no_trip_returns_none(self, mock_sd, monkeypatch):
+        triggered = []
+        path, audio, _ = self._run(
+            mock_sd, monkeypatch, [0] * 500,
+            on_trigger=lambda: triggered.append(True),
+        )
+        assert path is None
+        assert audio is None
+        assert triggered == []
+
+    def test_returns_none_when_audio_unavailable(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode._import_audio", MagicMock(side_effect=OSError("no audio")))
+        from tools.voice_mode import listen_for_speech
+        assert listen_for_speech(lambda: False, capture=True) is None

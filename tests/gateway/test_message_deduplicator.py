@@ -60,6 +60,19 @@ class TestMessageDeduplicatorTTL:
         assert dedup.is_duplicate("") is False
         assert dedup.is_duplicate("") is False
 
+    def test_contains_does_not_claim_unseen_message(self):
+        dedup = MessageDeduplicator(ttl_seconds=60)
+
+        assert dedup.contains("msg-1") is False
+        assert dedup.is_duplicate("msg-1") is False
+
+    def test_contains_expires_stale_message_without_refreshing_it(self):
+        dedup = MessageDeduplicator(ttl_seconds=5)
+        dedup._seen["msg-1"] = time.time() - 10
+
+        assert dedup.contains("msg-1") is False
+        assert "msg-1" not in dedup._seen
+
     def test_max_size_eviction_prunes_expired(self):
         """Cache pruning on overflow removes expired entries."""
         dedup = MessageDeduplicator(max_size=5, ttl_seconds=60)

@@ -16,6 +16,7 @@ from gateway.channel_directory import (
     _apply_channel_aliases,
     _build_from_sessions,
     _build_slack,
+    _slack_directory_warning_last,
 )
 
 
@@ -567,14 +568,59 @@ class TestBuildSlack:
 
         assert {e["id"] for e in entries} == {"C001"}
 
-    def test_response_not_ok_breaks_pagination_for_that_workspace(self, tmp_path):
+    def test_response_not_ok_missing_scope_falls_back_quietly(self, tmp_path, caplog):
         client = _make_slack_client([
             {"ok": False, "error": "missing_scope"},
         ])
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), caplog.at_level("WARNING"):
             entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
 
         assert entries == []
+        assert "missing_scope" not in caplog.text
+
+    def test_missing_scope_exception_falls_back_quietly(self, tmp_path, caplog):
+        class SlackLikeError(Exception):
+            def __init__(self):
+                super().__init__("The request to the Slack API failed")
+                self.response = {"ok": False, "error": "missing_scope"}
+
+        client = MagicMock()
+        client.users_conversations = AsyncMock(side_effect=SlackLikeError())
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), caplog.at_level("WARNING"):
+            entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+
+        assert entries == []
+        assert "missing_scope" not in caplog.text
+
+    def test_repeated_workspace_errors_are_warning_throttled(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # NOTE: uses a non-missing_scope error code — missing_scope is
+        # demoted to DEBUG entirely (quiet channels:read fallback), so the
+        # throttle path only sees other recurring workspace errors.
+        client = _make_slack_client([
+            {"ok": False, "error": "ratelimited"},
+            {"ok": False, "error": "ratelimited"},
+        ])
+        _slack_directory_warning_last.clear()
+        monkeypatch.setattr("gateway.channel_directory.time.monotonic", lambda: 1000.0)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), caplog.at_level("DEBUG"):
+            asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+            asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+
+        warning_messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelname == "WARNING"
+        ]
+        assert len(warning_messages) == 1
+        assert "ratelimited" in warning_messages[0]
+        assert any(
+            "suppressed repeated Slack channel list failure" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 class TestChannelAliases:

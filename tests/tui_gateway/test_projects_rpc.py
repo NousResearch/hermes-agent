@@ -172,6 +172,55 @@ def test_add_folder_and_for_cwd(tmp_path):
     assert "branch" in resolved
 
 
+def test_project_info_for_cwd_returns_status_payload(tmp_path):
+    # The status-surface resolver returns the owning project's identity for a
+    # nested cwd — the shape the TUI status label + /status read.
+    folder = tmp_path / "repo"
+    folder.mkdir()
+    created = _call("projects.create", {"name": "Repo", "folders": [str(folder)]})["project"]
+
+    nested = folder / "src"
+    nested.mkdir()
+
+    assert server._project_info_for_cwd(str(nested)) == {
+        "id": created["id"],
+        "slug": "repo",
+        "name": "Repo",
+        "primary_path": str(folder),
+    }
+
+
+def test_project_info_for_cwd_unowned_and_blank_are_none(tmp_path):
+    # A cwd outside every project — and an empty cwd — carry no project, so the
+    # status label falls back to the cwd leaf on every surface.
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    _call("projects.create", {"name": "Owned", "folders": [str(owned)]})
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    assert server._project_info_for_cwd(str(outside)) is None
+    assert server._project_info_for_cwd("") is None
+
+
+def test_session_info_carries_project_for_owned_cwd(tmp_path):
+    # session.info threads the resolved project through so the desktop/TUI can
+    # name the workspace without a second round-trip.
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    _call("projects.create", {"name": "Proj", "folders": [str(folder)]})
+
+    info = server._session_info(None, {"cwd": str(folder), "session_key": "s1"})
+    assert info["project"] == {
+        "id": info["project"]["id"],
+        "slug": "proj",
+        "name": "Proj",
+        "primary_path": str(folder),
+    }
+    assert info["project"]["name"] == "Proj"
+
+
 def test_update_and_archive(tmp_path):
     pid = _call("projects.create", {"name": "Orig", "folders": [str(tmp_path)]})["project"]["id"]
 
@@ -212,6 +261,140 @@ def test_record_repos_persists_and_shows_zero_session_repo(tmp_path):
     by_label = {r["label"]: r for r in _call("projects.discover_repos")["repos"]}
     assert "fresh-repo" in by_label
     assert by_label["fresh-repo"]["sessions"] == 0
+
+
+def test_scan_time_is_not_treated_as_session_activity(tmp_path):
+    """A scanned repo with no sessions must not rank as recently active.
+
+    ``discovered_repos.last_seen`` records when the disk scan last saw the
+    directory. Folding it into ``last_active`` stamped every scanned checkout
+    with the scan time — i.e. "just now" — so repos the user has never opened
+    in Hermes outranked the ones they actually work in.
+    """
+    worked_in = tmp_path / "worked-in"
+    worked_in.mkdir()
+    subprocess.run(["git", "init"], cwd=worked_in, check=True, capture_output=True)
+    server._get_db().create_session("worked-in-session", "cli", cwd=str(worked_in))
+
+    never_opened = tmp_path / "never-opened"
+    never_opened.mkdir()
+
+    _call(
+        "projects.record_repos",
+        {"repos": [{"root": str(never_opened)}, {"root": str(worked_in)}]},
+    )
+
+    by_root = {r["root"]: r for r in _call("projects.discover_repos")["repos"]}
+    idle = by_root[str(never_opened)]
+    active = by_root[str(worked_in)]
+
+    assert idle["sessions"] == 0
+    # A repo with no sessions has no activity to report...
+    assert idle["last_active"] == 0
+    # ...so the repo the user actually worked in sorts ahead of it.
+    assert active["last_active"] > idle["last_active"]
+
+
+def test_terminal_session_persists_its_launch_cwd():
+    """A terminal session's cwd IS its workspace, so the row must record it.
+
+    The user cd'd into that directory before running hermes. Dropping it left
+    the row with no cwd and no git_repo_root, so the sidebar could never place
+    the session under its project.
+    """
+    for source in ("tui", "cli"):
+        assert server._persisted_session_cwd(
+            {"source": source, "cwd": "/somewhere/a-repo"}
+        ) == "/somewhere/a-repo"
+
+
+def test_desktop_launch_cwd_is_not_persisted_as_a_workspace():
+    # The desktop launches from wherever the bundle was opened, so an unpicked
+    # cwd is an artifact — those chats belong under "No workspace".
+    assert server._persisted_session_cwd({"source": "desktop", "cwd": "/opt/whatever"}) is None
+
+    # An explicit pick is always honored, desktop included.
+    assert server._persisted_session_cwd(
+        {"source": "desktop", "cwd": "/picked/repo", "explicit_cwd": True}
+    ) == "/picked/repo"
+
+
+def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_path):
+    repo = tmp_path / "cached-repo"
+    repo.mkdir()
+    session_repo = tmp_path / "session-repo"
+    session_repo.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=session_repo, check=True, capture_output=True
+    )
+    server._get_db().create_session("session-repo", "cli", cwd=str(session_repo))
+    _call("projects.record_repos", {"repos": [{"root": str(repo)}]})
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "desktop": {
+                "repo_scan_enabled": False,
+                "repo_scan_roots": [],
+                "repo_scan_exclude_paths": [],
+            }
+        },
+    )
+    result = _call(
+        "projects.record_repos",
+        {
+            "repos": [{"root": str(repo)}],
+            "discovery_policy": {
+                "enabled": False,
+                "roots": [],
+                "exclude_paths": [],
+            },
+        },
+    )
+
+    assert result["accepted"] is False
+    assert all(item["root"] != str(repo) for item in result["repos"])
+    assert any(item["root"] == str(session_repo) for item in result["repos"])
+
+
+def test_nondefault_policy_rejects_stale_or_legacy_results(monkeypatch, tmp_path):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    policy = {
+        "enabled": True,
+        "roots": [str(root)],
+        "exclude_paths": [],
+    }
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "desktop": {
+                "repo_scan_enabled": True,
+                "repo_scan_roots": [str(root)],
+                "repo_scan_exclude_paths": [],
+            }
+        },
+    )
+
+    legacy = _call("projects.record_repos", {"repos": [{"root": str(root)}]})
+    stale = _call(
+        "projects.record_repos",
+        {
+            "repos": [{"root": str(root)}],
+            "discovery_policy": {**policy, "roots": [str(tmp_path / "other")]},
+        },
+    )
+    accepted = _call(
+        "projects.record_repos",
+        {"repos": [{"root": str(root)}], "discovery_policy": policy},
+    )
+
+    assert legacy["accepted"] is False
+    assert stale["accepted"] is False
+    assert accepted["accepted"] is True
+    assert any(item["root"] == str(root) for item in accepted["repos"])
 
 
 def test_discover_repos_from_full_history(tmp_path):

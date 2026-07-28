@@ -1,7 +1,7 @@
 ---
 name: excalidraw
 description: "Hand-drawn Excalidraw JSON diagrams (arch, flow, seq)."
-version: 1.0.0
+version: 1.0.1
 author: Hermes Agent
 license: MIT
 dependencies: []
@@ -51,7 +51,7 @@ Save to any path, e.g. `~/diagrams/my_diagram.excalidraw`.
 Run the upload script (located in this skill's `scripts/` directory) via terminal:
 
 ```bash
-python skills/diagramming/excalidraw/scripts/upload.py ~/diagrams/my_diagram.excalidraw
+python skills/creative/excalidraw/scripts/upload.py ~/diagrams/my_diagram.excalidraw
 ```
 
 This uploads to excalidraw.com (no account needed) and prints a shareable URL. Requires the `cryptography` pip package (`pip install cryptography`).

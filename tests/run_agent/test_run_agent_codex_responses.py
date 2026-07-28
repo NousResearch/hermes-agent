@@ -396,6 +396,25 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="openai.gpt-5.5",
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+        api_key="test-token",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert kwargs["prompt_cache_retention"] == "24h"
+
+
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     """'minimal' reasoning effort is clamped to 'low' on the Responses API.
 
@@ -1402,11 +1421,22 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
-    agent.client = _ExistingClient()
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
     ok = agent._try_refresh_codex_client_credentials(force=True)
 
     assert ok is True
-    assert closed["value"] is True
+    # #70773: the replaced shared client must NOT be close()d from the
+    # refresh path (cross-thread close is the FD-recycle corruption
+    # vector) — it is retired (sockets shutdown, FD release via GC).
+    assert closed["value"] is False
+    assert retired["client"] is existing
     assert rebuilt["kwargs"]["api_key"] == "fresh-xai-token"
     assert rebuilt["kwargs"]["base_url"] == "https://api.x.ai/v1"
     assert isinstance(agent.client, _RebuiltClient)
@@ -1524,11 +1554,22 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
-    agent.client = _ExistingClient()
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
     ok = agent._try_refresh_codex_client_credentials(force=True)
 
     assert ok is True
-    assert closed["value"] is True
+    # #70773: the replaced shared client must NOT be close()d from the
+    # refresh path (cross-thread close is the FD-recycle corruption
+    # vector) — it is retired (sockets shutdown, FD release via GC).
+    assert closed["value"] is False
+    assert retired["client"] is existing
     assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
     assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert isinstance(agent.client, _RebuiltClient)
@@ -1556,11 +1597,22 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
-    agent.client = _ExistingClient()
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
     ok = agent._try_refresh_copilot_client_credentials()
 
     assert ok is True
-    assert closed["value"] is True
+    # #70773: the replaced shared client must NOT be close()d from the
+    # refresh path (cross-thread close is the FD-recycle corruption
+    # vector) — it is retired (sockets shutdown, FD release via GC).
+    assert closed["value"] is False
+    assert retired["client"] is existing
     assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
     assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
     assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
@@ -2369,6 +2421,37 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
         "text": "short version: yes",
         "already_streamed": False,
     }
+
+
+def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
+    """_interim_content_was_streamed should return True when the streamed text
+    is a PREFIX of the final content (trailing delta added after stream, or
+    partial stream before verify nudge).  Exact equality is too strict — it
+    fails safe to a benign duplicate bubble instead of settling the interim.
+    (#65919 review: prefix-based match like the TUI's finalTail dedup.)"""
+    agent = _build_agent(monkeypatch)
+
+    # Exact match still works
+    agent._current_streamed_assistant_text = "hello world"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is a prefix of the final (trailing delta) — should match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("hello world") is True
+
+    # Streamed is empty — should not match
+    agent._current_streamed_assistant_text = ""
+    assert agent._interim_content_was_streamed("hello world") is False
+
+    # Final is empty — should not match
+    agent._current_streamed_assistant_text = "hello"
+    assert agent._interim_content_was_streamed("") is False
+
+    # Streamed is LONGER than final (reverse direction) — should NOT match.
+    # This is the unsafe direction: it could suppress a needed resend in the
+    # gateway path where already_streamed=True calls on_segment_break().
+    agent._current_streamed_assistant_text = "hello world extra"
+    assert agent._interim_content_was_streamed("hello") is False
 
 
 def test_interim_commentary_preserves_assistant_content(monkeypatch):

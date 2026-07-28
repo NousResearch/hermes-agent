@@ -311,8 +311,8 @@ describe('/billing slash command (overlay-driven)', () => {
   // ── CF-4: revoked-terminal UX (kill the "15-minute zombie button") ──
 
   it.each([
-    ['admin', 'An admin turned off terminal billing for this terminal'],
-    ['self', 'You turned off terminal billing for this terminal']
+    ['admin', 'An admin stopped remote spending for this terminal'],
+    ['self', 'You stopped remote spending for this terminal']
   ])(
     'ctx.charge remote_spending_revoked (%s) → clears the overlay (no zombie button) + actor copy',
     async (actor, copy) => {
@@ -387,7 +387,7 @@ describe('/billing slash command (overlay-driven)', () => {
     await Promise.resolve()
     await Promise.resolve()
     const out = printed(sys)
-    expect(out).toContain('Terminal billing is off for this account')
+    expect(out).toContain('Remote spending is off for this account')
     // Account-wide switch is NOT a per-terminal revoke — overlay stays open.
     expect(getOverlayState().billing).toBeTruthy()
   })

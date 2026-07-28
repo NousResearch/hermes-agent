@@ -20,6 +20,8 @@ from gateway.session import SessionSource, build_session_key
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
+from dataclasses import replace
+
 from tests.gateway.relay.stub_connector import StubConnector
 
 
@@ -112,9 +114,51 @@ async def test_outbound_send_round_trips(wired):
 @pytest.mark.asyncio
 async def test_get_chat_info_proxied_to_connector(wired):
     adapter, stub = wired
+    # Phase 1: the proxy is gated on op discovery — the connector must
+    # advertise get_chat_info in supported_ops (a legacy descriptor falls
+    # back to the local echo; see test_relay_adapter.py).
+    adapter._apply_descriptor(
+        replace(_discord_descriptor(), supported_ops=("send", "edit", "typing", "get_chat_info"))
+    )
     stub.chat_info["chan1"] = {"name": "general", "type": "group"}
     info = await adapter.get_chat_info("chan1")
     assert info == {"name": "general", "type": "group"}
+
+
+@pytest.mark.asyncio
+async def test_keep_typing_loop_emits_typing_frames_with_scope(wired):
+    """E2E through the REAL base-class refresh loop: the same ``_keep_typing``
+    task ``_process_message_background`` spawns for every turn must produce
+    ``op="typing"`` frames on the relay transport, carrying the tenant
+    discriminator captured from the inbound event (the connector's egress
+    guard declines undiscriminated frames). Regression: RelayAdapter inherited
+    the base no-op send_typing, so this loop ran all turn and emitted nothing —
+    no \"is typing…\" on any relay-fronted platform."""
+    import asyncio
+
+    adapter, stub = wired
+    await adapter.connect()
+    # Inbound captures chan1 -> guildA (scope) exactly as a real turn would.
+    adapter._capture_scope(_discord_event("guildA", "chan1", "userX", "hello"))
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        adapter._keep_typing("chan1", interval=0.05, stop_event=stop)
+    )
+    await asyncio.sleep(0.12)  # >= 2 ticks
+    stop.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    typing_frames = [f for f in stub.sent if f.get("op") == "typing"]
+    assert len(typing_frames) >= 2, f"expected repeated typing frames, got {stub.sent}"
+    for frame in typing_frames:
+        assert frame["chat_id"] == "chan1"
+        assert frame["metadata"].get("scope_id") == "guildA"
+    # Phase 1.5: each frame is tagged with the underlying platform for egress.
+    typing_platforms = [
+        p for f, p in zip(stub.sent, stub.sent_platforms) if f.get("op") == "typing"
+    ]
+    assert all(p == "discord" for p in typing_platforms)
 
 
 async def _async_capture(sink, event):

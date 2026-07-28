@@ -2,7 +2,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Tip } from '@/components/ui/tooltip'
+import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -27,7 +27,7 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        'fixed inset-0 z-[120] pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        'fixed inset-0 z-(--z-modal-backdrop) pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
         className
       )}
       data-slot="dialog-overlay"
@@ -48,6 +48,18 @@ const DIALOG_BANNER_TONES: Record<DialogBannerTone, string> = {
   info: 'bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_30%)] text-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_60%)] dark:bg-[color-mix(in_srgb,var(--ui-chat-bubble-background),black_20%)] dark:text-[color-mix(in_srgb,var(--ui-chat-bubble-background),white_60%)]'
 }
 
+// Radix focuses the first focusable element inside Dialog.Content on open. In
+// most dialogs that's a real input and the default autofocus is exactly what
+// we want, so it's opt-in rather than a shared default here. In dialogs with
+// no input (e.g. the updates overlay's idle/error views), the first focusable
+// element ends up being the close button, and since Tip shows on focus as well
+// as hover, that autofocus makes the "Close" tip appear immediately with no
+// pointer ever near the button. Dialogs like that should pass this in
+// explicitly as `onOpenAutoFocus={preventCloseButtonAutoFocus}`.
+export function preventCloseButtonAutoFocus(event: Event) {
+  event.preventDefault()
+}
+
 function DialogContent({
   className,
   children,
@@ -55,6 +67,7 @@ function DialogContent({
   fitContent = false,
   banner,
   bannerTone = 'error',
+  onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -72,19 +85,31 @@ function DialogContent({
 
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
+  // Publish the dialog's content node so popovers (Select / Popover /
+  // DropdownMenu) opened inside it portal INTO the dialog instead of
+  // document.body. That keeps them as DOM descendants — focus never leaves the
+  // dialog, so dismissing a dropdown (or clicking another field) no longer
+  // trips the Dialog's outside-interaction/focus-out close. See
+  // dialog-portal-context.ts. State (not just a ref) so consumers re-render once
+  // the node mounts.
+  const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
+
+  // No default here — Radix's normal autofocus (first focusable element, often
+  // an input) is what most dialogs want. Dialogs with no input should pass
+  // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
+
+  // No tip on the X — the glyph is the label. Keep aria-label / sr-only for a11y.
   const closeButton = showCloseButton ? (
     <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-      <Tip label={t.common.close}>
-        <Button
-          aria-label={t.common.close}
-          className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          size="icon-xs"
-          variant="ghost"
-        >
-          <X className="size-4" />
-          <span className="sr-only">{t.common.close}</span>
-        </Button>
-      </Tip>
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
     </DialogPrimitive.Close>
   ) : null
 
@@ -98,7 +123,7 @@ function DialogContent({
         <DialogOverlay />
         <DialogPrimitive.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-[130] pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+            'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             widthClass,
             className,
             // Callers often pass `gap-*` for the no-banner grid layout — suppress
@@ -106,25 +131,29 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
+          onOpenAutoFocus={onOpenAutoFocus}
+          ref={setContentNode}
           {...props}
         >
-          {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
-          <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
-            <div className="grid max-h-[calc(85vh-5rem)] min-h-0 gap-3 overflow-y-auto p-4">{children}</div>
-          </div>
-          <div
-            className={cn(
-              // Overlap by one corner radius so the white bottom lobes read clearly
-              // over the tint instead of meeting it on a straight seam.
-              'relative z-0 -mt-[var(--radius-xl)] px-4 pb-2.5 pt-[calc(var(--radius-xl)+0.625rem)] text-center text-[length:var(--conversation-tool-font-size)] leading-relaxed shadow-[inset_0_7px_7px_-4px_rgb(0_0_0/0.28)]',
-              DIALOG_BANNER_TONES[bannerTone]
-            )}
-            data-slot="dialog-banner"
-            role={bannerTone === 'error' ? 'alert' : 'status'}
-          >
-            {banner}
-          </div>
-          {closeButton}
+          <DialogPortalContainerContext.Provider value={contentNode}>
+            {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
+            <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
+              <div className="grid max-h-[calc(85vh-5rem)] min-h-0 gap-3 overflow-y-auto p-4">{children}</div>
+            </div>
+            <div
+              className={cn(
+                // Overlap by one corner radius so the white bottom lobes read clearly
+                // over the tint instead of meeting it on a straight seam.
+                'relative z-0 -mt-[var(--radius-xl)] px-4 pb-2.5 pt-[calc(var(--radius-xl)+0.625rem)] text-center text-[length:var(--conversation-tool-font-size)] leading-relaxed shadow-[inset_0_7px_7px_-4px_rgb(0_0_0/0.28)]',
+                DIALOG_BANNER_TONES[bannerTone]
+              )}
+              data-slot="dialog-banner"
+              role={bannerTone === 'error' ? 'alert' : 'status'}
+            >
+              {banner}
+            </div>
+            {closeButton}
+          </DialogPortalContainerContext.Provider>
         </DialogPrimitive.Content>
       </DialogPortal>
     )
@@ -138,15 +167,19 @@ function DialogContent({
           // Cap height at 85vh and let long content scroll inside the dialog
           // instead of overflowing off-screen (long cron titles, tool detail
           // dumps, etc.). Individual dialogs can still override via className.
-          'fixed left-1/2 top-1/2 z-[130] pointer-events-auto grid max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-3 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto grid max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-3 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           widthClass,
           className
         )}
         data-slot="dialog-content"
+        onOpenAutoFocus={onOpenAutoFocus}
+        ref={setContentNode}
         {...props}
       >
-        {children}
-        {closeButton}
+        <DialogPortalContainerContext.Provider value={contentNode}>
+          {children}
+          {closeButton}
+        </DialogPortalContainerContext.Provider>
       </DialogPrimitive.Content>
     </DialogPortal>
   )

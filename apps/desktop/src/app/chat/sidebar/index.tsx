@@ -21,7 +21,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem
 } from '@/components/ui/sidebar'
-import { TipKeybindLabel } from '@/components/ui/tooltip'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -89,10 +89,9 @@ import {
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
-  $sessionProfileTotals,
+  $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
-  $sessionsTotal,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -108,13 +107,13 @@ import {
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
-import { countLabel } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import {
+  orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
   PROJECT_PREVIEW_COUNT,
@@ -299,8 +298,7 @@ export function ChatSidebar({
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
-  const sessionsTotal = useStore($sessionsTotal)
-  const sessionProfileTotals = useStore($sessionProfileTotals)
+  const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const workingSessionIds = useStore($workingSessionIds)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
@@ -617,14 +615,21 @@ export function ChatSidebar({
     const sorted = sortProjectsForOverview(
       projectTree
         .filter(node => !(node.isAuto && dismissed.has(node.id)))
-        .map(project => ({ ...project, repos: orderRepos(project.repos) })),
+        .map(project => ({
+          ...project,
+          // Home is synthetic, so its name is ours to translate — every other
+          // label is a repo basename or a name the user typed.
+          label: project.isNoProject ? s.projects.home : project.label,
+          repos: orderRepos(project.repos)
+        })),
       activeProjectId
     )
 
     // Layer the user's manual drag-order on top of the deterministic sort. Empty
-    // (default) returns `sorted` untouched; new projects surface on top.
-    return orderByIds(sorted, project => project.id, projectOrderIds)
-  }, [showAllProfiles, projectTree, dismissedAutoProjects, orderRepos, activeProjectId, projectOrderIds])
+    // (default) returns `sorted` untouched; projects the user hasn't ordered yet
+    // keep their sorted position rather than jumping the hand-picked list.
+    return orderProjectsByIds(sorted, projectOrderIds)
+  }, [showAllProfiles, projectTree, dismissedAutoProjects, orderRepos, activeProjectId, projectOrderIds, s])
 
   // The overview only renders in grouped mode; the model stays live regardless
   // so scoping is consistent across views.
@@ -686,7 +691,9 @@ export function ChatSidebar({
     // The live-session overlay (creates/evictions) is applied per-repo in
     // RepoFlatSection, AFTER the visual git-worktree lanes are merged in (so
     // out-of-tree worktrees can be placed). Here we just order the snapshot.
-    return { ...hydrated, repos: orderRepos(hydrated.repos) }
+    // The label comes from the overview node either way — that's the model's
+    // presentation copy (Home is translated there), not the raw payload's.
+    return { ...hydrated, label: overviewEnteredProject.label, repos: orderRepos(hydrated.repos) }
   }, [overviewEnteredProject, enteredProjectTree, orderRepos])
 
   // Overlay live `$sessions` onto the entered project so a just-created session
@@ -716,8 +723,9 @@ export function ChatSidebar({
   // session settles (its turn finished) or the window refocuses (an external
   // terminal may have changed things) — only while a project is entered, and
   // only the cheap per-repo `git worktree list`, never the heavy tree scan.
-  const prevWorkingIdsRef = useRef<string[]>(workingSessionIds)
+  const prevWorkingIdsRef = useRef<readonly string[]>(workingSessionIds)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const prev = prevWorkingIdsRef.current
     prevWorkingIdsRef.current = workingSessionIds
@@ -754,6 +762,7 @@ export function ChatSidebar({
     [currentCwd]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!inProject || !enteredProject) {
       lastProjectCwdSyncRef.current = null
@@ -784,7 +793,7 @@ export function ChatSidebar({
   // Preview rows come from the backend tree (each project carries its
   // most-recent sessions), overlaid with live $sessions so a just-created
   // session shows under its project instantly (and with its working arc),
-  // matching the flat Recents list. Keyed by project path for the rows.
+  // matching the flat Recents list. Keyed by project id for the rows.
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
     () => overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, removedSessionIds),
     [projectOverview, agentSessions, projects, removedSessionIds]
@@ -933,7 +942,7 @@ export function ChatSidebar({
           ...group,
           loadingMore: Boolean(profileLoadMorePending[group.id]),
           onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
-          totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
+          hasMore: Boolean(sessionProfilesTruncated[group.id])
         }))
         // default (root) first, then the rest alphabetically.
         .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
@@ -944,7 +953,7 @@ export function ChatSidebar({
     loadMoreForProfileGroup,
     onLoadMoreProfileSessions,
     profileLoadMorePending,
-    sessionProfileTotals
+    sessionProfilesTruncated
   ])
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
@@ -952,22 +961,16 @@ export function ChatSidebar({
   const displayAgentSessions = agentSessions
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
-  // unified set. When scoped to one profile it must compare that profile's own
-  // loaded rows against that profile's total — otherwise a huge default profile
-  // keeps "Load more" stuck on while you browse a small one (the aggregator's
-  // total sums every profile). Per-profile totals come from the aggregator
-  // (children excluded); fall back to the global total / loaded count.
+  // unified set; scoped to one profile it tracks that profile's own truncation
+  // flag — otherwise a huge default profile keeps "Load more" stuck on while
+  // you browse a small one. The backend reports whether its page was capped
+  // rather than an exact count, so no COUNT(*) runs per refresh.
   const loadedSessionCount = showAllProfiles ? sessions.length : visibleSessions.length
-  const scopedProfileTotal = showAllProfiles ? undefined : sessionProfileTotals[profileScope]
 
-  const knownSessionTotal = Math.max(
-    showAllProfiles ? sessionsTotal : (scopedProfileTotal ?? loadedSessionCount),
-    loadedSessionCount
-  )
+  const hasMoreSessions = showAllProfiles
+    ? Object.values(sessionProfilesTruncated).some(Boolean)
+    : Boolean(sessionProfilesTruncated[profileScope])
 
-  const hasMoreSessions = knownSessionTotal > loadedSessionCount
-
-  const recentsMeta = countLabel(displayAgentSessions.length, knownSessionTotal)
   const displayRecentsCountRef = useRef(0)
   const loadedRecentsCountRef = useRef(0)
   displayRecentsCountRef.current = displayAgentSessions.length
@@ -1239,7 +1242,7 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
+                contentClassName={cn('flex max-h-[50vh] flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
@@ -1275,6 +1278,7 @@ export function ChatSidebar({
                   // virtualized long list, which must keep its own scroller.
                   !recentsVirtualizes && COMPACT_FLAT
                 )}
+                dateGrouped={inProject || !agentOrderManual}
                 dndSensors={dndSensors}
                 emptyState={
                   showSessionSkeletons ? (
@@ -1308,66 +1312,75 @@ export function ChatSidebar({
                       {enteredProject.path && (
                         <StartWorkButton onStarted={onNewSessionInWorkspace} repoPath={enteredProject.path} />
                       )}
-                      <ProjectMenu
-                        isActive={enteredProject.id === activeProjectId}
-                        onExitScope={exitProjectScope}
-                        project={enteredProject}
-                        scoped
-                      />
+                      {/* Home has no folder and no record to rename, theme, or delete. */}
+                      {!enteredProject.isNoProject && (
+                        <ProjectMenu
+                          isActive={enteredProject.id === activeProjectId}
+                          onExitScope={exitProjectScope}
+                          project={enteredProject}
+                          scoped
+                        />
+                      )}
                       <div className="grid size-6 place-items-center">
-                        <Button
-                          aria-label={s.showProjects}
-                          className={HEADER_NAV_BTN}
-                          onClick={event => {
-                            event.stopPropagation()
-                            exitProjectScope()
-                          }}
-                          size="icon-xs"
-                          variant="ghost"
-                        >
-                          <Codicon name="list-unordered" size="0.75rem" />
-                        </Button>
+                        <Tip label={s.showProjects}>
+                          <Button
+                            aria-label={s.showProjects}
+                            className={HEADER_NAV_BTN}
+                            onClick={event => {
+                              event.stopPropagation()
+                              exitProjectScope()
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name="list-unordered" size="0.75rem" />
+                          </Button>
+                        </Tip>
                       </div>
                     </div>
                   ) : (
                     <div className="flex shrink-0 items-center gap-0.5">
                       {!showAllProfiles ? (
-                        <Button
-                          aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                          className={HEADER_ACTION_BTN}
-                          onClick={event => {
-                            event.stopPropagation()
-
-                            if (agentsGrouped) {
-                              openProjectCreate()
-                            } else {
-                              onNewSessionInWorkspace(null)
-                            }
-                          }}
-                          size="icon-xs"
-                          variant="ghost"
-                        >
-                          <Codicon name="add" size="0.75rem" />
-                        </Button>
-                      ) : null}
-                      <div className="grid size-6 place-items-center">
-                        {!showAllProfiles && agentSessions.length > 0 ? (
+                        <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
                           <Button
-                            aria-label={agentsGrouped ? s.showSessions : s.showProjects}
-                            className={cn(
-                              HEADER_NAV_BTN,
-                              agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                            )}
+                            aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                            className={HEADER_ACTION_BTN}
                             onClick={event => {
                               event.stopPropagation()
-                              setSidebarRecentsOpen(true)
-                              setSidebarAgentsGrouped(!agentsGrouped)
+
+                              if (agentsGrouped) {
+                                openProjectCreate()
+                              } else {
+                                onNewSessionInWorkspace(null)
+                              }
                             }}
                             size="icon-xs"
                             variant="ghost"
                           >
-                            <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                            <Codicon name="add" size="0.75rem" />
                           </Button>
+                        </Tip>
+                      ) : null}
+                      <div className="grid size-6 place-items-center">
+                        {!showAllProfiles && agentSessions.length > 0 ? (
+                          <Tip label={agentsGrouped ? s.showSessions : s.showProjects}>
+                            <Button
+                              aria-label={agentsGrouped ? s.showSessions : s.showProjects}
+                              className={cn(
+                                HEADER_NAV_BTN,
+                                agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                              )}
+                              onClick={event => {
+                                event.stopPropagation()
+                                setSidebarRecentsOpen(true)
+                                setSidebarAgentsGrouped(!agentsGrouped)
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                            </Button>
+                          </Tip>
                         ) : null}
                       </div>
                     </div>
@@ -1379,9 +1392,7 @@ export function ChatSidebar({
                     reposScanning && !projectsSkeletonVisible ? (
                       <GlyphSpinner ariaLabel={s.loading} className="text-[0.6875rem] text-(--ui-text-quaternary)" />
                     ) : undefined
-                  ) : (
-                    recentsMeta
-                  )
+                  ) : undefined
                 }
                 liveSessions={inProject ? agentSessions : undefined}
                 onArchiveSession={onArchiveSession}
@@ -1447,7 +1458,7 @@ export function ChatSidebar({
                         platformName={group.label}
                       />
                     }
-                    labelMeta={countLabel(group.sessions.length, group.total)}
+                    labelMeta={String(shownSessions.length)}
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}

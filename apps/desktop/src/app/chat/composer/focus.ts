@@ -10,6 +10,8 @@
  * steal focus from the composer effect.
  */
 
+import { queryVisible } from '@/components/pane-shell/pane-visibility'
+
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
@@ -18,8 +20,10 @@ import { RICH_INPUT_SLOT } from './rich-editor'
 export type ComposerTarget = 'edit' | 'main' | (string & {})
 export type ComposerInsertMode = 'block' | 'inline'
 
-interface FocusDetail {
+export interface FocusDetail {
   target: ComposerTarget
+  /** Append after focus (type-to-focus / soft `/`). */
+  typeChar?: string
 }
 
 interface InsertDetail {
@@ -82,8 +86,10 @@ export const markActiveComposer = (target: ComposerTarget) => {
  *  Used by broadcast listeners (voice, Esc-to-stop) to act on exactly one. */
 export const getActiveComposer = (): ComposerTarget => activeTarget
 
-export const requestComposerFocus = (target: ComposerTarget | 'active' = 'active') =>
-  dispatch<FocusDetail>(FOCUS_EVENT, { target: resolve(target) })
+export const requestComposerFocus = (
+  target: ComposerTarget | 'active' = 'active',
+  { typeChar }: { typeChar?: string } = {}
+) => dispatch<FocusDetail>(FOCUS_EVENT, { target: resolve(target), typeChar })
 
 export const requestComposerInsert = (
   text: string,
@@ -98,8 +104,8 @@ export const requestComposerInsert = (
   dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolve(target), text: trimmed })
 }
 
-export const onComposerFocusRequest = (handler: (target: ComposerTarget) => void) =>
-  subscribe<FocusDetail>(FOCUS_EVENT, ({ target }) => handler(target))
+export const onComposerFocusRequest = (handler: (detail: FocusDetail) => void) =>
+  subscribe<FocusDetail>(FOCUS_EVENT, handler)
 
 export const onComposerInsertRequest = (handler: (detail: InsertDetail) => void) =>
   subscribe<InsertDetail>(INSERT_EVENT, handler)
@@ -171,9 +177,11 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   window.setTimeout(focus, 0)
 }
 
-/** Drop focus from the main composer input (status-stack chrome, sidebar, etc.). */
+/** Drop focus from the main composer input (status-stack chrome, sidebar, etc.).
+ *  Skips inactive tabs — they stay mounted, so an unscoped lookup can land on a
+ *  background composer and leave the visible one focused. */
 export const blurComposerInput = () => {
-  const el = document.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement | null
+  const el = queryVisible(`[data-slot="${RICH_INPUT_SLOT}"]`)
 
   if (el && document.activeElement === el) {
     el.blur()

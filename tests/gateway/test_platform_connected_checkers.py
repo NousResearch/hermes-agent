@@ -98,8 +98,9 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
     elif platform == Platform.SMS:
         monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACtest")
         mock_config.extra = {}
+    elif platform == Platform.API_SERVER:
+        mock_config.extra = {"key": "opensslrandhex32strongkey"}
     elif platform in {
-        Platform.API_SERVER,
         Platform.WEBHOOK,
         Platform.WHATSAPP,
     }:
@@ -127,3 +128,26 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
 
     result = checker(mock_config)
     assert result is True, f"{platform.value} checker should return True with valid-looking config"
+
+
+def test_api_server_checker_key_validity():
+    """API_SERVER checker: missing, placeholder, short, and strong keys."""
+    checker = _PLATFORM_CONNECTED_CHECKERS[Platform.API_SERVER]
+
+    cfg = MagicMock()
+
+    # Missing
+    cfg.extra = {}
+    assert checker(cfg) is False
+
+    # Placeholder
+    cfg.extra = {"key": "changeme"}
+    assert checker(cfg) is False
+
+    # Too short (<16 chars)
+    cfg.extra = {"key": "shortkey"}
+    assert checker(cfg) is False
+
+    # Strong key (>=16 chars, not a placeholder)
+    cfg.extra = {"key": "opensslrandhex32strongkey"}
+    assert checker(cfg) is True

@@ -702,6 +702,16 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        _user_interrupted = bool(
+            getattr(agent, "_interrupt_requested", False)
+        )
+        _interrupt_message = (
+            getattr(agent, "_interrupt_message", None)
+            if _user_interrupted
+            else None
+        )
+        if _user_interrupted:
+            agent.clear_interrupt()
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -711,8 +721,26 @@ def run_codex_app_server_turn(
             "api_calls": 0,
             "completed": False,
             "partial": True,
+            "interrupted": _user_interrupted,
+            **(
+                {"interrupt_message": _interrupt_message}
+                if _interrupt_message
+                else {}
+            ),
             "error": str(exc),
         }
+
+    # This runtime bypasses the normal conversation-loop finalizer. Mirror its
+    # interrupt handoff/cleanup so a hard stop cannot poison the next turn and a
+    # message-bearing compatibility interrupt can still be replayed by callers.
+    _user_interrupted = bool(
+        turn.interrupted and getattr(agent, "_interrupt_requested", False)
+    )
+    _interrupt_message = (
+        getattr(agent, "_interrupt_message", None) if _user_interrupted else None
+    )
+    if _user_interrupted:
+        agent.clear_interrupt()
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
@@ -750,11 +778,26 @@ def run_codex_app_server_turn(
         # the already-flushed user turn). See gateway/run.py agent_persisted.
         if getattr(agent, "_session_db", None) is not None:
             try:
-                agent._flush_messages_to_session_db(messages)
+                _codex_flush_ok = agent._flush_messages_to_session_db(messages)
             except Exception:
-                logger.debug(
+                _codex_flush_ok = False
+                logger.warning(
                     "codex app-server projected-message flush failed",
                     exc_info=True,
+                )
+            if _codex_flush_ok is False:
+                # Unlike the chat-completions loop (which fails closed BEFORE
+                # projection — see conversation_loop session_persistence_failed),
+                # codex output has already streamed to the user by the time this
+                # flush runs, so there is nothing left to withhold. We cannot
+                # flip agent_persisted=False either: the gateway fallback write
+                # would re-INSERT the already-flushed user turn (#860/#42039).
+                # Surface the durability gap loudly instead of a silent debug.
+                logger.warning(
+                    "codex app-server turn was delivered but could NOT be "
+                    "persisted to the session DB (session=%s) — this turn "
+                    "will be missing after restart/resume",
+                    getattr(agent, "session_id", None),
                 )
 
 
@@ -819,6 +862,12 @@ def run_codex_app_server_turn(
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
+        "interrupted": _user_interrupted,
+        **(
+            {"interrupt_message": _interrupt_message}
+            if _interrupt_message
+            else {}
+        ),
         "error": turn.error,
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages

@@ -30,11 +30,19 @@ class TestSummaryPrefixToolUseClause:
         generation must be frozen into _HISTORICAL_SUMMARY_PREFIXES so old
         persisted summaries still get the directive-strip on re-compaction."""
         assert len(_HISTORICAL_SUMMARY_PREFIXES) >= 3
-        newest_frozen = _HISTORICAL_SUMMARY_PREFIXES[0]
-        # The frozen copy is the pre-clause generation: same framing, no clause.
-        assert "tools remain fully active" not in newest_frozen
-        assert "Do NOT answer questions or fulfill requests" in newest_frozen
-        assert newest_frozen != SUMMARY_PREFIX
+        # The pre-clause generation (#65848 incident era): same framing, no
+        # tools-active clause. Newer generations are prepended ahead of it as
+        # the prefix evolves (tuple is newest-first), so match by content,
+        # not position. "topic overlap" distinguishes it from the older
+        # carveout-era entry.
+        pre_clause = [
+            p for p in _HISTORICAL_SUMMARY_PREFIXES
+            if "tools remain fully active" not in p
+            and "topic overlap" in p.lower()
+            and "Do NOT answer questions or fulfill requests" in p
+        ]
+        assert pre_clause, "pre-clause generation missing from frozen tuple"
+        assert all(p != SUMMARY_PREFIX for p in pre_clause)
 
     def test_historical_prefixes_are_distinct_from_current(self):
         for frozen in _HISTORICAL_SUMMARY_PREFIXES:

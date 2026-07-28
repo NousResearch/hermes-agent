@@ -25,21 +25,85 @@ def _has_configured_mcp_servers() -> bool:
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
-    """Spawn one shared background MCP discovery thread for this process."""
+    """Spawn one shared background MCP discovery thread for this process.
+
+    If the first background discovery run exits without connecting any MCP
+    server (for example after startup cancellation / OOM restart), later calls
+    are allowed to retry instead of permanently pinning the process in a
+    "discovery already started" state with zero MCP tools.
+    """
     global _mcp_discovery_started, _mcp_discovery_thread
 
     with _mcp_discovery_lock:
         if _mcp_discovery_started:
-            return
+            thread = _mcp_discovery_thread
+            if thread is not None and thread.is_alive():
+                return
+            try:
+                from tools.mcp_tool import get_mcp_status
+
+                status = get_mcp_status() or []
+                if any(entry.get("connected") for entry in status):
+                    return
+            except Exception:
+                return
+            logger.warning(
+                "Background MCP discovery previously exited with no connected "
+                "servers; retrying discovery thread"
+            )
+            _mcp_discovery_started = False
+            _mcp_discovery_thread = None
+
         _mcp_discovery_started = True
         if not _has_configured_mcp_servers():
             return
 
+        # Capture the caller's context-local HERMES_HOME override (profile
+        # scoping in multi-profile processes like the dashboard/desktop
+        # backend) and re-install it inside the discovery thread. ContextVars
+        # do not propagate into bare threads, so without this a session
+        # "switched" to profile X would discover the LAUNCH profile's
+        # mcp_servers instead (#67605). The config gate above already runs on
+        # the caller's thread, so it sees the same override.
+        try:
+            from hermes_constants import get_hermes_home_override
+
+            home_override = get_hermes_home_override()
+        except Exception:
+            home_override = None
+
         def _discover() -> None:
+            token = None
+            try:
+                from hermes_constants import set_hermes_home_override
+
+                token = set_hermes_home_override(home_override)
+            except Exception:
+                token = None
             try:
                 _discover_mcp_tools_without_interactive_oauth()
+                try:
+                    from tools.mcp_tool import get_mcp_status
+                    status = get_mcp_status() or []
+                    if not any(entry.get("connected") for entry in status):
+                        logger.warning(
+                            "Background MCP discovery completed with zero connected servers"
+                        )
+                except Exception:
+                    logger.debug("Failed to inspect MCP status after background discovery", exc_info=True)
             except Exception:
                 logger.debug("Background MCP tool discovery failed", exc_info=True)
+            finally:
+                if token is not None:
+                    try:
+                        from hermes_constants import reset_hermes_home_override
+
+                        reset_hermes_home_override(token)
+                    except Exception:
+                        pass
+                with _mcp_discovery_lock:
+                    global _mcp_discovery_thread, _mcp_discovery_started
+                    _mcp_discovery_thread = None
 
         thread = threading.Thread(
             target=_discover,

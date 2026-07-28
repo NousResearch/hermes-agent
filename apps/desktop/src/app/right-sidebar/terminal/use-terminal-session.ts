@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
-import { $filePreviewTarget, $previewTarget } from '@/store/preview'
+import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
@@ -62,7 +62,7 @@ type TerminalStatus = 'closed' | 'open' | 'starting'
 // file's name instead of the shell, so the composer ref reads as a file quote
 // rather than a bogus "zsh:N lines".
 function previewSelectionLabel(): string {
-  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const target = $previewTarget.get()
   const source = target?.path || target?.url || ''
 
   return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
@@ -421,6 +421,7 @@ export function useTerminalSession({
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
     onShellRef.current = onShell
@@ -478,6 +479,7 @@ export function useTerminalSession({
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [addSelectionToChat, readSelection])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
     const terminalApi = window.hermesDesktop?.terminal
@@ -974,6 +976,7 @@ export function useTerminalSession({
   // the subscribe fires immediately, so a command set before this pane mounted
   // runs as soon as the session is ready. Cleared after writing so a later
   // remount can't replay a stale command.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!active || status !== 'open') {
       return

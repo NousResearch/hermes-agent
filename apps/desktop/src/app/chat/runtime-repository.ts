@@ -1,14 +1,27 @@
-import { ExportedMessageRepository, type ThreadMessage } from '@assistant-ui/react'
+import { fromThreadMessageLike, getAutoStatus } from '@assistant-ui/core/internal'
+import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/react'
 import { useMemo, useRef } from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
+
+// The exact fallback status ExportedMessageRepository.fromBranchableArray uses.
+// Normalization happens HERE, once per message, so the cached record below is
+// already the final ThreadMessage the runtime consumes.
+const FALLBACK_STATUS = getAutoStatus(false, false, false, false, undefined)
 
 /**
  * ChatMessage[] -> assistant-ui message repository, with a WeakMap identity
  * cache so unchanged messages convert once (and a tool-merge cache that folds
  * tool-only assistant turns into their neighbour). Shared by the main chat's
  * runtime boundary and session tiles — one transcript pipeline, N surfaces.
+ *
+ * The cache stores NORMALIZED messages. `fromBranchableArray` maps the whole
+ * array through `fromThreadMessageLike` on every call, so building the export
+ * with it threw away the cache's reference identity once per streamed delta —
+ * re-normalizing the entire settled transcript ~30x/s. Normalizing inside the
+ * cache miss keeps identity stable for settled turns, which is what lets the
+ * runtime reconcile detect that only the tail moved.
  */
 export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMessageRepository {
   const cacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
@@ -32,7 +45,9 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
       }
 
       const cachedMessage = cacheRef.current.get(message)
-      const runtimeMessage = cachedMessage ?? toRuntimeMessage(message)
+
+      const runtimeMessage =
+        cachedMessage ?? fromThreadMessageLike(toRuntimeMessage(message), message.id, FALLBACK_STATUS)
 
       if (!cachedMessage) {
         cacheRef.current.set(message, runtimeMessage)
@@ -46,6 +61,6 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
       }
     }
 
-    return ExportedMessageRepository.fromBranchableArray(items, { headId })
+    return { headId, messages: items }
   }, [messages])
 }

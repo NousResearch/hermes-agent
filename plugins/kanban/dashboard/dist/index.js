@@ -3579,6 +3579,7 @@
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+        h(ModelEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
@@ -3982,6 +3983,173 @@
         },
         className: "h-7 text-xs w-20",
       }),
+    );
+  }
+
+  // Module-level cache for the model-options catalog so opening several
+  // task drawers doesn't refetch. { providers: [{slug,label,models}] }
+  let _modelCatalogCache = null;
+  let _modelCatalogPromise = null;
+  function fetchModelCatalog() {
+    if (_modelCatalogCache) return Promise.resolve(_modelCatalogCache);
+    if (_modelCatalogPromise) return _modelCatalogPromise;
+    _modelCatalogPromise = SDK.fetchJSON(`${API}/model-options`)
+      .then(function (data) {
+        _modelCatalogCache = data && Array.isArray(data.providers) ? data : { providers: [] };
+        return _modelCatalogCache;
+      })
+      .catch(function () {
+        _modelCatalogPromise = null; // allow retry on next open
+        return { providers: [] };
+      });
+    return _modelCatalogPromise;
+  }
+
+  // Per-task model override dropdown. Value encoding: "" = profile
+  // default; "<slug>\u0000<model>" = provider+model pair (the separator
+  // can't appear in either half). A catalog fetch failure degrades to a
+  // free-text input so the override is still settable.
+  function ModelEditor(props) {
+    const { t } = useI18n();
+    const task = props.task;
+    const [editing, setEditing] = useState(false);
+    const [catalog, setCatalog] = useState(_modelCatalogCache);
+    const [busy, setBusy] = useState(false);
+    const [freeText, setFreeText] = useState("");
+
+    useEffect(function () {
+      if (!editing || catalog) return;
+      let alive = true;
+      fetchModelCatalog().then(function (data) {
+        if (alive) setCatalog(data);
+      });
+      return function () { alive = false; };
+    }, [editing, catalog]);
+
+    const current = task.model_override
+      ? (task.provider_override
+          ? `${task.provider_override}: ${task.model_override}`
+          : task.model_override)
+      : tx(t, "modelProfileDefault", "profile default");
+
+    if (!editing) {
+      return h("div", { className: "hermes-kanban-meta-row" },
+        h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
+        h("span", {
+          className: cn(
+            "hermes-kanban-meta-value hermes-kanban-editable",
+            !task.model_override ? "text-muted-foreground" : "",
+          ),
+          onClick: function () { setEditing(true); },
+          title: tx(t, "clickToEditModel",
+            "Click to override the model for this task's next run"),
+        }, current),
+      );
+    }
+
+    const apply = function (patch) {
+      setBusy(true);
+      props.onPatch(patch).then(function () {
+        setEditing(false);
+      }).catch(function () {
+        // onPatch surfaces its own toast; just re-enable the control.
+      }).then(function () { setBusy(false); });
+    };
+
+    const onPick = function (value) {
+      if (value === "") {
+        apply({ clear_model_override: true });
+        return;
+      }
+      const sep = value.indexOf("\u0000");
+      if (sep === -1) {
+        apply({ model_override: value });
+        return;
+      }
+      apply({
+        provider_override: value.slice(0, sep),
+        model_override: value.slice(sep + 1),
+      });
+    };
+
+    const providers = (catalog && catalog.providers) || [];
+    const loading = editing && !catalog;
+    const currentValue = task.model_override
+      ? (task.provider_override
+          ? `${task.provider_override}\u0000${task.model_override}`
+          : task.model_override)
+      : "";
+
+    // Free-text fallback when the catalog is empty (inventory unavailable
+    // or zero authenticated providers).
+    if (!loading && providers.length === 0) {
+      const saveFree = function () {
+        const v = freeText.trim();
+        if (!v) { apply({ clear_model_override: true }); return; }
+        apply({ model_override: v });
+      };
+      return h("div", { className: "hermes-kanban-meta-row" },
+        h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
+        h(Input, {
+          value: freeText, autoFocus: true, disabled: busy,
+          placeholder: tx(t, "modelFreeTextPlaceholder", "model name (empty = profile default)"),
+          onChange: function (e) { setFreeText(e.target.value); },
+          onKeyDown: function (e) {
+            if (e.key === "Enter") { e.preventDefault(); saveFree(); }
+            if (e.key === "Escape") setEditing(false);
+          },
+          className: "h-7 text-xs flex-1",
+          style: { textTransform: "none" },
+          autoCapitalize: "none", autoCorrect: "off", spellCheck: false,
+        }),
+      );
+    }
+
+    // Ensure the current override is selectable even when it's not in the
+    // catalog (e.g. set from the CLI with a model the catalog doesn't list).
+    let currentInCatalog = currentValue === "";
+    for (let i = 0; i < providers.length && !currentInCatalog; i++) {
+      const p = providers[i];
+      for (let j = 0; j < p.models.length; j++) {
+        const enc = `${p.slug}\u0000${p.models[j]}`;
+        if (enc === currentValue || p.models[j] === currentValue) {
+          currentInCatalog = true;
+          break;
+        }
+      }
+    }
+
+    return h("div", { className: "hermes-kanban-meta-row" },
+      h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
+      loading
+        ? h("span", { className: "hermes-kanban-meta-value text-muted-foreground" },
+            tx(t, "modelLoading", "loading models…"))
+        : h("select", {
+            className: "hermes-kanban-recovery-select",
+            value: currentValue,
+            disabled: busy,
+            autoFocus: true,
+            onChange: function (e) { onPick(e.target.value); },
+            onKeyDown: function (e) {
+              if (e.key === "Escape") setEditing(false);
+            },
+          },
+            h("option", { value: "" },
+              tx(t, "modelProfileDefaultOption", "(profile default)")),
+            !currentInCatalog
+              ? h("option", { value: currentValue }, current)
+              : null,
+            providers.map(function (p) {
+              return h("optgroup", { key: p.slug, label: p.label || p.slug },
+                p.models.map(function (m) {
+                  return h("option", {
+                    key: `${p.slug}\u0000${m}`,
+                    value: `${p.slug}\u0000${m}`,
+                  }, m);
+                }),
+              );
+            }),
+          ),
     );
   }
 

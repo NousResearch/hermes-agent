@@ -234,7 +234,8 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     """Collect job/step timings from the GitHub API.
 
     1. Get orchestrator run's direct jobs (detect, all-checks-pass, etc.).
-       Skip workflow-call placeholder jobs (step name starts with "Run ./.github/").
+       Skip workflow-call placeholder jobs (step name starts with
+       "Run ./.github/workflows/").
     2. Find sub-workflow runs via head_sha + event=workflow_call.
     3. Get each sub-workflow run's jobs with full step timing.
     """
@@ -251,7 +252,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     direct = []
     for job in orch_jobs:
         steps = job.get("steps") or []
-        if any(s.get("name", "").startswith("Run ./.github/") for s in steps):
+        if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
             continue  # workflow-call placeholder
         if job.get("status") in ("in_progress", "queued"):
             continue  # skip self / unfinished
@@ -896,6 +897,86 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Review status JSON for the unified PR comment
+# ---------------------------------------------------------------------------
+
+# Wall-time regressions above this fraction of baseline are "warning" severity.
+_TIMINGS_WARN_PCT = 0.25
+
+
+def generate_review_status(
+    timings: dict, baseline: dict | None, report_url: str | None = None
+) -> list[dict]:
+    """Produce a review_status JSON array for the CI timings review section.
+
+    Returns a list with one ``{source, results: [...]}`` entry. The
+    result kind is ``"debug"`` or ``"warning"`` (timings is never error —
+    it's an observability job). *summary* is a single short line suitable
+    for the PR comment. *detail* has the per-job deltas as a markdown
+    fragment.
+    """
+    stats = compute_stats(timings, baseline)
+
+    if baseline is None:
+        severity = "debug"
+        summary = f"Wall time {fmt_dur(stats['wall'])} (no baseline yet)."
+    else:
+        wall = stats["wall"]
+        bl_wall = stats["bl_wall"] or 0
+        if bl_wall > 0:
+            pct = (wall - bl_wall) / bl_wall * 100
+            wall_str = f"Wall time {fmt_dur(wall)} vs {fmt_dur(bl_wall)} ({pct:+.1f}%)."
+            if pct > _TIMINGS_WARN_PCT * 100:
+                severity = "warning"
+            else:
+                severity = "debug"
+        else:
+            wall_str = f"Wall time {fmt_dur(wall)}."
+            severity = "debug"
+
+        if stats["slower"]:
+            wall_str += f" {stats['slower']} job(s) slower,"
+        if stats["faster"]:
+            wall_str += f" {stats['faster']} faster,"
+        if stats["unchanged"]:
+            wall_str += f" {stats['unchanged']} unchanged."
+        summary = wall_str
+
+    # Per-job delta detail (top 5 by absolute change)
+    detail_lines: list[str] = []
+    if baseline:
+        bl_map = {j["name"]: j for j in baseline.get("jobs", [])}
+        deltas: list[tuple[float, str, str]] = []
+        for j in timings.get("jobs", []):
+            if is_skipped(j):
+                continue
+            bl = bl_map.get(j["name"])
+            if not bl or is_skipped(bl):
+                continue
+            cur = j.get("duration_s") or 0
+            bl_d = bl.get("duration_s") or 0
+            diff = cur - bl_d
+            if abs(diff) < 1.0:
+                continue
+            deltas.append((abs(diff), j["name"], f"{diff:+.1f}s"))
+        deltas.sort(reverse=True)
+        for _, name, delta_str in deltas[:5]:
+            detail_lines.append(f"- {name}: {delta_str}")
+
+    result: dict = {
+        "kind": severity,
+        "title": "CI timings",
+        "summary": summary,
+        "detail": "\n".join(detail_lines),
+    }
+    if report_url:
+        result["link"] = report_url
+        result["link_label"] = "View report"
+
+    return [{"source": "ci timing", "results": [result]}]
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -916,6 +997,10 @@ def main():
                         help="JSON output path (default: ci-timings.json)")
     parser.add_argument("--summary-out", default="ci-timings-summary.md",
                         help="Markdown summary output path (default: ci-timings-summary.md)")
+    parser.add_argument("--review-status-out", default="",
+                        help="If set, write a review-status JSON for the unified PR comment.")
+    parser.add_argument("--review-status-only", action="store_true",
+                        help="Write review status from existing timings without regenerating the report.")
     args = parser.parse_args()
 
     # Collect or load timings
@@ -962,6 +1047,16 @@ def main():
     else:
         print(f"No baseline file at {args.baseline} — generating current-only report")
 
+    if args.review_status_only:
+        if not args.review_status_out:
+            parser.error("--review-status-only requires --review-status-out")
+        report_url = os.environ.get("CI_TIMINGS_REPORT_URL", "")
+        statuses = generate_review_status(timings, baseline, report_url)
+        with open(args.review_status_out, "w", encoding="utf-8") as f:
+            f.write(f"review_status={json.dumps(statuses)}\n")
+        print(f"Wrote review status to {args.review_status_out}")
+        return
+
     # Generate HTML
     html = generate_html(timings, baseline)
     with open(args.output, "w", encoding="utf-8") as f:
@@ -973,6 +1068,17 @@ def main():
     with open(args.summary_out, "a", encoding="utf-8") as f:
         f.write(summary)
         print(f"Wrote summary to {args.summary_out}")
+
+    # Write review status for the unified PR comment.
+    # The output goes to GITHUB_OUTPUT (or a file with the same key=value
+    # format) so the ci-timings job can expose it as a workflow_call output.
+    if args.review_status_out:
+        report_url = os.environ.get("CI_TIMINGS_REPORT_URL", "")
+        statuses = generate_review_status(timings, baseline, report_url)
+        json_str = json.dumps(statuses)
+        with open(args.review_status_out, "a", encoding="utf-8") as f:
+            f.write(f"review_status={json_str}\n")
+        print(f"Wrote review status to {args.review_status_out}")
 
 
 if __name__ == "__main__":

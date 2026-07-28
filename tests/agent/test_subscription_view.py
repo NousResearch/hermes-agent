@@ -10,13 +10,30 @@ from decimal import Decimal
 import pytest
 
 from agent.subscription_view import (
+    CurrentSubscription,
     SubscriptionState,
+    SubscriptionTier,
     build_subscription_state,
     dev_fixture_subscription_state,
+    format_tier_row,
+    is_upgrade,
+    selectable_tiers,
     subscription_change_preview_from_payload,
     subscription_manage_url,
     subscription_state_from_payload,
 )
+
+
+def _tier(tid, order, dpm, mc, *, is_current=False, is_enabled=True):
+    return SubscriptionTier(
+        tier_id=tid,
+        name=tid.title(),
+        tier_order=order,
+        dollars_per_month=Decimal(dpm) if dpm is not None else None,
+        monthly_credits=Decimal(mc) if mc is not None else None,
+        is_current=is_current,
+        is_enabled=is_enabled,
+    )
 
 
 # ── subscription_manage_url ──────────────────────────────────────────
@@ -42,6 +59,75 @@ def test_manage_url_omits_org_when_absent():
     assert "org_id" not in url
 
 
+def test_manage_url_appends_plan_when_tier_picked():
+    # A picked tier rides along as ?plan=<tier_id>, org_id first, plan second.
+    s = SubscriptionState(
+        logged_in=True,
+        org_id="org_x",
+        portal_url="https://portal.nousresearch.com/billing",
+    )
+    assert (
+        subscription_manage_url(s, tier_id="plus")
+        == "https://portal.nousresearch.com/manage-subscription?org_id=org_x&plan=plus"
+    )
+
+
+def test_manage_url_plan_without_org():
+    # No org_id → plan is still appended (the portal validates/ignores it).
+    s = SubscriptionState(logged_in=True, org_id=None, portal_url="https://p.example.com/")
+    assert (
+        subscription_manage_url(s, tier_id="ultra")
+        == "https://p.example.com/manage-subscription?plan=ultra"
+    )
+
+
+def test_manage_url_no_plan_when_tier_absent():
+    # No tier picked → no plan= param (unchanged legacy shape).
+    s = SubscriptionState(logged_in=True, org_id="org_x", portal_url="https://p.example.com/")
+    url = subscription_manage_url(s)
+    assert url == "https://p.example.com/manage-subscription?org_id=org_x"
+    assert "plan=" not in url
+
+
+def test_manage_url_preserves_unrelated_query_params():
+    # Pre-existing portal query params survive; contract-owned org_id/plan are
+    # appended after them, org_id before plan.
+    s = SubscriptionState(
+        logged_in=True, org_id="org_x", portal_url="https://portal.example/billing?ref=abc"
+    )
+    assert (
+        subscription_manage_url(s, tier_id="plus")
+        == "https://portal.example/manage-subscription?ref=abc&org_id=org_x&plan=plus"
+    )
+
+
+def test_manage_url_overwrites_stale_contract_params():
+    # A portal_url that already carries org_id/plan gets them replaced, not doubled.
+    s = SubscriptionState(
+        logged_in=True, org_id="org_x", portal_url="https://portal.example/x?org_id=old&plan=stale"
+    )
+    assert (
+        subscription_manage_url(s, tier_id="plus")
+        == "https://portal.example/manage-subscription?org_id=org_x&plan=plus"
+    )
+
+
+def test_manage_url_rejects_non_http_scheme():
+    # Only http(s) is handed to a browser open.
+    assert (
+        subscription_manage_url(
+            SubscriptionState(logged_in=True, org_id="o", portal_url="ftp://portal.example/billing")
+        )
+        is None
+    )
+    assert (
+        subscription_manage_url(
+            SubscriptionState(logged_in=True, portal_url="file:///etc/passwd")
+        )
+        is None
+    )
+
+
 def test_manage_url_none_without_portal():
     assert subscription_manage_url(SubscriptionState(logged_in=True, portal_url=None)) is None
 
@@ -49,6 +135,55 @@ def test_manage_url_none_without_portal():
 def test_manage_url_none_for_garbage_portal():
     # No scheme/netloc → can't build a deep-link; fail closed (None), not crash.
     assert subscription_manage_url(SubscriptionState(logged_in=True, portal_url="not a url")) is None
+
+
+# ── shared plan-catalog helpers (format_tier_row / selectable_tiers / is_upgrade) ──
+
+
+def test_format_tier_row_groups_thousands():
+    # $1000+ renders thousands-grouped ($1,000), matching the TUI's toLocaleString.
+    assert format_tier_row(_tier("max", 4, "1000", "3000")) == "Max · $1,000/mo · $3,000 credits/mo"
+
+
+def test_format_tier_row_hides_absent_or_zero_credits():
+    # A None / zero-credits tier hides the suffix — never "· — credits/mo" / "· $0 credits/mo".
+    assert format_tier_row(_tier("plus", 1, "20", "0")) == "Plus · $20/mo"
+    assert format_tier_row(_tier("plus", 1, "20", None)) == "Plus · $20/mo"
+    assert "credits/mo" not in format_tier_row(_tier("plus", 1, "20", "0"))
+
+
+def test_selectable_tiers_excludes_free_current_and_disabled():
+    state = SubscriptionState(
+        logged_in=True,
+        tiers=(
+            _tier("free", 0, "0", "0"),
+            _tier("plus", 1, "20", "22"),
+            _tier("legacy", 2, "40", "50", is_enabled=False),
+            _tier("ultra", 3, "200", "220", is_current=True),
+        ),
+    )
+    # free (order 0), disabled (legacy), and the current tier (ultra) are excluded.
+    assert [t.tier_id for t in selectable_tiers(state)] == ["plus"]
+
+
+def test_is_upgrade_by_tier_order():
+    state = SubscriptionState(
+        logged_in=True,
+        current=CurrentSubscription(tier_id="plus", tier_name="Plus"),
+        tiers=(_tier("plus", 1, "20", "22"), _tier("ultra", 3, "200", "220")),
+    )
+    assert is_upgrade(state, "ultra") is True
+    assert is_upgrade(state, "plus") is False
+
+
+def test_is_upgrade_falls_back_to_is_current_marker():
+    # No explicit current subscription → derive the current order from tiers[] is_current.
+    state = SubscriptionState(
+        logged_in=True,
+        current=None,
+        tiers=(_tier("plus", 1, "20", "22", is_current=True), _tier("ultra", 3, "200", "220")),
+    )
+    assert is_upgrade(state, "ultra") is True
 
 
 # ── payload parser ───────────────────────────────────────────────────

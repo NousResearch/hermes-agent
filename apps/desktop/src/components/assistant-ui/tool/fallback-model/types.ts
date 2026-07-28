@@ -36,17 +36,21 @@ export interface ToolView {
   imageUrl?: string
   inlineDiff: string
   previewTarget?: string
-  rawArgs: string
-  rawResult: string
   /** Set for tools whose output naturally contains ANSI escape codes
    *  (terminal/execute_code) so the renderer knows to run them through
    *  the ANSI parser instead of printing them as literals. */
   rendersAnsi?: boolean
+  /** Original query, shown above structured web-search results. */
+  searchQuery?: string
   searchHits?: SearchResultRow[]
   /** When the backend reports stderr as a separate stream (terminal /
    *  execute_code), the renderer shows it as its own labeled, neutrally
    *  tinted block under stdout — distinct from an error tone. */
   stderr?: string
+  /** Terminal-only command shown as the prompt in the expanded transcript. */
+  terminalCommand?: string
+  /** Terminal-only process exit code, when the backend reported one. */
+  terminalExitCode?: number
   /** When set, the renderer uses stdout+stderr as separate sections and
    *  ignores the merged `detail`. */
   stdout?: string

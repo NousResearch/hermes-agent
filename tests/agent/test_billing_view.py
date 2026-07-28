@@ -1,4 +1,4 @@
-"""Unit tests for the Phase 2b terminal-billing core + HTTP client.
+"""Unit tests for the Phase 2b Remote Spending core + HTTP client.
 
 Covers:
 - Decimal money parsing/formatting (server emits decimal strings, not 2dp).
@@ -25,6 +25,7 @@ from agent.billing_view import (
     BillingState,
     CardInfo,
     MonthlyCap,
+    PaymentMethodInfo,
     billing_state_from_payload,
     build_billing_state,
     format_money,
@@ -213,6 +214,41 @@ def test_state_owner_tier_parse():
     assert s.auto_reload == AutoReload(
         enabled=True, threshold_usd=Decimal("20"), reload_to_usd=Decimal("100")
     )
+
+
+def test_state_parses_link_payment_method():
+    payload = _owner_payload()
+    payload["paymentMethod"] = {
+        "kind": "link",
+        "email": "billing@example.com",
+        "paymentMethodId": "pm_secret",
+        "purpose": "top-up",
+        "resolvedVia": "customerDefault",
+    }
+
+    state = billing_state_from_payload(payload)
+
+    assert state.payment_method == PaymentMethodInfo(
+        kind="link",
+        email="billing@example.com",
+        resolved_via="customerDefault",
+    )
+
+
+def test_state_without_payment_method_keeps_it_absent():
+    state = billing_state_from_payload(_owner_payload())
+
+    assert state.payment_method is None
+
+
+@pytest.mark.parametrize("raw_payment_method", ["link", {"email": "billing@example.com"}])
+def test_state_ignores_malformed_payment_method(raw_payment_method):
+    payload = _owner_payload()
+    payload["paymentMethod"] = raw_payment_method
+
+    state = billing_state_from_payload(payload)
+
+    assert state.payment_method is None
 
 
 @pytest.mark.parametrize(

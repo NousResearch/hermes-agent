@@ -282,3 +282,47 @@ class TestRunSingleChildTimeoutDump:
         if logs_dir.is_dir():
             dumps = list(logs_dir.glob("subagent-timeout-*.log"))
             assert dumps == []
+
+    # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────
+
+    def test_timeout_result_carries_structured_metadata(self, hermes_home, monkeypatch):
+        """Parents must be able to distinguish a child_timeout_seconds kill
+        from other failures without parsing the error string."""
+        child = _StubChild(api_call_count=0, hang_seconds=10.0)
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert result["timeout_seconds"] == 0.3
+        assert result["timed_out_after_seconds"] == result["duration_seconds"]
+        assert result["timeout_phase"] == "before_first_llm_call"
+
+    def test_timeout_phase_after_llm_calls(self, hermes_home, monkeypatch):
+        child = _StubChild(api_call_count=5, hang_seconds=10.0)
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["timeout_phase"] == "after_llm_calls"
+        assert result["timeout_seconds"] == 0.3
+
+    def test_non_timeout_error_has_null_timeout_metadata(self, hermes_home, monkeypatch):
+        """The metadata fields are timeout-specific — a child that raises
+        must report them as None so consumers can key on presence."""
+        from tools import delegate_tool
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 30.0)
+
+        child = _StubChild(api_call_count=1, hang_seconds=0.0)
+
+        def _boom(*a, **kw):
+            raise RuntimeError("child crashed")
+
+        child.run_conversation = _boom
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        result = delegate_tool._run_single_child(
+            task_index=0, goal="test goal", child=child, parent_agent=parent,
+        )
+
+        assert result["status"] == "error"
+        assert result["timeout_seconds"] is None
+        assert result["timed_out_after_seconds"] is None
+        assert result["timeout_phase"] is None

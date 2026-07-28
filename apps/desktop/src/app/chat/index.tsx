@@ -1,29 +1,34 @@
 import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
+import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
-import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
+import { migrateSessionDraft } from '@/store/composer'
+import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -32,13 +37,14 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
+  resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
-import { routeSessionId } from '../routes'
+import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -65,7 +71,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onCancel: () => Promise<void> | void
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
-  onBranchInNewChat: (messageId: string) => void
+  onBranchInNewChat?: (messageId: string) => void
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
@@ -171,6 +177,30 @@ interface ChatRuntimeBoundaryProps {
 const NO_MESSAGES: ChatMessage[] = []
 
 /**
+ * The view's $messages, live only while this surface is the VISIBLE tab.
+ *
+ * Keep-alive keeps every ever-active tab MOUNTED (tree-group.tsx), so without
+ * this gate a hidden tab re-renders its entire thread on every streaming
+ * delta flush (~30×/s) — five busy tabs quintuple the per-token render cost
+ * and the app crawls. Hidden tabs freeze their transcript instead (status
+ * dots stay live through the separate status atoms) and catch up in one
+ * commit on reveal — the subscribe fires immediately with the current value.
+ */
+function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+  const visible = usePaneVisible()
+  const [messages, setMessages] = useState(() => $messages.get())
+
+  // nanostores types the listener value ReadonlyIfObject; the store publishes
+  // a fresh array per flush, so the cast is safe and avoids a per-token clone.
+  useEffect(
+    () => (visible ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
+    [$messages, visible]
+  )
+
+  return messages
+}
+
+/**
  * Owns the $messages subscription and the assistant-ui external-store runtime.
  *
  * Isolated from ChatView so the per-token delta flush (which replaces the
@@ -189,7 +219,7 @@ function ChatRuntimeBoundary({
   onThreadMessagesChange,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
-  const storeMessages = useStore(useSessionView().$messages)
+  const storeMessages = useMessagesWhileVisible(useSessionView().$messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
   const runtimeMessageRepository = useRuntimeMessageRepository(messages)
 
@@ -251,6 +281,7 @@ export function ChatView({
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
   // from the view slice, not the global atoms (which track the primary only).
@@ -276,7 +307,45 @@ export function ChatView({
   const messagesEmpty = useStore(view.$messagesEmpty)
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
+  const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
+
+  // Durable composer/queue scope (lineage root) so auto-compression tip rotation
+  // does not wipe an in-progress draft or orphan /queue entries. For the
+  // primary view, the route is authoritative over the store selection — the
+  // latter can be momentarily null/stale mid-switch, which used to leak into
+  // the composer's scope key (#59305). A tile has no route, so it always uses
+  // its own selection directly.
+  const queueSessionKey = useMemo(() => {
+    const effectiveSelectedSessionId = isPrimary
+      ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
+      : selectedSessionId
+
+    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
+  }, [isPrimary, location.pathname, selectedSessionId, sessions])
+
+  // When the tip row arrives after compression, migrate any tip-keyed stash onto
+  // the durable lineage key before the composer remounts onto that key.
+  useEffect(() => {
+    if (!selectedSessionId || !queueSessionKey || selectedSessionId === queueSessionKey) {
+      return
+    }
+
+    migrateSessionDraft(selectedSessionId, queueSessionKey)
+    migrateQueuedPrompts(selectedSessionId, queueSessionKey)
+  }, [queueSessionKey, selectedSessionId])
+
+  // Transcript-side stops (the streaming message's hover Stop, the runtime's
+  // cancel) are explicit halts, same as the composer's Stop button: park any
+  // queued turns so the interrupt doesn't roll straight into the next one.
+  // ChatBar wraps its own onCancel internally — its send-now-while-busy path
+  // needs the raw interrupt — so it still receives the unwrapped prop.
+  const haltRun = useCallback(() => {
+    parkQueuedPrompts(queueSessionKey || activeSessionId)
+
+    return onCancel()
+  }, [activeSessionId, onCancel, queueSessionKey])
+
   // A tile IS its session — no route involved, never "mismatched".
   const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
   const isRoutedSessionView = Boolean(routedSessionId)
@@ -322,21 +391,8 @@ export function ChatView({
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: ['model-options', activeSessionId || 'global'],
-    queryFn: () => {
-      if (!activeSessionId) {
-        return getGlobalModelOptions()
-      }
-
-      if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
-      }
-
-      return gateway.request<ModelOptionsResponse>('model.options', {
-        session_id: activeSessionId,
-        explicit_only: true
-      })
-    },
+    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
+    queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
     enabled: gatewayOpen
   })
 
@@ -414,6 +470,7 @@ export function ChatView({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-chat-surface=""
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
     >
@@ -437,7 +494,7 @@ export function ChatView({
 
       <ChatRuntimeBoundary
         busy={busy}
-        onCancel={onCancel}
+        onCancel={haltRun}
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
@@ -455,7 +512,7 @@ export function ChatView({
             intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
-            onCancel={onCancel}
+            onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
             sessionId={activeSessionId}
@@ -524,7 +581,7 @@ export function ChatView({
               onSteer={onSteer}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
-              queueSessionKey={selectedSessionId}
+              queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}
             />

@@ -186,7 +186,7 @@ async def test_picker_tap_to_custom_clears_stale_base_url_and_api_mode(tmp_path,
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, dict(_STALE_MODEL_CFG))
 
-    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
+    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model --global"))
 
     assert confirmation is not None
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))

@@ -217,3 +217,112 @@ def test_nous_provider_profile_uses_helper():
     assert profile is not None
     body = profile.build_extra_body()
     assert body["tags"] == nous_portal_tags()
+
+
+def test_nous_sticky_key_matches_conversation_tag():
+    """Sticky routing key must resolve like the ``conversation=`` tag does.
+
+    The load-bearing case is the auxiliary call sites (compression, titles,
+    vision, MoA slots): they pass no ``session_id`` at all, so before this
+    resolution they carried the conversation tag but NO Portal sticky key and
+    routed independently of their conversation.
+
+    The explicit-argument case matters for installs that opt out of the
+    default ``compression.in_place: true`` (#38763) and therefore still rotate
+    ``agent.session_id`` at compaction, and for delegate-subagent trees that
+    should tag as the parent conversation.
+    """
+    from agent.portal_tags import (
+        conversation_tag,
+        reset_conversation_context,
+        set_conversation_context,
+    )
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("nous")
+    token = set_conversation_context("root-conversation")
+    try:
+        # Rotated segment id passed explicitly — root still wins, both places.
+        body = profile.build_extra_body(session_id="segment-after-compaction")
+        assert body["session_id"] == "root-conversation"
+        assert conversation_tag("root-conversation") in body["tags"]
+
+        # Auxiliary call sites pass no session_id but inherit the context.
+        aux = profile.build_extra_body()
+        assert aux["session_id"] == "root-conversation"
+    finally:
+        reset_conversation_context(token)
+
+
+def test_nous_sticky_key_falls_back_to_explicit_session_id():
+    """Outside any agent turn the explicit session_id remains the sticky key."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("nous")
+    body = profile.build_extra_body(session_id="explicit-only")
+    assert body["session_id"] == "explicit-only"
+    assert profile.build_extra_body().get("session_id") is None
+
+
+def test_compress_context_publishes_root_when_called_out_of_turn(monkeypatch):
+    """Out-of-turn compaction must still carry the conversation tag.
+
+    ``/compact``, the gateway ``/compress`` command and its hygiene sweep call
+    ``_compress_context`` directly, outside ``run_conversation``'s ambient
+    scope. That call ships the full uncompressed history — the largest prompt
+    of the session — so losing the sticky key there reroutes it to a cold
+    endpoint.
+    """
+    import agent.conversation_compression as cc
+    from agent.portal_tags import get_conversation_context
+    from run_agent import AIAgent
+
+    seen = {}
+
+    def _fake_compress(agent, messages, system_message, **kwargs):
+        seen["conversation"] = get_conversation_context()
+        return ([], "")
+
+    monkeypatch.setattr(cc, "compress_context", _fake_compress)
+
+    class _Agent:
+        def _conversation_root_id(self):
+            return "root-abc"
+
+    AIAgent._compress_context(_Agent(), [], "sys")
+
+    assert seen["conversation"] == "root-abc"
+    # The scope is local: nothing leaks into the caller's context.
+    assert get_conversation_context() is None
+
+
+def test_compress_context_preserves_ambient_context(monkeypatch):
+    """In-turn compaction inherits the turn's root and restores it untouched."""
+    import agent.conversation_compression as cc
+    from agent.portal_tags import (
+        get_conversation_context,
+        reset_conversation_context,
+        set_conversation_context,
+    )
+    from run_agent import AIAgent
+
+    seen = {}
+
+    def _fake_compress(agent, messages, system_message, **kwargs):
+        seen["conversation"] = get_conversation_context()
+        return ([], "")
+
+    monkeypatch.setattr(cc, "compress_context", _fake_compress)
+
+    class _Agent:
+        def _conversation_root_id(self):
+            # A rotated segment id must never win over the ambient root.
+            return "segment-after-compaction"
+
+    token = set_conversation_context("outer-root")
+    try:
+        AIAgent._compress_context(_Agent(), [], "sys")
+        assert seen["conversation"] == "outer-root"
+        assert get_conversation_context() == "outer-root"
+    finally:
+        reset_conversation_context(token)

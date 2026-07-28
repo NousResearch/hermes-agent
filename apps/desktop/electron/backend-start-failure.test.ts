@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { shouldLatchBackendStartFailure } from './backend-start-failure'
+import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 
 test('latches a LOCAL backend failure so the install-retry loop is broken', () => {
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false }), true)
@@ -19,5 +19,34 @@ test('the two branches are mutually exclusive (a failure either latches or stays
   for (const attemptedRemote of [true, false]) {
     const latched = shouldLatchBackendStartFailure({ attemptedRemote })
     assert.equal(latched, !attemptedRemote)
+  }
+})
+
+test('latches a CONFIRMED remote reauth failure so the overlay stays clickable', () => {
+  // Without this the non-latching remote path re-runs startHermes on every
+  // getConnection/api call, re-emits running:true, and the overlay hides
+  // itself — the "Sign in" button flickers away before it can be clicked.
+  assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth: true }), true)
+})
+
+test('does not latch a transient remote failure as reauth', () => {
+  // A mint timeout or a host unreachable across sleep must still self-heal.
+  assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth: false }), false)
+})
+
+test('never latches a LOCAL failure as reauth (that is backendStartFailure job)', () => {
+  assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: false, isReauth: true }), false)
+  assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: false, isReauth: false }), false)
+})
+
+test('the two latches never fire for the same failure', () => {
+  // They are complementary, not overlapping: local failures latch via
+  // backendStartFailure, confirmed remote reauth latches via its own flag.
+  for (const attemptedRemote of [true, false]) {
+    for (const isReauth of [true, false]) {
+      const start = shouldLatchBackendStartFailure({ attemptedRemote })
+      const reauth = shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth })
+      assert.ok(!(start && reauth), `both latched for remote=${attemptedRemote} reauth=${isReauth}`)
+    }
   }
 })

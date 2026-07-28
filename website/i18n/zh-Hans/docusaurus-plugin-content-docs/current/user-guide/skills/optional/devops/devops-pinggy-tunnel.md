@@ -21,7 +21,7 @@ description: "通过 Pinggy 实现零安装 SSH localhost 隧道"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Pinggy`, `Tunnel`, `Networking`, `SSH`, `Webhook`, `Localhost` |
-| 相关 skill | `cloudflared-quick-tunnel`, [`webhook-subscriptions`](/user-guide/skills/bundled/devops/devops-webhook-subscriptions) |
+| 相关 skill | |
 
 ## 参考：完整 SKILL.md
 

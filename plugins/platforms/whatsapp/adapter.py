@@ -55,7 +55,7 @@ def _listener_pids_on_port(port: int) -> list:
     try:
         result = subprocess.run(
             ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         for line in result.stdout.strip().splitlines():
             try:
@@ -70,7 +70,7 @@ def _listener_pids_on_port(port: int) -> list:
     try:
         result = subprocess.run(
             ["ss", "-ltnHp", f"sport = :{port}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         for m in re.finditer(r"pid=(\d+)", result.stdout):
             pids.append(int(m.group(1)))
@@ -88,7 +88,7 @@ def _kill_port_process(port: int) -> None:
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
                 creationflags=windows_hide_flags(),
             )
             for line in result.stdout.splitlines():
@@ -167,7 +167,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     try:
         # Format: line 1 = pid, optional line 2 = kernel start time. Legacy
         # files written before the guard existed have only the pid.
-        lines = pid_file.read_text().split("\n")
+        lines = pid_file.read_text(encoding="utf-8").split("\n")
         pid = int(lines[0].strip())
         if len(lines) > 1 and lines[1].strip():
             recorded_start = int(lines[1].strip())
@@ -208,7 +208,7 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
         from gateway.status import get_process_start_time
         start = get_process_start_time(pid)
         text = str(pid) if start is None else "{}\n{}".format(pid, start)
-        (session_path / "bridge.pid").write_text(text)
+        (session_path / "bridge.pid").write_text(text, encoding="utf-8")
     except OSError:
         pass
 
@@ -223,7 +223,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=10,
             )
         except FileNotFoundError:
@@ -349,7 +349,7 @@ def check_whatsapp_requirements() -> bool:
         result = subprocess.run(
             [_node, "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=5
         )
         return result.returncode == 0
@@ -531,7 +531,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             _deps_fresh = False
             if (bridge_dir / "node_modules").exists():
                 try:
-                    _deps_fresh = (_dep_stamp.read_text().strip() == _pkg_hash) and bool(_pkg_hash)
+                    _deps_fresh = (
+                        _dep_stamp.read_text(encoding="utf-8").strip() == _pkg_hash
+                    ) and bool(_pkg_hash)
                 except OSError:
                     _deps_fresh = False
             if not _deps_fresh:
@@ -547,7 +549,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,
-                        text=True,
+                        text=True, encoding='utf-8', errors='replace',
                         timeout=npm_install_timeout,
                         env=with_hermes_node_path(),
                     )
@@ -557,7 +559,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] Dependencies installed")
                     if _pkg_hash:
                         try:
-                            _dep_stamp.write_text(_pkg_hash)
+                            _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                         except OSError:
                             pass  # Stamp is an optimization; install still succeeded
                 except Exception as e:
@@ -1672,7 +1674,7 @@ def interactive_setup() -> None:
     static _PLATFORMS["whatsapp"] dict. CLI helpers are lazy-imported so the
     plugin's module-load surface stays minimal.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -1705,9 +1707,12 @@ def interactive_setup() -> None:
         save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("WhatsApp allowlist configured")
 
-    home_channel = prompt("Home chat ID for cron delivery (leave empty to skip)")
+    home_channel = prompt("Home chat ID for cron delivery (leave empty to skip)").strip()
     if home_channel:
-        save_env_value("WHATSAPP_HOME_CHANNEL", home_channel.strip())
+        save_env_value("WHATSAPP_HOME_CHANNEL", home_channel)
+    else:
+        if remove_env_value("WHATSAPP_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
 
 
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:

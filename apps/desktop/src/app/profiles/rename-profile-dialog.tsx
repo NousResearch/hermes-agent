@@ -10,11 +10,11 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Field, FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -93,11 +93,8 @@ export function RenameProfileDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form className="grid gap-3" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="rename-profile-name">
-              {p.newNameLabel}
-            </label>
+        <form className="grid gap-4" onSubmit={handleSubmit}>
+          <Field htmlFor="rename-profile-name" label={p.newNameLabel}>
             <Input
               aria-invalid={invalid}
               autoFocus
@@ -105,10 +102,8 @@ export function RenameProfileDialog({
               onChange={event => setName(event.target.value)}
               value={name}
             />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {p.nameHint}
-            </p>
-          </div>
+            <FieldHint error={invalid}>{p.nameHint}</FieldHint>
+          </Field>
 
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">

@@ -102,6 +102,10 @@ class WSTransport:
         self._pending_tokens: list[str] = []
         self._token_flush_handle: asyncio.TimerHandle | None = None
         self._token_flush_armed = False
+        # Buffer mutation is protected by the thread lock above; actual socket
+        # writes need an async boundary because several batches can be queued on
+        # the owning loop while it recovers from a stall.
+        self._send_lock = asyncio.Lock()
 
     @staticmethod
     def _is_streaming_frame(obj: dict) -> bool:
@@ -211,36 +215,35 @@ class WSTransport:
         if self._closed:
             return False
         # Flush any buffered streamed tokens ahead of this frame (RPC response /
-        # control frame) so it can't overtake the tokens that preceded it.
+        # control frame) as ONE serialized batch. Sending them in two lock
+        # acquisitions would let a later batch slip between the pending tokens
+        # and the frame that drained them.
         with self._token_lock:
-            pending = self._pending_tokens
+            batch = self._pending_tokens
             self._pending_tokens = []
-        if pending:
-            await self._safe_send_many(pending)
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
+            batch.append(json.dumps(obj, ensure_ascii=False))
+        await self._safe_send_many(batch)
         return not self._closed
 
-    async def _safe_send(self, line: str) -> None:
-        try:
-            await self._ws.send_text(line)
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
-
     async def _safe_send_many(self, lines: list[str]) -> None:
-        """Send a batch of pre-serialized frames in order on the loop thread."""
-        try:
-            for line in lines:
-                await self._ws.send_text(line)
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
+        """Send one indivisible batch of pre-serialized frames in wire order."""
+        async with self._send_lock:
+            if self._closed:
+                return
+            try:
+                for line in lines:
+                    if self._closed:
+                        return
+                    await self._ws.send_text(line)
+            except Exception as exc:
+                # Latch while still holding the writer lock so queued batches
+                # observe the failure before they get a chance to touch the
+                # socket.
+                self._closed = True
+                _log.warning(
+                    "ws send failed peer=%s error_type=%s error=%s",
+                    self._peer, type(exc).__name__, exc,
+                )
 
     def close(self) -> None:
         self._closed = True
@@ -300,22 +303,6 @@ async def handle_ws(ws: Any) -> None:
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
-        # The desktop app and dashboard chat reach the agent through this WS
-        # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
-        # spawns the background MCP discovery thread). Without starting it here,
-        # discovery never runs in this process: _make_agent only *waits* on the
-        # thread (wait_for_mcp_discovery), which no-ops when it was never
-        # created, so the agent snapshots an MCP-less tool list and the only way
-        # to surface MCP tools is a manual /reload-mcp. Start it once per
-        # process here (idempotent, config-gated) before gateway.ready so the
-        # first agent build can pick up already-spawning servers. (#38945)
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-        start_background_mcp_discovery(
-            logger=_log,
-            thread_name="tui-ws-mcp-discovery",
-        )
-
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
@@ -326,6 +313,12 @@ async def handle_ws(ws: Any) -> None:
                 },
             }
         )
+        if ready_ok:
+            # Live-apply skins Hermes activates mid-conversation.
+            server._ensure_skin_watcher()
+            # Track this peer for session-less global broadcasts (skin.changed
+            # from the background watcher) — write_json can't route those.
+            server.register_live_transport(transport)
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1
@@ -426,6 +419,7 @@ async def handle_ws(ws: Any) -> None:
         reaped_sessions = 0
         detached_sessions = 0
         if transport is not None:
+            server.unregister_live_transport(transport)
             transport.close()
 
             # Reap sessions this transport owned (close_on_disconnect sidecar

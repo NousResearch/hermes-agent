@@ -569,7 +569,8 @@ class TestTopUpSuppression:
         assert latch["usage_band"] is None
         to_show, _ = evaluate_credits_notices(state_with_fraction(0.95), latch)
         n = next(n for n in to_show if n.key == "credits.usage")
-        assert "90%" in n.text
+        # uf 0.95 of a $20 cap → used = $19.00 (cap − remaining, clamped).
+        assert "$19.00" in n.text
         assert latch["usage_band"] == 90
 
     def test_grant_spent_still_fires_with_topup(self):
@@ -645,7 +646,8 @@ class TestUsageBands:
         evaluate_credits_notices(state_with_fraction(0.10), latch)  # prime
         to_show, _ = evaluate_credits_notices(state_with_fraction(0.55), latch)
         n = next(n for n in to_show if n.key == "credits.usage")
-        assert "50%" in n.text and n.level == "info"
+        # uf 0.55 of a $20 cap → used = $11.00; band 50 fires at info level.
+        assert "$11.00" in n.text and n.level == "info"
         assert latch["usage_band"] == 50
 
     def test_75_band_fires_warn(self):
@@ -653,7 +655,8 @@ class TestUsageBands:
         evaluate_credits_notices(state_with_fraction(0.10), latch)
         to_show, _ = evaluate_credits_notices(state_with_fraction(0.80), latch)
         n = next(n for n in to_show if n.key == "credits.usage")
-        assert "75%" in n.text and n.level == "warn"
+        # uf 0.80 of a $20 cap → used = $16.00; band 75 fires at warn level.
+        assert "$16.00" in n.text and n.level == "warn"
         assert latch["usage_band"] == 75
 
     def test_climb_replaces_band(self):
@@ -663,15 +666,15 @@ class TestUsageBands:
         # 55% → 50 band
         evaluate_credits_notices(state_with_fraction(0.55), latch)
         assert latch["usage_band"] == 50
-        # 80% → climbs to 75, clearing the 50 line
+        # 80% → climbs to 75, clearing the 50 line (used = $16.00 of $20)
         to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.80), latch)
         assert "credits.usage" in to_clear
-        assert "75%" in self._band_text(to_show)
+        assert "$16.00" in self._band_text(to_show)
         assert latch["usage_band"] == 75
-        # 95% → climbs to 90
+        # 95% → climbs to 90 (used = $19.00 of $20)
         to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.95), latch)
         assert "credits.usage" in to_clear
-        assert "90%" in self._band_text(to_show)
+        assert "$19.00" in self._band_text(to_show)
         assert latch["usage_band"] == 90
 
     def test_step_down_on_recovery(self):
@@ -680,13 +683,13 @@ class TestUsageBands:
         evaluate_credits_notices(state_with_fraction(0.10), latch)
         evaluate_credits_notices(state_with_fraction(0.95), latch)
         assert latch["usage_band"] == 90
-        # drop to 80% → steps down to 75
+        # drop to 80% → steps down to 75 (used = $16.00 of $20)
         to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.80), latch)
         assert "credits.usage" in to_clear
-        assert "75%" in self._band_text(to_show)
-        # drop to 55% → steps down to 50
+        assert "$16.00" in self._band_text(to_show)
+        # drop to 55% → steps down to 50 (used = $11.00 of $20)
         to_show, _ = evaluate_credits_notices(state_with_fraction(0.55), latch)
-        assert "50%" in self._band_text(to_show)
+        assert "$11.00" in self._band_text(to_show)
         # drop below 50% → clears entirely
         to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.10), latch)
         assert "credits.usage" in to_clear

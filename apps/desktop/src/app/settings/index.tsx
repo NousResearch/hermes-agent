@@ -176,6 +176,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
           id: 'pview:keys',
           label: t.settings.nav.providerApiKeys,
           onSelect: () => openProviderView('keys')
+        },
+        {
+          active: activeView === 'providers' && providerView === 'custom-endpoints',
+          icon: Globe,
+          id: 'pview:custom-endpoints',
+          label: t.settings.nav.providerCustomEndpoints,
+          onSelect: () => openProviderView('custom-endpoints')
         }
       ],
       gapBefore: true,
@@ -298,7 +305,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
               onMainModelChanged={onMainModelChanged}
             />
           ) : activeView === 'providers' ? (
-            <ProvidersSettings onClose={onClose} onViewChange={setProviderView} view={providerView} />
+            <ProvidersSettings
+              onClose={onClose}
+              onConfigSaved={onConfigSaved}
+              onMainModelChanged={onMainModelChanged}
+              onViewChange={setProviderView}
+              view={providerView}
+            />
           ) : activeView === 'keys' ? (
             <KeysSettings view={keysView} />
           ) : activeView === 'notifications' ? (

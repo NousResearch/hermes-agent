@@ -1,14 +1,14 @@
 ---
-title: "Lambda Labs Gpu Cloud — Reserved and on-demand GPU cloud instances for ML training and inference"
+title: "Lambda Labs Gpu Cloud — On-demand GPU cloud instances for ML training"
 sidebar_label: "Lambda Labs Gpu Cloud"
-description: "Reserved and on-demand GPU cloud instances for ML training and inference"
+description: "On-demand GPU cloud instances for ML training"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Lambda Labs Gpu Cloud
 
-Reserved and on-demand GPU cloud instances for ML training and inference. Use when you need dedicated GPU instances with simple SSH access, persistent filesystems, or high-performance multi-node clusters for large-scale training.
+On-demand GPU cloud instances for ML training.
 
 ## Skill metadata
 

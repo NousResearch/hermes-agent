@@ -561,18 +561,33 @@ def test_check_fn_false_when_no_cdp_url(monkeypatch):
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt, "_get_cdp_override_raw", lambda: "")
     assert browser_cdp_tool._browser_cdp_check() is False
 
 
 def test_check_fn_true_when_cdp_url_set(monkeypatch):
-    """Gate opens as soon as a CDP URL is resolvable."""
+    """Gate opens as soon as a CDP URL is configured (no network resolution)."""
     import tools.browser_tool as bt
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
     monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
+        bt, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
     )
+    assert browser_cdp_tool._browser_cdp_check() is True
+
+
+def test_check_fn_does_not_probe_network(monkeypatch):
+    """The availability gate must never hit the network: a stale/unreachable
+    configured endpoint used to cost multiple blocking HTTP probes at every
+    CLI/Desktop startup (tool-schema assembly), stalling launch by 10+ s."""
+    import tools.browser_tool as bt
+
+    def _boom(*a, **k):  # pragma: no cover — the assertion is that it's unused
+        raise AssertionError("check_fn must not perform network I/O")
+
+    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
+    monkeypatch.setattr(bt.requests, "get", _boom)
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     assert browser_cdp_tool._browser_cdp_check() is True
 
 
@@ -583,6 +598,6 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
 
     monkeypatch.setattr(bt, "check_browser_requirements", lambda: False)
     monkeypatch.setattr(
-        bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
+        bt, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is False

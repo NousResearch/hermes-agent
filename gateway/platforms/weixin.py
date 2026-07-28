@@ -124,6 +124,12 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
     verification. Otherwise fall back to aiohttp's default (which honors
     ``SSL_CERT_FILE`` env var via ``trust_env=True``).
+
+    Uses a tight ``keepalive_timeout=2`` (default aiohttp: 30s) so idle
+    connections drain promptly behind proxies like Cloudflare Warp that
+    leave peer-initiated FIN in ``CLOSE_WAIT`` (same class as #18451).
+    ``enable_cleanup_closed=True`` helps the connector clean up sockets
+    that the remote side has already closed.
     """
     try:
         import ssl
@@ -133,7 +139,12 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     if not AIOHTTP_AVAILABLE:
         return None
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    return aiohttp.TCPConnector(ssl=ssl_ctx)
+    return aiohttp.TCPConnector(
+        ssl=ssl_ctx,
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451, #69089).
+        keepalive_timeout=2,
+        enable_cleanup_closed=True,
+    )
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2

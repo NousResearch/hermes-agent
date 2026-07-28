@@ -108,7 +108,7 @@ hermes chat [options]
 | `--ignore-user-config` | 忽略 `~/.hermes/config.yaml`，使用内置默认值。`.env` 中的凭据仍会加载。适用于隔离的 CI 运行、可复现的 bug 报告和第三方集成。 |
 | `--ignore-rules` | 跳过 `AGENTS.md`、`SOUL.md`、`.cursorrules`、持久 memory 和预加载 skill 的自动注入。与 `--ignore-user-config` 组合可实现完全隔离的运行。 |
 | `--source <tag>` | 用于过滤的会话来源标签（默认：`cli`）。对于不应出现在用户会话列表中的第三方集成，使用 `tool`。 |
-| `--max-turns <N>` | 每个对话轮次的最大工具调用迭代次数（默认：90，或 config 中的 `agent.max_turns`）。 |
+| `--max-turns <N>` | 每个对话轮次的最大工具调用迭代次数（默认：500，或 config 中的 `agent.max_turns`）。 |
 
 示例：
 

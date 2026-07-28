@@ -6,12 +6,14 @@ export {
 } from './billing-policy'
 export type {
   BillingAutoReload,
+  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,
   BillingErrorPayload,
   BillingMonthlyCap,
   BillingMutationResponse,
+  BillingPaymentMethod,
   BillingRefusalCode,
   BillingStateResponse,
   ChargeFailureReason,
@@ -43,10 +45,20 @@ export {
   type WebSocketLike
 } from './json-rpc-gateway'
 export {
+  type HermesSkin,
+  SKIN_BRANDING_TOKENS,
+  SKIN_COLOR_TOKENS,
+  type SkinBranding,
+  type SkinBrandingToken,
+  type SkinColors,
+  type SkinColorToken
+} from './skin'
+export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,
   GatewayReauthRequiredError,
   type GatewayWsConnection,
+  type GatewayWsUrlResult,
   type HermesWebSocketUrlOptions,
   isGatewayReauthRequired,
   resolveGatewayWsUrl,

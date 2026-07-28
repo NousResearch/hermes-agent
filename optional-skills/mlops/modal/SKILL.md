@@ -1,10 +1,10 @@
 ---
 name: modal-serverless-gpu
-description: Serverless GPU cloud platform for running ML workloads. Use when you need on-demand GPU access without infrastructure management, deploying ML models as APIs, or running batch jobs with automatic scaling.
-version: 1.0.0
+description: Serverless GPU cloud for ML jobs and model APIs.
+version: 1.0.1
 author: Orchestra Research
 license: MIT
-dependencies: [modal>=0.64.0]
+dependencies: [modal>=1.0]
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -227,7 +227,6 @@ async def batch_predict(inputs: list[str]) -> list[dict]:
     # Inputs automatically batched
     return model.batch_predict(inputs)
 ```
-
 ## Secrets management
 
 ```bash
@@ -259,10 +258,10 @@ def hourly_job():
 ### Cold start mitigation
 
 ```python
-@app.function(
-    container_idle_timeout=300,  # Keep warm 5 min
-    allow_concurrent_inputs=10,  # Handle concurrent requests
-)
+# Modal 1.0 autoscaler params: scaledown_window (was container_idle_timeout).
+# Input concurrency moved to the @modal.concurrent decorator.
+@app.function(scaledown_window=300)  # Keep warm 5 min
+@modal.concurrent(max_inputs=10)     # Handle concurrent requests per container
 def inference():
     pass
 ```
@@ -304,13 +303,20 @@ def run_parallel():
     memory=32768,              # 32GB RAM
     cpu=4,                     # 4 CPU cores
     timeout=3600,              # 1 hour max
-    container_idle_timeout=120,# Keep warm 2 min
+    scaledown_window=120,      # Keep warm 2 min (was container_idle_timeout)
     retries=3,                 # Retry on failure
-    concurrency_limit=10,      # Max concurrent containers
+    max_containers=10,         # Max concurrent containers (was concurrency_limit)
+    min_containers=1,          # Keep N containers warm (was keep_warm)
 )
 def my_function():
     pass
 ```
+
+> **Modal 1.0 autoscaler renames** (see the [migration guide](https://modal.com/docs/guide/modal-1-0-migration)):
+> - `container_idle_timeout` → `scaledown_window`
+> - `concurrency_limit` → `max_containers`
+> - `keep_warm` → `min_containers`
+> - `allow_concurrent_inputs=N` → the `@modal.concurrent(max_inputs=N)` decorator
 
 ## Debugging
 
@@ -327,7 +333,7 @@ if __name__ == "__main__":
 
 | Issue | Solution |
 |-------|----------|
-| Cold start latency | Increase `container_idle_timeout`, use `@modal.enter()` |
+| Cold start latency | Increase `scaledown_window`, use `@modal.enter()` |
 | GPU OOM | Use larger GPU (`A100-80GB`), enable gradient checkpointing |
 | Image build fails | Pin dependency versions, check CUDA compatibility |
 | Timeout errors | Increase `timeout`, add checkpointing |

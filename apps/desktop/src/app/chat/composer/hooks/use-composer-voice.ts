@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { chatMessageText } from '@/lib/chat-messages'
+import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { notifyError } from '@/store/notifications'
-import { $messages } from '@/store/session'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
 import type { ComposerTarget } from '../focus'
 import { onComposerVoiceToggleRequest } from '../focus'
+import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
@@ -50,6 +50,8 @@ export function useComposerVoice({
   target
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
+  // A tile's composer speaks ITS transcript, not the primary chat's.
+  const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const lastSpokenIdRef = useRef<string | null>(null)
 
@@ -60,6 +62,7 @@ export function useComposerVoice({
     onTranscribeAudio
   })
 
+  /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
   const pendingResponse = () => {
     const messages = $messages.get()
     const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
@@ -80,6 +83,13 @@ export function useComposerVoice({
       text
     }
   }
+
+  /**
+   * Voice-conversation selector: every unspoken assistant bubble of the turn,
+   * in order — narration interims AND the final answer, not just whichever
+   * bubble happens to be last. See `collectUnspokenTurnSpeech`.
+   */
+  const pendingTurnResponse = () => collectUnspokenTurnSpeech($messages.get(), lastSpokenIdRef.current)
 
   const consumePendingResponse = () => {
     const messages = $messages.get()
@@ -108,7 +118,7 @@ export function useComposerVoice({
     onFatalError: () => setVoiceConversationActive(false),
     onSubmit: submitVoiceTurn,
     onTranscribeAudio,
-    pendingResponse
+    pendingResponse: pendingTurnResponse
   })
 
   // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting

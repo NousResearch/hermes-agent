@@ -144,6 +144,21 @@ class TestDisplayResumedHistory:
 
         assert "You are a helpful assistant" not in output
 
+    def test_timeline_markers_render_as_events_not_user_input(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "opaque model context", "display_kind": "model_switch"},
+            {"role": "user", "content": "opaque delegation context", "display_kind": "async_delegation_complete"},
+            {"role": "user", "content": "opaque hidden context", "display_kind": "hidden"},
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "◈ model changed" in output
+        assert "◈ background delegation completed" in output
+        assert "You:" not in output
+        assert "opaque" not in output
+
     def test_tool_messages_hidden(self):
         cli = _make_cli()
         cli.conversation_history = _tool_call_history()
@@ -556,8 +571,7 @@ class TestPreloadResumedSession:
     def test_returns_false_when_session_has_no_messages(self):
         cli = _make_cli(resume="empty_session")
         mock_db = MagicMock()
-        mock_db.get_session.return_value = {"id": "empty_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = []
+        mock_db.get_resume_conversations.return_value = ([], [])
         cli._session_db = mock_db
 
         buf = StringIO()
@@ -573,7 +587,7 @@ class TestPreloadResumedSession:
         messages = _simple_history()
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "good_session", "title": "Test Session"}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_resume_conversations.return_value = (messages, messages)
         cli._session_db = mock_db
 
         buf = StringIO()
@@ -593,7 +607,7 @@ class TestPreloadResumedSession:
         messages = [{"role": "user", "content": "hi"}]
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "reopen_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_resume_conversations.return_value = (messages, messages)
         mock_conn = MagicMock()
         mock_db._conn = mock_conn
         cli._session_db = mock_db
@@ -617,7 +631,7 @@ class TestPreloadResumedSession:
         ]
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "one_msg_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_resume_conversations.return_value = (messages, messages)
         mock_db._conn = MagicMock()
         cli._session_db = mock_db
 
@@ -643,7 +657,7 @@ class TestHandleResumeCommandRecap:
 
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "target_session", "title": "Test Session"}
-        mock_db.get_messages_as_conversation.return_value = messages
+        mock_db.get_resume_conversations.return_value = (messages, messages)
         # resolve_resume_session_id passes the id through when no compression chain.
         mock_db.resolve_resume_session_id.return_value = "target_session"
         cli._session_db = mock_db
@@ -656,6 +670,7 @@ class TestHandleResumeCommandRecap:
 
         assert cli.session_id == "target_session"
         assert cli.conversation_history == messages
+        assert cli._resume_display_history == messages
         mock_db.end_session.assert_called_once_with("current_session", "resumed_other")
         mock_db.reopen_session.assert_called_once_with("target_session")
         display_mock.assert_called_once_with()
@@ -666,7 +681,7 @@ class TestHandleResumeCommandRecap:
 
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "target_session", "title": None}
-        mock_db.get_messages_as_conversation.return_value = []
+        mock_db.get_resume_conversations.return_value = ([], [])
         mock_db.resolve_resume_session_id.return_value = "target_session"
         cli._session_db = mock_db
 
@@ -677,6 +692,39 @@ class TestHandleResumeCommandRecap:
             cli._handle_resume_command("/resume target_session")
 
         display_mock.assert_not_called()
+
+    def test_resume_command_replaces_stale_display_history(self):
+        """In-session /resume B after startup --resume A must show B's recap,
+        not A's. The _resume_display_history attribute set by startup resume
+        must be replaced, not retained."""
+        cli = _make_cli(resume="session_a")
+        cli.session_id = "session_a"
+        # Simulate startup --resume A having populated both projections.
+        messages_a = [{"role": "user", "content": "from session A"}]
+        cli.conversation_history = messages_a
+        cli._resume_display_history = messages_a
+
+        messages_b = [{"role": "user", "content": "from session B"}]
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "session_b", "title": "Session B"}
+        mock_db.get_resume_conversations.return_value = (messages_b, messages_b)
+        mock_db.resolve_resume_session_id.return_value = "session_b"
+        cli._session_db = mock_db
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="session_b"),
+            patch.object(cli, "_display_resumed_history") as display_mock,
+        ):
+            cli._handle_resume_command("/resume session_b")
+
+        assert cli.session_id == "session_b"
+        assert cli.conversation_history == messages_b
+        # The stale A display history must have been replaced by B's.
+        assert cli._resume_display_history == messages_b
+        assert "from session A" not in [
+            m.get("content", "") for m in cli._resume_display_history
+        ]
+        display_mock.assert_called_once_with()
 
 
 # ── Integration: _init_agent skips when preloaded ────────────────────

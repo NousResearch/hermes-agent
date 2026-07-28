@@ -81,6 +81,8 @@ async def handle(event_type: str, context: dict):
 | `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
 | `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |
+| `reaction:added` | An emoji reaction was added to a message the bot can see (Slack adapter currently). Requires the `reactions:read` scope + the `reaction_added` bot event subscription; the bot must be a member of the channel. | `platform`, `reaction`, `user_id`, `item_user_id`, `item_type`, `channel_id`, `message_ts`, `team_id`, `event_ts`, `raw_event` |
+| `reaction:removed` | An emoji reaction was removed from a message the bot can see. Requires the `reaction_removed` bot event subscription. | same shape as `reaction:added` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
 
 #### Wildcard Matching
@@ -957,7 +959,7 @@ Fires **once per child agent** after `delegate_task` finishes. Whether you deleg
 ```python
 def my_callback(parent_session_id: str, child_role: str | None,
                 child_summary: str | None, child_status: str,
-                duration_ms: int, **kwargs):
+                tool_call_history: list[dict], duration_ms: int, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -966,6 +968,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `child_role` | `str \| None` | Orchestrator role tag set on the child (`None` if the feature isn't enabled) |
 | `child_summary` | `str \| None` | The final response the child returned to the parent |
 | `child_status` | `str` | `"completed"`, `"failed"`, `"interrupted"`, or `"error"` |
+| `tool_call_history` | `list[dict]` | Ordered metadata-only tool calls: `tool_name`, bounded `tool_input`, `input_bytes`, `output_bytes`, and `status`; raw inputs and outputs are excluded |
 | `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
 
 **Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.

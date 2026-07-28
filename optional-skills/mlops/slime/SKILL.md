@@ -1,6 +1,6 @@
 ---
 name: slime-rl-training
-description: Provides guidance for LLM post-training with RL using slime, a Megatron+SGLang framework. Use when training GLM models, implementing custom data generation workflows, or needing tight Megatron-LM integration for RL scaling.
+description: RL post-training for LLMs with Megatron and SGLang.
 version: 1.0.0
 author: Orchestra Research
 license: MIT

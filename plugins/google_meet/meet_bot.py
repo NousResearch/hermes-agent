@@ -425,7 +425,7 @@ def _mac_audio_device_index(device_name: str) -> str:
         out = _sp.run(
             ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=10,
         )
     except Exception:

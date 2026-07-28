@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   desktopSkinSlashCompletions,
+  desktopSlashCommandArgumentMode,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
@@ -21,6 +22,9 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/version')).toBe(true)
     expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
     expect(isDesktopSlashCommand('/yolo')).toBe(true)
+    expect(isDesktopSlashSuggestion('/approvals')).toBe(true)
+    expect(isDesktopSlashCommand('/approvals')).toBe(true)
+    expect(resolveDesktopCommand('/approvals')?.surface).toEqual({ kind: 'exec' })
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {
@@ -31,13 +35,21 @@ describe('desktop slash command curation', () => {
 
   it('hides terminal, messaging, and dedicated-UI commands from suggestions', () => {
     expect(isDesktopSlashSuggestion('/clear')).toBe(false)
-    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+    expect(isDesktopSlashSuggestion('/density')).toBe(false)
     expect(isDesktopSlashSuggestion('/redraw')).toBe(false)
     expect(isDesktopSlashSuggestion('/approve')).toBe(false)
     expect(isDesktopSlashSuggestion('/model')).toBe(false)
     expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('routes /compact to /compress (context compression), not the TUI display toggle', () => {
+    expect(resolveDesktopCommand('/compact')?.name).toBe('/compress')
+    expect(isDesktopSlashCommand('/compact')).toBe(true)
+    // Alias stays out of the popover so /compress is the single visible entry.
+    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+    expect(isDesktopSlashSuggestion('/compress')).toBe(true)
   })
 
   it('surfaces /tools, /save, and /personality on the desktop', () => {
@@ -54,7 +66,7 @@ describe('desktop slash command curation', () => {
 
   it('routes /pet through the desktop action handler and drops /pets', () => {
     expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
-    expect(resolveDesktopCommand('/pet')?.args).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/pet')).toBe('options')
     expect(isDesktopSlashSuggestion('/pet')).toBe(true)
     expect(isDesktopSlashCommand('/pet')).toBe(true)
     expect(resolveDesktopCommand('/pets')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
@@ -70,7 +82,76 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/browser')).toBeNull()
     expect(resolveDesktopCommand('/browser')?.surface).toEqual({ kind: 'action', action: 'browser' })
     // Bare /browser expands to its sub-action options in the popover.
-    expect(resolveDesktopCommand('/browser')?.args).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/browser')).toBe('options')
+  })
+
+  it('routes /compress through the session-compression action', () => {
+    // /compress must be an action (session.compress RPC), not exec: the slash
+    // worker route times out on large sessions (#44456).
+    expect(resolveDesktopCommand('/compress')?.surface).toEqual({ kind: 'action', action: 'compress' })
+    expect(desktopSlashCommandArgumentMode('/compress')).toBe('text')
+    expect(isDesktopSlashCommand('/compress')).toBe(true)
+    expect(isDesktopSlashSuggestion('/compress')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/compress')).toBeNull()
+    // /compact is an alias — executes but stays out of the popover.
+    expect(resolveDesktopCommand('/compact')?.surface).toEqual({ kind: 'action', action: 'compress' })
+    expect(isDesktopSlashCommand('/compact')).toBe(true)
+    expect(isDesktopSlashSuggestion('/compact')).toBe(false)
+  })
+
+  it('routes only stateless session commands through dedicated gateway RPCs', () => {
+    const expected = {
+      '/save': 'session.save',
+      '/status': 'session.status'
+    } as const
+
+    for (const [name, rpcName] of Object.entries(expected)) {
+      const surface = resolveDesktopCommand(name)?.surface
+      expect(surface?.kind).toBe('rpc')
+
+      if (surface?.kind !== 'rpc') {
+        continue
+      }
+
+      expect(surface.rpc).toBe(rpcName)
+      expect(surface.buildParams({ arg: 'topic A', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual({
+        session_id: 's-1'
+      })
+    }
+  })
+
+  it('keeps commands with richer CLI semantics on the slash worker', () => {
+    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('still routes commands without dedicated RPCs through exec()', () => {
+    const execNames = [
+      '/background',
+      '/debug',
+      '/goal',
+      '/personality',
+      '/queue',
+      '/retry',
+      '/rollback',
+      '/tools',
+      '/undo',
+      '/version'
+    ]
+
+    for (const name of execNames) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('distinguishes free prose from finite slash option lists', () => {
+    expect(desktopSlashCommandArgumentMode('/goal')).toBe('mixed')
+    expect(desktopSlashCommandArgumentMode('/steer')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/queue')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/personality')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/handoff')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/version')).toBeNull()
   })
 
   it('routes /journey (and aliases) to the memory graph overlay action', () => {

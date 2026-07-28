@@ -842,6 +842,12 @@ def cronjob(
             # _execute_job_now advances next_run_at and blocks a concurrent tick
             # from double-firing.
             exec_result = _execute_job_now(job)
+            # A claimed direct run advances next_run_at and may race the
+            # external one-shot for the same occurrence. If Chronos loses that
+            # claim, its consumed fire cannot re-arm itself; reconcile from the
+            # winning direct path after the run has persisted its final state.
+            if exec_result.get("claimed", False):
+                _notify_provider_jobs_changed_safe()
             # Re-read so the response reflects the post-run last_run_at/last_status.
             result = _format_job(get_job(job_id) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)

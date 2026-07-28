@@ -76,6 +76,11 @@ def test_update_check_sanitizes_env(monkeypatch):
         "latest_version": "1.0.0",
         "update_available": False,
     })
+    # PATH is pinned to /usr/bin:/bin above, so the driver won't resolve;
+    # pin it so the check reaches the (sanitized) subprocess spawn.
+    monkeypatch.setattr(
+        cua_backend, "resolve_cua_driver_cmd", lambda *a, **k: "cua-driver"
+    )
     monkeypatch.setattr(
         cua_backend.subprocess, "run", _capture_run(captured, stdout=payload)
     )

@@ -3,20 +3,27 @@
 These cover the home-channel save logic that previously lived in
 ``hermes_cli/setup.py::_setup_slack`` before the Slack adapter migrated to a
 bundled plugin (#41112). ``interactive_setup`` lazy-imports its CLI helpers
-from ``hermes_cli.config`` (get_env_value / save_env_value) and
-``hermes_cli.cli_output`` (prompt / prompt_yes_no / print_*), so we patch those
-source modules.
+from ``hermes_cli.config`` (get_env_value / save_env_value / remove_env_value)
+and ``hermes_cli.cli_output`` (prompt / prompt_yes_no / print_*), so we patch
+those source modules.
 """
 import hermes_cli.config as config_mod
 import hermes_cli.cli_output as cli_output_mod
 from plugins.platforms.slack.adapter import interactive_setup
 
 
-def _patch_setup_io(monkeypatch, prompts, saved):
+def _patch_setup_io(monkeypatch, prompts, saved, removed, existing):
     """Wire interactive_setup's lazy-imported CLI helpers to test doubles."""
     prompt_iter = iter(prompts)
-    monkeypatch.setattr(config_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(config_mod, "get_env_value", lambda key: existing.get(key, ""))
     monkeypatch.setattr(config_mod, "save_env_value", lambda k, v: saved.update({k: v}))
+
+    # Mirror remove_env_value's real semantics: True if removed, False if absent.
+    def _remove(key):
+        removed.append(key)
+        return existing.pop(key, None) is not None
+
+    monkeypatch.setattr(config_mod, "remove_env_value", _remove)
     monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(prompt_iter))
     monkeypatch.setattr(cli_output_mod, "prompt_yes_no", lambda *_a, **_kw: False)
     for name in ("print_header", "print_info", "print_success", "print_warning"):
@@ -29,29 +36,94 @@ def _patch_setup_io(monkeypatch, prompts, saved):
 def test_interactive_setup_saves_home_channel(monkeypatch, tmp_path):
     """interactive_setup() saves SLACK_HOME_CHANNEL when the user provides one."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    saved = {}
+    saved, removed = {}, []
     # prompts: bot token, app token, allowed users (empty), home channel
     _patch_setup_io(
         monkeypatch,
-        ["xoxb-test-token", "xapp-test-token", "", "C01ABC2DE3F"],
+        ["«redacted:xox…»", "xapp-test-token", "", "C01ABC2DE3F"],
         saved,
+        removed,
+        existing={},
     )
 
     interactive_setup()
 
     assert saved.get("SLACK_HOME_CHANNEL") == "C01ABC2DE3F"
+    assert "SLACK_HOME_CHANNEL" not in removed
 
 
 def test_interactive_setup_home_channel_empty_not_saved(monkeypatch, tmp_path):
     """interactive_setup() does not save SLACK_HOME_CHANNEL when left blank."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    saved = {}
+    saved, removed = {}, []
     _patch_setup_io(
         monkeypatch,
-        ["xoxb-test-token", "xapp-test-token", "", ""],
+        ["«redacted:xox…»", "xapp-test-token", "", ""],
         saved,
+        removed,
+        existing={},
     )
 
     interactive_setup()
 
     assert "SLACK_HOME_CHANNEL" not in saved
+
+
+class TestSlackHomeChannelClear:
+    """Blank home-channel answer must clear SLACK_HOME_CHANNEL (#12423)."""
+
+    def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed = {}, []
+        _patch_setup_io(
+            monkeypatch,
+            ["«redacted:xox…»", "xapp-test-token", "", ""],
+            saved,
+            removed,
+            existing={"SLACK_HOME_CHANNEL": "C01OLDHOMEXYZ"},
+        )
+        interactive_setup()
+        assert "SLACK_HOME_CHANNEL" in removed
+        assert "SLACK_HOME_CHANNEL" not in saved
+
+    def test_blank_without_prior_home_still_attempts_remove(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed = {}, []
+        _patch_setup_io(
+            monkeypatch,
+            ["«redacted:xox…»", "xapp-test-token", "", ""],
+            saved,
+            removed,
+            existing={},
+        )
+        interactive_setup()
+        assert removed.count("SLACK_HOME_CHANNEL") == 1
+
+    def test_nonempty_saves_home_channel(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed = {}, []
+        _patch_setup_io(
+            monkeypatch,
+            ["«redacted:xox…»", "xapp-test-token", "", "C01ABC2DE3F"],
+            saved,
+            removed,
+            existing={},
+        )
+        interactive_setup()
+        assert saved["SLACK_HOME_CHANNEL"] == "C01ABC2DE3F"
+        assert "SLACK_HOME_CHANNEL" not in removed
+
+    def test_whitespace_only_clears_home_channel(self, monkeypatch, tmp_path):
+        """Whitespace-only input should clear, not save."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, removed = {}, []
+        _patch_setup_io(
+            monkeypatch,
+            ["«redacted:xox…»", "xapp-test-token", "", "   "],
+            saved,
+            removed,
+            existing={"SLACK_HOME_CHANNEL": "C01OLDHOMEXYZ"},
+        )
+        interactive_setup()
+        assert "SLACK_HOME_CHANNEL" in removed
+        assert "SLACK_HOME_CHANNEL" not in saved

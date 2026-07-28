@@ -105,58 +105,54 @@ pub fn run() {
     let force_setup = force_setup_from_args(std::env::args().skip(1));
     tracing::info!(?mode, force_setup, "Hermes installer starting");
 
+    // macOS launcher fast path: hand off before constructing Tauri/AppKit.
+    // Entering the Tauri runtime, even with LSUIElement set, can briefly
+    // register this bootstrap process as a regular Dock application.
+    if cfg!(target_os = "macos") && mode == AppMode::Install && !force_setup {
+        let install_root = paths::hermes_home().join("hermes-agent");
+        if bootstrap::hermes_is_installed(&install_root) {
+            match bootstrap::spawn_installed_desktop(&install_root) {
+                Ok(()) => {
+                    // Brief grace so the spawned app is registered before the
+                    // launcher process exits (mirrors launch_hermes_desktop).
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    tracing::info!(
+                        "hermes already installed — relaunched desktop; exiting installer"
+                    );
+                    return;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        "relaunch of installed desktop failed; showing installer UI"
+                    );
+                }
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(AppState::new(mode)))
-        .setup(move |app| {
+        .setup(|app| {
             use tauri::Manager;
-            // Launcher fast path (macOS only): a bare ("Install") launch when
-            // Hermes is already installed should NOT show the installer or
-            // rebuild — it should just open the app, so the /Applications
-            // "Hermes" doubles as a normal launcher (first run installs, every
-            // later run launches instantly). The window is kept hidden until
-            // here via `"visible": false` so this path never flashes a window.
-            //
-            // Gated to macOS deliberately: on Windows/Linux the installer keeps
-            // its existing behavior (Windows users relaunch via the Start
-            // Menu/Desktop "Hermes" shortcuts that install.ps1 creates, and a
-            // reliable detached relaunch there needs the DETACHED_PROCESS +
-            // startup-grace handling used by launch_hermes_desktop — out of
-            // scope here). So this is a pure no-op on non-macOS.
-            //
-            // `--reinstall`/`--repair` opts out so a broken install can be
-            // repaired by re-running setup instead of launching the bad app.
-            if cfg!(target_os = "macos") && mode == AppMode::Install && !force_setup {
-                let install_root = paths::hermes_home().join("hermes-agent");
-                if bootstrap::hermes_is_installed(&install_root) {
-                    match bootstrap::spawn_installed_desktop(&install_root) {
-                        Ok(()) => {
-                            // Brief grace so the spawned app is registered
-                            // before we exit (mirrors launch_hermes_desktop).
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                            tracing::info!(
-                                "hermes already installed — relaunched desktop; exiting installer"
-                            );
-                            app.handle().exit(0);
-                            return Ok(());
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                ?err,
-                                "relaunch of installed desktop failed; showing installer UI"
-                            );
-                        }
-                    }
-                }
-            }
+            // A visible installer must behave like a normal foreground app so
+            // first-run, repair, and update windows remain discoverable in the
+            // Dock and Cmd-Tab. The successful launcher fast path returned
+            // before Tauri was constructed and can never reach this callback.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
             // First run / repair install, or Update mode: reveal the UI.
             match app.get_webview_window("main") {
                 Some(win) => {
                     if let Err(err) = win.show() {
                         tracing::error!(?err, "failed to show main installer window");
+                    } else if let Err(err) = win.set_focus() {
+                        tracing::warn!(?err, "failed to focus main installer window");
                     }
                 }
                 None => {

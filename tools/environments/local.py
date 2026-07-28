@@ -6,6 +6,7 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -358,6 +359,184 @@ def _windows_bash_candidates(custom: "str | None") -> list[str]:
     if found and found not in candidates:
         candidates.append(found)
     return candidates
+
+_WINDOWS_POWERSHELL_EXES = frozenset(
+    {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+)
+_BASH_TOP_LEVEL_PUNCTUATION = frozenset(";&|<>(){}[]#")
+_BASH_UNQUOTED_EXPANSION_CHARS = frozenset("$`*?~\\")
+_POWERSHELL_COMMAND_SWITCH_NAMES = frozenset(
+    {"c", "co", "com", "comm", "comma", "comman", "command", "commandwithargs"}
+)
+_POWERSHELL_FLAG_SWITCH_NAMES = frozenset(
+    {
+        "login",
+        "mta",
+        "nologo",
+        "nol",
+        "noexit",
+        "noe",
+        "noninteractive",
+        "non",
+        "noprofile",
+        "nop",
+        "sta",
+    }
+)
+_POWERSHELL_VALUE_SWITCH_NAMES = frozenset(
+    {
+        "configurationname",
+        "custompipename",
+        "encodedarguments",
+        "executionpolicy",
+        "ep",
+        "inputformat",
+        "inp",
+        "outputformat",
+        "of",
+        "settingsfile",
+        "version",
+        "windowstyle",
+        "workingdirectory",
+        "wd",
+    }
+)
+_POWERSHELL_NON_COMMAND_MODES = frozenset(
+    {"f", "file", "e", "ec", "enc", "encodedcommand"}
+)
+
+
+def _scan_conservative_bash_words(
+    command: str,
+) -> tuple[frozenset[int], bool] | None:
+    """Inspect a simple Bash command without changing its word semantics.
+
+    Return the word indexes containing live ``$``/backtick expansion inside
+    double quotes plus whether the executable word used any quoting. Unquoted
+    Bash expansion, backslashes, globbing, control operators, comments, and
+    malformed quotes are rejected so the later POSIX ``shlex`` pass cannot
+    silently reinterpret them.
+    """
+    quote: str | None = None
+    word_index = -1
+    in_word = False
+    executable_was_quoted = False
+    expanding_words: set[int] = set()
+    index = 0
+
+    while index < len(command):
+        char = command[index]
+
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+
+        if quote == '"':
+            if char == "\\" and index + 1 < len(command):
+                next_char = command[index + 1]
+                if next_char in '$`"\\':
+                    index += 2
+                    continue
+            if char == '"':
+                quote = None
+            elif char in "$`":
+                expanding_words.add(word_index)
+            index += 1
+            continue
+
+        if char.isspace():
+            in_word = False
+            index += 1
+            continue
+
+        if not in_word:
+            word_index += 1
+            in_word = True
+
+        if char in ("'", '"'):
+            quote = char
+            if word_index == 0:
+                executable_was_quoted = True
+        elif (
+            char in _BASH_TOP_LEVEL_PUNCTUATION
+            or char in _BASH_UNQUOTED_EXPANSION_CHARS
+        ):
+            return None
+        index += 1
+
+    if quote is not None:
+        return None
+    return frozenset(expanding_words), executable_was_quoted
+
+
+def _powershell_command_payload_start(tokens: list[str]) -> int | None:
+    """Locate a real host-level Command switch before script/encoded modes."""
+    index = 1
+    while index < len(tokens):
+        token = tokens[index].lower()
+        if len(token) < 2 or token[0] not in ("-", "/"):
+            return None
+        switch_name = token[1:]
+        if switch_name in _POWERSHELL_COMMAND_SWITCH_NAMES:
+            return index + 1
+        if switch_name in _POWERSHELL_NON_COMMAND_MODES or switch_name == "-":
+            return None
+        if switch_name in _POWERSHELL_FLAG_SWITCH_NAMES:
+            index += 1
+            continue
+        if switch_name in _POWERSHELL_VALUE_SWITCH_NAMES:
+            if index + 1 >= len(tokens):
+                return None
+            index += 2
+            continue
+        return None
+    return None
+
+
+def _quote_windows_powershell_command(command: str) -> str | None:
+    """Safely re-quote a standalone PowerShell invocation for outer Bash.
+
+    Hermes normally wraps local commands in ``bash -c`` and a later ``eval``.
+    Bash otherwise expands PowerShell expressions such as ``$_.Path`` and
+    ``$env:TEMP`` before PowerShell sees them. This recognizes only a simple,
+    standalone pwsh/powershell invocation and rebuilds each parsed argv token
+    with Bash-safe quoting. Ambiguous shell syntax stays on the existing Bash
+    path unchanged.
+    """
+    stripped = command.strip()
+    if not stripped or "\n" in stripped or "\r" in stripped:
+        return None
+
+    scan = _scan_conservative_bash_words(stripped)
+    if scan is None:
+        return None
+    expanding_words, executable_was_quoted = scan
+
+    try:
+        tokens = shlex.split(stripped, comments=False, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    exe_name = ntpath.basename(tokens[0]).lower()
+    if exe_name not in _WINDOWS_POWERSHELL_EXES:
+        return None
+
+    command_start = _powershell_command_payload_start(tokens)
+    if expanding_words and (
+        command_start is None
+        or any(word_index < command_start for word_index in expanding_words)
+    ):
+        return None
+
+    rebuilt = [shlex.quote(token) for token in tokens]
+    if executable_was_quoted:
+        escaped_executable = tokens[0].replace("'", "'\"'\"'")
+        rebuilt[0] = f"'{escaped_executable}'"
+    return " ".join(rebuilt)
 
 
 def _find_bash() -> str:
@@ -764,6 +943,16 @@ class LocalEnvironment(BaseEnvironment):
             return "/tmp"
         fallback = tempfile.gettempdir()
         return _posix(fallback) if fallback.startswith("/") else "/tmp"
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        exec_command, sudo_stdin = super()._prepare_command(command)
+        if _IS_WINDOWS:
+            # Protect PowerShell's own $ expressions before BaseEnvironment
+            # places the command inside Bash's later eval wrapper.
+            protected = _quote_windows_powershell_command(exec_command)
+            if protected is not None:
+                exec_command = protected
+        return exec_command, sudo_stdin
 
     @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:

@@ -239,7 +239,7 @@ export function ExternalLink({
 
   return (
     <a
-      className={cn('link-chip font-semibold', className)}
+      className={cn('link-chip', className)}
       href={target}
       onClick={event => {
         event.stopPropagation()
@@ -279,7 +279,7 @@ export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: P
   return (
     <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>
       <LinkBrandIcon href={target} />
-      <span className="font-medium">{display}</span>
+      {display}
     </ExternalLink>
   )
 }

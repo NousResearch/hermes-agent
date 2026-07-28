@@ -1,6 +1,6 @@
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
-import { dispatchDisplayText } from '@hermes/shared'
+import { skillInvocationText } from '@hermes/shared'
 
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
@@ -268,8 +268,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           // A skill/bundle dispatch's `message` is the expanded skill body —
           // model-facing scaffolding. Never render it; the bubble shows the
-          // invocation instead.
-          const displayText = dispatchDisplayText('display' in dispatch ? dispatch.display : undefined, message)
+          // invocation the gateway projected, or one read from the payload
+          // when the backend is older than this app.
+          const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
+          const displayText = projected || skillInvocationText(message) || undefined
 
           // Gate on the TARGET session's own busy state, not the foreground
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat

@@ -67,12 +67,3 @@ export function skillInvocationText(text: string): null | string {
 
   return instruction ? `${label} ${instruction.replace(/\s+/g, ' ')}` : label
 }
-
-/**
- * What a skill/bundle dispatch should render as. Prefers the gateway's own
- * projection; falls back to reading the payload for an older gateway that
- * doesn't send one. Undefined for an ordinary send, which renders as written.
- */
-export function dispatchDisplayText(display: string | undefined, message: string): string | undefined {
-  return display?.trim() || skillInvocationText(message) || undefined
-}

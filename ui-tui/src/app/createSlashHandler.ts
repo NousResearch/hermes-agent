@@ -1,5 +1,3 @@
-import { dispatchDisplayText } from '@hermes/shared/skill-scaffold'
-
 import { parseSlashCommand } from '../domain/slash.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
 import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
@@ -107,10 +105,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
 
       // A skill/bundle dispatch's `message` is the expanded skill body —
-      // model-facing scaffolding. The transcript shows the invocation instead;
-      // an ordinary send has no projection and goes through unchanged.
+      // model-facing scaffolding. `display` is the invocation the gateway
+      // projected; the transcript shows that instead. An ordinary send has no
+      // projection and goes through unchanged. No client-side fallback here:
+      // the TUI spawns its gateway from this same checkout, so the two can't
+      // version-skew (unlike the desktop, which can meet an older backend).
       const sendDispatch = (display: string | undefined, message: string) => {
-        const shown = dispatchDisplayText(display, message)
+        const shown = display?.trim()
 
         return shown ? send(message, true, shown) : send(message)
       }

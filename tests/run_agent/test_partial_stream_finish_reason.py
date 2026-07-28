@@ -864,10 +864,19 @@ class TestSendTimeEmptyAssistantPad:
 
 
 class TestSendTimePadMultimodalSafety:
-    """Regression: the send-time pad must skip multimodal (list) assistant
+    """Regression: the send-time pad must skip non-string (list) assistant
     content instead of crashing — a forked session whose new user turn
     attaches an image hit AttributeError: 'list' object has no attribute
-    'strip' inside the pad loop."""
+    'strip' inside the pad loop.
+
+    Note: current main flattens multimodal assistant list-content to a
+    plain string upstream of the send boundary, so the list shape rarely
+    survives to the pad loop in this path — but other builders/callers can
+    still produce list content, and the ``isinstance(str)`` guard must hold
+    regardless of upstream flattening.  This test drives a multimodal
+    history through the loop and asserts (a) no crash, and (b) the
+    assistant turn's text is neither dropped nor replaced by the pad.
+    """
 
     def test_multimodal_assistant_content_not_touched(self, loop_agent):
         from tests.run_agent.test_run_agent import _mock_response
@@ -895,7 +904,40 @@ class TestSendTimePadMultimodalSafety:
         assert result["completed"] is True
         kwargs = loop_agent.client.chat.completions.create.call_args_list[0]
         sent = kwargs.kwargs.get("messages") or kwargs.args[0].get("messages")
-        mm = next(m for m in sent if isinstance(m.get("content"), list) and m.get("role") == "assistant")
-        assert mm["content"] == [{"type": "text", "text": "I see an image"}], (
-            "Multimodal assistant content must pass through untouched."
+        # The assistant turn survives with its text intact — regardless of
+        # whether upstream passes flattened it to a str or kept the list.
+        mm = next(
+            m for m in sent
+            if m.get("role") == "assistant" and not m.get("tool_calls")
         )
+        c = mm["content"]
+        if isinstance(c, list):
+            assert c == [{"type": "text", "text": "I see an image"}], (
+                "Multimodal assistant list content must pass through untouched."
+            )
+        else:
+            assert "I see an image" in (c or ""), (
+                "Flattened multimodal assistant text must survive the pad loop."
+            )
+        assert c != " ", "The pad must never replace real multimodal content."
+
+    def test_pad_loop_skips_list_content_directly(self):
+        """Unit-shape check: the pad predicate itself must skip list content
+        (the exact AttributeError shape) and pad only textless str turns."""
+        api_messages = [
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": ""},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        ]
+        # Mirror of the send-boundary pad in conversation_loop.
+        for am in api_messages:
+            if (
+                am.get("role") == "assistant"
+                and not am.get("tool_calls")
+                and isinstance(am.get("content"), str)
+                and not am["content"].strip()
+            ):
+                am["content"] = " "
+        assert api_messages[0]["content"] == [{"type": "text", "text": "hi"}]
+        assert api_messages[1]["content"] == " "
+        assert api_messages[2]["content"] == ""

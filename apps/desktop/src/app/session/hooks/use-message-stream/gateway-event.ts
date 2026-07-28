@@ -106,6 +106,28 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
   })
 }
 
+/**
+ * Events that retire a "drafting a tool call" claim.
+ *
+ * `tool.generating` opens the claim and nothing closes it — a draft can be
+ * abandoned without ever reaching `tool.start`, so enumerating the ways one
+ * *ends* left the label on screen for the rest of the turn. Inverted: the
+ * claim only covers what the model is emitting right now, and any other output
+ * from the session proves it moved on. Same rule the TUI applies to its
+ * transient trail lines (`turnController.pruneTransient`).
+ */
+const DRAFT_SUPERSEDING_EVENT_TYPES = new Set([
+  'error',
+  'message.complete',
+  'message.delta',
+  'message.start',
+  'reasoning.delta',
+  'thinking.delta',
+  'tool.complete',
+  'tool.progress',
+  'tool.start'
+])
+
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
   'message.interim',
@@ -242,6 +264,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // whole turn to complete.
       if (sessionId && COMPACTION_RESUME_EVENT_TYPES.has(event.type) && compactedTurnRef.current.has(sessionId)) {
         setSessionCompacting(sessionId, false)
+      }
+
+      if (sessionId && DRAFT_SUPERSEDING_EVENT_TYPES.has(event.type)) {
+        setSessionDraftingTool(sessionId, '')
       }
 
       if (event.type === 'gateway.ready') {
@@ -442,7 +468,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         flushQueuedDeltas(sessionId)
         pruneFinishedSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
-        setSessionDraftingTool(sessionId, '')
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
         // A fresh turn on this session optimistically clears its billing wall;
@@ -613,7 +638,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // last item stuck pending/in_progress. Finished lists keep their linger.
         clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
-        setSessionDraftingTool(sessionId, '')
 
         flushQueuedDeltas(sessionId)
 
@@ -686,7 +710,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // from it strands an argless placeholder whenever the bubble is sealed
         // before the real `tool.start` arrives, because the two can no longer be
         // reconciled across the boundary. It's a status, so say it as one.
-        if (!sessionId) {
+        // A stopped turn can still emit a frame or two before the backend
+        // notices, and naming a tool we will never run leaves the label up
+        // until something else retires it. `mutateStream` drops late tool rows
+        // on the same condition; the status line has to agree with it.
+        if (!sessionId || sessionInterrupted(sessionId)) {
           return
         }
 
@@ -701,7 +729,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        setSessionDraftingTool(sessionId, '')
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
 
         if (isActiveEvent) {
@@ -710,7 +737,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
-          setSessionDraftingTool(sessionId, '')
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
 
           if (isActiveEvent) {
@@ -1002,7 +1028,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           clearClarifyRequest(undefined, sessionId)
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
-          setSessionDraftingTool(sessionId, '')
           compactedTurnRef.current.delete(sessionId)
         }
 

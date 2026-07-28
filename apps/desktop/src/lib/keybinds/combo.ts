@@ -2,9 +2,10 @@
 //
 // A combo is a canonical lowercase string like "mod+k", "mod+shift+]", "shift+x",
 // or "r". `mod` is Cmd on macOS / Ctrl elsewhere, so a single binding works on
-// both. We prefer layout-aware `event.key` for letters, then fall back to
-// `event.code` so shifted punctuation still normalizes to its unshifted token
-// ("shift+/" stays "shift+/" instead of becoming "shift+?").
+// both. We derive the base key from `event.key` where the layout matters
+// (letters, unshifted punctuation) and from `event.code` otherwise, so a
+// binding follows the character the user's layout actually types while Shift
+// never mutates it ("shift+/" stays "shift+/" instead of becoming "shift+?").
 //
 // `ctrl` is physical Control, distinct from `mod`. It only matters on macOS,
 // where `mod` is Cmd and Cmd+Tab is OS-reserved — so `ctrl+tab` is literally
@@ -71,8 +72,30 @@ function baseKeyFromCode(code: string): string | null {
   return CODE_TO_KEY[code] ?? null
 }
 
-function baseKeyFromEventKey(key: string): string | null {
-  return /^[a-z]$/i.test(key) ? key.toLowerCase() : null
+// Punctuation we ship as combo tokens, derived from CODE_TO_KEY so the two
+// can't drift. Named tokens (space, tab, …) are excluded by the length check.
+const PUNCTUATION_KEYS = new Set(Object.values(CODE_TO_KEY).filter(token => token.length === 1))
+
+// The layout-aware half of the base key. `event.key` carries the character the
+// user's layout actually produces, which is what a binding should match:
+//
+//   - Letters always win, shifted or not — `toLowerCase` normalizes the case.
+//   - Punctuation only when Shift is UP, because a shifted `event.key` is the
+//     shifted glyph ("?" for "/"), and combos stay anchored to the unshifted
+//     token. Shifted punctuation falls through to `event.code` below.
+//
+// Digits deliberately stay physical: on AZERTY the number row is shifted, so
+// `event.key` for the "1" key is "&" and only yields "1" with Shift held —
+// `event.code` is what keeps `mod+1` reachable there.
+//
+// Anything else (Option glyphs like "˚", dead keys, non-Latin scripts) isn't a
+// token we ship, so it fails both checks and falls back to the physical code.
+function baseKeyFromEventKey(key: string, shiftKey: boolean): string | null {
+  if (/^[a-z]$/i.test(key)) {
+    return key.toLowerCase()
+  }
+
+  return !shiftKey && PUNCTUATION_KEYS.has(key) ? key : null
 }
 
 // Returns the canonical combo for a keydown, or null while only modifiers are
@@ -82,7 +105,7 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
     return null
   }
 
-  const base = baseKeyFromEventKey(event.key) ?? baseKeyFromCode(event.code)
+  const base = baseKeyFromEventKey(event.key, event.shiftKey) ?? baseKeyFromCode(event.code)
 
   if (!base) {
     return null

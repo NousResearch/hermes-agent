@@ -143,6 +143,22 @@ hermes acp --setup-browser --yes     # 非交互式接受下载
 
 使用兼容 ACP 的插件并将其指向 `hermes acp` 或 `hermes-acp`。
 
+### Buzz Desktop
+
+[Buzz](https://github.com/block/buzz) 将 Hermes Agent 作为预设运行时提供。
+按常规方式安装 Hermes 后，Buzz 会自动发现它 —— 打开 **Settings → Runtimes**，
+Hermes 就会出现在你的运行时列表中。
+
+如果发现失败（较旧的安装），请确认 ACP 启动器可以在登录 shell 的 PATH 上解析：
+
+```bash
+command -v hermes-acp || command -v hermes
+```
+
+较新的安装会将 `hermes` 和 `hermes-acp` 两个启动器写入 `~/.local/bin`；
+运行 `hermes update` 会为较旧的安装补上 `hermes-acp` 启动器。作为手动兜底方案，
+可以将 Buzz 的 agent 命令配置为 `hermes`，参数为 `["acp"]`。
+
 ## 配置与凭据
 
 ACP 模式使用与 CLI 相同的 Hermes 配置：

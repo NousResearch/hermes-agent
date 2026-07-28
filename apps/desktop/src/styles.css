@@ -387,7 +387,11 @@
     --dt-spacing-mul: 1;
 
     --radius: 0.75rem;
-    --radius-scalar: 0.6;
+    /* Effective value everywhere: the chat backdrop used to force 0.2 onto the
+       root element at runtime (an ungated leva slider default), so this 0.6
+       only ever applied to the windows that don't mount the backdrop. Pinned
+       to the value the app actually renders at. */
+    --radius-scalar: 0.2;
 
     /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
        plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing.

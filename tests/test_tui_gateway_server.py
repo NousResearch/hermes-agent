@@ -37,7 +37,7 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
-def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
+def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text("max_concurrent_sessions: 1\n", encoding="utf-8")
@@ -56,23 +56,31 @@ def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
         monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
 
+        # Opening a chat must NOT take a slot. Every tile paint and every
+        # background reconnect-resume calls session.create, and an unprompted
+        # draft has no DB row and is filtered out of the sidebar — so a slot
+        # held here is invisible to the user while still starving the other
+        # surfaces that share this cap.
         first = server._methods["session.create"]("r1", {"cols": 80})
-        assert "result" in first
-        sid = first["result"]["session_id"]
-
         second = server._methods["session.create"]("r2", {"cols": 80})
-        assert second["error"]["message"] == (
-            "Hermes is at the active session limit (1/1). "
-            "Try again when another session finishes."
-        )
-        assert list(server._sessions) == [sid]
+        assert "result" in first and "result" in second
+        sid = first["result"]["session_id"]
+        other = second["result"]["session_id"]
+        assert active_session_registry_snapshot() == []
+
+        # The first turn is what claims the slot, and is re-entrant.
+        assert server._ensure_active_session_slot(sid, server._sessions[sid]) is None
+        assert server._ensure_active_session_slot(sid, server._sessions[sid]) is None
+        assert len(active_session_registry_snapshot()) == 1
+
+        blocked = server._ensure_active_session_slot(other, server._sessions[other])
+        assert "active session limit (1/1)" in blocked
 
         closed = server._methods["session.close"]("r3", {"session_id": sid})
         assert closed["result"]["closed"] is True
         assert active_session_registry_snapshot() == []
 
-        third = server._methods["session.create"]("r4", {"cols": 80})
-        assert "result" in third
+        assert server._ensure_active_session_slot(other, server._sessions[other]) is None
     finally:
         _clear_server_sessions()
         server._cfg_cache = None

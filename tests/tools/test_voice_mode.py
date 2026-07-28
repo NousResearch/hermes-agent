@@ -706,6 +706,38 @@ class TestAudioRecorder:
         with pytest.raises(RuntimeError, match="sounddevice and numpy"):
             recorder.start()
 
+    def test_start_oserror_points_at_portaudio_not_pip(self, monkeypatch):
+        """OSError from _import_audio means PortAudio's shared library is
+        missing — pip can't fix that. The error must point at the system
+        package, not 'pip install sounddevice numpy' (#18432)."""
+        def _fail_import():
+            raise OSError("PortAudio library not found")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+        monkeypatch.setattr("tools.voice_mode._is_termux_environment", lambda: False)
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError) as exc_info:
+            recorder.start()
+        msg = str(exc_info.value)
+        assert "PortAudio system library not found" in msg
+        assert "libportaudio2" in msg
+        assert "pip install" not in msg
+
+    def test_start_oserror_termux_hint(self, monkeypatch):
+        """Same OSError path on Termux points at pkg install portaudio."""
+        def _fail_import():
+            raise OSError("PortAudio library not found")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+        monkeypatch.setattr("tools.voice_mode._is_termux_environment", lambda: True)
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError, match="pkg install portaudio"):
+            recorder.start()
+
     def test_start_creates_and_starts_stream(self, mock_sd):
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream

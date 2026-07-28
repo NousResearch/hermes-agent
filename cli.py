@@ -12154,9 +12154,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Return whether CLI voice mode should play record start/stop beeps."""
         try:
             from hermes_cli.config import load_config
+            from utils import is_truthy_value
             voice_cfg = load_config().get("voice", {})
             if isinstance(voice_cfg, dict):
-                return bool(voice_cfg.get("beep_enabled", True))
+                # is_truthy_value handles quoted YAML strings like "false"
+                # which bool() would misread as True (#49883).
+                return is_truthy_value(voice_cfg.get("beep_enabled", True), default=True)
         except Exception:
             pass
         return True

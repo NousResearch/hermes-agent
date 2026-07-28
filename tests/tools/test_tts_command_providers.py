@@ -134,11 +134,17 @@ class TestCommandTtsEnv:
 
         captured = {}
 
+        class _Stream:
+            def read(self, size):
+                return ""
+
         class Proc:
             returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
 
-            def communicate(self, timeout=None):
-                return "", ""
+            def wait(self, timeout=None):
+                return 0
 
         def fake_popen(command, **kwargs):
             captured["env"] = kwargs["env"]

@@ -6742,6 +6742,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 _probe_voice_duration_seconds, audio_path
             )
 
+            # Render caption markdown (#32029): auto-TTS captions carry the
+            # agent's markdown reply, which showed literal *asterisks* and
+            # [links](...) without a parse_mode. Format to MarkdownV2 when it
+            # fits the 1024-char caption cap; fall back to the raw text
+            # (previous behaviour) when formatting would overflow or the
+            # Bot API rejects the entities.
+            _caption_variants: List[tuple] = []
+            if caption:
+                try:
+                    _formatted_caption = self.format_message(caption)
+                    if utf16_len(_formatted_caption) <= 1024:
+                        _caption_variants.append(
+                            (_formatted_caption, ParseMode.MARKDOWN_V2)
+                        )
+                except Exception:
+                    logger.debug(
+                        "[%s] voice caption MarkdownV2 formatting failed; "
+                        "sending plain caption", self.name, exc_info=True,
+                    )
+                _caption_variants.append((caption[:1024], None))
+            else:
+                _caption_variants.append((None, None))
+
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
@@ -6755,22 +6778,49 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
-                        self._bot.send_voice,
-                        {
-                            "chat_id": normalize_telegram_chat_id(chat_id),
-                            "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
-                            "reply_to_message_id": reply_to_id,
-                            "duration": _duration_secs,
-                            **voice_thread_kwargs,
-                            **self._notification_kwargs(metadata),
-                        },
-                        metadata,
-                        reply_to_id,
-                        "voice",
-                        reset_media=lambda: audio_file.seek(0),
-                    )
+                    msg = None
+                    _last_parse_error: Optional[Exception] = None
+                    for _cap_text, _cap_parse_mode in _caption_variants:
+                        try:
+                            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                                self._bot.send_voice,
+                                {
+                                    "chat_id": normalize_telegram_chat_id(chat_id),
+                                    "voice": audio_file,
+                                    "caption": _cap_text,
+                                    "parse_mode": _cap_parse_mode,
+                                    "reply_to_message_id": reply_to_id,
+                                    "duration": _duration_secs,
+                                    **voice_thread_kwargs,
+                                    **self._notification_kwargs(metadata),
+                                },
+                                metadata,
+                                reply_to_id,
+                                "voice",
+                                reset_media=lambda: audio_file.seek(0),
+                            )
+                            break
+                        except Exception as _cap_error:
+                            # Only retry the next (plain) variant on entity
+                            # parse failures; anything else is a real send
+                            # error for the outer handler.
+                            if (_cap_parse_mode is not None
+                                    and ("parse" in str(_cap_error).lower()
+                                         or "entit" in str(_cap_error).lower())):
+                                logger.warning(
+                                    "[%s] voice caption MarkdownV2 rejected, "
+                                    "retrying plain: %s",
+                                    self.name,
+                                    _redact_telegram_error_text(_cap_error),
+                                )
+                                _last_parse_error = _cap_error
+                                audio_file.seek(0)
+                                continue
+                            raise
+                    if msg is None:
+                        raise _last_parse_error or RuntimeError(
+                            "Telegram send_voice failed for all caption variants"
+                        )
                 elif ext in {".mp3", ".m4a"}:
                     # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)

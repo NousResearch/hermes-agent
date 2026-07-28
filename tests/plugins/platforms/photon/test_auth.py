@@ -85,7 +85,13 @@ def test_save_auth_never_world_readable(tmp_hermes_home: Path) -> None:
 
 def test_save_auth_leaves_no_temp_files(tmp_hermes_home: Path) -> None:
     photon_auth.store_photon_token("secret-token")
-    leftovers = [p.name for p in tmp_hermes_home.iterdir() if p.name != "auth.json"]
+    leftovers = [
+        p.name
+        for p in tmp_hermes_home.iterdir()
+        # auth.lock is the cross-process lock sentinel from
+        # hermes_cli.auth._auth_store_lock — expected to persist.
+        if p.name not in ("auth.json", "auth.lock")
+    ]
     assert leftovers == []
 
 
@@ -157,7 +163,13 @@ def test_save_auth_closes_raw_fd_when_fdopen_fails(tmp_hermes_home: Path) -> Non
             f"raw fd {fd} leaked after forced os.fdopen failure; "
             f"closed={closed_fds!r}"
         )
-    leftovers = [p.name for p in tmp_hermes_home.iterdir() if p.name != "auth.json"]
+    leftovers = [
+        p.name
+        for p in tmp_hermes_home.iterdir()
+        # auth.lock is the cross-process lock sentinel from
+        # hermes_cli.auth._auth_store_lock — expected to persist.
+        if p.name not in ("auth.json", "auth.lock")
+    ]
     assert leftovers == [], f"temp file leaked after fdopen failure: {leftovers}"
 
 

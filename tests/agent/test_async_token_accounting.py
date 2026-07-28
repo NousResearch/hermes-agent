@@ -608,3 +608,40 @@ class TestWriterFailure:
         assert db._token_writer_thread is not dead
         assert db.flush_token_counts()
         assert _totals(db, "s-respawn")["input_tokens"] == 3
+
+    def test_stop_drain_claims_busy_before_clearing_queue(self, db):
+        """_stop_token_writer's leftover drain must follow the same
+        busy-before-clear ordering as the writer loop: a concurrent flush's
+        lock-free fast path (queue-then-busy, no cond held) must never
+        observe 'empty and idle' while the popped batch is unapplied."""
+        db.create_session("s-stopdrain", "test")
+        db.flush_token_counts()
+        db._stop_token_writer()  # writer dead, connection open
+
+        applied = threading.Event()
+        gate = threading.Event()
+        original = db.update_token_counts
+
+        def gated(session_id, **kwargs):
+            applied.set()
+            assert gate.wait(timeout=10)
+            return original(session_id, **kwargs)
+
+        db.update_token_counts = gated
+        try:
+            db._token_queue.append(
+                ("s-stopdrain", dict(input_tokens=6, api_call_count=1))
+            )
+            t = threading.Thread(target=db._stop_token_writer)
+            t.start()
+            assert applied.wait(timeout=10)
+            # Stop-drain is mid-apply with the queue popped: the fast path
+            # must see busy=True and wait (timing out), not return True.
+            assert db.flush_token_counts(timeout=0.3) is False
+            gate.set()
+            t.join(timeout=10)
+            assert db.flush_token_counts()
+        finally:
+            db.update_token_counts = original
+
+        assert _totals(db, "s-stopdrain")["input_tokens"] == 6

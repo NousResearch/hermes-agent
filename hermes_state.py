@@ -5333,10 +5333,16 @@ class SessionDB:
                     )
                     return
                 self._token_queue_cond.wait(remaining)
+            # busy is claimed BEFORE the queue is cleared — same ordering
+            # as the writer loop and the flush caller-drain. The lock-free
+            # fast path in flush_token_counts() reads queue-then-busy
+            # without the cond, so clearing first would let a concurrent
+            # flush observe "empty and idle" and return True while this
+            # popped batch is still unapplied.
             batch = list(self._token_queue)
-            self._token_queue.clear()
             if batch:
                 self._token_writer_busy = True
+                self._token_queue.clear()
         if batch:
             try:
                 self._apply_token_batch(batch)

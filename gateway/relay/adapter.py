@@ -311,24 +311,6 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - config shape is operator-owned
             return True
 
-    def _flat_dm_status_enabled(self) -> bool:
-        """Liveliness in flat-DM mode: anchor the STATUS (not the reply) to the
-        triggering message's ts.
-
-        ``assistant.threads.setStatus`` on a message ts renders "… thinking" in
-        that message's thread-footer space and vanishes on clear — no message
-        artifact. Native suppresses this in flat mode because ITS response
-        routing could inherit the activated thread; the relay lane's sends are
-        explicitly flat in flat mode (QA-6/7 anchor strip), so the status
-        anchor cannot leak into reply placement here. Default ON — flat DMs
-        get a live status billboard while replies still post at the DM root.
-        Opt out: platforms.relay.extra.slack.flat_dm_status: false.
-        """
-        try:
-            return bool(self._relay_slack_extra().get("flat_dm_status", True))
-        except Exception:  # noqa: BLE001 - config shape is operator-owned
-            return True
-
     def _stamp_slack_session_thread(self, event) -> None:
         """Native session-keying parity for fronted Slack (QA-3).
 
@@ -1041,17 +1023,15 @@ class RelayAdapter(BasePlatformAdapter):
             and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
-            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
             # Thread mode: status targets the per-message thread (QA-1).
-            # Flat mode: the status can STILL anchor to the triggering ts —
+            # Flat mode: the status STILL anchors to the triggering ts —
             # setStatus renders in the footer space and clears without a
             # message artifact, and flat sends strip their anchors (QA-6/7)
-            # so reply placement cannot inherit it. Gated separately
-            # (flat_dm_status, default on) for a clean opt-out.
-            if anchor and (
-                self._effective_reply_in_thread()
-                or self._flat_dm_status_enabled()
-            ):
+            # so reply placement cannot inherit it. Unconditional: liveliness
+            # is not a preference, it ships in whatever form the mode
+            # supports (no speculative opt-out knob).
+            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            if anchor:
                 md["thread_id"] = anchor
         # Rich status parity (QA-1): run.py's live-status lane stashes the
         # current per-tool phrase via set_status_text() (base class store).
@@ -1111,10 +1091,7 @@ class RelayAdapter(BasePlatformAdapter):
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
             anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
-            if anchor and (
-                self._effective_reply_in_thread()
-                or self._flat_dm_status_enabled()
-            ):
+            if anchor:
                 md["thread_id"] = anchor
         try:
             await self._transport.send_outbound(

@@ -6868,8 +6868,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _e:
                 logger.debug("Shutdown transcript flush failed: %s", _e)
             try:
-                from hermes_cli.lifecycle import finalize_session
-                finalize_session(
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
                     reason="shutdown",
@@ -9161,10 +9162,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key, entry in _expired_entries:
                     try:
                         try:
-                            from hermes_cli.lifecycle import finalize_session
+                            from hermes_cli.plugins import invoke_hook as _invoke_hook
                             _parts = key.split(":")
                             _platform = _parts[2] if len(_parts) > 2 else ""
-                            finalize_session(
+                            _invoke_hook(
+                                "on_session_finalize",
                                 session_id=entry.session_id,
                                 platform=_platform,
                                 reason="session_expired",
@@ -10981,7 +10983,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
             try:
-                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _hook_results = _invoke_hook(
                     "pre_gateway_dispatch",
                     event=event,

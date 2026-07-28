@@ -97,6 +97,7 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+_HAS_PILK = _safe_find_spec("pilk")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1146,12 +1147,12 @@ def _validate_audio_file_size(audio_path: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _validate_audio_file(
+def _validate_audio_source_file(
     file_path: str,
     *,
     enforce_size_limit: bool = True,
 ) -> Optional[Dict[str, Any]]:
-    """Validate the audio file.  Returns an error dict or None if OK."""
+    """Validate source path safety (and optionally size) before any decoder runs."""
     audio_path = Path(file_path)
 
     if os.path.islink(audio_path):
@@ -1160,12 +1161,6 @@ def _validate_audio_file(
         return {"success": False, "transcript": "", "error": f"Audio file not found: {file_path}"}
     if not audio_path.is_file():
         return {"success": False, "transcript": "", "error": f"Path is not a file: {file_path}"}
-    if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
-        }
     if enforce_size_limit:
         return _validate_audio_file_size(audio_path)
     try:
@@ -1173,6 +1168,69 @@ def _validate_audio_file(
     except OSError as e:
         return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
     return None
+
+
+def _validate_audio_file(
+    file_path: str,
+    *,
+    enforce_size_limit: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Validate a supported, decoder-safe audio file."""
+    source_error = _validate_audio_source_file(
+        file_path, enforce_size_limit=enforce_size_limit
+    )
+    if source_error:
+        return source_error
+
+    audio_path = Path(file_path)
+    if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
+        }
+    return None
+
+
+def _prepare_audio_for_transcription(
+    file_path: str,
+) -> tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Convert a decoder-safe .silk source to a temporary supported WAV file."""
+    audio_path = Path(file_path)
+    if audio_path.suffix.lower() != ".silk":
+        return file_path, None, None
+    if not _HAS_PILK:
+        # pilk is a tiny silk-v3 codec binding — lazy-install it on first
+        # .silk voice note instead of bloating the base install.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("stt.silk", prompt=False)
+        except Exception:
+            pass
+        if not _safe_find_spec("pilk"):
+            return None, None, {
+                "success": False,
+                "transcript": "",
+                "error": "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription.",
+            }
+
+    temp_dir = tempfile.mkdtemp(prefix="hermes-silk-")
+    converted_path = os.path.join(temp_dir, f"{audio_path.stem}.wav")
+    try:
+        import pilk
+
+        pilk.silk_to_wav(file_path, converted_path)
+        if not Path(converted_path).is_file() or Path(converted_path).stat().st_size == 0:
+            raise RuntimeError("pilk did not produce a readable WAV file")
+        return converted_path, temp_dir, None
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error("Failed to convert .silk audio %s: %s", file_path, exc, exc_info=True)
+        return None, None, {
+            "success": False,
+            "transcript": "",
+            "error": f"Failed to convert .silk audio for transcription: {exc}",
+        }
 
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
@@ -1906,7 +1964,7 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
 
@@ -1926,7 +1984,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
           - "provider" (str, optional): Which provider was used
     """
     # Apply common path validation before provider resolution so invalid files
-    # cannot trigger provider setup or lazy installation.
+    # cannot trigger provider setup or lazy installation. The remote-upload
+    # size cap is enforced separately below, only for non-local providers.
     error = _validate_audio_file(file_path, enforce_size_limit=False)
     if error:
         return error
@@ -2055,6 +2114,36 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
+
+
+def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Safely validate, preprocess supported inputs, and dispatch transcription."""
+    # Cap .silk sources before the decoder runs (decoder safety). For all
+    # other inputs the remote-upload size cap is provider-scoped and enforced
+    # in _transcribe_prepared_audio, so local whisper can handle big files.
+    is_silk = Path(file_path).suffix.lower() == ".silk"
+    source_error = _validate_audio_source_file(file_path, enforce_size_limit=is_silk)
+    if source_error:
+        return source_error
+
+    prepared_path, cleanup_dir, prep_error = _prepare_audio_for_transcription(file_path)
+    if prep_error:
+        return prep_error
+    if prepared_path is None:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "Audio preprocessing did not produce a file for transcription.",
+        }
+
+    try:
+        prepared_error = _validate_audio_file(prepared_path, enforce_size_limit=False)
+        if prepared_error:
+            return prepared_error
+        return _transcribe_prepared_audio(prepared_path, model)
+    finally:
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:

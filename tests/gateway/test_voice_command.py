@@ -1031,6 +1031,39 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
+    async def test_input_resolves_channel_prompt(self, runner):
+        """Voice input must carry the bound text channel's channel_prompt (#50149)."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value="Be terse in #dev.")
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        mock_adapter._resolve_channel_prompt.assert_called_once_with("123")
+        event = mock_adapter.handle_message.call_args[0][0]
+        assert event.channel_prompt == "Be terse in #dev."
+
+    @pytest.mark.asyncio
+    async def test_input_channel_prompt_resolver_failure_is_non_fatal(self, runner):
+        """A failing channel_prompt resolver must not block voice input."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(side_effect=RuntimeError("boom"))
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        event = mock_adapter.handle_message.call_args[0][0]
+        assert event.channel_prompt is None
+
+    @pytest.mark.asyncio
     async def test_input_reuses_bound_source_metadata(self, runner):
         """Voice input should share the linked text channel session metadata."""
         from gateway.config import Platform

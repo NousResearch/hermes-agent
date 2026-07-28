@@ -38,6 +38,13 @@ _EXAMPLE_PLUGIN_FIXTURE = (
 )
 
 
+def _service_mutation_body(confirmation, suffix="0001"):
+    return {
+        "confirmation": confirmation,
+        "idempotency_key": f"dashboard-test-{confirmation.lower()}-{suffix}",
+    }
+
+
 @pytest.fixture
 def _install_example_plugin(_isolate_hermes_home):
     """Drop the example-dashboard fixture into the per-test HERMES_HOME
@@ -1154,7 +1161,10 @@ class TestWebServerEndpoints:
         web_server._ACTION_PROCS.pop("hermes-update", None)
         web_server._ACTION_RESULTS.pop("hermes-update", None)
 
-        resp = self.client.post("/api/hermes/update")
+        resp = self.client.post(
+            "/api/hermes/update",
+            json=_service_mutation_body("UPDATE", "docker"),
+        )
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1224,9 +1234,18 @@ class TestWebServerEndpoints:
         monkeypatch.setattr(web_server.secrets, "token_hex", lambda _size: "a" * 32)
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_IDEMPOTENCY_KEYS.pop("hermes-update", None)
         web_server._ACTION_RESULTS.pop("hermes-update", None)
 
-        resp = self.client.post("/api/hermes/update")
+        try:
+            resp = self.client.post(
+                "/api/hermes/update",
+                json=_service_mutation_body("UPDATE", "action-id"),
+            )
+        finally:
+            web_server._ACTION_PROCS.pop("hermes-update", None)
+            web_server._ACTION_IDEMPOTENCY_KEYS.pop("hermes-update", None)
+            web_server._ACTION_IDS.pop("hermes-update", None)
 
         assert resp.status_code == 200
         assert resp.json() == {
@@ -1259,7 +1278,10 @@ class TestWebServerEndpoints:
         web_server._ACTION_IDS["hermes-update"] = "b" * 32
 
         try:
-            resp = self.client.post("/api/hermes/update")
+            resp = self.client.post(
+                "/api/hermes/update",
+                json=_service_mutation_body("UPDATE", "reuse"),
+            )
         finally:
             web_server._ACTION_PROCS.pop("hermes-update", None)
             web_server._ACTION_IDS.pop("hermes-update", None)
@@ -1272,6 +1294,73 @@ class TestWebServerEndpoints:
             "already_running": True,
             "action_id": "b" * 32,
         }
+
+    def test_service_mutations_require_exact_confirmation_and_key(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_spawn_hermes_action",
+            lambda *_args, **_kwargs: pytest.fail("invalid request must not spawn"),
+        )
+
+        restart = self.client.post("/api/gateway/restart")
+        update = self.client.post(
+            "/api/hermes/update",
+            json=_service_mutation_body("update"),
+        )
+
+        assert restart.status_code == 400
+        assert "confirmation" in restart.json()["detail"]
+        assert update.status_code == 400
+        assert "confirmation" in update.json()["detail"]
+
+    def test_gateway_restart_reuses_only_the_same_idempotency_key(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class Proc:
+            pid = 12346
+
+            def poll(self):
+                return None
+
+        calls = []
+
+        def fake_spawn(subcommand, name, **_kwargs):
+            calls.append((subcommand, name))
+            proc = Proc()
+            web_server._ACTION_PROCS[name] = proc
+            web_server._ACTION_COMMANDS[name] = tuple(subcommand)
+            return proc
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+        web_server._ACTION_PROCS.pop("gateway-restart", None)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
+        web_server._ACTION_IDEMPOTENCY_KEYS.pop("gateway-restart", None)
+
+        try:
+            first = self.client.post(
+                "/api/gateway/restart",
+                json=_service_mutation_body("RESTART", "same"),
+            )
+            repeated = self.client.post(
+                "/api/gateway/restart",
+                json=_service_mutation_body("RESTART", "same"),
+            )
+            conflicting = self.client.post(
+                "/api/gateway/restart",
+                json=_service_mutation_body("RESTART", "different"),
+            )
+        finally:
+            web_server._ACTION_PROCS.pop("gateway-restart", None)
+            web_server._ACTION_COMMANDS.pop("gateway-restart", None)
+            web_server._ACTION_IDEMPOTENCY_KEYS.pop("gateway-restart", None)
+
+        assert first.status_code == 200
+        assert repeated.status_code == 200
+        assert conflicting.status_code == 409
+        assert calls == [(["gateway", "restart"], "gateway-restart")]
 
 
 

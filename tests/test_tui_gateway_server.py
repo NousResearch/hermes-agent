@@ -7584,6 +7584,54 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert calls["args"][2] == "src/app.tsx"
 
 
+def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
+    """rollback.restore must truncate from the last *real* user turn,
+    not a display_kind timeline marker (same bug class as /undo).
+    """
+    from pathlib import Path as _Path
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "abc123"}]
+
+        def restore(self, cwd, target, file_path=None):
+            return {"success": True, "message": "restored"}
+
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {
+            "role": "user",
+            "content": "background agent finished",
+            "display_kind": "async_delegation_complete",
+        },
+    ]
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
+        history=list(history),
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "rollback.restore",
+                "params": {"session_id": "sid", "hash": "abc123"},
+            }
+        )
+
+        assert resp["result"]["success"] is True
+        assert resp["result"]["history_removed"] == 3  # q2 + a2 + marker
+        # Only first exchange remains
+        remaining = server._sessions["sid"]["history"]
+        assert [m["content"] for m in remaining] == ["first question", "first answer"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ── session.steer ────────────────────────────────────────────────────
 
 
@@ -8117,6 +8165,105 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         ]
         assert server._sessions["sid"]["history_version"] == 2
         assert stub_db.replaced == [("session-key", original_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+# ---------------------------------------------------------------------------
+# session.interrupt must only cancel pending prompts owned by the calling
+# session — it must not blast-resolve clarify/sudo/secret prompts on
+# unrelated sessions sharing the same tui_gateway process.  Without
+# session scoping the other sessions' prompts silently resolve to empty
+# strings, unblocking their agent threads as if the user cancelled.
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
+    """truncate_before_user_ordinal must count only real user turns.
+
+    display_kind timeline rows (model_switch, async_delegation_complete, …)
+    are role=user but no client counts them as user turns. Without the
+    filter, a trailing marker shifts the ordinal so the wrong message is
+    targeted for truncation.
+    """
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    original_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+        {
+            "role": "user",
+            "content": "background agent finished",
+            "display_kind": "async_delegation_complete",
+        },
+    ]
+    server._sessions["sid"] = _session(agent=_Agent(), history=original_history)
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        # ordinal=1 means "truncate before the 2nd-from-last real user turn"
+        # which is "first". The display_kind marker must NOT shift the ordinal.
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited first",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        # With display_kind filter: user_indices = [0, 2] (indices of "first" and "second").
+        # ordinal=1 → user_indices[1] = 2, truncated = history[:2] = [first, first reply].
+        # Without the filter: user_indices = [0, 2, 4] (includes the marker),
+        # ordinal=1 → user_indices[1] = 2, same result by luck — but ordinal=0
+        # would truncate to history[:0] vs history[:0], and higher ordinals shift.
+        assert seen["history"] == original_history[:2], (
+            f"Expected truncation to first 2 messages, got {seen['history']}"
+        )
+        assert stub_db.replaced == [("session-key", original_history[:2])], (
+            f"Expected DB replace with first 2 messages, got {stub_db.replaced}"
+        )
     finally:
         server._sessions.pop("sid", None)
 

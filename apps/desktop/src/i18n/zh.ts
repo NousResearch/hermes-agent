@@ -2900,7 +2900,6 @@ export const zh: Translations = {
       lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
     tool: {
-      code: '代码',
       copyCode: '复制代码',
       renderingImage: '正在渲染图片',
       copyOutput: '复制输出',

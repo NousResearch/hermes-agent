@@ -2326,7 +2326,6 @@ export interface Translations {
       lateAnswerHint: string
     }
     tool: {
-      code: string
       copyCode: string
       renderingImage: string
       copyOutput: string

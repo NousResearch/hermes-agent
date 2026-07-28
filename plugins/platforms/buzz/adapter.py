@@ -360,6 +360,7 @@ class BuzzAdapter(BasePlatformAdapter):
 
         # Runtime state
         self._poll_task: Optional[asyncio.Task] = None
+        self._lock_key: Optional[str] = None
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
@@ -421,6 +422,27 @@ class BuzzAdapter(BasePlatformAdapter):
         self._display_name = str(profiles[0].get("display_name") or "").strip()
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
 
+        # Prevent two profiles from driving the same Buzz identity on the
+        # same relay (duplicate replies, split de-dupe state). Mirrors the
+        # IRC adapter's scoped-lock pattern.
+        try:
+            from gateway.status import acquire_scoped_lock
+
+            lock_key = f"{self.relay_url}:{self._self_pubkey}"
+            if not acquire_scoped_lock("buzz", lock_key):
+                logger.error(
+                    "Buzz: identity %s… on %s already in use by another profile",
+                    self._self_pubkey[:8],
+                    self.relay_url,
+                )
+                self._set_fatal_error(
+                    "lock_conflict", "Buzz identity in use by another profile", retryable=False
+                )
+                return False
+            self._lock_key = lock_key
+        except ImportError:
+            self._lock_key = None  # status module not available (e.g. tests)
+
         # Map channel ids to names and pick the watch set.
         code, out, err = await self._run_cli(["channels", "list"])
         if code != 0:
@@ -463,6 +485,15 @@ class BuzzAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the poll loop and drop runtime state."""
         self._mark_disconnected()
+        lock_key = getattr(self, "_lock_key", None)
+        if lock_key:
+            try:
+                from gateway.status import release_scoped_lock
+
+                release_scoped_lock("buzz", lock_key)
+            except Exception:
+                pass
+            self._lock_key = None
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
@@ -874,9 +905,15 @@ class BuzzAdapter(BasePlatformAdapter):
         return stripped.strip()
 
     async def _resolve_user_name(self, pubkey: str) -> str:
-        """Resolve a pubkey to a display name (cached; falls back to npub prefix)."""
+        """Resolve a pubkey to a display name (cached; falls back to npub prefix).
+
+        Failures are cached too (negative caching): without it, every message
+        from a profile-less pubkey re-runs ``users get`` each poll sweep,
+        which amplifies badly when several adapter instances poll in one
+        process.
+        """
         cached = self._user_names.get(pubkey)
-        if cached:
+        if cached is not None:
             return cached
         name = ""
         code, out, _err = await self._run_cli(["users", "get", "--pubkey", pubkey])

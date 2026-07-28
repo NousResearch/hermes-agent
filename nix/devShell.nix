@@ -35,6 +35,8 @@
             install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
           '')
           uv
+          # Validate GitHub Actions workflows before pushing CI changes.
+          actionlint
           # Headless Wayland compositor for E2E tests (test:e2e:visual).
           # cage renders a single client with no window management, so
           # the Electron window opens at a fixed size without tiling.

@@ -96,11 +96,9 @@ function TooltipContent({
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
-        // Transparent, width-capped wrapper. The visible chip is the inner inline
-        // span so `box-decoration-break: clone` gives a marker-style background
-        // that hugs EACH wrapped line (bg only on the text, ragged right — no
-        // rectangular dead space). No fade transition — once the hover delay
-        // elapses the chip appears at once.
+        // Transparent, width-capped wrapper. The visible panel is the inner span
+        // so all lines share one stable background. No fade transition — once
+        // the hover delay elapses the panel appears at once.
         // pointer-events-none: the tip must never steal hover/clicks from the
         // chrome underneath (titlebar tools, adjacent tabs, etc.).
         className={cn('pointer-events-none z-(--z-over-modal) w-fit max-w-64 select-none', className)}
@@ -108,14 +106,9 @@ function TooltipContent({
         sideOffset={sideOffset}
         {...props}
       >
-        {/* bg-foreground/text-background auto-inverts per theme. leading-normal
-            keeps lines readable; py-1 makes the cloned line-boxes overlap just
-            enough to read as one continuous fill (no gaps between lines). */}
-        {/* [&>*]:!inline-flex: a block-level label child (e.g. `flex`) collapses
-            this inline decoration's geometry, so Radix measures a zero-size chip
-            and parks an empty rectangle in the corner (#62022). Force any direct
-            child inline-flex so every call site stays safe. */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
+        {/* bg-foreground/text-background auto-inverts per theme. A column keeps
+            primary text and optional detail rows aligned inside one panel. */}
+        <span className="inline-flex max-w-full flex-col items-start gap-1 bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif]">
           {children}
         </span>
       </TooltipPrimitive.Content>
@@ -198,9 +191,14 @@ function TipHintLabel({ text, hint }: TipHintLabelProps) {
   return (
     <span className="inline-flex items-center gap-2">
       <span>{text}</span>
-      <span className="opacity-55">{hint}</span>
+      <TooltipDetails>{hint}</TooltipDetails>
     </span>
   )
+}
+
+/** Muted secondary content inside a tooltip. The caller owns its layout. */
+function TooltipDetails({ className, ...props }: React.ComponentProps<'span'>) {
+  return <span className={cn('text-background/65 font-normal', className)} {...props} />
 }
 
 interface TipKeybindLabelProps {
@@ -229,6 +227,7 @@ export {
   TipKeybindLabel,
   Tooltip,
   TooltipContent,
+  TooltipDetails,
   TooltipProvider,
   TooltipTrigger
 }

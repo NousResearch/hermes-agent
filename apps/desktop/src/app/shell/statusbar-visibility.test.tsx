@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { StatusbarControls, type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { TooltipDetails } from '@/components/ui/tooltip'
 import {
   $statusbarHiddenIds,
   $statusbarVisible,
@@ -55,6 +56,32 @@ function openContextMenu(target: HTMLElement) {
 }
 
 describe('statusbar item visibility', () => {
+  it('groups version-tooltip details below its primary label in one panel', async () => {
+    bar([
+      item('version-client', 'v1.2.3', {
+        title: (
+          <>
+            <span>Hermes Desktop v1.2.3</span>
+            <TooltipDetails className="flex flex-col gap-0.5">
+              <span>Commit abc1234</span>
+              <span>Branch ethie/hermes-version</span>
+            </TooltipDetails>
+          </>
+        )
+      })
+    ])
+
+    fireEvent.pointerMove(screen.getByRole('button', { name: 'v1.2.3' }), { pointerType: 'mouse' })
+
+    const tooltip = await screen.findByRole('tooltip')
+    const label = tooltip.firstElementChild
+
+    expect(tooltip.textContent).toBe('Hermes Desktop v1.2.3Commit abc1234Branch ethie/hermes-version')
+    expect(label?.classList.contains('bg-foreground')).toBe(true)
+    expect(label?.classList.contains('flex-col')).toBe(true)
+    expect(screen.getByText('Commit abc1234').parentElement?.classList.contains('text-background/65')).toBe(true)
+  })
+
   it('hides the route/toggle items out of the box and keeps status items', () => {
     bar([
       item('cron', 'Cron'),

@@ -438,8 +438,10 @@ const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 // build hasn't been invoked, or schema mismatch). Callers must handle null.
 //
 // Schema:
-//   { schemaVersion: 1, commit, branch, builtAt, dirty, source }
-const INSTALL_STAMP_SCHEMA_VERSION = 1
+//   schema 1: { commit, branch, builtAt, dirty, source }
+//   schema 2 adds immutable-package provenance: baseVersion, displayVersion,
+//   distance, and distribution.
+const INSTALL_STAMP_SCHEMA_VERSION = 2
 
 function loadInstallStamp() {
   // Try packaged location first (resources/install-stamp.json), then the
@@ -457,7 +459,7 @@ function loadInstallStamp() {
       const parsed = JSON.parse(raw)
 
       if (parsed && typeof parsed === 'object' && typeof parsed.commit === 'string' && parsed.commit.length >= 7) {
-        if (parsed.schemaVersion !== INSTALL_STAMP_SCHEMA_VERSION) {
+        if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== INSTALL_STAMP_SCHEMA_VERSION) {
           console.warn(
             `[hermes] install-stamp.json schemaVersion ${parsed.schemaVersion} != expected ${INSTALL_STAMP_SCHEMA_VERSION}; ignoring`
           )
@@ -469,6 +471,10 @@ function loadInstallStamp() {
           schemaVersion: parsed.schemaVersion,
           commit: parsed.commit,
           branch: parsed.branch || null,
+          baseVersion: typeof parsed.baseVersion === 'string' ? parsed.baseVersion : null,
+          displayVersion: typeof parsed.displayVersion === 'string' ? parsed.displayVersion : null,
+          distance: typeof parsed.distance === 'number' && parsed.distance >= 0 ? parsed.distance : null,
+          distribution: typeof parsed.distribution === 'string' ? parsed.distribution : null,
           builtAt: parsed.builtAt || null,
           dirty: Boolean(parsed.dirty),
           source: parsed.source || null,
@@ -11055,35 +11061,16 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
-// Resolve the canonical Hermes version (the one `release.py` bumps in
-// hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
-// real Hermes version instead of the Electron app's own package.json version,
-// which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
-// when the source tree can't be read (e.g. a packaged build without the repo).
+// Resolve the canonical Hermes version from the build stamp rather than the
+// Electron app's own package.json version, which historically drifted (stuck
+// at 0.0.2). An unstamped legacy build falls back to app.getVersion().
 function resolveHermesVersion() {
-  try {
-    const root = resolveUpdateRoot()
-    const initPath = path.join(root, 'hermes_cli', '__init__.py')
-
-    if (fileExists(initPath)) {
-      const raw = fs.readFileSync(initPath, 'utf8')
-      const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
-
-      if (match) {
-        return match[1]
-      }
-    }
-  } catch {
-    // Fall through to the Electron app version below.
-  }
-
-  return app.getVersion()
+  return INSTALL_STAMP?.displayVersion ?? INSTALL_STAMP?.baseVersion ?? app.getVersion()
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
+// The stamp is generated alongside the renderer, so the native About panel and
+// the renderer report the same build identity. macOS only — `showAboutPanel()`
+// is a no-op elsewhere, and the other platforms don't use this menu item.
 function showAboutPanelFresh() {
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
@@ -11093,8 +11080,27 @@ function showAboutPanelFresh() {
   app.showAboutPanel()
 }
 
-ipcMain.handle('hermes:version', async () => ({
-  appVersion: resolveHermesVersion(),
+function resolveHermesVersionInfo() {
+  if (INSTALL_STAMP) {
+    return {
+      appVersion: resolveHermesVersion(),
+      baseVersion: INSTALL_STAMP.baseVersion ?? undefined,
+      distance: INSTALL_STAMP.distance ?? undefined,
+      commit: INSTALL_STAMP.commit,
+      branch: INSTALL_STAMP.branch,
+      source: INSTALL_STAMP.source ?? undefined,
+      distribution: INSTALL_STAMP.distribution ?? undefined,
+      dirty: INSTALL_STAMP.dirty
+    }
+  }
+
+  const appVersion = app.getVersion()
+
+  return { appVersion, baseVersion: appVersion }
+}
+
+ipcMain.handle('hermes:version', () => ({
+  ...resolveHermesVersionInfo(),
   electronVersion: process.versions.electron,
   nodeVersion: process.versions.node,
   platform: process.platform,

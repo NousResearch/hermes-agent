@@ -206,7 +206,7 @@ uv pip install -e ".[all]"
 hermes gateway restart
 ```
 
-To roll back to a specific release tag (substitute your previous tag — e.g. a recent release like `v2026.5.16`, or any earlier tag from `git tag --sort=-version:refname`):
+To roll back to a specific release tag (substitute your previous tag — e.g. a recent release like `v0.19.0`, or any earlier tag from `git tag --sort=-version:refname`):
 
 ```bash
 git checkout vX.Y.Z

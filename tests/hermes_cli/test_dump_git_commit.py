@@ -1,159 +1,123 @@
 """Tests for hermes_cli.dump._get_git_commit — git SHA resolution for ``hermes dump``.
 
 ``hermes dump`` prints the running commit so support bug reports identify the
-exact version.  Source installs resolve it live via ``git rev-parse``; the
-published Docker image excludes ``.git`` and falls back to the baked SHA
-written by the Dockerfile's ``HERMES_GIT_SHA`` build-arg.
+exact version. Source installs resolve it live via git; packaged builds
+(Docker, Nix) use the install stamp. Both paths go through
+``version_info.get_version_info()``.
 
-These tests cover both paths plus the failure modes (no git, no baked file).
+These tests cover both paths plus the failure modes (no stamp, no git).
 """
 
 from unittest.mock import MagicMock, patch
 
+from hermes_cli.version_info import VersionInfo, _reset_version_info_cache
+
+
+def setup_function():
+    _reset_version_info_cache()
+
 
 def test_get_git_commit_uses_live_git_when_available(tmp_path):
-    """Source install: ``git rev-parse --short=8 HEAD`` wins; no fallback."""
+    """Source install: version_info resolves commit from live git."""
     from hermes_cli import dump
 
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
 
-    git_result = MagicMock(returncode=0, stdout="deadbeef\n")
-    # build_info should NOT be consulted when live git succeeds.
-    with patch("hermes_cli.dump.subprocess.run", return_value=git_result) as mock_run, \
-         patch("hermes_cli.build_info.get_build_sha") as mock_build:
+    with patch("hermes_cli.version_info._resolve_stamp_file", lambda: None), \
+         patch("hermes_cli.version_info._resolve_repo_dir", lambda: repo_dir), \
+         patch("hermes_cli.version_info._git_version_info",
+               return_value=VersionInfo("0.19.0", "0.19.0+3", 3, "deadbeef" * 5, "main", "git")):
         commit = dump._get_git_commit(repo_dir)
 
     assert commit == "deadbeef"
-    mock_run.assert_called_once()
-    mock_build.assert_not_called()
 
 
-def test_get_git_commit_falls_back_to_build_sha_when_live_git_fails(tmp_path):
-    """Docker image case: live git returns non-zero → use baked SHA."""
+def test_get_git_commit_uses_stamp_when_no_git(tmp_path):
+    """Docker/Nix: version_info resolves commit from the install stamp."""
     from hermes_cli import dump
 
     repo_dir = tmp_path / "no-git-here"
     repo_dir.mkdir()
 
-    failed = MagicMock(returncode=128, stdout="")
-    with patch("hermes_cli.dump.subprocess.run", return_value=failed), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="cafef00d"):
+    with patch("hermes_cli.version_info._resolve_stamp_file", lambda: tmp_path / "stamp.json"), \
+         patch("hermes_cli.version_info._resolve_repo_dir", lambda: None), \
+         patch("hermes_cli.version_info._stamp_version_info",
+               return_value=VersionInfo("0.19.0", "0.19.0", None, "cafef00d" * 5, None, "docker")):
         commit = dump._get_git_commit(repo_dir)
 
     assert commit == "cafef00d"
 
 
-def test_get_git_commit_falls_back_when_git_returns_empty_stdout(tmp_path):
-    """Edge case: git exits 0 but prints nothing — still try the baked SHA."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    empty = MagicMock(returncode=0, stdout="\n")
-    with patch("hermes_cli.dump.subprocess.run", return_value=empty), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="abcdef12"):
-        commit = dump._get_git_commit(repo_dir)
-
-    assert commit == "abcdef12"
-
-
-def test_get_git_commit_falls_back_when_git_raises(tmp_path):
-    """git binary missing (e.g. minimal container w/o git) → baked SHA path."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    with patch("hermes_cli.dump.subprocess.run", side_effect=FileNotFoundError("git")), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="feedface"):
-        commit = dump._get_git_commit(repo_dir)
-
-    assert commit == "feedface"
-
-
 def test_get_git_commit_returns_unknown_when_neither_source_available(tmp_path):
-    """Pip-installed wheel: no git, no baked SHA → '(unknown)' (legacy contract)."""
+    """Pip-installed wheel: no stamp, no git → '(unknown)'."""
     from hermes_cli import dump
 
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
 
-    failed = MagicMock(returncode=128, stdout="")
-    with patch("hermes_cli.dump.subprocess.run", return_value=failed), \
-         patch("hermes_cli.build_info.get_build_sha", return_value=None):
+    with patch("hermes_cli.version_info._resolve_stamp_file", lambda: None), \
+         patch("hermes_cli.version_info._resolve_repo_dir", lambda: None):
         commit = dump._get_git_commit(repo_dir)
 
     assert commit == "(unknown)"
 
 
 def test_get_git_commit_output_format_identical_between_sources(tmp_path):
-    """Regression guard: live-git and baked-SHA outputs share the same shape.
-
-    Ben explicitly asked for identical output between Docker and source installs
-    so support tooling that parses ``hermes dump`` doesn't have to special-case
-    container builds.  Both paths must return a bare 8-char SHA — no prefix,
-    no suffix, no annotation.
-    """
+    """Regression guard: live-git and stamp outputs share the same shape."""
     from hermes_cli import dump
 
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
 
     # Live-git path.
-    git_result = MagicMock(returncode=0, stdout="b2f477a3\n")
-    with patch("hermes_cli.dump.subprocess.run", return_value=git_result):
+    with patch("hermes_cli.version_info._resolve_stamp_file", lambda: None), \
+         patch("hermes_cli.version_info._resolve_repo_dir", lambda: repo_dir), \
+         patch("hermes_cli.version_info._git_version_info",
+               return_value=VersionInfo("0.19.0", "0.19.0+3", 3, "b2f477a3" * 5, "main", "git")):
+        _reset_version_info_cache()
         live = dump._get_git_commit(repo_dir)
 
-    # Baked-SHA path.
-    failed = MagicMock(returncode=128, stdout="")
-    with patch("hermes_cli.dump.subprocess.run", return_value=failed), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="b2f477a3"):
+    # Stamp path.
+    with patch("hermes_cli.version_info._resolve_stamp_file", lambda: tmp_path / "stamp.json"), \
+         patch("hermes_cli.version_info._resolve_repo_dir", lambda: None), \
+         patch("hermes_cli.version_info._stamp_version_info",
+               return_value=VersionInfo("0.19.0", "0.19.0", None, "b2f477a3" * 5, None, "docker")):
+        _reset_version_info_cache()
         baked = dump._get_git_commit(repo_dir)
 
     assert live == baked == "b2f477a3"
-    # Same length, same charset — no decoration in either branch.
     assert len(live) == 8
     assert all(c in "0123456789abcdef" for c in live)
 
 
-def test_get_git_commit_date_uses_live_git(tmp_path):
-    """Source install: ``git log -1 --format=%cd --date=short`` returns the date."""
+def test_get_git_commit_date_uses_version_info(tmp_path):
+    """Source install: version_info carries the commit date from live git."""
     from hermes_cli import dump
 
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
 
-    git_result = MagicMock(returncode=0, stdout="2026-06-17\n")
-    with patch("hermes_cli.dump.subprocess.run", return_value=git_result):
+    with patch("hermes_cli.version_info._resolve_stamp_file", lambda: None), \
+         patch("hermes_cli.version_info._resolve_repo_dir", lambda: repo_dir), \
+         patch("hermes_cli.version_info._git_version_info",
+               return_value=VersionInfo("0.19.0", "0.19.0+3", 3, "deadbeef" * 5, "main", "git", False, 1718662620)):
+        _reset_version_info_cache()
         date = dump._get_git_commit_date(repo_dir)
 
-    assert date == "2026-06-17"
+    assert date == "2024-06-17"
 
 
-def test_get_git_commit_date_empty_when_git_fails(tmp_path):
-    """Docker image / pip wheel: no git → '' so the dump line drops the date."""
+def test_get_git_commit_date_empty_when_unknown(tmp_path):
+    """Docker/pip: no git, no stamp → '' so the dump line drops the date."""
     from hermes_cli import dump
 
     repo_dir = tmp_path / "no-git-here"
     repo_dir.mkdir()
 
-    failed = MagicMock(returncode=128, stdout="")
-    with patch("hermes_cli.dump.subprocess.run", return_value=failed):
-        date = dump._get_git_commit_date(repo_dir)
-
-    assert date == ""
-
-
-def test_get_git_commit_date_empty_when_git_raises(tmp_path):
-    """git binary missing → '' (no crash, suffix simply omitted)."""
-    from hermes_cli import dump
-
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    with patch("hermes_cli.dump.subprocess.run", side_effect=FileNotFoundError("git")):
+    with patch("hermes_cli.version_info._resolve_stamp_file", lambda: None), \
+         patch("hermes_cli.version_info._resolve_repo_dir", lambda: None):
+        _reset_version_info_cache()
         date = dump._get_git_commit_date(repo_dir)
 
     assert date == ""

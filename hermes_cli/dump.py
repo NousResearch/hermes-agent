@@ -54,61 +54,38 @@ def _dotenv_key_names() -> set[str]:
 def _get_git_commit(project_root: Path) -> str:
     """Return short git commit hash, or '(unknown)'.
 
-    Source installs and dev images resolve this live via ``git rev-parse``.
-    The published Docker image excludes ``.git`` from the build context, so
-    that lookup always fails — we fall back to the baked-in build SHA written
-    to ``<project_root>/.hermes_build_sha`` by the Dockerfile's
-    ``HERMES_GIT_SHA`` build-arg (see ``hermes_cli/build_info.py``).
-    The output format is identical regardless of source.
+    Uses ``version_info.get_version_info()`` which reads the install stamp
+    first (Docker/Nix), then falls back to live ``git rev-parse`` for source
+    installs.
     """
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short=8", "HEAD"],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
-            cwd=str(project_root),
-        )
-        if result.returncode == 0:
-            value = result.stdout.strip()
-            if value:
-                return value
+        from hermes_cli.version_info import get_version_info
+
+        info = get_version_info()
+        if info.commit:
+            return info.commit[:8]
     except Exception:
         pass
-
-    # Fall back to the build-time baked SHA (populated in published Docker
-    # images, absent otherwise).  Defers the import so the dump module
-    # stays cheap on non-dump code paths.
-    try:
-        from hermes_cli.build_info import get_build_sha
-        baked = get_build_sha(short=8)
-        if baked:
-            return baked
-    except Exception:
-        pass
-
     return "(unknown)"
 
 
 def _get_git_commit_date(project_root: Path) -> str:
     """Return the date the HEAD commit was authored (YYYY-MM-DD), or ''.
 
-    Resolves live via ``git log`` on source installs.  The published Docker
-    image excludes ``.git``, so this returns '' there — the dump line simply
-    drops the date suffix in that case (the baked SHA still identifies the
-    build).
+    Uses ``version_info.get_version_info()`` which carries the commit date
+    as a Unix timestamp from the install stamp (Docker/Nix) or live git
+    (source installs). Formats as YYYY-MM-DD for display.
     """
     try:
-        result = subprocess.run(
-            ["git", "log", "-1", "--format=%cd", "--date=short", "HEAD"],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
-            cwd=str(project_root),
-        )
-        if result.returncode == 0:
-            value = result.stdout.strip()
-            if value:
-                return value
+        from hermes_cli.version_info import get_version_info
+
+        info = get_version_info()
+        if info.commit_date:
+            from datetime import datetime, timezone
+
+            return datetime.fromtimestamp(info.commit_date, tz=timezone.utc).strftime("%Y-%m-%d")
     except Exception:
         pass
-
     return ""
 
 

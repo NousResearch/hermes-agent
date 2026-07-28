@@ -20,6 +20,7 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     """When cache is fresh, check_for_updates should return cached value without calling git."""
     from hermes_cli.banner import check_for_updates
     from hermes_cli import __version__
+    from pathlib import Path
 
     # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
@@ -30,6 +31,10 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Ensure version_info doesn't find a stamp or git repo (so it doesn't
+    # call subprocess before the cache check).
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = check_for_updates()
 
@@ -45,6 +50,9 @@ def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
     'behind' count survived the upgrade. The version guard forces a recheck.
     """
     import hermes_cli.banner as banner
+    from hermes_cli.version_info import _reset_version_info_cache
+
+    _reset_version_info_cache()
 
     # No local git checkout -> the PyPI path is exercised (pip-install class).
     fake_banner = tmp_path / "hermes_cli" / "banner.py"
@@ -59,7 +67,9 @@ def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
     )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    # No stamp file and no git checkout -> version_info returns commit=None
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = banner.check_for_updates()
 
@@ -94,6 +104,26 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     assert result == 5
     # origin probe + is-shallow probe + git fetch + git rev-list
     assert mock_run.call_count == 4
+
+
+def test_check_for_updates_uses_exact_local_count_for_live_git(tmp_path, monkeypatch):
+    """A source checkout keeps the full-clone exact-count update path."""
+    import hermes_cli.banner as banner
+    from hermes_cli.version_info import VersionInfo, _reset_version_info_cache
+
+    _reset_version_info_cache()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    live_git_info = VersionInfo("0.19.0", "0.19.0+3", 3, "a" * 40, "main", "git")
+
+    with patch("hermes_cli.version_info.get_version_info", return_value=live_git_info), \
+         patch.object(banner, "_check_via_local_git", return_value=7) as local_check, \
+         patch.object(banner, "_check_via_rev") as immutable_check, \
+         patch.object(banner, "_resolve_repo_dir", return_value=tmp_path):
+        result = banner.check_for_updates()
+
+    assert result == 7
+    local_check.assert_called_once_with(tmp_path)
+    immutable_check.assert_not_called()
 
 
 def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
@@ -224,6 +254,7 @@ def test_check_via_local_git_full_clone_keeps_exact_count(tmp_path):
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     """Returns None when .git directory doesn't exist anywhere (no source tree)."""
     import hermes_cli.banner as banner
+    from pathlib import Path
 
     # Create a fake banner.py so the fallback path also has no .git
     fake_banner = tmp_path / "hermes_cli" / "banner.py"
@@ -232,6 +263,8 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(banner, "__file__", str(fake_banner))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         result = banner.check_for_updates()
     assert result is None
@@ -258,15 +291,17 @@ def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
 def test_check_for_updates_docker_returns_none(tmp_path, monkeypatch):
     """Inside the Docker image, check_for_updates() must short-circuit to None.
 
-    Regression: the published image excludes .git (.dockerignore) and sets no
-    HERMES_REVISION (nix-only), so without a docker guard check_for_updates()
-    would fall through and try to probe a non-existent git checkout. The guard
-    must return None (so the > 0 render guards stay false) AND not reach the
-    git probe or write a cache entry.
+    Regression: the published image excludes .git (.dockerignore), so without
+    a docker guard check_for_updates() would fall through and try to probe a
+    non-existent git checkout. The guard must return None (so the > 0 render
+    guards stay false) AND not reach the git probe or write a cache entry.
     """
     import hermes_cli.banner as banner
+    from pathlib import Path
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
     cache_file = tmp_path / ".update_check"
 
     with patch("hermes_cli.config.detect_install_method", return_value="docker"), \

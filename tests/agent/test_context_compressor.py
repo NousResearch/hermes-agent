@@ -34,6 +34,9 @@ def compressor():
             protect_last_n=2,
             quiet_mode=True,
         )
+        # Resolve context_length while the mock is still active so the
+        # fixture returns a fully-initialized compressor.
+        _ = c.context_length
         return c
 
 
@@ -2584,11 +2587,14 @@ class TestSummaryTargetRatio:
         """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+            # Resolve while mock is active (lazy init defers this past __init__).
+            _ = c.context_length
         # 200K < 512K → threshold floored at 75%: 150K * 0.40 ratio = 60K
         assert c.tail_token_budget == 60_000
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+            _ = c.context_length
         # 1M * 0.50 threshold * 0.40 ratio = 200K
         assert c.tail_token_budget == 200_000
 
@@ -2596,10 +2602,12 @@ class TestSummaryTargetRatio:
         """Max summary tokens should be 5% of context, capped at 10K."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.max_summary_tokens == 10_000  # 200K * 0.05
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.max_summary_tokens == 10_000  # capped at 10K ceiling
 
     def test_ratio_clamped(self):
@@ -2616,6 +2624,7 @@ class TestSummaryTargetRatio:
         """Sub-512K models get the 75% small-context threshold floor."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.threshold_percent == 0.75
         # 75% of 100K = 75K, above the 64K minimum floor
         assert c.threshold_tokens == 75_000
@@ -2624,6 +2633,7 @@ class TestSummaryTargetRatio:
         """At 512K+ the configured (default 50%) percentage is used directly."""
         with patch("agent.context_compressor.get_model_context_length", return_value=512_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.threshold_percent == 0.50
         assert c.threshold_tokens == 256_000
 
@@ -3192,6 +3202,8 @@ class TestThresholdTokensCap:
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=2_000_000,
             )
+            # Resolve while mock is active (lazy init defers this past __init__).
+            _ = comp.context_length
         # Ratio-based: 1000000 * 0.50 = 500000. Cap: 2000000, clamped to 1000000.
         # Effective: min(500000, 1000000) = 500000.
         assert comp.threshold_tokens == 500_000
@@ -3202,6 +3214,7 @@ class TestThresholdTokensCap:
             comp = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
             )
+            _ = comp.context_length
         assert comp.threshold_tokens == 500_000
         assert comp.threshold_tokens_cap is None
 
@@ -3248,6 +3261,7 @@ class TestThresholdTokensCap:
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=500_000,
             )
+            _ = comp.context_length
         # 64000 * 0.50 = 32000, floored to 64000 (MINIMUM_CONTEXT_LENGTH),
         # degenerate: floored >= window → 85% of 64000 = 54400.
         # Cap 500000 clamped to 64000. min(54400, 64000) = 54400.
@@ -3357,6 +3371,7 @@ class TestThresholdTokensCap:
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=100_000,
             )
+            _ = comp.context_length
         # Floor raised pct to 0.75 (200K < 512K) regardless of the cap.
         assert comp.threshold_percent == 0.75
         # Cap clamps the token trigger below the floored pct value (150K).
@@ -3490,6 +3505,105 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestLazyContextResolution:
+    """Verify that ContextCompressor defers get_model_context_length until
+    context_length is first accessed, so construction never blocks on network
+    I/O or blocks startup when the model metadata service is slow."""
+
+    def test_init_does_not_call_get_model_context_length(self):
+        """get_model_context_length must NOT be called during __init__; it
+        should only be called on first access of .context_length."""
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=200_000,
+        ) as mock_get:
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+            mock_get.assert_not_called()
+
+            # First access triggers resolution
+            _ = c.context_length
+            mock_get.assert_called_once()
+
+    def test_init_does_not_probe_when_not_quiet(self, caplog):
+        """quiet_mode=False must ALSO stay non-blocking in __init__.
+
+        Regression for the lazy-init defect: the "Context compressor
+        initialized" log reads context_length/threshold_tokens/tail_token_budget,
+        so emitting it in __init__ forced the deferred get_model_context_length()
+        probe to run during construction whenever quiet_mode was False (the
+        interactive CLI path) — silently re-introducing the #32221 blocking that
+        the original PR set out to remove. The informative line must instead be
+        emitted once, on first context-length resolution.
+        """
+        import logging
+
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=200_000,
+        ) as mock_get:
+            c = ContextCompressor(model="test/model", quiet_mode=False)
+            # No probe, and no init log, at construction time.
+            mock_get.assert_not_called()
+
+            with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+                _ = c.context_length
+            mock_get.assert_called_once()
+            init_lines = [
+                r for r in caplog.records
+                if "Context compressor initialized" in r.getMessage()
+            ]
+            assert len(init_lines) == 1, (
+                f"expected exactly one init log on first access, got {len(init_lines)}"
+            )
+
+            # Subsequent access must not re-probe or re-log.
+            with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+                _ = c.context_length
+                _ = c.threshold_tokens
+            mock_get.assert_called_once()
+            again = [
+                r for r in caplog.records
+                if "Context compressor initialized" in r.getMessage()
+            ]
+            assert len(again) == 1, "init log fired more than once"
+
+    def test_context_length_setter_bypasses_resolution(self):
+        """Assigning to .context_length directly must skip the network probe
+        entirely and return the assigned value."""
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+        ) as mock_get:
+            c = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+            )
+            c.context_length = 100_000
+            result = c.context_length
+            mock_get.assert_not_called()
+            assert result == 100_000
+
+    def test_config_context_length_skips_network_probe(self):
+        """When config_context_length is provided, the resolver must use it
+        as the cached value and not make a network call."""
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            side_effect=lambda model, **kwargs: kwargs.get("config_context_length"),
+        ) as mock_get:
+            c = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                config_context_length=200_000,
+            )
+            result = c.context_length
+            assert result == 200_000
 
 
 class TestPreflightSentinelGuard:
@@ -4513,3 +4627,45 @@ class TestMinTailUserMessages:
         exactly the pre-feature single-anchor behavior."""
         from hermes_cli.config import DEFAULT_CONFIG
         assert DEFAULT_CONFIG["compression"]["min_tail_user_messages"] == 1
+
+
+class TestContextLengthSetterCoherence:
+    """The context_length setter must (a) not wipe runtime corrections on
+    no-op re-assignment of the same window (codex app-server usage callback
+    re-reports it every response), and (b) re-apply the small-context
+    threshold floor for a genuinely new window so percent and tokens derive
+    from the same window."""
+
+    def test_same_value_reassignment_preserves_threshold_override(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
+        # Runtime correction (aux-context threshold sync pattern).
+        c.threshold_tokens = 42_000
+        c.tail_token_budget = 8_400
+        # Codex usage callback re-reports the same window every response.
+        c.context_length = 200_000
+        assert c.threshold_tokens == 42_000
+        assert c.tail_token_budget == 8_400
+
+    def test_new_value_assignment_refloors_and_invalidates(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
+        assert c.threshold_percent == 0.50  # 1M >= 512K: configured value
+        # Switch to a small window via direct assignment (codex path).
+        c.context_length = 200_000
+        # Floor re-applied for the new window...
+        assert c.threshold_percent == 0.75
+        # ...and budgets recompute from the same window+percent.
+        assert c.threshold_tokens == 150_000
+
+    def test_new_value_assignment_drops_floor_when_growing(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
+        assert c.threshold_percent == 0.75  # floored
+        c.context_length = 1_000_000
+        # Raise-only floor no longer applies: back to configured value.
+        assert c.threshold_percent == 0.50
+        assert c.threshold_tokens == 500_000

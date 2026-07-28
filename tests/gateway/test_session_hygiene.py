@@ -1094,15 +1094,31 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_db = object()
+    stored_system_prompt = (
+        "You are Hermes.\n\n"
+        "<memory_provider_context>\n"
+        "Pinboard provider instructions\n"
+        "</memory_provider_context>"
+    )
+    fake_db = MagicMock()
+    async_session_db = SimpleNamespace(
+        _db=fake_db,
+        get_session=AsyncMock(
+            return_value={
+                "system_prompt": stored_system_prompt,
+            }
+        ),
+    )
 
     class FakeInPlaceCompressAgent:
         last_instance = None
 
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
+            self.platform = kwargs.get("platform")
             self.session_id = kwargs.get("session_id", "fake-session")
             self._session_db = kwargs.get("session_db")
+            self._cached_system_prompt = None
             self.compression_in_place = False
             self._last_compaction_in_place = False
             self.context_compressor = SimpleNamespace(
@@ -1118,6 +1134,8 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         def _compress_context(self, messages, *_args, **_kwargs):
             assert self.compression_in_place is True
             assert self._session_db is fake_db
+            assert self.platform == "gateway_hygiene"
+            assert self._cached_system_prompt == stored_system_prompt
             self._last_compaction_in_place = True
             return ([{"role": "assistant", "content": "compressed in place"}], None)
 
@@ -1152,7 +1170,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = SimpleNamespace(_db=fake_db)
+    runner._session_db = async_session_db
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._run_agent = AsyncMock(
@@ -1190,6 +1208,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     assert result == "ok"
     agent = FakeInPlaceCompressAgent.last_instance
     assert agent is not None
+    async_session_db.get_session.assert_awaited_once_with("sess-1")
     agent.context_compressor.bind_session_state.assert_called_once_with(fake_db, "sess-1")
     # In-place compaction already persisted via archive_and_compact() —
     # rewrite_transcript would replace_messages(active_only=False) and DELETE
@@ -1429,7 +1448,7 @@ def _make_progress_runner(monkeypatch, tmp_path, agent_cls, cfg_text):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(cfg_text)
+    cfg_path.write_text(cfg_text, encoding="utf-8")
 
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -1617,3 +1636,122 @@ async def test_hygiene_trickle_stream_is_bounded_by_total_ceiling(
     ]
     assert len(timeout_warnings) == 1
     assert runner._hygiene_compression_failure_cooldowns["sess-progress"] > time.time()
+
+@pytest.mark.asyncio
+async def test_session_hygiene_does_not_repoint_when_rotated_transcript_write_fails(
+    monkeypatch, tmp_path
+):
+    """Mirrors test_compress_command_does_not_repoint_session_when_transcript_write_fails.
+
+    Hygiene auto-compress used to repoint session_entry.session_id onto the
+    rotated child SID *before* rewrite_transcript, and ignored a False return.
+    A failed write (lock/ENOSPC) left the live entry on an empty child while
+    the turn continued — conversation silently vanished. Write first; only
+    rebind after a durable persist, matching manual /compress.
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class RotatingCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "sess-1")
+            self._last_compaction_in_place = False
+            self._print_fn = None
+            self.context_compressor = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            self.session_id = "sess-2"
+            return (
+                [
+                    {"role": "user", "content": "kept"},
+                    {"role": "assistant", "content": "summary"},
+                ],
+                None,
+            )
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = RotatingCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    session_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:user-1",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    # Canonical write fails — must not rebind live entry onto sess-2.
+    runner.session_store.rewrite_transcript = MagicMock(return_value=False)
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store._save = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = object()
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._rebind_turn_lease = MagicMock()
+    runner._sync_telegram_topic_binding = MagicMock()
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="user-1",
+            chat_type="dm",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    # Rewrite was attempted against the *child* SID (write-first).
+    runner.session_store.rewrite_transcript.assert_called_once()
+    assert runner.session_store.rewrite_transcript.call_args[0][0] == "sess-2"
+    # Live entry must stay on the original session — conversation remains reachable.
+    assert session_entry.session_id == "sess-1"
+    runner._rebind_turn_lease.assert_not_called()
+    runner.session_store._save.assert_not_called()
+    runner._sync_telegram_topic_binding.assert_not_called()

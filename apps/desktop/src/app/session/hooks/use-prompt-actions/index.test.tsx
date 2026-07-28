@@ -1215,9 +1215,9 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   it("sends a skill's kickoff into the TAB that invoked it, not the foreground chat", async () => {
     // `/work` in a fresh ⌘T tab: slash.exec returns a skill dispatch whose
     // `message` is the kickoff prompt. The dispatcher resolved the tab as its
-    // target, printed "⚡ loading skill" there — then submitted the kickoff
-    // with no target at all, so submit re-resolved from activeSessionIdRef and
-    // fired it as a user message into whatever conversation was on screen.
+    // target, then submitted the kickoff with no target at all, so submit
+    // re-resolved from activeSessionIdRef and fired it as a user message into
+    // whatever conversation was on screen.
     const tabRuntimeId = 'tab-runtime'
     const tabStoredId = 'tab-stored'
 
@@ -1260,6 +1260,56 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     dropSessionState(tabRuntimeId)
     $queuedPromptsBySession.set({})
+  })
+
+  it('renders a skill turn as its invocation — the expanded body never reaches a bubble', async () => {
+    // A `/skill` dispatch's `message` is the whole skill body (model-facing
+    // scaffolding). The agent must receive it verbatim; every UI surface —
+    // the user bubble and any system line — must show only `/work fix it`.
+    const skillBody =
+      '[IMPORTANT: The user has invoked the "work" skill, indicating they want you to follow its instructions.\n' +
+      'The full skill content is loaded below.]\n\nSPIN UP A WORKTREE, never the primary checkout.\n\n' +
+      'The user has provided the following instruction alongside the skill invocation: fix it'
+
+    const states: Record<string, unknown>[] = []
+    const submitted: (Record<string, unknown> | undefined)[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return (
+        method === 'slash.exec' ? { type: 'skill', name: 'work', message: skillBody, display: '/work fix it' } : {}
+      ) as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/work fix it')
+
+    // The agent still gets the full skill.
+    expect(submitted).toEqual([expect.objectContaining({ text: skillBody })])
+
+    const rendered = states.flatMap(state => {
+      const messages = Array.isArray(state.messages)
+        ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+        : []
+
+      return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+    })
+
+    expect(rendered).toContain('/work fix it')
+    expect(rendered.join('\n')).not.toContain('SPIN UP A WORKTREE')
+    expect(rendered.join('\n')).not.toContain('IMPORTANT: The user has invoked')
   })
 
   it('slash status header carries the command token, not the full invocation', async () => {
@@ -1555,6 +1605,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
       },
@@ -1590,6 +1641,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: 'rt-session-a',
         text: 'queued for background session'
       },
@@ -1646,6 +1698,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: 'rt-session-a-rebound',
         text: 'queued for background session'
       },
@@ -1696,6 +1749,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'please send me'
       },
@@ -2473,11 +2527,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
+      queued: true,
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
     })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      queued: true,
       session_id: RECOVERED_SESSION_ID,
       text: 'queued background message after wake'
     })
@@ -3788,7 +3844,7 @@ describe('uploadComposerAttachment remote read failures', () => {
 
   it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
     // electron/hardening.ts rejects the readFileDataUrl IPC with this exact
-    // shape when a file exceeds DATA_URL_READ_MAX_BYTES.
+    // shape when a file exceeds the configured data-URL read cap.
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: {

@@ -7,6 +7,9 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
   resolveDirectoryForIpc,
@@ -23,6 +26,14 @@ async function rejectsWithCode(promise, code: string) {
     return true
   })
 }
+
+test('clampDataUrlReadMaxMb defaults and bounds the attach size preference', () => {
+  assert.equal(clampDataUrlReadMaxMb(undefined), DATA_URL_READ_DEFAULT_MAX_MB)
+  assert.equal(clampDataUrlReadMaxMb(0), 1)
+  assert.equal(clampDataUrlReadMaxMb(256), 256)
+  assert.equal(clampDataUrlReadMaxMb(99999), 4096)
+  assert.equal(dataUrlReadMaxBytesFromMb(16), 16 * 1024 * 1024)
+})
 
 test('resolveTimeoutMs falls back to defaults and accepts overrides', () => {
   assert.equal(resolveTimeoutMs(undefined), DEFAULT_FETCH_TIMEOUT_MS)

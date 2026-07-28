@@ -4031,6 +4031,15 @@ def save_config_value(key_path: str, value: any) -> bool:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
+
+        # Model/provider changes made through /model and the TUI use this
+        # persistence path rather than ``hermes config set``. Surface the same
+        # fail-closed cron drift warning for every operator-facing model switch.
+        from hermes_cli.config import (
+            warn_unpinned_cron_jobs_after_model_config_change,
+        )
+
+        warn_unpinned_cron_jobs_after_model_config_change(key_path, value)
         
         return True
     except Exception as e:
@@ -8077,10 +8086,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No messages to retry.")
             return None
         
-        # Walk backwards to find the last user message
+        # Walk backwards to the last *real* user message. Timeline bookkeeping
+        # rows (display_kind set) are role=user but are not user turns — match
+        # CLI resume counting and list_recent_user_messages.
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
+            msg = self.conversation_history[i]
+            if msg.get("role") == "user" and not msg.get("display_kind"):
                 last_user_idx = i
                 break
         
@@ -8125,10 +8137,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if n < 1:
             n = 1
 
-        # Walk backwards collecting the indices of the last N user messages.
+        # Walk backwards collecting the indices of the last N *real* user
+        # messages (exclude display_kind timeline rows — same predicate as
+        # list_recent_user_messages and resume turn counting).
         user_indices = []
         for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
+            msg = self.conversation_history[i]
+            if msg.get("role") == "user" and not msg.get("display_kind"):
                 user_indices.append(i)
                 if len(user_indices) >= n:
                     break
@@ -11859,6 +11874,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
+                from tools.voice_mode import is_voice_stop_phrase
+                if is_voice_stop_phrase(transcript):
+                    # Bare "stop" (or configured phrase) ends the voice chat
+                    # instead of being sent to the agent.
+                    _cprint(f"{_DIM}Stop phrase detected — ending voice chat.{_RST}")
+                    self._disable_voice_mode()
+                    return
                 self._attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
@@ -12019,6 +12041,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             result = transcribe_recording(wav_path, model=self._voice_stt_model())
             transcript = (result.get("transcript") or "").strip() if result.get("success") else ""
             if transcript:
+                from tools.voice_mode import is_voice_stop_phrase
+                if is_voice_stop_phrase(transcript):
+                    _cprint(f"\n{_DIM}Stop phrase detected — ending voice chat.{_RST}")
+                    self._disable_voice_mode()
+                    return
                 self._pending_input.put(transcript)
                 submitted = True
             elif not result.get("success"):

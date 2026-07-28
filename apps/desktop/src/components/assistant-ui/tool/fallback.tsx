@@ -5,10 +5,8 @@ import { useStore } from '@nanostores/react'
 import {
   Children,
   createContext,
-  type CSSProperties,
   type FC,
   Fragment,
-  isValidElement,
   type PropsWithChildren,
   type ReactNode,
   useContext,
@@ -68,6 +66,7 @@ import {
   type ToolTitleAction
 } from './fallback-model'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
+import { ToolRunTicker } from './run-ticker'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -708,12 +707,13 @@ function TerminalTranscript({ command, exitCode }: TerminalTranscriptProps) {
 //   - File edits are the deliverable, not scaffolding. The diff is what the
 //     user reviews, so it stays visible at its place in the turn, live and
 //     settled, the way a PR shows its changes.
-//   - `clarify` and `image_generate` bypass ToolEntry to render their own
-//     markup: a question the user has to answer, an image they asked for.
+//   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
+//     render their own markup: a question the user has to answer, an image
+//     they asked for, the several agents a fan-out is running.
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
-const CARD_TOOLS = new Set(['clarify', 'image_generate'])
+const CARD_TOOLS = new Set(['clarify', 'delegate_task', 'image_generate'])
 
 export function isCardTool(toolName: string): boolean {
   return CARD_TOOLS.has(toolName) || isFileEditTool(toolName)
@@ -761,26 +761,7 @@ export function splitRunItems(toolNames: readonly string[]): RunItem[] {
  * touches thirty files reads as one line ticking over in place instead of a
  * list growing down the page. When the run settles the ticker goes away and
  * the summary above it is all that's left.
- *
- * Rows are clipped to a uniform line box so the reel's offset stays exact
- * whatever a row happens to contain.
  */
-function ToolRunTicker({ children }: { children: ReactNode }) {
-  const rows = Children.toArray(children)
-
-  return (
-    <div className="tool-ticker" data-tool-ticker="">
-      <div className="tool-ticker__reel" style={{ '--tool-ticker-index': rows.length - 1 } as CSSProperties}>
-        {rows.map((row, index) => (
-          <div className="tool-ticker__row" key={isValidElement(row) ? (row.key ?? index) : index}>
-            {row}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 // The one grey line that stands in for a run of tool calls — "Explored 3
 // files, ran 5 commands". Live, it narrates in the present tense above the
 // ticker and offers no toggle, since there is nothing settled to unfold yet.

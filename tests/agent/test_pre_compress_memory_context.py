@@ -13,10 +13,14 @@ def _make_compressor():
     compressor = ContextCompressor.__new__(ContextCompressor)
     compressor.protect_first_n = 2
     compressor.protect_last_n = 5
-    compressor.tail_token_budget = 20_000
+    # Set context_length BEFORE the derived budgets: its setter resets the
+    # lazily-cached threshold/tail/summary budgets (#32221 lazy init), so
+    # assigning it later would clear the explicit values below.
     compressor.context_length = 200_000
     compressor.threshold_percent = 0.80
     compressor.threshold_tokens = 160_000
+    compressor.summary_target_ratio = 0.20
+    compressor.tail_token_budget = 20_000
     compressor.max_summary_tokens = 10_000
     compressor.quiet_mode = True
     compressor.compression_count = 0

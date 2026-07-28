@@ -332,6 +332,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._stream: Any = None
         self._raw_stream_resource: Any = None
         self._closed = False
+        self._close_error: BaseException | None = None
         self._callback_error: BaseException | None = None
         self._logical: tuple[relay_runtime.RelayTurnContext, Any, str] | None = None
         self._defer_logical_completion = defer_logical_completion
@@ -426,7 +427,11 @@ class ManagedLlmStream(Iterator[Any]):
             finally:
                 close = getattr(raw_stream, "close", None)
                 if callable(close):
-                    run_callback(close)
+                    try:
+                        run_callback(close)
+                    except BaseException as exc:
+                        self._close_error = exc
+                        raise
 
         def observe_chunk(chunk: Any) -> None:
             if self._on_chunk is not None:
@@ -494,10 +499,10 @@ class ManagedLlmStream(Iterator[Any]):
             try:
                 chunk = next(self._stream)
             except StopIteration:
-                self.close()
+                self._close(logical_outcome="cancelled")
                 raise
             if self._accept_chunk is not None and not self._accept_chunk(chunk):
-                self.close()
+                self._close(logical_outcome="cancelled")
                 raise StopIteration
             return chunk
 
@@ -512,7 +517,7 @@ class ManagedLlmStream(Iterator[Any]):
             if not self._defer_logical_completion:
                 _complete_logical(self._logical, outcome="success")
                 self._logical = None
-            self.close()
+            self._close(logical_outcome="cancelled")
             raise StopIteration from None
         except BaseException as exc:
             callback_error = self._callback_error
@@ -552,6 +557,10 @@ class ManagedLlmStream(Iterator[Any]):
     def close(self) -> None:
         """Close an explicitly abandoned stream and cancel its logical call."""
         self._close(logical_outcome="cancelled")
+        close_error = self._close_error
+        self._close_error = None
+        if close_error is not None:
+            raise close_error
 
     def _preserve_pending_provider_chunks(self) -> None:
         """Switch a failed Relay stream to its undelivered provider chunks."""
@@ -601,7 +610,9 @@ class ManagedLlmStream(Iterator[Any]):
                 if callable(close):
                     try:
                         close()
-                    except Exception:
+                    except Exception as exc:
+                        if self._close_error is None:
+                            self._close_error = exc
                         logger.debug(
                             "Provider stream cleanup failed",
                             exc_info=True,
@@ -618,15 +629,16 @@ class ManagedLlmStream(Iterator[Any]):
 
             try:
                 loop.run_until_complete(close_stream())
-            except Exception:
-                pass
+            except Exception as exc:
+                if self._close_error is None:
+                    self._close_error = exc
         if not self._defer_logical_completion:
             _complete_logical(self._logical, outcome=logical_outcome)
             self._logical = None
         loop.close()
 
     def __del__(self) -> None:
-        self.close()
+        self._close(logical_outcome="cancelled")
 
 
 class AnthropicStreamAccumulator:

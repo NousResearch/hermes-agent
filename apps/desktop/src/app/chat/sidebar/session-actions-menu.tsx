@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import { openSession } from '@/app/open-session'
 import {
   closeAllTreeTabs,
   closeOtherTreeTabs,
@@ -37,8 +38,8 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, openSessionTile } from '@/store/session-states'
-import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import { $sessionTiles } from '@/store/session-states'
+import { canOpenSessionWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -169,8 +170,9 @@ function useSessionActions({
             onSelect: () => {
               triggerHaptic('selection')
               // Stack into the MAIN zone as a tab (center dock; the strip
-              // sticky-shows on gain) — the door to the tab bar.
-              openSessionTile(sessionId, 'center')
+              // sticky-shows on gain) — the door to the tab bar. Focuses first
+              // if the session is already on screen.
+              openSession(sessionId, () => undefined, 'tab')
             }
           })
         ]
@@ -183,7 +185,7 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              void openSessionInNewWindow(sessionId)
+              openSession(sessionId, () => undefined, 'window')
             }
           })
         ]

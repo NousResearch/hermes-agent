@@ -53,6 +53,7 @@ def _make_adapter():
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._send_read_receipts = False
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None

@@ -528,6 +528,46 @@ def test_anthropic_stream_callbacks_do_not_reenter_captured_context(
     assert observed == ["caller", "caller"]
 
 
+def test_explicit_stream_close_surfaces_provider_close_failure(relay_turn):
+    del relay_turn
+
+    class FailingCloseStream:
+        def __init__(self):
+            self._chunks = iter([{"delta": "partial"}])
+            self.close_calls = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._chunks)
+
+        def close(self):
+            self.close_calls += 1
+            raise RuntimeError("provider close failed")
+
+    raw_stream = FailingCloseStream()
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: raw_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "partial"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-close-failure",
+        },
+    )
+
+    assert next(stream) == {"delta": "partial"}
+    with pytest.raises(RuntimeError, match="provider close failed"):
+        stream.close()
+
+    assert raw_stream.close_calls == 1
+    stream.close()
+
+
 def test_non_stream_does_not_forward_relay_session_headers(relay_turn):
     _relay, _turn = relay_turn
     captured_requests = []

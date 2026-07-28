@@ -97,7 +97,7 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     return None
 
 
-def describe_skill_invocation(content: Any) -> Optional[str]:
+def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
     """Render a slash-skill-expanded turn the way the user typed it.
 
     The expanded message embeds the whole skill body, so any surface that
@@ -109,6 +109,10 @@ def describe_skill_invocation(content: Any) -> Optional[str]:
     Returns ``"/work — fix the title leak"``, or ``"/work"`` for a bare
     invocation, or ``None`` when *content* is not skill scaffolding (the
     caller should then summarize it as an ordinary message).
+
+    *separator* joins the command and the instruction. Previews use the
+    default em dash; pass ``" "`` for the literal invocation the user typed,
+    which is what chat transcripts render.
     """
     if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
         return None
@@ -127,7 +131,7 @@ def describe_skill_invocation(content: Any) -> Optional[str]:
         instruction = instruction.split(SKILL_EXCERPT_JOINT)[0]
         instruction = " ".join(instruction.split())
         if instruction:
-            return f"{label} — {instruction}" if name else instruction
+            return f"{label}{separator}{instruction}" if name else instruction
 
     return label if name else None
 

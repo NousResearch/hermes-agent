@@ -89,6 +89,8 @@ class TestContextCompressorModelThresholds:
             model_thresholds={"glm-5.2": 0.40},
             quiet_mode=True,
         )
+        # Resolve while mock is active (lazy init defers floor past __init__).
+        _ = cc.context_length
         # 256K < 512K → floor at 0.75; override 0.40 < 0.75, so floor wins
         assert cc.threshold_percent == 0.75
         assert cc.threshold_tokens == int(256_000 * 0.75)
@@ -113,6 +115,8 @@ class TestContextCompressorModelThresholds:
             threshold_percent=0.50,
             quiet_mode=True,
         )
+        # Resolve while mock is active (lazy init defers floor past __init__).
+        _ = cc.context_length
         # 256K < 512K → floored at 0.75
         assert cc.threshold_percent == 0.75
         assert cc.model_thresholds == {}

@@ -5,6 +5,7 @@ import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 import {
   baseName,
+  excludeProjectSessions,
   kanbanWorktreeDir,
   liveSessionProjectId,
   mergeRepoWorktreeGroups,
@@ -863,5 +864,104 @@ describe('overlayLivePreviews', () => {
     const previews = overlayLivePreviews([homeNode([])], [makeSession(null, { id: 'fresh' })], [], 3)
 
     expect(previews[NO_PROJECT_ID].map(s => s.id)).toEqual(['fresh'])
+  })
+})
+
+describe('excludeProjectSessions', () => {
+  it('drops matching rows from every lane and recounts the subtree', () => {
+    const keep = makeSession('/www/app', { id: 'keep' })
+    const pinnedRow = makeSession('/www/app', { id: 'pinned' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 2,
+          groups: [lane({ id: 'main', isMain: true, label: 'main', path: '/www/app', sessions: [keep, pinnedRow] })]
+        }
+      ],
+      sessionCount: 2
+    })
+
+    const filtered = excludeProjectSessions(project, session => session.id === 'pinned')
+
+    expect(filtered.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['keep'])
+    expect(filtered.repos[0].sessionCount).toBe(1)
+    expect(filtered.sessionCount).toBe(1)
+  })
+
+  it('keeps a lane the filter emptied — a worktree is structure, not a row', () => {
+    const pinnedRow = makeSession('/www/app/wt', { id: 'pinned' })
+
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [pinnedRow],
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: 'wt', label: 'wt', path: '/www/app/wt', sessions: [pinnedRow] })]
+        }
+      ],
+      sessionCount: 1
+    })
+
+    const filtered = excludeProjectSessions(project, session => session.id === 'pinned')
+
+    expect(filtered.repos[0].groups.map(g => g.id)).toEqual(['wt'])
+    expect(filtered.repos[0].groups[0].sessions).toEqual([])
+    expect(filtered.previewSessions).toEqual([])
+    expect(filtered.sessionCount).toBe(0)
+  })
+
+  it('returns the same node when nothing matches (memo-stable)', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [makeSession('/www/app', { id: 'keep' })],
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({ id: 'main', isMain: true, label: 'main', sessions: [makeSession('/www/app', { id: 'keep' })] })
+          ]
+        }
+      ],
+      sessionCount: 1
+    })
+
+    expect(excludeProjectSessions(project, () => false)).toBe(project)
+  })
+
+  it('survives the live overlay: a lane left empty by the filter is not pruned', () => {
+    // The two run in sequence on an entered project (filter, then overlay), and
+    // the overlay drops lanes it empties — it must not take the filter's with it.
+    const pinnedRow = makeSession('/www/app/wt', { id: 'pinned' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: 'wt', label: 'wt', path: '/www/app/wt', sessions: [pinnedRow] })]
+        }
+      ],
+      sessionCount: 1
+    })
+
+    const filtered = excludeProjectSessions(project, session => session.id === 'pinned')
+    const overlaid = overlayLiveLanes(filtered, [], new Set(['someone-else']))
+
+    expect(overlaid.repos[0].groups.map(g => g.id)).toEqual(['wt'])
   })
 })

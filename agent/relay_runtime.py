@@ -722,7 +722,8 @@ class RelaySessionCoordinator:
         with turn.logical_llm_lock:
             logical_calls = list(turn.logical_llm_calls.items())
             turn.logical_llm_calls.clear()
-        for request_id, logical_handle in logical_calls:
+        for index in range(len(logical_calls) - 1, -1, -1):
+            request_id, logical_handle = logical_calls[index]
             try:
                 lease.host.run_in_session(
                     lease.session,
@@ -736,11 +737,21 @@ class RelaySessionCoordinator:
                 )
             except Exception:
                 with turn.logical_llm_lock:
-                    turn.logical_llm_calls.setdefault(request_id, logical_handle)
+                    # Relay scopes are stack-owned. If the newest remaining
+                    # handle cannot close, older handles cannot close safely
+                    # either, so retain the unclosed prefix for diagnostics.
+                    for pending_request_id, pending_handle in logical_calls[
+                        : index + 1
+                    ]:
+                        turn.logical_llm_calls.setdefault(
+                            pending_request_id,
+                            pending_handle,
+                        )
                 logger.warning(
                     "Hermes Relay logical LLM finalization failed",
                     exc_info=True,
                 )
+                break
 
     @staticmethod
     def _reset_turn_context(turn: RelayTurnContext) -> None:

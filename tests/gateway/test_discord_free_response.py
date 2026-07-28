@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import os
 import sys
 
 import pytest
@@ -48,7 +49,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter, _apply_yaml_config  # noqa: E402
 
 
 class FakeDMChannel:
@@ -108,6 +109,7 @@ def adapter(monkeypatch):
     for _var in (
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_THREAD_MENTION_FREE_USERS",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
@@ -127,10 +129,24 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
-    author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
+def make_message(
+    *,
+    channel,
+    content: str,
+    mentions=None,
+    msg_type=None,
+    msg_id: int = 123,
+    author_id: int = 42,
+    author_bot: bool = False,
+):
+    author = SimpleNamespace(
+        id=author_id,
+        display_name="Jezza",
+        name="Jezza",
+        bot=author_bot,
+    )
     return SimpleNamespace(
-        id=123,
+        id=msg_id,
         content=content,
         mentions=list(mentions or []),
         attachments=[],
@@ -305,6 +321,301 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
     assert event.source.chat_type == "group"
+
+
+
+@pytest.mark.asyncio
+async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter, monkeypatch):
+    """Threads under a voice-linked channel should still require @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._voice_text_channels[111] = 789
+    message = make_message(
+        channel=FakeThread(channel_id=790, parent=FakeTextChannel(channel_id=789)),
+        content="thread reply without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_default_keeps_responding_after_participation(adapter, monkeypatch):
+    """Default behavior: once the bot is in a thread, it auto-responds without @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+
+    thread = FakeThread(channel_id=456, name="follow-up")
+    adapter._threads.mark("456")  # bot has previously participated
+
+    message = make_message(channel=thread, content="follow-up without mention")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_single_human_thread_allows_configured_user_without_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="one-on-one")
+    adapter._threads.mark("456")
+
+    await adapter._handle_message(
+        make_message(channel=thread, content="follow-up", author_id=42)
+    )
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_single_human_thread_becomes_mention_gated_after_other_human(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="shared-thread")
+    adapter._threads.mark("456")
+
+    await adapter._handle_message(
+        make_message(channel=thread, content="Ally joined", author_id=99)
+    )
+    adapter.handle_message.assert_not_awaited()
+
+    await adapter._handle_message(
+        make_message(channel=thread, content="Rob follow-up", author_id=42)
+    )
+    adapter.handle_message.assert_not_awaited()
+    assert "456" in adapter._shared_human_threads
+
+
+@pytest.mark.asyncio
+async def test_discord_single_human_shared_thread_still_allows_explicit_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="shared-thread")
+    adapter._threads.mark("456")
+    adapter._shared_human_threads.mark("456")
+    bot_user = adapter._client.user
+
+    await adapter._handle_message(
+        make_message(
+            channel=thread,
+            content=f"<@{bot_user.id}> Rob tagged you",
+            mentions=[bot_user],
+            author_id=42,
+        )
+    )
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_single_human_thread_ignores_bot_participants(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="bot-present")
+    adapter._threads.mark("456")
+    adapter._observe_thread_human_participant(
+        make_message(
+            channel=thread,
+            content="automation note",
+            author_id=77,
+            author_bot=True,
+        )
+    )
+
+    await adapter._handle_message(
+        make_message(channel=thread, content="Rob follow-up", author_id=42)
+    )
+
+    assert "456" not in adapter._shared_human_threads
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_single_human_thread_isolates_multiple_configured_users(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42,99")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="one-owner")
+    adapter._threads.mark("456")
+
+    await adapter._handle_message(
+        make_message(channel=thread, content="Rob follow-up", author_id=42)
+    )
+    adapter.handle_message.assert_awaited_once()
+    adapter.handle_message.reset_mock()
+
+    await adapter._handle_message(
+        make_message(channel=thread, content="Ally joined", author_id=99)
+    )
+
+    assert "456" in adapter._shared_human_threads
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_discord_thread_owner_survives_tracker_reload(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42,99")
+    thread = FakeThread(channel_id=456, name="persistent-owner")
+    adapter._threads.mark("456")
+
+    adapter._observe_thread_human_participant(
+        make_message(channel=thread, content="Rob follow-up", author_id=42)
+    )
+    adapter._mention_free_thread_owners.clear()
+
+    assert adapter._discord_thread_owner("456", {"42", "99"}) == "42"
+
+
+def test_discord_thread_mention_free_users_yaml_bridge(monkeypatch):
+    monkeypatch.delenv("DISCORD_THREAD_MENTION_FREE_USERS", raising=False)
+
+    _apply_yaml_config(
+        {},
+        {"thread_mention_free_users": ["42", 99]},
+    )
+
+    assert os.environ["DISCORD_THREAD_MENTION_FREE_USERS"] == "42,99"
+
+
+def test_discord_thread_mention_free_users_via_config_extra(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_THREAD_MENTION_FREE_USERS", raising=False)
+    adapter.config.extra["thread_mention_free_users"] = ["42", 99]
+
+    assert adapter._discord_thread_mention_free_users() == {"42", "99"}
+
+
+@pytest.mark.asyncio
+async def test_discord_dispatch_marks_unconfigured_human_thread_shared(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42")
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter._ready_event.set()
+
+    thread = FakeThread(channel_id=456, name="shared-thread")
+    adapter._threads.mark("456")
+
+    allowed_first = await adapter._dispatch_discord_message(
+        make_message(channel=thread, content="Rob follow-up", msg_id=1, author_id=42)
+    )
+    assert allowed_first is True
+    adapter.handle_message.assert_awaited_once()
+    adapter.handle_message.reset_mock()
+
+    other_human = await adapter._dispatch_discord_message(
+        make_message(channel=thread, content="Ally joined", msg_id=2, author_id=99)
+    )
+    assert other_human is False
+    assert "456" in adapter._shared_human_threads
+    adapter.handle_message.assert_not_awaited()
+
+    owner_followup = await adapter._dispatch_discord_message(
+        make_message(channel=thread, content="Rob ambient follow-up", msg_id=3, author_id=42)
+    )
+    assert owner_followup is False
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_discord_shared_human_thread_survives_adapter_reload(tmp_path, monkeypatch):
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_THREAD_MENTION_FREE_USERS", "42")
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter1 = DiscordAdapter(config)
+    thread = FakeThread(channel_id=456, name="persistent-shared")
+    adapter1._threads.mark("456")
+    adapter1._observe_thread_human_participant(
+        make_message(channel=thread, content="Rob follow-up", author_id=42)
+    )
+    adapter1._observe_thread_human_participant(
+        make_message(channel=thread, content="Ally joined", author_id=99)
+    )
+
+    adapter2 = DiscordAdapter(config)
+    adapter2._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter2.handle_message = AsyncMock()
+    assert "456" in adapter2._threads
+    assert adapter2._discord_thread_owner("456", {"42"}) == "42"
+    assert "456" in adapter2._shared_human_threads
+    assert not adapter2._discord_bot_thread_is_mention_free(
+        make_message(channel=thread, content="Rob ambient follow-up", author_id=42),
+        "456",
+    )
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_require_mention_gates_followups(adapter, monkeypatch):
+    """When thread_require_mention=true, even bot-participated threads need @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="multi-bot thread")
+    adapter._threads.mark("456")  # bot has previously participated
+
+    message = make_message(channel=thread, content="ambient chatter — not for me")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_require_mention_still_responds_when_mentioned(adapter, monkeypatch):
+    """thread_require_mention=true still lets explicit @mentions through in threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=456, name="multi-bot thread")
+    adapter._threads.mark("456")
+    bot_user = adapter._client.user
+
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> hey, this one's for you",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypatch):
+    """thread_require_mention can also be set via config.extra (yaml)."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_require_mention"] = True
+
+    thread = FakeThread(channel_id=456, name="multi-bot thread")
+    adapter._threads.mark("456")
+
+    message = make_message(channel=thread, content="ambient — should be ignored")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

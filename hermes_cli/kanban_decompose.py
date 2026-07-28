@@ -49,6 +49,10 @@ from hermes_cli import profiles as profiles_mod
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_CONTEXT_BUDGET_TOKENS = 150_000
+_MIN_CONTEXT_BUDGET_TOKENS = 32_000
+
+
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
 
 A user dropped a rough idea into the Triage column. Your job is to break it
@@ -59,6 +63,7 @@ You will be given:
   - The original task title and body
   - The list of available profiles (each with name + description)
   - The fallback "default_assignee" used when no profile fits
+  - A target maximum context budget for one fresh worker session
 
 Output a single JSON object with this exact shape:
 
@@ -70,20 +75,34 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "estimated_context_tokens": <rough integer estimate>
       },
       ...
     ]
   }
 
 Rules:
+  - The context-budget estimate is intentionally rough, not a promise. It
+    includes the worker's base prompt, task spec, likely repository/file/tool
+    output, and implementation conversation. Keep every child at or below the
+    supplied budget with sensible margin.
+  - First look for semantic seams. Split only at those seams; never create
+    arbitrary micro-tasks merely to hit a number.
+  - Among valid semantic splits, choose the FEWEST workers and the LARGEST
+    pieces that fit the budget. The objective is minimum handoffs and minimum
+    duplicate worker context, not maximum parallelism.
+  - If the whole task is plausibly within budget, return fanout=false. If a
+    semantic child would exceed budget, split that child further at its own
+    semantic seams before returning the graph.
   - "parents" is a list of INDICES (0-based) into this same "tasks" list,
     expressing actual data dependencies. Tasks with no parents run in
     PARALLEL. Tasks with parents wait until every parent completes.
-  - Prefer parallelism. If two tasks can be done independently, give
-    them no parents so the dispatcher fans them out at once.
-  - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Don't
-    cram everything into 1 task.
+  - Prefer parallelism only when it does not add a handoff or duplicate work.
+    If two tasks can be done independently, give them no parents so the
+    dispatcher can fan them out at once.
+  - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Do not cram
+    clearly over-budget work into 1 task.
   - Pick assignees from the roster by matching the task to the profile's
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
@@ -98,7 +117,8 @@ return:
     "rationale": "<one sentence>",
     "title": "<tightened title>",
     "body":  "<concrete spec for a single worker>",
-    "assignee": "<profile name from the roster, or null for default>"
+    "assignee": "<profile name from the roster, or null for default>",
+    "estimated_context_tokens": <rough integer estimate>
   }
 
 In that case the task stays as one work item, just with a tightened spec and
@@ -118,6 +138,8 @@ Available profiles (assignees you may pick from):
 {roster}
 
 Default assignee (used when no profile fits a task): {default_assignee}
+
+Maximum rough context budget per fresh worker: {context_budget_tokens:,} tokens
 """
 
 
@@ -214,6 +236,24 @@ def _resolve_default_assignee(cfg: dict) -> str:
         return "default"
 
 
+def _resolve_context_budget_tokens(cfg: dict) -> int:
+    """Resolve the decomposer's coarse per-worker context cap.
+
+    This is a planning guardrail, not a runtime token counter: actual context
+    varies with tool calls and model behavior. Keep a defensible lower bound so
+    malformed configuration cannot force pathological micro-task fanout.
+    """
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    raw = kanban_cfg.get("decomposer_context_budget_tokens")
+    if raw is None:
+        return _DEFAULT_CONTEXT_BUDGET_TOKENS
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_CONTEXT_BUDGET_TOKENS
+    return max(_MIN_CONTEXT_BUDGET_TOKENS, budget)
+
+
 def _build_roster() -> tuple[list[dict], set[str]]:
     """Return (roster_for_prompt, valid_assignee_names).
 
@@ -293,6 +333,7 @@ def decompose_task(
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
+    context_budget_tokens = _resolve_context_budget_tokens(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
     roster, valid_names = _build_roster()
@@ -309,6 +350,7 @@ def decompose_task(
         body=_truncate(task.body or "(no body)", 4000),
         roster=_format_roster(roster),
         default_assignee=default_assignee,
+        context_budget_tokens=context_budget_tokens,
     )
 
     try:

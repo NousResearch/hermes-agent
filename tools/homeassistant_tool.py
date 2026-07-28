@@ -111,7 +111,7 @@ async def _async_list_entities(
 
     hass_url, hass_token = _get_config()
     url = f"{hass_url}/api/states"
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:
         async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=15)) as resp:
             resp.raise_for_status()
             states = await resp.json()
@@ -125,7 +125,7 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
 
     hass_url, hass_token = _get_config()
     url = f"{hass_url}/api/states/{entity_id}"
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:
         async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()
             data = await resp.json()
@@ -187,7 +187,7 @@ async def _async_call_service(
     url = f"{hass_url}/api/services/{domain}/{service}"
     payload = _build_service_payload(entity_id, data)
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:
         async with session.post(
             url,
             headers=_get_headers(hass_token),
@@ -299,7 +299,7 @@ async def _async_list_services(domain: Optional[str] = None) -> Dict[str, Any]:
     hass_url, hass_token = _get_config()
     url = f"{hass_url}/api/services"
     headers = {"Authorization": f"Bearer {hass_token}", "Content-Type": "application/json"}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             resp.raise_for_status()
             services = await resp.json()

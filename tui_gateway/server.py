@@ -16136,6 +16136,31 @@ def _fuzzy_basename_rank(name: str, query: str) -> tuple[int, int] | None:
     return None
 
 
+def _abs_completion_prefix_exists(path_part: str) -> bool:
+    """True when ``path_part`` reads sensibly as an absolute path.
+
+    A leading `/` is only meant literally if something is actually there:
+    the parent directory has to exist, and a partially-typed final segment
+    has to match at least one of its entries. Used to decide whether
+    `@/foo` is the absolute `/foo` or shorthand for `foo` under the cwd.
+    """
+    expanded = _normalize_completion_path(path_part)
+    parent = os.path.dirname(expanded.rstrip("/")) or "/"
+    tail = os.path.basename(expanded.rstrip("/"))
+
+    if not os.path.isdir(parent):
+        return False
+
+    if not tail or expanded.endswith("/"):
+        return os.path.isdir(expanded) or expanded == "/"
+
+    try:
+        tail_lower = tail.lower()
+        return any(e.lower().startswith(tail_lower) for e in os.listdir(parent))
+    except OSError:
+        return False
+
+
 @method("complete.path")
 def _(rid, params: dict) -> dict:
     word = params.get("word", "")
@@ -16170,6 +16195,21 @@ def _(rid, params: dict) -> dict:
         else:
             prefix_tag = ""
             path_part = query if is_context else query
+
+        # `@/foo` almost always means "foo, from here" rather than the absolute
+        # `/foo`: the `@` already says "this is a path", so the slash reads as a
+        # separator people type out of habit. Take the absolute reading only
+        # when something is actually there, else drop the slash and resolve
+        # relative to the cwd — otherwise `@/Desktop` dead-ends on a directory
+        # that exists one level down. Real absolute paths (`@/usr/local`,
+        # `@/etc/hosts`) still resolve, since those prefixes do exist.
+        if (
+            is_context
+            and path_part.startswith("/")
+            and not path_part.startswith("//")
+            and not _abs_completion_prefix_exists(path_part)
+        ):
+            path_part = path_part.lstrip("/")
 
         # Fuzzy basename search across the repo when the user types a bare
         # name with no path separator — `@appChrome` surfaces every file

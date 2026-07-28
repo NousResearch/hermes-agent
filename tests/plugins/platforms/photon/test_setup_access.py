@@ -73,6 +73,8 @@ def test_env_enablement_home_channel_defaults_name(monkeypatch: pytest.MonkeyPat
 
 def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    # Token validation (added for #72763) would otherwise hit the network.
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
     # The dashboard id *is* the Spectrum project id (ids unified), so setup no
     # longer enables Spectrum or fetches a separate spectrumProjectId — it
     # reuses this id directly.
@@ -128,6 +130,8 @@ def test_setup_reuses_valid_existing_secret(
         return "new_secret"
 
     monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    # Token validation (added for #72763) would otherwise hit the network.
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
     monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
     monkeypatch.setattr(
         cli.photon_auth,
@@ -173,6 +177,8 @@ def test_setup_regenerates_when_existing_secret_invalid(
 ) -> None:
     """When existing credentials are invalid, setup must regenerate."""
     monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    # Token validation (added for #72763) would otherwise hit the network.
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
     monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
     monkeypatch.setattr(
         cli.photon_auth,

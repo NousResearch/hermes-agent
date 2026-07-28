@@ -97,7 +97,7 @@ The bootstrap is idempotent — re-running it is fast and skips work that's alre
 
 ## Host setup
 
-### Buzz
+### Buzz channels (relay bridge)
 
 [Buzz](https://github.com/block/buzz) is a Nostr-based collaboration platform
 for people and agents. Its `buzz-acp` harness connects Buzz channels to any ACP
@@ -111,19 +111,26 @@ This is a transport integration, not a second Hermes installation. The
 subprocess launched by `buzz-acp` uses the same Hermes configuration,
 credentials, memory, skills, and state as `hermes` on that host.
 
+(This is distinct from [Buzz Desktop's managed runtime](#buzz-desktop), which
+spawns Hermes locally as a preset harness. The relay bridge is for joining Buzz
+*channels* as an agent identity, typically on a server.)
+
 Prerequisites:
 
 - Complete the ACP installation and `hermes acp --check` above.
-- Build or install `buzz-acp` and the `buzz` CLI from the
-  [Buzz repository](https://github.com/block/buzz).
-- Provision a dedicated Buzz/Nostr identity for Hermes.
-- Add that identity to the intended Buzz channels with the `bot` role.
+- Build `buzz-acp` and the `buzz` CLI from the
+  [Buzz repository](https://github.com/block/buzz)
+  (`cargo build --release -p buzz-acp`).
+- Mint a dedicated Nostr keypair for Hermes (`buzz-admin generate-key`) and
+  register it as a relay member (`buzz-admin add-member`). Every agent needs
+  its own identity — do not reuse a human keypair.
+- Add that identity to the intended Buzz channels.
 
-Start a local bridge with:
+Start a bridge with:
 
 ```bash
 export BUZZ_RELAY_URL="wss://community.example.com"
-export BUZZ_PRIVATE_KEY="nsec1..."
+export BUZZ_PRIVATE_KEY="..."
 export BUZZ_API_TOKEN="..."
 export BUZZ_ACP_AGENT_COMMAND="hermes"
 export BUZZ_ACP_AGENT_ARGS="acp"
@@ -132,32 +139,17 @@ buzz-acp
 ```
 
 `BUZZ_API_TOKEN` is needed only when the relay enforces token authentication.
-Do not commit or paste the private key, API token, or owner authorization.
+Do not commit or paste the private key or API token.
 
 For a persistent server deployment, run `buzz-acp` under a service manager as
-the same operating-system user that owns the intended Hermes home. The Buzz
-operator guide covers dedicated identities, author allowlists, channel
-membership, secret-file permissions, `systemd`, live round-trip verification,
-and troubleshooting:
-
-- [Run a Hermes Agent in Buzz](https://github.com/block/buzz/blob/main/docs/hermes-agent-acp.md)
+the same operating-system user that owns the intended Hermes home. Setup,
+key generation, channel discovery, and per-agent options are documented in the
+[buzz-acp README](https://github.com/block/buzz/tree/main/crates/buzz-acp).
 
 The bridge discovers every Buzz channel where the Hermes identity is a member
 and automatically subscribes when it is added to another channel. Buzz channel
 membership therefore remains the access boundary; Hermes does not need a
 separate channel list in its own configuration.
-
-Current `buzz-acp` builds also publish the Hermes identity's relay-directory
-profile at startup. This makes the externally hosted identity appear by its
-Buzz display name under **Agents → External agents** and in the `@` mention picker
-for users admitted by the bridge's inbound author gate. The directory event
-contains identity, channel, owner, and audience metadata—not Hermes or Buzz
-credentials.
-
-The verified owner can customize the external agent's Buzz display name and
-avatar. Buzz applies that presentation consistently to cards, profiles,
-messages, mentions, DMs, and sidebars. It does not modify Hermes configuration,
-Soul, prompts, memory, provider, skills, or identity.
 
 To expose Hermes ACP activity in the owner's Buzz Desktop, add:
 
@@ -165,24 +157,19 @@ To expose Hermes ACP activity in the owner's Buzz Desktop, add:
 export BUZZ_ACP_RELAY_OBSERVER="true"
 ```
 
-This publishes encrypted kind `24200` frames addressed to the verified owner.
-Desktop renders the live lifecycle, tool, response, and usage stream in the
-agent's **Activity log**. The relay treats these frames as ephemeral, so
-Desktop must be online before the turn starts; its local observer archive is
-the durable owner-side history.
+This publishes encrypted kind `24200` observer frames addressed to the agent's
+owner (Buzz's NIP-AO). Desktop renders the live lifecycle, tool, response, and
+usage stream in the agent's **Activity log**. The relay treats these frames as
+ephemeral, so Desktop must be online before the turn starts; its local observer
+archive is the durable owner-side history.
 
-Headless bridges commonly run with ACP permission bypass enabled because no
-editor is present to answer approval dialogs. Treat that as privileged
-automation: use a dedicated operating-system account, restrict which Buzz users
-can prompt the agent, and grant membership only in channels where Hermes is
-expected to work.
-
-For an end-to-end check, open the external-agent card, customize its avatar,
-verify the avatar on a channel message and sidebar entry, open **Activity log**,
-then trigger a fresh mention. A complete test shows the signed Hermes reply and
-the owner-decrypted ACP transcript without changing Hermes-owned state.
-
-### Editors
+Headless bridges answer ACP permission requests themselves because no editor
+is present to show approval dialogs — see
+[Keep Buzz agents owner-only](#keep-buzz-agents-owner-only). Treat the bridge
+as privileged automation: use a dedicated operating-system account, restrict
+which Buzz users can prompt the agent (`buzz-acp` supports an owner-only
+respond gate via `BUZZ_ACP_AGENT_OWNER`), and grant membership only in channels
+where Hermes is expected to work.
 
 ### VS Code
 

@@ -15,6 +15,7 @@ import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
@@ -754,6 +755,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
             void refreshBackgroundProcesses(sessionId)
           }
+        }
+
+        // The agent just created/deleted/renamed a skill, which adds or removes
+        // its `/name` command. Drop the composer's cached `/` list so the new
+        // skill is offerable now rather than after the hour-long TTL.
+        if (payload?.name === 'skill_manage') {
+          invalidateSlashCompletions()
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {

@@ -19,15 +19,25 @@ Contract: the Skill Sync wire contract (version 1, frozen
 for Milestone 1). Endpoint shapes, object model, canonicalization, and status
 codes below all trace to that document.
 
---- DEV-PHASE GATE (Milestone 1) -----------------------------------------
-Client sync is INERT (no push, no pull, no-op) unless the resolved Nous
-identity's access token carries ``tool_gateway_admin === true``. That claim is
-minted by NAS (access-token-issuer.ts:312) and rides on the same bearer
-``resolve_nous_runtime_credentials()`` returns. We decode the JWT payload
-(no signature verification -- the server re-verifies) and check the claim
-before doing any sync work. This is a temporary dev gate for the M1 rollout;
-remove it (or replace it with a real ``sync:*`` scope / config toggle) when
-sync ships to all users.
+--- ACCESS GATE (pre-launch) ---------------------------------------------
+Client sync is INERT (no push, no pull, no-op) unless the signed-in user is a
+**Nous admin**. We read that off the access token, which rides on the same
+bearer ``resolve_nous_runtime_credentials()`` returns; we decode the JWT
+payload (no signature verification -- the server re-verifies) and check the
+claim before doing any sync work.
+
+NAMING: the claim on the wire is ``tool_gateway_admin``, which is misleading
+-- it is NOT a tool-gateway-specific right. NAS populates it from
+``Permissions.ADMIN_ACCESS`` (access-token-issuer.ts), the same global portal
+admin permission that guards ``/admin/*``; the claim is simply named for its
+first consumer. We keep the wire name (other services read it) but call it
+what it means everywhere on this side.
+
+This gate is pre-launch containment, not the shipping entitlement. Admin
+status conflates "may administer Nous" with "has Skill Sync enabled", and has
+no middle setting for a beta cohort -- opening it up would mean handing out
+portal admin. Replace it with a real entitlement (a ``sync:*`` scope, a tier
+check, or a per-cohort feature flag) before shipping to users.
 
 --- OPT-IN DEFAULT (M1-D, provisional) -----------------------------------
 Nothing syncs unless the user marks a skill for sync. The user's local intent
@@ -196,18 +206,20 @@ def canonical_json_bytes(obj: Dict[str, Any]) -> bytes:
 # We reuse resolve_nous_runtime_credentials() for the bearer (it honors the
 # cross-process file lock + portal host allowlist and refreshes as needed --
 # we do NOT reimplement refresh). The returned api_key IS the JWT bearer; we
-# decode its payload (unverified) to read the dev gate claim.
+# decode its payload (unverified) to read the access-gate claim.
 # ---------------------------------------------------------------------------
 
 # Dev-phase gate claim (NAS access-token-issuer.ts:312). Sync is inert unless
 # the resolved token carries this claim === true. Remove when sync ships GA.
-DEV_GATE_CLAIM = "tool_gateway_admin"
+# Wire claim name is NAS's; it means "this user is a Nous admin"
+# (populated from Permissions.ADMIN_ACCESS), NOT a tool-gateway right.
+NOUS_ADMIN_CLAIM = "tool_gateway_admin"
 
 
 class SyncInertError(RuntimeError):
     """Raised (and caught by the gate-and-swallow hooks) when sync must no-op:
 
-    not logged in, no bearer, or the dev-phase gate claim is absent/false.
+    not logged in, no bearer, or the caller is not a Nous admin.
     """
 
 
@@ -234,7 +246,7 @@ def _decode_jwt_payload_unverified(token: str) -> Dict[str, Any]:
 def resolve_identity() -> Dict[str, Any]:
     """Resolve the Nous bearer + owner + dev-gate flag.
 
-    Returns a dict: ``{api_key, base_url, owner, dev_gate_ok, claims}``.
+    Returns a dict: ``{api_key, base_url, owner, nous_admin, claims}``.
     Raises :class:`SyncInertError` if not logged in / no bearer.
 
     ``owner`` is the token-verified subject; the server derives the real owner
@@ -259,12 +271,12 @@ def resolve_identity() -> Dict[str, Any]:
         or claims.get("tid")
         or "unknown"
     )
-    dev_gate_ok = claims.get(DEV_GATE_CLAIM) is True
+    nous_admin = claims.get(NOUS_ADMIN_CLAIM) is True
     return {
         "api_key": api_key,
         "base_url": (creds or {}).get("base_url"),
         "owner": str(owner),
-        "dev_gate_ok": dev_gate_ok,
+        "nous_admin": nous_admin,
         "claims": claims,
     }
 
@@ -272,7 +284,7 @@ def resolve_identity() -> Dict[str, Any]:
 def dev_gate_open() -> bool:
     """Whether the access gate permits sync. Never raises."""
     try:
-        return bool(resolve_identity().get("dev_gate_ok"))
+        return bool(resolve_identity().get("nous_admin"))
     except SyncInertError:
         return False
     except Exception as e:
@@ -375,7 +387,7 @@ def sync_feature_enabled() -> bool:
     ``HERMES_SYNC_ENABLED`` -> ``sync.enabled`` -> False. This is the master
     switch a Hermes Cloud deployment sets to opt its instances into sync by
     default. It is checked by the gate-and-swallow entrypoints IN ADDITION to
-    the dev-phase token gate and a configured base URL — all three must hold for
+    the Nous-admin token gate and a configured base URL — all three must hold for
     background sync to run.
     """
     return _sync_config_bool("HERMES_SYNC_ENABLED", "enabled", default=False)
@@ -1533,7 +1545,7 @@ def _opted_in_rel_paths() -> List[str]:
 # maybe_pull_skills / maybe_push_skills clone the shape of the curator's
 # maybe_run_curator (agent/curator.py:1998): best-effort, never raise, return
 # a result dict or None. The access gate is checked first -- sync is inert
-# (no push, no pull, no-op) unless tool_gateway_admin === true on the token.
+# (no push, no pull, no-op) unless the signed-in user is a Nous admin.
 # ---------------------------------------------------------------------------
 
 def maybe_push_skills(*, message: str = "hermes skill sync") -> Optional[Dict[str, Any]]:
@@ -1541,8 +1553,8 @@ def maybe_push_skills(*, message: str = "hermes skill sync") -> Optional[Dict[st
     Never raises. Called from the debounced skill_manage push hook."""
     try:
         identity = resolve_identity()
-        if not identity.get("dev_gate_ok"):
-            return None  # access gate: inert without tool_gateway_admin
+        if not identity.get("nous_admin"):
+            return None  # access gate: inert unless the user is a Nous admin
         if not sync_feature_enabled():
             return None  # feature off for this instance (HERMES_SYNC_ENABLED)
         if not resolve_sync_base_url():
@@ -1561,8 +1573,8 @@ def maybe_pull_skills() -> Optional[Dict[str, Any]]:
     + CLI startup)."""
     try:
         identity = resolve_identity()
-        if not identity.get("dev_gate_ok"):
-            return None  # access gate: inert without tool_gateway_admin
+        if not identity.get("nous_admin"):
+            return None  # access gate: inert unless the user is a Nous admin
         if not sync_feature_enabled():
             return None  # feature off for this instance (HERMES_SYNC_ENABLED)
         if not resolve_sync_base_url():
@@ -1576,7 +1588,7 @@ def maybe_pull_skills() -> Optional[Dict[str, Any]]:
 def sync_status() -> Dict[str, Any]:
     """Return a status snapshot for ``hermes sync status``. Never raises."""
     status: Dict[str, Any] = {
-        "dev_gate_ok": False,
+        "nous_admin": False,
         "logged_in": False,
         "feature_enabled": sync_feature_enabled(),
         "default_opt_in": sync_default_opt_in(),
@@ -1598,7 +1610,7 @@ def sync_status() -> Dict[str, Any]:
         identity = resolve_identity()
         status["logged_in"] = True
         status["owner"] = identity.get("owner")
-        status["dev_gate_ok"] = bool(identity.get("dev_gate_ok"))
+        status["nous_admin"] = bool(identity.get("nous_admin"))
     except SyncInertError:
         pass
     except Exception as e:

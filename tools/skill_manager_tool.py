@@ -1451,7 +1451,7 @@ def _maybe_debounced_sync_push(skill_name: str) -> None:
 
     Cheap fast-path: if the skill isn't opted into sync, do nothing (no auth,
     no network). Otherwise (re)arm a daemon timer; the actual push runs through
-    ``skills_sync_client.maybe_push_skills`` which enforces the DEV-PHASE gate
+    ``skills_sync_client.maybe_push_skills`` which enforces the access gate
     and swallows all errors. Never blocks the caller (M1-C: agent never blocks
     on sync).
     """
@@ -1589,7 +1589,7 @@ def skill_manage(
         # Sync push hook (debounced, best-effort). Fires only AFTER the
         # write gate passed (staged/unapproved writes never reach here -- the
         # gate returns early above), so we never push un-reviewed content.
-        # Inert unless the DEV-PHASE gate is open (tool_gateway_admin on the
+        # Inert unless the access gate is open (the user is a Nous admin on the
         # token), a sync base URL is configured, and the skill is opted into
         # sync. Debounced so a burst of edits collapses to one push. Never
         # raises -- an agent write must never block on sync (M1-C invariant).

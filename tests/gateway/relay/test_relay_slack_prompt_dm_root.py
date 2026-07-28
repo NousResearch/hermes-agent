@@ -110,14 +110,16 @@ async def test_exec_approval_flat_mode_posts_at_dm_root():
 
 
 # ---------------------------------------------------------------------------
-# Thread-per-message mode: the first-turn self-anchor (thread_id == message_id)
-# IS the thread root — the prompt must stay in the thread (QA-5 regression).
+# Thread-per-message mode, end-to-end placement contract: run.py stamps the
+# turn's thread (first turn: the triggering message's own ts) and the adapter
+# forwards prompt metadata UNTOUCHED — no re-derivation, no strip. Mixed
+# placement (progress threaded, card at root) was the 2026-07-27 regression.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_exec_approval_first_turn_self_anchor_stays_in_thread():
-    """Thread-per-message first turn: run.py stamps thread_id = the triggering
-    message's own ts. The approval card must post INTO that thread — stripping
-    it exiled the card to the home channel (2026-07-27 report)."""
+async def test_exec_approval_forwards_run_py_thread_stamp_untouched():
+    """The adapter must forward run.py's thread stamp verbatim: the approval
+    card posts INTO the stamped thread. Any adapter-side re-derivation or
+    strip exiled the card to the home channel (2026-07-27 report)."""
     adapter, stub = _wire("D1", "dm", scope_id="T1")
     md = {
         "thread_id": "1700000000.000100",
@@ -137,7 +139,7 @@ async def test_exec_approval_first_turn_self_anchor_stays_in_thread():
 
 
 @pytest.mark.asyncio
-async def test_clarify_first_turn_self_anchor_stays_in_thread():
+async def test_clarify_forwards_run_py_thread_stamp_untouched():
     adapter, stub = _wire("D1", "dm", scope_id="T1")
     md = {
         "thread_id": "1700000000.000200",
@@ -155,8 +157,8 @@ async def test_clarify_first_turn_self_anchor_stays_in_thread():
 
 
 @pytest.mark.asyncio
-async def test_slash_confirm_first_turn_self_anchor_stays_in_thread():
-    """The stamp-trusting rule covers every prompt surface (single
+async def test_slash_confirm_forwards_run_py_thread_stamp_untouched():
+    """The forward-untouched rule covers every prompt surface (single
     _send_prompt choke point)."""
     adapter, stub = _wire("D1", "dm")
     md = {"thread_id": "1700000000.000300", "message_id": "1700000000.000300"}
@@ -403,3 +405,48 @@ def test_nested_relay_slack_config_subset_wins():
     # Default: thread-per-message.
     adapter.config.extra = {}
     assert adapter._effective_reply_in_thread() is True
+
+
+# ---------------------------------------------------------------------------
+# Cross-module boundary pin (review 2026-07-28): the adapter deliberately has
+# NO prompt-side strip — flat-mode placement depends entirely on run.py's
+# _resolve_progress_thread_id suppressing the synthetic self-anchor upstream.
+# If that suppression regresses, prompt cards silently thread again. These
+# tests pin the boundary in BOTH modes so the coupling is load-bearing.
+# ---------------------------------------------------------------------------
+def test_run_py_suppresses_self_anchor_in_flat_mode():
+    from gateway.run import _resolve_progress_thread_id
+
+    # Flat mode + synthetic self-anchor (thread_id == own message id) => None:
+    # prompt/progress metadata arrives at the adapter with NO thread anchor.
+    assert (
+        _resolve_progress_thread_id(
+            "slack", "1700.001", "1700.001", reply_in_thread=False
+        )
+        is None
+    )
+    # Flat mode + REAL thread (ids differ) => the real thread survives.
+    assert (
+        _resolve_progress_thread_id(
+            "slack", "1699.000", "1700.001", reply_in_thread=False
+        )
+        == "1699.000"
+    )
+
+
+def test_run_py_keeps_self_anchor_in_thread_mode():
+    from gateway.run import _resolve_progress_thread_id
+
+    # Thread-per-message mode: the first-turn self-anchor IS the thread root
+    # and must flow through to the adapter unchanged.
+    assert (
+        _resolve_progress_thread_id(
+            "slack", "1700.001", "1700.001", reply_in_thread=True
+        )
+        == "1700.001"
+    )
+    # No source thread at all: Slack synthesizes the root from the message id.
+    assert (
+        _resolve_progress_thread_id("slack", None, "1700.001", reply_in_thread=True)
+        == "1700.001"
+    )

@@ -1448,61 +1448,6 @@ class RelayAdapter(BasePlatformAdapter):
             return None
         return state
 
-    def _strip_synthetic_dm_thread(
-        self, chat_id: str, metadata: Optional[Dict[str, Any]]
-    ) -> Optional[Dict[str, Any]]:
-        """Drop the synthetic DM thread anchor from an interactive prompt's metadata.
-
-        A clarify/approval/confirm prompt is emitted mid-turn in reply to the
-        triggering inbound event, so ``metadata`` carries that event's thread
-        context — run.py's ``_thread_metadata_for_source`` stamps
-        ``metadata["thread_id"]`` (and, for Slack, ``metadata["message_id"]`` =
-        the triggering message ts). For a Slack DM with no REAL thread, that
-        ``thread_id`` is the message's own synthetic self-anchor (a session-keying
-        fallback), and forwarding it makes the connector's slackRestSender thread
-        the prompt card UNDER the user's message instead of posting it flat at the
-        DM root — the reported bug ("approval block was put in a thread").
-
-        Native Slack Hermes already suppresses this synthetic DM thread anchor
-        (``SlackAdapter._resolve_thread_ts`` returns ``None`` for a top-level / DM
-        message). We reproduce it here with the same discipline used on the
-        streaming path (``_resolve_reply_to_for_send``):
-
-          Slack DM + thread_id is the synthetic self-anchor  ⇒  strip thread_id.
-
-        A REAL thread (``thread_id`` distinct from the triggering message ts) is
-        left untouched so a prompt raised inside a thread stays in that thread;
-        non-DM / non-Slack chats are never matched. Only the threading keys are
-        removed — tenant scope (``scope_id`` / ``slack_team_id``) and everything
-        else survive so egress routing is unaffected.
-        """
-        if not metadata:
-            return metadata
-        if self._platform_by_chat.get(str(chat_id)) != Platform.SLACK.value:
-            return metadata
-        if self._chat_type_by_chat.get(str(chat_id)) != "dm":
-            return metadata
-        thread_id = metadata.get("thread_id")
-        if not thread_id:
-            return metadata
-        # Trust the run.py stamp (QA-5). The threading MODE is decided in ONE
-        # place — run.py's _resolve_progress_thread_id, which reads
-        # platforms.slack.extra.reply_in_thread:
-        #   * flat mode (reply_in_thread=false): the synthetic self-anchor is
-        #     suppressed THERE, so prompt metadata arrives with NO thread_id and
-        #     this helper is a no-op — the card posts flat at the DM root;
-        #   * thread-per-message mode (default): metadata.thread_id is stamped
-        #     for the whole turn, and on the FIRST turn it legitimately equals
-        #     the triggering message's ts (the synthetic root IS the thread).
-        # The previous unconditional thread_id == message_id strip re-derived
-        # the mode here and got it wrong for thread-per-message: the approval
-        # card (and its resolved-state swap) was exiled to the DM root while
-        # progress bubbles honoured the thread (2026-07-27 mixed-placement
-        # screenshot). Mirror native SlackAdapter._resolve_thread_ts, which
-        # only performs the self-anchor strip when reply_in_thread=false — a
-        # state this lane never sees with an anchor present, per the above.
-        return metadata
-
     async def _send_prompt(
         self,
         chat_id: str,
@@ -1533,7 +1478,11 @@ class RelayAdapter(BasePlatformAdapter):
         # of posting it flat at the DM root (the reported bug). Native Slack
         # Hermes suppresses this synthetic DM thread anchor; drop it here for the
         # same Slack-DM-with-no-real-thread case, matching _resolve_reply_to_for_send.
-        prompt_metadata = self._strip_synthetic_dm_thread(chat_id, metadata)
+        # Prompt metadata is forwarded VERBATIM. The threading mode is decided
+        # in exactly one place — run.py's _resolve_progress_thread_id (flat mode
+        # suppresses the synthetic self-anchor there; thread mode stamps the
+        # turn's thread). Boundary pinned by test_run_py_suppresses_self_anchor*.
+        prompt_metadata = metadata
         action: Dict[str, Any] = {
             "op": "prompt",
             "chat_id": chat_id,

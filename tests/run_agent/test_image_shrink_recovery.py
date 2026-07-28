@@ -661,3 +661,62 @@ class TestShrinkImagePartsHelper:
         # Default cap (8000) — no explicit max_dimension passed.
         assert agent._try_shrink_image_parts_in_messages(msgs) is True
         assert msgs[0]["content"][0]["image_url"]["url"] == shrunk
+
+
+class TestShrinkCopyOnWriteHistoryIsolation:
+    """The shrink recovery must never rewrite the stored conversation history.
+
+    With selective prompt-cache copying (#57046 salvage), un-marked messages
+    on the decorated per-call list share their nested content parts with
+    ``agent.messages``. The shrink helper therefore replaces parts
+    copy-on-write and reassigns ``msg["content"]`` instead of mutating the
+    aliased part/source dicts in place.
+    """
+
+    def test_shrink_does_not_mutate_aliased_history_parts(self, monkeypatch):
+        agent = _make_agent()
+        oversized_url = _big_png_data_url(5000)
+        shrunk = "data:image/jpeg;base64," + "C" * 1000
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: shrunk,
+            raising=False,
+        )
+
+        # Simulate the persistent history and the per-call api_messages list:
+        # top-level dicts are shallow copies, nested content parts are ALIASED
+        # (exactly what conversation_loop's msg.copy() + selective cache
+        # decoration produce for un-marked messages).
+        history_part = {"type": "image_url", "image_url": {"url": oversized_url}}
+        history_msg = {"role": "user", "content": [history_part]}
+        api_msg = history_msg.copy()  # shares the content list + part dicts
+
+        assert agent._try_shrink_image_parts_in_messages([api_msg]) is True
+        # The outgoing copy carries the shrunken image...
+        assert api_msg["content"][0]["image_url"]["url"] == shrunk
+        # ...but the stored history still has the original bytes.
+        assert history_msg["content"][0] is history_part
+        assert history_part["image_url"]["url"] == oversized_url
+
+    def test_shrink_anthropic_source_does_not_mutate_history(self, monkeypatch):
+        agent = _make_agent()
+        raw_b64 = _big_png_data_url(5000).split(",", 1)[1]
+        shrunk = "data:image/jpeg;base64," + "D" * 1000
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: shrunk,
+            raising=False,
+        )
+
+        source = {"type": "base64", "media_type": "image/png", "data": raw_b64}
+        history_part = {"type": "image", "source": source}
+        history_msg = {"role": "user", "content": [history_part]}
+        api_msg = history_msg.copy()
+
+        assert agent._try_shrink_image_parts_in_messages([api_msg]) is True
+        assert api_msg["content"][0]["source"]["data"] == "D" * 1000
+        # Aliased history source untouched.
+        assert history_part["source"] is source
+        assert source["data"] == raw_b64

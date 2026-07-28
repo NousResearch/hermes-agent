@@ -2721,16 +2721,28 @@ def try_shrink_image_parts_in_messages(
             media_type = "image/jpeg"
         return f"data:{media_type};base64,{data}"
 
-    def _write_data_url_to_source(source: dict, data_url: str) -> None:
+    def _write_data_url_to_source(source: dict, data_url: str) -> dict:
+        """Return a NEW source dict carrying the re-encoded payload.
+
+        Copy-on-write: content parts on the per-call ``api_messages`` list may
+        be shared references into the persistent conversation history (the
+        per-message copy is shallow, and cache decoration only deep-copies the
+        marked messages). Mutating the existing dict would rewrite the stored
+        transcript with the degraded image — so the caller replaces the part,
+        never edits it in place.
+        """
         header, _, data = data_url.partition(",")
         media_type = "image/jpeg"
         if header.startswith("data:"):
             candidate = header[len("data:"):].split(";", 1)[0].strip()
             if candidate.startswith("image/"):
                 media_type = candidate
-        source["type"] = "base64"
-        source["media_type"] = media_type
-        source["data"] = data
+        return {
+            **source,
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }
 
     for msg in api_messages:
         if not isinstance(msg, dict):
@@ -2738,7 +2750,13 @@ def try_shrink_image_parts_in_messages(
         content = msg.get("content")
         if not isinstance(content, list):
             continue
-        for part in content:
+        # Copy-on-write per message: never mutate part/source dicts in place —
+        # they can alias the stored conversation history (see
+        # _write_data_url_to_source). Build a replacement content list on the
+        # first shrunken part and reassign msg["content"] (a top-level write on
+        # the per-call message copy, which never reaches history).
+        new_content: list | None = None
+        for part_idx, part in enumerate(content):
             if not isinstance(part, dict):
                 continue
             ptype = part.get("type")
@@ -2747,7 +2765,12 @@ def try_shrink_image_parts_in_messages(
                 url = _source_to_data_url(source)
                 resized, unshrinkable = _shrink_data_url(url or "")
                 if resized and isinstance(source, dict):
-                    _write_data_url_to_source(source, resized)
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {
+                        **part,
+                        "source": _write_data_url_to_source(source, resized),
+                    }
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
@@ -2761,17 +2784,26 @@ def try_shrink_image_parts_in_messages(
                 url = image_value.get("url", "")
                 resized, unshrinkable = _shrink_data_url(url)
                 if resized:
-                    image_value["url"] = resized
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {
+                        **part,
+                        "image_url": {**image_value, "url": resized},
+                    }
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
             elif isinstance(image_value, str):
                 resized, unshrinkable = _shrink_data_url(image_value)
                 if resized:
-                    part["image_url"] = resized
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {**part, "image_url": resized}
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
+        if new_content is not None:
+            msg["content"] = new_content
 
     if changed_count:
         logger.info(

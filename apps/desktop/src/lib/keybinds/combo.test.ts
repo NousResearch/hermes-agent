@@ -57,7 +57,7 @@ describe('comboFromEvent — ctrl as a distinct modifier on macOS', () => {
     expect(comboFromEvent(keydown({ code: 'KeyM', key: ',', metaKey: true }))).toBe('mod+,')
   })
 
-  it('keeps digits physical so AZERTY\'s shifted number row still binds', async () => {
+  it("keeps digits physical so AZERTY's shifted number row still binds", async () => {
     const { comboFromEvent } = await loadCombo('MacIntel')
 
     // On AZERTY the unshifted "1" key types "&", and "1" only with Shift held.

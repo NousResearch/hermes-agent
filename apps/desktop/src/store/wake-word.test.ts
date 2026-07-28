@@ -39,7 +39,7 @@ describe('applyWakeStatus', () => {
     })
   })
 
-  it('keeps the button hidden and carries the hint when unavailable', () => {
+  it('tracks unavailability and carries the hint for the tooltip', () => {
     applyWakeStatus({ available: false, hint: 'pip install openwakeword', listening: false, phrase: 'hey hermes' })
 
     const state = $wakeWord.get()

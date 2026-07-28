@@ -2,6 +2,7 @@
  *  section chrome, and the masked scroller. Pure SDK + tokens. */
 
 import {
+  atom,
   coarseElapsed,
   Codicon,
   DropdownMenu,
@@ -22,6 +23,13 @@ import { columnMeta, type KanbanTask } from './types'
 // Plugin-scoped i18n lives in ./i18n; re-exported so components import strings
 // and chrome from one place (./ui).
 export { columnHelp, columnLabel, type KanbanText, lockedReason, useKanban } from './i18n'
+
+/** One-shot "open the new-task dialog in this lane" request, so a command that
+ *  fires from ANYWHERE (keybind, palette) can reach the board page without the
+ *  page having to exist yet: the handler navigates and drops the lane here, the
+ *  page consumes it on arrival and clears it. Ephemeral by design — never
+ *  persisted, so a remount can't reopen a dialog the user already dismissed. */
+export const $newTaskLane = atom<null | string>(null)
 
 /** Orchestration knobs (cached app-wide; the settings panel invalidates). */
 export function useOrchestration() {

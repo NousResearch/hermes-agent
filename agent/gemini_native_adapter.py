@@ -73,7 +73,7 @@ def probe_gemini_tier(
     api_key: str,
     base_url: str = DEFAULT_GEMINI_BASE_URL,
     *,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.6-flash",
     timeout: float = 10.0,
 ) -> str:
     """Probe a Google AI Studio API key and return its tier.
@@ -154,8 +154,8 @@ def is_free_tier_quota_error(error_message: str) -> bool:
 
 
 _FREE_TIER_GUIDANCE = (
-    "\n\nYour Google API key is on the free tier (<= 250 requests/day for "
-    "gemini-2.5-flash). Hermes typically makes 3-10 API calls per user turn, "
+    "\n\nYour Google API key is on the free tier (a few hundred requests/day "
+    "for Gemini Flash models). Hermes typically makes 3-10 API calls per user turn, "
     "so the free tier is exhausted in a handful of messages and cannot sustain "
     "an agent session. Enable billing on your Google Cloud project and "
     "regenerate the key in a billing-enabled project: "
@@ -980,7 +980,7 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.6-flash",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,

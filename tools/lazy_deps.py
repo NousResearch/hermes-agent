@@ -136,6 +136,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
+    # SILK voice-note decoding (WeChat/QQ .silk voice messages). pilk is a
+    # small silk-v3 codec binding; installed on first .silk transcription.
+    "stt.silk": ("pilk==0.2.4",),
 
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),

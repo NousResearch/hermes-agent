@@ -42,7 +42,16 @@ export function markSubmitting(): void {
 // Submit a ready prompt (already resolved to be neither a slash command nor a
 // shell escape, with a live session). Pulled out of useSubmission so the
 // synchronous-busy invariant above is unit-testable without React test infra.
-export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessage = true): void {
+//
+// `displayOverride` is what the transcript shows when it differs from what the
+// agent receives — a `/skill` invocation expands into the whole skill body, and
+// that scaffolding is model-facing only.
+export function submitPrompt(
+  text: string,
+  deps: SubmitPromptDeps,
+  showUserMessage = true,
+  displayOverride?: string
+): void {
   const sid = getUiState().sid
 
   if (!sid) {
@@ -63,7 +72,7 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
     deps.setLastUserMsg(text)
 
     if (show) {
-      deps.appendMessage({ role: 'user', text: displayText })
+      deps.appendMessage({ role: 'user', text: displayOverride || displayText })
     }
 
     patchUiState({ busy: true, status: 'running…' })

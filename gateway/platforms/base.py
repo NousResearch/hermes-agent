@@ -2361,6 +2361,47 @@ _RETRYABLE_ERROR_PATTERNS = (
 )
 
 
+# How long to suppress a repeat backend-unavailable notice for the same
+# session and error type.  An outage lasting longer than this posts one
+# more notice, which is the intent — the user should be reminded the
+# backend is still down, just not once per message.
+_LLM_CONNECTION_ERROR_COOLDOWN_SECONDS = 300.0
+
+# Hard cap on tracked sessions.  Expired entries are dropped on write, so
+# this only binds when many distinct sessions fail inside one cooldown
+# window; the oldest entry is then evicted.
+_LLM_ERROR_TRACKER_MAX_SESSIONS = 1024
+
+
+def _is_llm_connection_error(exc: BaseException) -> bool:
+    """Return True for transient backend transport failures.
+
+    Classification is by exception type name against
+    ``agent.error_classifier._TRANSPORT_ERROR_TYPES`` — the same set the
+    agent runtime uses to decide what is worth a retry — so the two cannot
+    drift apart, plus ``ConnectionError`` by instance.
+
+    The instance arm is needed because the name set lists ``ConnectionError``
+    but not every subclass, and ``ConnectionRefusedError`` — a backend that
+    is simply down — is the common case here.  ``ConnectionError`` is narrow:
+    its subclasses are all genuine transport failures (refused, reset,
+    aborted, broken pipe).
+
+    Deliberately *not* widened to ``OSError``, which is what the agent
+    runtime can afford at the call site but this catch cannot: it is
+    adapter-wide and also guards filesystem and platform work, where a
+    ``FileNotFoundError`` or ``PermissionError`` is not a backend outage and
+    must keep its actionable detail.
+    """
+    if isinstance(exc, ConnectionError):
+        return True
+    try:
+        from agent.error_classifier import _TRANSPORT_ERROR_TYPES
+    except Exception:  # pragma: no cover - agent package unavailable
+        return False
+    return type(exc).__name__ in _TRANSPORT_ERROR_TYPES
+
+
 # Type for message handlers.  Handlers may return a plain string (normal
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
@@ -2676,6 +2717,11 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Last user-visible backend-unavailable notice per session:
+        # session_key -> (error_type, monotonic_timestamp).  Pruned on write
+        # by _record_llm_error_notice; never grows past
+        # _LLM_ERROR_TRACKER_MAX_SESSIONS.
+        self._llm_error_last_posted: dict[str, tuple[str, float]] = {}
         # Dynamic working-state status text per chat (chat_id -> phrase).
         # Set by the gateway on tool starts ("is running pytest…") and read
         # by adapters whose typing indicator renders text (Slack's
@@ -5351,6 +5397,42 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    def _llm_error_notice_suppressed(
+        self, session_key: str, error_type: str, now: float
+    ) -> bool:
+        """True when this session already saw this notice inside the cooldown."""
+        previous = self._llm_error_last_posted.get(session_key)
+        if previous is None:
+            return False
+        previous_type, previous_ts = previous
+        return (
+            previous_type == error_type
+            and now - previous_ts < _LLM_CONNECTION_ERROR_COOLDOWN_SECONDS
+        )
+
+    def _record_llm_error_notice(
+        self, session_key: str, error_type: str, now: float
+    ) -> None:
+        """Record a posted notice, dropping expired and surplus entries.
+
+        Called only on backend failures, so the O(n) prune is cheap and
+        keeps the map from retaining every session key for the lifetime of
+        the adapter.
+        """
+        tracker = self._llm_error_last_posted
+        expired = [
+            key for key, (_, ts) in tracker.items()
+            if now - ts >= _LLM_CONNECTION_ERROR_COOLDOWN_SECONDS
+        ]
+        for key in expired:
+            del tracker[key]
+        # Only reachable when >1024 distinct sessions fail inside one
+        # cooldown window; evict oldest-first so live sessions survive.
+        while len(tracker) >= _LLM_ERROR_TRACKER_MAX_SESSIONS:
+            oldest = min(tracker, key=lambda k: tracker[k][1])
+            del tracker[oldest]
+        tracker[session_key] = (error_type, now)
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -5868,20 +5950,44 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            # Send the error to the user so they aren't left with radio silence
+            # Send the error to the user so they aren't left with radio silence.
+            # Backend transport failures get a sanitized notice with a short
+            # per-session cooldown, so an outage does not repeat the same
+            # message once per inbound message.  Everything else keeps the
+            # existing detailed report.
             try:
                 error_type = type(e).__name__
-                error_detail = str(e)[:300] if str(e) else "no details available"
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-                await self.send(
-                    chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
-                    ),
-                    metadata=_thread_metadata,
-                )
+                if _is_llm_connection_error(e):
+                    now = time.monotonic()
+                    if self._llm_error_notice_suppressed(session_key, error_type, now):
+                        logger.info(
+                            "[%s] Suppressing duplicate backend-unavailable notice "
+                            "(%s) for session %s",
+                            self.name, error_type, session_key,
+                        )
+                        return
+                    self._record_llm_error_notice(session_key, error_type, now)
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            "The AI backend is temporarily unavailable. "
+                            "I'll resume automatically when it comes back; "
+                            "no action needed."
+                        ),
+                        metadata=_thread_metadata,
+                    )
+                else:
+                    error_detail = str(e)[:300] if str(e) else "no details available"
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            f"Sorry, I encountered an error ({error_type}).\n"
+                            f"{error_detail}\n"
+                            "Try again or use /reset to start a fresh session."
+                        ),
+                        metadata=_thread_metadata,
+                    )
             except Exception as notify_err:
                 logger.error(
                     "[%s] Failed to send error notification to user: %s",

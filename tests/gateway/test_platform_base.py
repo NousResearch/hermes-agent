@@ -1,24 +1,32 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
 import time
 from unittest.mock import patch
 
 import pytest
 
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    ProcessingOutcome,
+    SendResult,
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
     safe_url_for_log,
     utf16_len,
     validate_inbound_media_size,
+    _LLM_CONNECTION_ERROR_COOLDOWN_SECONDS,
+    _LLM_ERROR_TRACKER_MAX_SESSIONS,
+    _is_llm_connection_error,
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+from gateway.session import SessionSource, build_session_key
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
@@ -2199,3 +2207,247 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
+
+
+# ---------------------------------------------------------------------------
+# Backend-unavailable notices — classification, cooldown, tracker bounds
+# ---------------------------------------------------------------------------
+
+
+class _ProviderAPIConnectionError(Exception):
+    """Stand-in for the OpenAI SDK error.
+
+    Classification is by exception *type name*, so the test double must be
+    named exactly as the SDK class is.  Renamed via ``__name__`` below.
+    """
+
+
+_ProviderAPIConnectionError.__name__ = "APIConnectionError"
+
+
+class _ErrorReportingAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
+        self.sent = []
+        self.processing_hooks = []
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return SendResult(success=True, message_id=str(len(self.sent)))
+
+    async def get_chat_info(self, chat_id: str):
+        return {"id": chat_id}
+
+    async def on_processing_complete(self, event, outcome) -> None:
+        self.processing_hooks.append((event.message_id, outcome))
+
+
+def _make_error_event(message_id: str = "msg-1") -> MessageEvent:
+    return MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+        ),
+        message_id=message_id,
+    )
+
+
+class TestLLMConnectionErrorClassification:
+    """The classifier must agree with the agent runtime's transport set."""
+
+    @pytest.mark.parametrize(
+        "type_name",
+        [
+            "APIConnectionError",
+            "APITimeoutError",
+            "ConnectError",
+            "ConnectTimeout",
+            "PoolTimeout",
+            "RemoteProtocolError",
+        ],
+    )
+    def test_provider_transport_types_are_backend_errors(self, type_name):
+        exc_type = type(type_name, (Exception,), {})
+        assert _is_llm_connection_error(exc_type("transport failure")) is True
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ConnectionRefusedError("refused"),
+            ConnectionResetError("reset"),
+            TimeoutError("timed out"),
+        ],
+    )
+    def test_builtin_connection_types_are_backend_errors(self, exc):
+        assert _is_llm_connection_error(exc) is True
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            FileNotFoundError("/var/hermes/media/missing.png"),
+            PermissionError("/etc/hermes/secrets.env"),
+            IsADirectoryError("/tmp/hermes"),
+            RuntimeError("boom"),
+            ValueError("bad value"),
+        ],
+    )
+    def test_non_backend_failures_are_not_backend_errors(self, exc):
+        """OSError subclasses from filesystem work must keep their detail."""
+        assert _is_llm_connection_error(exc) is False
+
+
+class TestGatewayErrorReporting:
+    @staticmethod
+    async def _quiet_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    def _adapter_with_error(self, exc):
+        adapter = _ErrorReportingAdapter()
+        adapter._keep_typing = self._quiet_typing
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            raise exc
+
+        adapter.set_message_handler(handler)
+        return adapter
+
+    async def _run(self, adapter, message_id="msg-1"):
+        event = _make_error_event(message_id)
+        await adapter._process_message_background(event, build_session_key(event.source))
+        return event
+
+    @pytest.mark.asyncio
+    async def test_provider_transport_error_gets_sanitized_notice(self):
+        adapter = self._adapter_with_error(
+            _ProviderAPIConnectionError("Connection error to https://api.example.com/v1")
+        )
+
+        await self._run(adapter)
+
+        assert len(adapter.sent) == 1
+        content = adapter.sent[0]["content"]
+        assert content == (
+            "The AI backend is temporarily unavailable. "
+            "I'll resume automatically when it comes back; no action needed."
+        )
+        assert "APIConnectionError" not in content
+        assert "api.example.com" not in content
+
+    @pytest.mark.asyncio
+    async def test_non_backend_oserror_keeps_actionable_detail(self):
+        """A filesystem failure under the same catch must not be sanitized."""
+        adapter = self._adapter_with_error(
+            FileNotFoundError("/var/hermes/media/report.pdf missing")
+        )
+
+        await self._run(adapter)
+
+        assert len(adapter.sent) == 1
+        content = adapter.sent[0]["content"]
+        assert "FileNotFoundError" in content
+        assert "/var/hermes/media/report.pdf missing" in content
+        assert "backend is temporarily unavailable" not in content
+
+    @pytest.mark.asyncio
+    async def test_non_connection_error_keeps_detailed_notice(self):
+        adapter = self._adapter_with_error(RuntimeError("boom"))
+
+        await self._run(adapter)
+
+        assert adapter.sent[0]["content"] == (
+            "Sorry, I encountered an error (RuntimeError).\n"
+            "boom\n"
+            "Try again or use /reset to start a fresh session."
+        )
+
+    @pytest.mark.asyncio
+    async def test_repeated_error_is_suppressed_during_cooldown(self):
+        adapter = self._adapter_with_error(ConnectionRefusedError("refused"))
+
+        await self._run(adapter, "msg-1")
+        await self._run(adapter, "msg-2")
+
+        assert len(adapter.sent) == 1
+        # Processing still completes for both — only the notice is suppressed.
+        assert adapter.processing_hooks == [
+            ("msg-1", ProcessingOutcome.FAILURE),
+            ("msg-2", ProcessingOutcome.FAILURE),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_notice_posts_again_after_cooldown_expires(self):
+        adapter = self._adapter_with_error(ConnectionRefusedError("refused"))
+
+        await self._run(adapter, "msg-1")
+        assert len(adapter.sent) == 1
+
+        # Backdate the recorded notice past the cooldown window.
+        (session_key,) = adapter._llm_error_last_posted
+        error_type, ts = adapter._llm_error_last_posted[session_key]
+        adapter._llm_error_last_posted[session_key] = (
+            error_type,
+            ts - _LLM_CONNECTION_ERROR_COOLDOWN_SECONDS - 1.0,
+        )
+
+        await self._run(adapter, "msg-2")
+        assert len(adapter.sent) == 2
+
+    @pytest.mark.asyncio
+    async def test_distinct_error_type_is_not_suppressed(self):
+        adapter = _ErrorReportingAdapter()
+        adapter._keep_typing = self._quiet_typing
+        errors = [ConnectionRefusedError("refused"), ConnectionResetError("reset")]
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            raise errors.pop(0)
+
+        adapter.set_message_handler(handler)
+
+        await self._run(adapter, "msg-1")
+        await self._run(adapter, "msg-2")
+
+        assert len(adapter.sent) == 2
+
+
+class TestLLMErrorTrackerBounds:
+    """The cooldown map must not retain every session key forever."""
+
+    def _adapter(self):
+        return _ErrorReportingAdapter()
+
+    def test_expired_entries_are_pruned_on_write(self):
+        adapter = self._adapter()
+        now = time.monotonic()
+        stale_ts = now - _LLM_CONNECTION_ERROR_COOLDOWN_SECONDS - 1.0
+        for i in range(50):
+            adapter._llm_error_last_posted[f"stale-{i}"] = ("ConnectionError", stale_ts)
+
+        adapter._record_llm_error_notice("live", "ConnectionError", now)
+
+        assert set(adapter._llm_error_last_posted) == {"live"}
+
+    def test_tracker_is_bounded_when_all_entries_are_live(self):
+        adapter = self._adapter()
+        now = time.monotonic()
+        overflow = _LLM_ERROR_TRACKER_MAX_SESSIONS + 200
+
+        for i in range(overflow):
+            # Ascending timestamps inside the window: nothing expires, so the
+            # hard cap is what has to hold.
+            adapter._record_llm_error_notice(f"session-{i}", "ConnectionError", now + i * 0.001)
+
+        assert len(adapter._llm_error_last_posted) <= _LLM_ERROR_TRACKER_MAX_SESSIONS
+        # Oldest-first eviction keeps the most recent sessions.
+        assert f"session-{overflow - 1}" in adapter._llm_error_last_posted
+        assert "session-0" not in adapter._llm_error_last_posted

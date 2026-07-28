@@ -3787,6 +3787,15 @@ DEFAULT_CONFIG = {
         #   false   - always keep GPU acceleration on, even over a remote display.
         # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
         "disable_gpu": "auto",
+        # macOS only: optional persistent code-signing identity (a cert in the
+        # login keychain — a self-signed "Code Signing" cert from Keychain
+        # Access works; no Apple Developer account needed) used to re-sign
+        # locally rebuilt desktop apps. A certificate-anchored Designated
+        # Requirement stays stable across rebuilds, so TCC grants (Full Disk
+        # Access, Desktop/Downloads/Documents, Accessibility, Automation,
+        # microphone) survive every update. Empty keeps the default stable
+        # ad-hoc signing (identifier-pinned requirement).
+        "macos_signing_identity": "",
         # Auto-continue a turn that was killed mid-run by an app/backend/machine
         # crash: resuming that session re-submits the interrupted prompt (shown
         # as a "resumed interrupted turn" event) if the interruption is fresh.

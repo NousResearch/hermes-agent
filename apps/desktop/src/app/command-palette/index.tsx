@@ -16,6 +16,7 @@ import {
   AppWindow,
   Archive,
   BarChart3,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -90,6 +91,8 @@ import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
   action?: string
+  /** Renders a trailing check: this row IS the current setting (theme, mode). */
+  active?: boolean
   icon: IconComponent
   id: string
   /** Keep the palette open after running (live-preview pickers like theme/mode). */
@@ -301,7 +304,7 @@ export function CommandPalette() {
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
   const navigate = useNavigate()
-  const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
+  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
 
@@ -666,6 +669,7 @@ export function CommandPalette() {
     result.push({
       heading: t.settings.appearance.themeTitle,
       items: availableThemes.map(theme => ({
+        active: themeName === theme.name,
         icon: Palette,
         id: `search-theme-${theme.name}`,
         keepOpen: true,
@@ -686,6 +690,7 @@ export function CommandPalette() {
     result.push({
       heading: t.settings.appearance.colorMode,
       items: THEME_MODES.map(entry => ({
+        active: mode === entry.mode,
         icon: entry.icon,
         id: `search-mode-${entry.mode}`,
         keepOpen: true,
@@ -764,13 +769,15 @@ export function CommandPalette() {
     configFieldLabel,
     go,
     mcpServers,
+    mode,
     resolvedMode,
     search,
     sessions,
     setMode,
     setTheme,
     settingsSectionLabel,
-    t
+    t,
+    themeName
   ])
 
   const groups = useMemo(() => [...baseGroups, ...searchGroups], [baseGroups, searchGroups])
@@ -824,6 +831,7 @@ export function CommandPalette() {
           {
             heading: t.settings.appearance.colorMode,
             items: THEME_MODES.map(entry => ({
+              active: mode === entry.mode,
               icon: entry.icon,
               id: `mode-${entry.mode}`,
               keepOpen: true,
@@ -848,7 +856,7 @@ export function CommandPalette() {
         groups: []
       }
     }),
-    [availableThemes, resolvedMode, setMode, setTheme, t, themeName]
+    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
@@ -963,6 +971,11 @@ export function CommandPalette() {
                             {item.to && (
                               <ChevronRight
                                 className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
+                              />
+                            )}
+                            {item.active && (
+                              <Check
+                                className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')}
                               />
                             )}
                           </CommandItem>

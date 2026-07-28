@@ -4020,10 +4020,20 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = _hermes_home / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    config_path = user_config_path if user_config_path.exists() else project_config_path
+    # Runtime persistence ALWAYS targets the user's HERMES_HOME config.yaml,
+    # creating it if needed. Resolve HERMES_HOME live (not the import-time
+    # _hermes_home constant) so profile switches and test isolation land right.
+    #
+    # We deliberately do NOT fall back to the repo's project cli-config.yaml:
+    # that file is a shipped default/template, and most config readers
+    # (load_config → get_hermes_home()/config.yaml, including
+    # load_wake_word_config) never read it. Writing a user setting there means
+    # the reader never sees it. This was the "wake-word ear reverts to disabled
+    # after restart" bug — the toggle's persist wrote to cli-config.yaml (which
+    # exists in the checkout) while startup read HERMES_HOME/config.yaml, so the
+    # setting silently vanished every restart on any install whose
+    # HERMES_HOME/config.yaml didn't exist yet.
+    config_path = get_hermes_home() / 'config.yaml'
     
     try:
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)

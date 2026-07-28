@@ -1,9 +1,7 @@
 'use client'
 
-import type { ReactNode } from 'react'
 import * as React from 'react'
-import { useShikiHighlighter } from 'react-shiki'
-import { type BundledLanguage, codeToTokens, type ShikiTransformer, type ThemedToken } from 'shiki'
+import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
 
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
@@ -276,7 +274,8 @@ function parseFullFileDiff(diff: string, fullText: string): DiffLine[] {
   return out
 }
 
-function DiffBody({ lines, syntax }: { lines: DiffLine[]; syntax?: boolean }) {
+/** Exported for the lazily-loaded SyntaxDiff (syntax-diff.tsx). */
+export function DiffBody({ lines, syntax }: { lines: DiffLine[]; syntax?: boolean }) {
   return (
     <>
       {lines.map((line, index) => (
@@ -383,7 +382,10 @@ function TokenizedDiffBody({
     let cancelled = false
 
     setTokens(null)
-    void codeToTokens(code, { lang: language as BundledLanguage, theme })
+    // Dynamic import so the multi-MB shiki chunk stays off the cold-start
+    // path — this effect only runs once a highlightable diff is on screen.
+    void import('shiki')
+      .then(({ codeToTokens }) => codeToTokens(code, { lang: language as BundledLanguage, theme }))
       .then(result => {
         if (!cancelled) {
           setTokens(result.tokens)
@@ -446,7 +448,8 @@ function TokenizedDiffBody({
 
 // Shiki transformer: tag each `.line` with the diff tint for its kind, so the
 // syntax-highlighted output keeps add/remove backgrounds + the gutter accent.
-function diffLineTransformer(kinds: DiffKind[]): ShikiTransformer {
+// Exported for the lazily-loaded SyntaxDiff (syntax-diff.tsx).
+export function diffLineTransformer(kinds: DiffKind[]): ShikiTransformer {
   return {
     line(node, line) {
       const kind = kinds[line - 1] ?? 'context'
@@ -463,17 +466,17 @@ function diffLineTransformer(kinds: DiffKind[]): ShikiTransformer {
 }
 
 function SyntaxDiff({ language, lines }: { language: string; lines: DiffLine[] }) {
-  const code = React.useMemo(() => lines.map(line => line.text).join('\n'), [lines])
-  const transformers = React.useMemo(() => [diffLineTransformer(lines.map(line => line.kind))], [lines])
-
-  const highlighted = useShikiHighlighter(code, language, SHIKI_THEME, {
-    defaultColor: 'light-dark()',
-    transformers
-  })
-
-  // Until Shiki resolves, show the plain colored diff so there's no flash.
-  return (highlighted as ReactNode) ?? <DiffBody lines={lines} />
+  // The Shiki hook lives in a lazily-loaded module (syntax-diff.tsx) so the
+  // multi-MB shiki chunk stays off the cold-start path. Until it (and the
+  // highlight itself) resolves, show the plain colored diff — no flash.
+  return (
+    <React.Suspense fallback={<DiffBody lines={lines} />}>
+      <LazySyntaxDiff language={language} lines={lines} />
+    </React.Suspense>
+  )
 }
+
+const LazySyntaxDiff = React.lazy(() => import('./syntax-diff'))
 
 interface DiffLinesProps extends Omit<React.ComponentProps<'pre'>, 'children'> {
   text: string

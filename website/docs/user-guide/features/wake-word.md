@@ -204,6 +204,9 @@ PORCUPINE_ACCESS_KEY=your-key-here
 - An STT provider for transcribing the spoken command — local `faster-whisper`
   works out of the box; see [Voice Mode](/user-guide/features/voice-mode) for the
   full provider list.
+- A TTS provider for speaking the reply (the default `edge-tts` works with no
+  key). The wake flow is fully hands-free, so the toggle refuses to arm until
+  both STT and TTS are ready — `hermes tools` (Voice section) sets them up.
 - The wake engine deps (auto-installed, or `hermes-agent[wake]`).
 
 `/wake status` reports exactly what's missing if the listener won't start.

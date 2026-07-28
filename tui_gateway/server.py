@@ -17740,6 +17740,17 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, f"wake module unavailable: {e}")
 
     cfg = load_wake_word_config()
+    # Requirements first: a gesture on an unarmed-able setup (no STT/TTS, no
+    # mic, missing key) must refuse WITHOUT flipping wake_word.enabled — else
+    # config says on while nothing can ever arm, and auto-arm paths churn.
+    reqs = check_wake_word_requirements(cfg)
+    if not reqs["available"]:
+        logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
+        return _ok(rid, {
+            "started": False,
+            "reason": "unavailable",
+            "hint": reqs.get("hint") or "",
+        })
     enabled_persisted = False
     if persist and not cfg.get("enabled"):
         enabled_persisted = _persist_wake_enabled(True)
@@ -17755,14 +17766,6 @@ def _(rid, params: dict) -> dict:
         logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
                     surface, reason, cfg.get("enabled"), cfg.get("surface"))
         return _ok(rid, {"started": False, "reason": reason})
-    reqs = check_wake_word_requirements(cfg)
-    if not reqs["available"]:
-        logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
-        return _ok(rid, {
-            "started": False,
-            "reason": "unavailable",
-            "hint": reqs.get("hint") or "",
-        })
 
     existing_owner, existing_surface = _wake_owner_snapshot()
     if existing_owner is not None and (

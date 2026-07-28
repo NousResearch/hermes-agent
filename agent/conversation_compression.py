@@ -55,7 +55,9 @@ logger = logging.getLogger(__name__)
 
 # Terminal compression outcomes published by host/hygiene timeout or cooldown
 # writers. Detached heartbeat workers must not clobber these back to
-# agent.compression after cancel (otherwise timeout is unobservable).
+# agent.compression after cancel (otherwise timeout is unobservable). Observing
+# a terminal stamp (or a cancelled commit fence) also latches the heartbeat
+# silent so a later UNKNOWN rewrite cannot re-arm a zombie worker.
 _TERMINAL_COMPRESSION_PROVENANCES = frozenset(
     {
         ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
@@ -498,6 +500,11 @@ class CompressionCommitFence:
     def finish_commit(self) -> None:
         """Leave a commit boundary entered by :meth:`begin_commit`."""
         self._lock.release()
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True after cancellation won before the commit boundary."""
+        return self._cancelled
 
 
 # Defaults for the in-agent (non-hygiene) progress-aware compress_context wrap.
@@ -981,8 +988,17 @@ def _supported_compression_kwargs(
 class _CompressionActivityHeartbeat:
     """Refresh the agent inactivity tracker while compression blocks in an aux call."""
 
-    def __init__(self, agent: Any, interval_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        agent: Any,
+        interval_seconds: float | None = None,
+        commit_fence: Optional[CompressionCommitFence] = None,
+    ) -> None:
         self._agent = agent
+        self._commit_fence = commit_fence
+        # Latched once host cancel/timeout wins or a terminal stamp is observed,
+        # so a later UNKNOWN rewrite cannot re-arm a detached zombie heartbeat.
+        self._suppressed = False
         if interval_seconds is None:
             interval_seconds = getattr(agent, "_compression_activity_heartbeat_interval", 60.0)
         try:
@@ -1002,6 +1018,7 @@ class _CompressionActivityHeartbeat:
     def start(self) -> "_CompressionActivityHeartbeat":
         # A new compression episode always republishes agent.compression even
         # if a prior timeout/cooldown stamp is still on the agent.
+        self._suppressed = False
         self._touch("context compression started", allow_terminal_overwrite=True)
         self._thread.start()
         return self
@@ -1010,24 +1027,49 @@ class _CompressionActivityHeartbeat:
         self._stop.set()
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=1.0)
+        # Host timeout already owns the terminal stamp; a detached worker's
+        # late stop must not republish agent.compression / "completed".
+        if self._should_suppress():
+            return
         self._touch(desc)
+
+    def _fence_cancelled(self) -> bool:
+        fence = self._commit_fence
+        return fence is not None and fence.is_cancelled
+
+    def _should_suppress(self) -> bool:
+        if self._suppressed:
+            return True
+        if self._fence_cancelled():
+            self._suppressed = True
+            return True
+        return False
 
     def _touch(self, desc: str, *, allow_terminal_overwrite: bool = False) -> None:
         try:
             if not allow_terminal_overwrite:
+                if self._should_suppress():
+                    return
                 current = normalize_activity_provenance(
                     getattr(self._agent, "_last_activity_provenance", None)
                 )
                 if current in _TERMINAL_COMPRESSION_PROVENANCES:
+                    self._suppressed = True
                     return
             touch = getattr(self._agent, "_touch_activity", None)
             if callable(touch):
+                # Re-check after reading provenance: host may cancel/stamp
+                # TIMEOUT between the earlier guard and the write.
+                if not allow_terminal_overwrite and self._should_suppress():
+                    return
                 touch(desc, provenance=ActivityProvenance.AGENT_COMPRESSION)
         except Exception:
             logger.debug("compression activity heartbeat touch failed", exc_info=True)
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_seconds):
+            if self._should_suppress():
+                return
             self._touch("context compression in progress")
 
 
@@ -2232,7 +2274,9 @@ def compress_context(
                 )
 
         messages_before_compression = copy.deepcopy(messages)
-        _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
+        _activity_heartbeat = _CompressionActivityHeartbeat(
+            agent, commit_fence=commit_fence
+        ).start()
         # Publish forward progress to the commit fence while the summary LLM
         # call streams. Async hosts (gateway session hygiene) poll
         # ``commit_fence.seconds_since_progress()`` to extend their deadline

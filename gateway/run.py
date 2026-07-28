@@ -14424,6 +14424,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                message_type=event.message_type,
             )
 
             # Stop persistent typing indicator now that the agent is done.
@@ -14989,7 +14990,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            # Skip when streaming TTS already delivered audio for this turn (#60671).
+            _stts_adapter = self._adapter_for_source(source)
+            _streaming_tts_done = (
+                _stts_adapter is not None
+                and bool(getattr(_stts_adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation))
+            )
+            if (
+                not _streaming_tts_done
+                and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)
+            ):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and
@@ -20582,6 +20592,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        message_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -20600,6 +20611,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                message_type=message_type,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -20611,6 +20623,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                message_type=message_type,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -20732,6 +20745,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        message_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -21706,6 +21720,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        # #60671 — streaming PCM audio consumer.  Created on the gateway
+        # event-loop thread (NOT inside run_sync's executor worker) so the
+        # outer finalisation / interrupt paths can reference it without a
+        # cross-scope NameError.
+        streaming_tts_consumer_holder: list = [None]
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -21808,6 +21827,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cleanup_msg_ids.append(str(mid))
                 _fut.add_done_callback(_track_status_id)
 
+        # ---- Streaming TTS consumer setup (#60671) ----
+        # Created on the gateway event-loop thread (here, in _run_agent_inner),
+        # NOT inside run_sync's executor worker.  This avoids a cross-scope
+        # NameError: the outer interrupt / finalisation paths reference the
+        # consumer via ``streaming_tts_consumer_holder[0]``.
+        #
+        # Gates: voice input, auto-TTS enabled for this chat, adapter
+        # supports streaming, and a usable streaming TTS provider configured.
+        _stts_adapter = self._adapter_for_source(source)
+        _is_voice_input = (
+            message_type is not None
+            and str(getattr(message_type, "value", message_type)).lower() == "voice"
+        )
+        if (
+            _stts_adapter is not None
+            and _is_voice_input
+            and _stts_adapter._should_auto_tts_for_chat(source.chat_id)
+        ):
+            try:
+                from gateway.streaming_tts_consumer import StreamingTTSConsumer
+                from tools.tts_tool import _load_tts_config
+                _tts_cfg = _load_tts_config()
+                _gateway_loop = self._gateway_loop or asyncio.get_event_loop()
+                _stts_consumer = StreamingTTSConsumer(
+                    adapter=_stts_adapter,
+                    chat_id=source.chat_id,
+                    tts_config=_tts_cfg,
+                    loop=_gateway_loop,
+                    metadata=_status_thread_metadata,
+                )
+                if _stts_consumer.active:
+                    streaming_tts_consumer_holder[0] = _stts_consumer
+                    _stts_consumer.start()
+                # else: consumer inactive (no streaming provider) — leave
+                # the holder as None so the whole-file fallback path runs.
+            except Exception as _stts_err:
+                logger.debug("Could not set up streaming TTS consumer: %s", _stts_err)
+
         def run_sync():
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
@@ -21885,6 +21942,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
+            # #60671 — streaming TTS consumer is created on the outer
+            # event-loop thread before run_sync launches.  run_sync only
+            # reads it via ``streaming_tts_consumer_holder[0]`` for delta
+            # callback wiring.
+            _stts_consumer_ref = streaming_tts_consumer_holder[0]
             _scfg = getattr(getattr(self, 'config', None), 'streaming', None)
             if _scfg is None:
                 from gateway.config import StreamingConfig
@@ -21969,9 +22031,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
+                                    # Tee to the streaming-TTS consumer (#60671).
+                                    if _stts_consumer_ref is not None:
+                                        _stts_consumer_ref.on_delta(text)
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
+
+            # When text streaming is off but streaming TTS is active,
+            # install a TTS-only delta callback so the consumer still
+            # receives LLM deltas for audio synthesis (#60671).
+            if _stream_delta_cb is None and _stts_consumer_ref is not None:
+                def _stream_delta_cb(text: str) -> None:
+                    if _run_still_current():
+                        _stts_consumer_ref.on_delta(text)
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
@@ -22860,6 +22933,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
+
+            # Signal the streaming-TTS consumer that the agent is done (#60671).
+            # finish() is called from the outer event-loop thread after the
+            # executor returns, so early returns from run_sync are also
+            # finalised.  See the outer finally/completion section below.
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
@@ -23265,6 +23343,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.debug("Interrupt detected from adapter, signaling agent...")
                             agent.interrupt(pending_text)
                             _interrupt_detected.set()
+                            # Abort streaming TTS on barge-in (#60671).
+                            _stts = streaming_tts_consumer_holder[0]
+                            if _stts is not None:
+                                _stts.abort("barge-in")
                             break
                 except asyncio.CancelledError:
                     raise
@@ -23465,6 +23547,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
+                            # Abort streaming TTS on barge-in (#60671).
+                            _stts = streaming_tts_consumer_holder[0]
+                            if _stts is not None:
+                                _stts.abort("barge-in")
+
             else:
                 # Poll loop: check the agent's built-in activity tracker
                 # (updated by _touch_activity() on every tool call, API
@@ -23538,6 +23625,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
+                            # Abort streaming TTS on barge-in (#60671).
+                            _stts = streaming_tts_consumer_holder[0]
+                            if _stts is not None:
+                                _stts.abort("barge-in")
 
             if _inactivity_timeout:
                 # Build a diagnostic summary from the agent's activity tracker.
@@ -23641,6 +23732,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
             adapter = self._adapter_for_source(source)
+
+            # Finalize the streaming-TTS consumer (#60671).
+            #
+            # finish() is called from the outer event-loop thread (not the
+            # executor worker) so early returns from run_sync are also
+            # finalised.  wait_complete() drains queued audio; on timeout
+            # the consumer is aborted unconditionally — if audio was
+            # audible, suppression is preserved so the gateway does not
+            # replay from the beginning; if no audio was audible, the
+            # whole-file fallback path is permitted.
+            _stts = streaming_tts_consumer_holder[0]
+            if _stts is not None:
+                _stts.finish()
+                try:
+                    await _stts.wait_complete(timeout=10.0)
+                except Exception as _stts_done_err:
+                    logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
+                if not _stts.done:
+                    # Timeout before or after audible audio: abort to free
+                    # the consumer task.  Audible streams retain suppression;
+                    # silent streams remain eligible for whole-file fallback.
+                    _stts.abort("streaming TTS finalisation timeout")
+                    await _stts.wait_complete(timeout=2.0)
+                if _stts.suppress_whole_file and adapter is not None:
+                    _mark_turn = getattr(adapter, "_mark_streaming_tts_completed_turn", None)
+                    if callable(_mark_turn):
+                        _mark_turn(session_key, run_generation)
             
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
@@ -23853,6 +23971,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message_id = None
                 next_channel_prompt = None
                 next_session_key = session_key
+                # #60671 — carry the pending event's message_type into the
+                # recursive call so queued voice turns can stream TTS and
+                # re-mark the generation for the final delivered turn.
+                next_message_type = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -23884,6 +24006,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_message_type = getattr(pending_event, "message_type", None)
+
+                # Clear the completed streaming marker from the prior logical
+                # turn so the recursive turn's streaming TTS is not suppressed
+                # by the prior turn's completion (#60671).
+                _clear_adapter = self._adapter_for_source(source)
+                if _clear_adapter is not None and session_key and run_generation is not None:
+                    _completed_turns = getattr(_clear_adapter, "_streaming_tts_completed_turns", None)
+                    if _completed_turns is not None:
+                        _prior_key = getattr(_clear_adapter, "_streaming_tts_turn_key", None)
+                        if callable(_prior_key):
+                            _pk = _prior_key(session_key, run_generation)
+                            if _pk:
+                                _completed_turns.discard(_pk)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -23925,6 +24061,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    message_type=next_message_type,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
@@ -23964,6 +24101,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except asyncio.CancelledError:
                             pass
             
+            # Unconditional abort + bounded wait for the streaming-TTS
+            # consumer (#60671 hardening).  Covers cancellation / exception
+            # paths where the normal finalisation block was skipped.
+            _stts_finally = streaming_tts_consumer_holder[0]
+            if _stts_finally is not None and not _stts_finally.done:
+                _stts_finally.abort("cleanup")
+                try:
+                    await _stts_finally.wait_complete(timeout=2.0)
+                except Exception:
+                    pass
+
             # Clean up tracking
             tracking_task.cancel()
             if session_key:

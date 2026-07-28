@@ -560,12 +560,17 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # /model picker only ever shows the currently-configured model.
     # Model IDs use the "google/" publisher prefix Vertex's openapi
     # endpoint expects (see hermes_cli/model_setup_flows.py).
+    # Entries validated live against a GCP project (global region,
+    # HTTP 200) as of 2026-07-21 (PR #68767).
     "vertex": [
         "google/gemini-3.1-pro-preview",
         "google/gemini-3-pro-preview",
+        "google/gemini-3.6-flash",
         "google/gemini-3.5-flash",
+        "google/gemini-3.5-flash-lite",
         "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-3.1-flash-lite",
     ],
     "novita": [
         "moonshotai/kimi-k2.5",
@@ -574,19 +579,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-v3-0324",
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
-    ],
-    # Google Vertex AI — OpenAI-compatible endpoint
-    # (aiplatform.googleapis.com/v1beta1/projects/<proj>/locations/global/endpoints/openapi)
-    # IDs must use the "google/" prefix exactly as returned by the API.
-    # All entries below have been validated live against the antse-tooling GCP
-    # project (global region) and returned HTTP 200 as of 2026-07-21.
-    "vertex": [
-        "google/gemini-3.5-flash",           # frontier Flash; strong agentic + coding
-        "google/gemini-3.6-flash",           # incremental over 3.5-flash (newer)
-        "google/gemini-3.5-flash-lite",      # lighter/cheaper 3.5 Flash variant
-        "google/gemini-3.1-pro-preview",     # 3.1 Pro preview
-        "google/gemini-3-flash-preview",     # 3.0 Flash preview
-        "google/gemini-3.1-flash-lite",      # most cost-efficient Gemini 3.x
     ],
 }
 

@@ -125,11 +125,14 @@ Tip unlabeled chrome when the job (or a keybind / truncated path / host /
 other detail) is not already on screen — toolbar / titlebar / statusbar icons,
 `TipKeybindLabel` shortcuts, ownership chips, unlabeled icon grids.
 
-Do **not** tip menu triggers (kebabs / ⋯ / `ActionsMenu` /
-`DropdownMenuTrigger`). The affordance is "open menu"; the verbs live in the
-menu. Never `"Actions for ${row title}"`, `"Project actions"`, `"Actions"`, or
-`"Credential actions"` on a ⋯ — the row already names the thing. Same for any
-control whose visible label already says what the tip would.
+Do **not** tip:
+
+- Menu triggers (kebabs / ⋯ / `ActionsMenu` / `DropdownMenuTrigger`) — the
+  affordance is "open menu"; verbs live in the menu. Never tip
+  `"Actions for ${row title}"` / `"Project actions"` / `"Actions"`.
+- Close / dismiss X buttons — the glyph is the label (`aria-label` only).
+- Controls whose visible label already says what the tip would ("click to…",
+  paraphrases of the same words, timer labels restating "Running").
 
 Never use native HTML `title=` on buttons — unstyled, ~500ms OS delay, clashes
 with the themed `Tip`. `src/components/ui/__tests__/no-native-title.test.ts`

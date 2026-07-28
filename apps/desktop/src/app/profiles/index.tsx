@@ -14,22 +14,11 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { SanitizedInput } from '@/components/ui/sanitized-input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import {
-  createProfile,
-  deleteProfile,
-  getProfileSoul,
-  type ProfileInfo,
-  renameProfile,
-  updateProfileSoul
-} from '@/hermes'
+import { deleteProfile, getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
-import { slug } from '@/lib/sanitize'
 import { normalize } from '@/lib/text'
-import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileColors, refreshProfiles } from '@/store/profile'
 
@@ -49,11 +38,8 @@ import {
   PanelSectionLabel
 } from '../overlays/panel'
 
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-function isValidProfileName(name: string): boolean {
-  return PROFILE_NAME_RE.test(name.trim())
-}
+import { CreateProfileDialog } from './create-profile-dialog'
+import { RenameProfileDialog } from './rename-profile-dialog'
 
 interface ProfilesViewProps {
   onClose: () => void
@@ -112,40 +98,15 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
     )
   }, [profiles, query])
 
-  const handleCreate = useCallback(
-    async (name: string, cloneFrom: null | string) => {
-      const trimmed = name.trim()
-
-      if (!isValidProfileName(trimmed)) {
-        throw new Error(p.nameHint)
-      }
-
-      await createProfile({ name: trimmed, clone_from: cloneFrom })
-      notify({ kind: 'success', title: p.created, message: trimmed })
-      setSelectedName(trimmed)
+  // The shared Create/Rename dialogs own the createProfile / renameProfile /
+  // updateProfileSoul calls; the panel just selects the resulting profile and
+  // re-pulls the list.
+  const selectAndRefresh = useCallback(
+    async (name: string) => {
+      setSelectedName(name)
       await refresh()
     },
-    [p, refresh]
-  )
-
-  const handleRename = useCallback(
-    async (from: string, to: string): Promise<void> => {
-      const target = to.trim()
-
-      if (target === from) {
-        return
-      }
-
-      if (!isValidProfileName(target)) {
-        throw new Error(p.nameHint)
-      }
-
-      await renameProfile(from, target)
-      notify({ kind: 'success', title: p.renamed, message: `${from} → ${target}` })
-      setSelectedName(target)
-      await refresh()
-    },
-    [p, refresh]
+    [refresh]
   )
 
   const handleConfirmDelete = useCallback(async () => {
@@ -229,18 +190,13 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       <RenameProfileDialog
         currentName={pendingRename?.name ?? ''}
         onClose={() => setPendingRename(null)}
-        onRename={async newName => {
-          if (pendingRename) {
-            await handleRename(pendingRename.name, newName)
-            setPendingRename(null)
-          }
-        }}
+        onRenamed={selectAndRefresh}
         open={pendingRename !== null}
       />
 
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
-        onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
+        onCreated={selectAndRefresh}
         open={createOpen}
         profiles={profiles ?? []}
       />
@@ -469,239 +425,5 @@ function SoulEditor({ profileName }: { profileName: string }) {
         </Button>
       </div>
     </section>
-  )
-}
-
-function CreateProfileDialog({
-  onClose,
-  onCreate,
-  open,
-  profiles
-}: {
-  onClose: () => void
-  onCreate: (name: string, cloneFrom: null | string) => Promise<void>
-  open: boolean
-  profiles: ProfileInfo[]
-}) {
-  const { t } = useI18n()
-  const p = t.profiles
-  const [name, setName] = useState('')
-  const [cloneFrom, setCloneFrom] = useState<null | string>('default')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    setName('')
-    setCloneFrom('default')
-    setError(null)
-    setSaving(false)
-  }, [open])
-
-  const trimmed = name.trim()
-  const invalid = trimmed !== '' && !isValidProfileName(trimmed)
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-
-    if (!trimmed || invalid) {
-      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
-
-      return
-    }
-
-    setSaving(true)
-    setError(null)
-
-    try {
-      await onCreate(trimmed, cloneFrom)
-      onClose()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : p.failedCreate)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{p.newProfile}</DialogTitle>
-          <DialogDescription>{p.createDesc}</DialogDescription>
-        </DialogHeader>
-
-        <form className="grid gap-4" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-name">
-              {p.nameLabel}
-            </label>
-            <SanitizedInput
-              aria-invalid={invalid}
-              autoFocus
-              id="new-profile-name"
-              onValueChange={setName}
-              placeholder="my-profile"
-              sanitize={slug}
-              value={name}
-            />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {p.nameHint}
-            </p>
-          </div>
-
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
-              {p.cloneFrom}
-            </label>
-            <Select
-              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
-              value={cloneFrom ?? '__none__'}
-            >
-              <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
-                {profiles.map(profile => (
-                  <SelectItem key={profile.name} value={profile.name}>
-                    {profile.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
-          </div>
-
-          {error && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={saving || !trimmed || invalid} type="submit">
-              {saving ? p.creating : p.createAction}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function RenameProfileDialog({
-  currentName,
-  onClose,
-  onRename,
-  open
-}: {
-  currentName: string
-  onClose: () => void
-  onRename: (newName: string) => Promise<void>
-  open: boolean
-}) {
-  const { t } = useI18n()
-  const p = t.profiles
-  const [name, setName] = useState(currentName)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    setName(currentName)
-    setError(null)
-    setSaving(false)
-  }, [currentName, open])
-
-  const trimmed = name.trim()
-  const unchanged = trimmed === currentName
-  const invalid = trimmed !== '' && !unchanged && !isValidProfileName(trimmed)
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-
-    if (unchanged) {
-      onClose()
-
-      return
-    }
-
-    if (!trimmed || invalid) {
-      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
-
-      return
-    }
-
-    setSaving(true)
-    setError(null)
-
-    try {
-      await onRename(trimmed)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : p.failedRename)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{p.renameTitle}</DialogTitle>
-          <DialogDescription>
-            {p.renameDescPrefix}
-            <span className="font-mono">~/.local/bin</span>
-            {p.renameDescSuffix}
-          </DialogDescription>
-        </DialogHeader>
-
-        <form className="grid gap-3" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="rename-profile-name">
-              {p.newNameLabel}
-            </label>
-            <SanitizedInput
-              aria-invalid={invalid}
-              autoFocus
-              id="rename-profile-name"
-              onValueChange={setName}
-              sanitize={slug}
-              value={name}
-            />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {p.nameHint}
-            </p>
-          </div>
-
-          {error && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={saving || invalid || unchanged} type="submit">
-              {saving ? p.renaming : p.rename}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   )
 }

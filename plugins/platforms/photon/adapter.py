@@ -162,7 +162,7 @@ def _sidecar_pid_alive(pid: Any) -> bool:
         pass
     if os.name == "posix":
         try:
-            os.kill(pid_int, 0)
+            os.kill(pid_int, 0)  # windows-footgun: ok — inside os.name == "posix" guard
         except ProcessLookupError:
             return False
         except PermissionError:

@@ -519,12 +519,41 @@ def _stt_ready() -> bool:
 
 
 def _tts_ready() -> bool:
-    """Can the configured text-to-speech provider actually run?
+    """Can the configured text-to-speech provider run (or install at first use)?
 
     The wake flow is fully hands-free (wake → speak → hear the reply); without
-    TTS the reply is silent and the loop is pointless. Mirrors /voice's use of
-    ``check_tts_requirements``.
+    TTS the reply is silent and the loop is pointless.
+
+    PROBE, not an installer: ``check_tts_requirements`` lazily pip-installs the
+    provider SDK via ``_import_*`` → ``lazy_deps.ensure`` — running that inside
+    a status poll froze wake.status for the length of a pip install (and a
+    failed install marked the wake word unavailable, unmounting the desktop
+    ear). When the provider's deps aren't installed yet, "installable at first
+    use" counts as ready and we never touch pip from here.
     """
+    try:
+        from tools.tts_tool import _get_provider, _load_tts_config
+
+        provider = _get_provider(_load_tts_config())
+    except Exception:
+        return False
+
+    _LAZY_TTS_FEATURES = {
+        "edge": "tts.edge",
+        "elevenlabs": "tts.elevenlabs",
+        "mistral": "tts.mistral",
+    }
+    feature = _LAZY_TTS_FEATURES.get(provider)
+    if feature is not None:
+        try:
+            from tools import lazy_deps
+
+            if not lazy_deps.is_available(feature):
+                # Not installed: ready iff it can install at first speak.
+                return lazy_deps._allow_lazy_installs()
+        except Exception:
+            return False
+
     try:
         from tools.tts_tool import check_tts_requirements
 

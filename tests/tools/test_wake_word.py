@@ -126,6 +126,43 @@ def test_requirements_need_stt_and_tts(monkeypatch):
     assert "speech-to-text and text-to-speech" in r["hint"]
 
 
+def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
+    """_tts_ready must NOT trigger lazy pip installs from a status poll.
+
+    Regression: check_tts_requirements → _import_edge_tts → lazy_deps.ensure
+    ran pip inside wake.status; a slow/failed install froze the poll and
+    unmounted the desktop ear. Uninstalled-but-lazy-installable counts as
+    ready WITHOUT calling ensure/check.
+    """
+    import types as _types
+
+    monkeypatch.setattr(
+        ww, "_tts_ready", ww.__dict__["_tts_ready"]
+    )  # use the real implementation
+    fake_tts = _types.SimpleNamespace(
+        _get_provider=lambda cfg: "edge",
+        _load_tts_config=lambda: {},
+        check_tts_requirements=lambda: (_ for _ in ()).throw(
+            AssertionError("check_tts_requirements must not run when deps are missing")
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "tools.tts_tool", fake_tts)
+
+    # Deps missing + lazy installs allowed → ready (installs at first speak).
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: False)
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+    assert ww._tts_ready() is True
+
+    # Deps missing + lazy installs disabled → not ready.
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
+    assert ww._tts_ready() is False
+
+    # Deps present → falls through to the real requirements check.
+    fake_tts.check_tts_requirements = lambda: True
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
+    assert ww._tts_ready() is True
+
+
 def test_requirements_porcupine_needs_access_key(monkeypatch):
     monkeypatch.delenv("PORCUPINE_ACCESS_KEY", raising=False)
     monkeypatch.setattr(ww, "_audio_available", lambda: True)

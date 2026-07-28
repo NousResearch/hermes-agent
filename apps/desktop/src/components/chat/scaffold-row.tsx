@@ -11,6 +11,10 @@ import { DisclosureRow } from '@/components/chat/disclosure-row'
  * pick their own grey — a thinking header painted `--ui-text-secondary`, a tool
  * summary `--ui-text-tertiary`, both under the same opacity — which read as two
  * different kinds of line for what is one kind of thing.
+ *
+ * The resting fade is the other half and lives in CSS, on the *block* that
+ * holds the row rather than on the row: mark it `data-conversation-scaffold`.
+ * A surface that skips the mark reads a shade brighter than its neighbours.
  */
 export const SCAFFOLD_LABEL_CLASS =
   'text-[length:var(--conversation-tool-font-size)] leading-(--conversation-line-height) text-(--conversation-scaffold-text)'

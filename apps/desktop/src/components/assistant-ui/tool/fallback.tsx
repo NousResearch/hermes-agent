@@ -510,6 +510,7 @@ function ToolEntry({ part }: ToolEntryProps) {
         'group/tool-block min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
         open && TOOL_EXPANDED_SHELL_CLASS
       )}
+      data-conversation-scaffold=""
       data-file-edit={isFileEdit && open ? '' : undefined}
       data-slot="tool-block"
       data-tool-open={open ? '' : undefined}
@@ -795,7 +796,7 @@ function ToolRunHeader({
   summary: string
 }) {
   return (
-    <div data-tool-summary="">
+    <div data-conversation-scaffold="" data-tool-summary="">
       <ScaffoldRow onToggle={onToggle} open={open}>
         <FadeText className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>
           {live ? <span className="shimmer">{summary}</span> : summary}

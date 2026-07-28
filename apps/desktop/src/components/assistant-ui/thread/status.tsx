@@ -34,6 +34,7 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
       'text-(--conversation-scaffold-text)',
       className
     )}
+    data-conversation-scaffold=""
     role="status"
     {...rest}
   >

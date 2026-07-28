@@ -476,6 +476,23 @@ describe('a file edit among ordinary activity', () => {
   })
 })
 
+// The transcript rests its scaffolding at a fade, keyed off one attribute. A
+// surface that renders without it is brighter than everything around it, which
+// is how two adjacent, identical rows came to sit at two opacities.
+describe('transcript fade', () => {
+  it('marks every row and summary as scaffolding', async () => {
+    const { container } = render(<GroupHarness message={editBetweenRunsMessage()} />)
+
+    await screen.findByText('Explored 2 files')
+
+    const unmarked = [...container.querySelectorAll('[data-tool-summary],[data-tool-row]')].filter(
+      node => !node.hasAttribute('data-conversation-scaffold')
+    )
+
+    expect(unmarked).toHaveLength(0)
+  })
+})
+
 describe('live tool run', () => {
   it('keeps its rows on screen instead of hiding them behind the summary', async () => {
     const { container } = render(<GroupHarness message={groupedPendingMessage()} />)

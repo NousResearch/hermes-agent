@@ -30,12 +30,14 @@ Usage::
 import logging
 import os
 import platform
+import queue
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -653,9 +655,12 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
 
 
 def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProcess:
-    """Run a command-provider shell command with process-tree timeout cleanup.
+    """Run a command-provider shell command with process-tree idle cleanup.
 
-    Mirrors ``tools.tts_tool._run_command_tts``.
+    Mirrors ``tools.tts_tool._run_command_tts``: ``timeout`` is an IDLE
+    timeout, reset whenever the command emits output on stdout/stderr —
+    a slow-but-alive provider survives, a silently stalled one is killed
+    (same progress-based stuck detection as the TTS runner, #50081).
     Child env is scrubbed of Hermes secrets (salvage of #56332) while still
     propagating delegated-child lineage markers when applicable.
     """
@@ -680,21 +685,89 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        _terminate_command_stt_process_tree(proc)
+    output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
+    chunks: Dict[str, list] = {"stdout": [], "stderr": []}
+    open_streams = {"stdout", "stderr"}
+
+    def read_stream(name: str, stream: Any) -> None:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        read1 = getattr(getattr(stream, "buffer", None), "read1", None)
         try:
-            stdout, stderr = proc.communicate(timeout=1)
-        except Exception:
-            stdout = getattr(exc, "output", None)
-            stderr = getattr(exc, "stderr", None)
-        raise subprocess.TimeoutExpired(
-            command,
-            timeout,
-            output=stdout,
-            stderr=stderr,
-        ) from exc
+            while True:
+                if read1 is None:
+                    chunk = stream.read(65536)
+                else:
+                    data = read1(65536)
+                    chunk = data.decode(encoding, errors="replace")
+                if not chunk:
+                    break
+                output_queue.put((name, chunk))
+        finally:
+            output_queue.put((name, None))
+
+    readers = [
+        threading.Thread(
+            target=read_stream,
+            args=("stdout", proc.stdout),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_stream,
+            args=("stderr", proc.stderr),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while open_streams:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            name, chunk = output_queue.get(timeout=min(0.05, remaining))
+        except queue.Empty:
+            continue
+        if chunk is None:
+            open_streams.discard(name)
+            continue
+        chunks[name].append(chunk)
+        deadline = time.monotonic() + timeout
+
+    if not timed_out:
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+
+    if timed_out:
+        _terminate_command_stt_process_tree(proc)
+        for reader in readers:
+            reader.join(timeout=0.5)
+        while True:
+            try:
+                name, chunk = output_queue.get_nowait()
+            except queue.Empty:
+                break
+            if chunk:
+                chunks[name].append(chunk)
+        stdout = "".join(chunks["stdout"])
+        stderr = "".join(chunks["stderr"])
+        try:
+            raise subprocess.TimeoutExpired(command, timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise subprocess.TimeoutExpired(
+                command,
+                timeout,
+                output=stdout,
+                stderr=stderr,
+            ) from exc
+
+    stdout = "".join(chunks["stdout"])
+    stderr = "".join(chunks["stderr"])
 
     if proc.returncode:
         raise subprocess.CalledProcessError(

@@ -1,8 +1,8 @@
 'use client'
 
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
-import { type FC, useMemo } from 'react'
-import ShikiHighlighter from 'react-shiki'
+import { type ComponentProps, type FC, lazy, Suspense, useMemo } from 'react'
+import type ShikiHighlighter from 'react-shiki'
 
 import {
   CodeCard,
@@ -51,6 +51,20 @@ const MAX_HIGHLIGHT_CHARS = 150_000
 const MAX_HIGHLIGHT_LINES = 3_000
 const CHUNK_LINES = 200
 const EST_LINE_PX = 16
+
+// react-shiki (and through it the multi-MB shiki grammar/theme bundle) is the
+// heaviest dependency in the renderer. `shiki-block.tsx` is its only static
+// importer, so this lazy() is the single seam that keeps shiki out of the
+// entry chunk — it loads on the first highlighted code block, not at boot.
+const ShikiBlock = lazy(() => import('./shiki-block'))
+
+/** Drop-in ShikiHighlighter that suspends on first use and renders the code
+ *  as plain preformatted text until the shiki chunk arrives. */
+export const LazyShiki: FC<ComponentProps<typeof ShikiHighlighter>> = props => (
+  <Suspense fallback={<PlainCode code={String(props.children ?? '')} />}>
+    <ShikiBlock {...props} />
+  </Suspense>
+)
 
 export function exceedsHighlightBudget(code: string): boolean {
   if (code.length > MAX_HIGHLIGHT_CHARS) {
@@ -161,7 +175,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
             {plain ? (
               <PlainCode code={trimmed} />
             ) : (
-              <ShikiHighlighter
+              <LazyShiki
                 addDefaultStyles={false}
                 as="div"
                 colorReplacements={SHIKI_COLOR_REPLACEMENTS}
@@ -172,7 +186,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
                 theme={SHIKI_THEME}
               >
                 {trimmed}
-              </ShikiHighlighter>
+              </LazyShiki>
             )}
           </Pre>
         </ExpandableBlock>

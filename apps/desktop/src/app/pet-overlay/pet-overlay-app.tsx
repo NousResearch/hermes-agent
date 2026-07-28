@@ -6,7 +6,7 @@ import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
-import { $petActivity, $petAtRest, $petInfo, $petRoam, setPetInfo } from '@/store/pet'
+import { $petActivity, $petAtRest, $petInfo, setPetInfo } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
 import { roamWalkRow } from '@/components/pet/pet-sprite'
 import { usePetRoam } from '@/components/pet/use-pet-roam'
@@ -390,11 +390,13 @@ export function PetOverlayApp() {
 
   // ── roam ──────────────────────────────────────────────────────────────
 
-  const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
   const petW = (info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)
   const petH = (info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)
   const active = info.enabled && Boolean(info.spritesheetBase64)
+  // Overlay always roams when idle — the $petRoam localStorage toggle is
+  // per-device and may not sync cleanly across BrowserWindow instances.
+  const roamActive = active && atRest
 
   // Seed a centered-bottom starting position once the pet loads.
   useEffect(() => {
@@ -402,7 +404,7 @@ export function PetOverlayApp() {
       roamPosSeeded.current = true
       setRoamPos({
         x: Math.max(0, (window.innerWidth - petW) / 2),
-        y: Math.max(0, window.innerHeight - petH)
+        y: Math.max(0, window.innerHeight - petH - 16)
       })
     }
   }, [active, petW, petH])
@@ -412,7 +414,7 @@ export function PetOverlayApp() {
   const commitRoam = useCallback((point: Point) => setRoamPos(point), [])
 
   usePetRoam({
-    enabled: roamEnabled && active && atRest,
+    enabled: roamActive,
     containerRef: petRef,
     isInteracting,
     petW,

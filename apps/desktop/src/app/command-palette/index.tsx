@@ -313,6 +313,7 @@ export function CommandPalette() {
   const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
+
   // cmdk's onSelect doesn't forward the triggering event — keep the last
   // click/keydown modifiers so session rows can honour ⌘-Enter / ⌘-click.
   const lastSelectMods = useRef<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }>({
@@ -320,6 +321,7 @@ export function CommandPalette() {
     metaKey: false,
     shiftKey: false
   })
+
   const noteSelectMods = (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
     lastSelectMods.current = {
       ctrlKey: event.ctrlKey,

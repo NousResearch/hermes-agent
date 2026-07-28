@@ -1048,14 +1048,43 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             except sqlite3.Error:
                 pass
             msg = str(exc).lower()
-            if "no such table" in msg or "no such column" in msg:
-                return None
             if "no such tokenizer: cjk_unicode61" in msg:
                 # This probe process couldn't load the cjk extension while
                 # the DB carries the cjk index — capability gap, not
                 # corruption. A tokenizer-capable SessionDB serves it fine;
                 # a tokenizer-less one self-heals by dropping the triggers.
                 return None
+            if "no such table" in msg or "no such column" in msg:
+                # A brand-new file mid-init genuinely has no sessions/messages
+                # tables yet, and that must not be reported as damage. But the
+                # SAME error text is produced by a structurally BROKEN store:
+                # an FTS trigger that outlived the virtual table it writes to
+                # (interrupted migration, partially-applied schema change,
+                # manual DROP). In that state every INSERT INTO messages
+                # fails, so the store cannot record a single new message — yet
+                # returning None here reported it as "opens cleanly — no
+                # repair needed", leaving the user with no actionable signal.
+                #
+                # Distinguish the two by asking whether the base tables exist.
+                # If they do, this is not a fresh file, and a "no such table"
+                # from the write probe is a real, actionable schema fault.
+                try:
+                    base_tables = {
+                        r[0] for r in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table' "
+                            "AND name IN ('sessions', 'messages')"
+                        ).fetchall()
+                    }
+                except sqlite3.DatabaseError:
+                    return None
+                if {"sessions", "messages"} - base_tables:
+                    # Genuinely mid-init / not a populated store.
+                    return None
+                return (
+                    f"incomplete FTS schema — message writes fail: {exc}. "
+                    "An FTS trigger references a table that no longer exists "
+                    "(interrupted migration or partial schema change)."
+                )
             return str(exc)
         return None
     except sqlite3.DatabaseError as exc:

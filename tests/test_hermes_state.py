@@ -7810,3 +7810,104 @@ class TestDisplayMetadataReadPaths:
         )
         assert db.get_messages_as_conversation("s1")[0]["display_metadata"] == self.META
 
+
+class TestRepairDetectsIncompleteFtsSchema:
+    """`sessions repair --check-only` must not call a write-broken store healthy.
+
+    _db_opens_cleanly() drives a rolled-back message write through the FTS
+    triggers. When a trigger outlives the virtual table it writes to, that
+    write fails with "no such table" — the same text a brand-new file
+    mid-init produces — and the probe used to treat both as "not yet a
+    populated DB" and report the database as clean.
+    """
+
+    @staticmethod
+    def _seed(db_path, n=60):
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            for i in range(n):
+                seeded.append_message(
+                    "s1",
+                    role=("user" if i % 3 == 0
+                          else "assistant" if i % 3 == 1 else "tool"),
+                    content=f"sentinel payload {i} zebra",
+                )
+            high_water = seeded._conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages"
+            ).fetchone()[0]
+        finally:
+            seeded.close()
+        return high_water
+
+    def test_repair_check_detects_trigger_without_its_fts_table(self, tmp_path):
+        """A populated store whose message writes fail is NOT 'healthy'.
+
+        When an FTS trigger outlives the virtual table it writes to, every
+        ``INSERT INTO messages`` fails. ``_db_opens_cleanly()`` used to treat
+        the resulting "no such table" as "brand new file mid-init" and return
+        None, so ``hermes sessions repair --check-only`` reported the DB as
+        clean while the store could not record a single new message.
+        """
+        db_path = tmp_path / "state.db"
+        self._seed(db_path, n=10)
+
+        # Drop the trigram table but leave its triggers behind.
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+            conn.commit()
+            surviving = [
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                    "AND name LIKE 'messages_fts_trigram%'"
+                ).fetchall()
+            ]
+            assert surviving, "setup: triggers must outlive the table"
+
+            # Ground truth: the store really cannot accept a message.
+            with pytest.raises(sqlite3.OperationalError):
+                conn.execute(
+                    "INSERT INTO sessions (id, source, started_at) "
+                    "VALUES ('s2', 'cli', 0)"
+                )
+                conn.execute(
+                    "INSERT INTO messages (session_id, role, content, timestamp) "
+                    "VALUES ('s2', 'user', 'x', 0)"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+
+        reason = hermes_state._db_opens_cleanly(db_path)
+        assert reason is not None, (
+            "repair reported a write-broken store as opening cleanly"
+        )
+        assert "messages_fts_trigram" in reason
+
+    def test_repair_check_still_passes_a_healthy_store(self, tmp_path):
+        """The narrowed guard must not flag an intact populated store.
+
+        The write probe's "no such table" branch is the one being narrowed, so
+        the invariant that matters is that a normal, fully-initialised DB —
+        with and without the trigram index — still reports clean.
+        """
+        db_path = tmp_path / "state.db"
+        self._seed(db_path, n=10)
+        assert hermes_state._db_opens_cleanly(db_path) is None
+
+        # Same store with the trigram index cleanly removed (table AND its
+        # triggers) — the supported trigram-disabled shape, not damage.
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for trigger in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+            conn.commit()
+        finally:
+            conn.close()
+        assert hermes_state._db_opens_cleanly(db_path) is None

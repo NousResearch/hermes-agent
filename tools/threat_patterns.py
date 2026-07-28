@@ -58,6 +58,60 @@ MAX_SCAN_CHARS = 65_536
 # bypasses without introducing unbounded repetition.
 _FILLER = r"(?:\w+\s+){0,8}"
 
+# Negation prefixes that flip a would-be injection pattern from a positive
+# instruction ("pretend to be X") into a benign negative guidance ("don't
+# pretend to be X").  When one of these precedes a match within a small
+# window, the match is treated as advisory-only and suppressed at the
+# context-file layer (see ``agent/prompt_builder.py``).
+#
+# The set is intentionally narrow: it covers the contractions and long forms
+# that occur in natural prose.  Imperative negation ("do not") and contraction
+# ("don't") are the common case; "never" / "avoid" / "without" cover stylistic
+# variants.  We do not attempt to handle languages other than English or
+# roundabout phrasings — the failure mode of missing one is a false positive,
+# not a false negative (the underlying pattern still applies to the rest of
+# the file).
+_NEGATION_PREFIXES = (
+    "don't",
+    "do not",
+    "dont",        # strip-apostrophe typo / plain-ASCII authoring
+    "never",
+    "avoid",
+    "without",
+    "not",         # "you are not to pretend …"
+)
+
+# Compiled once: a single regex that matches any negation prefix at a word
+# boundary, used by the negation-aware scanner.  Case-insensitive.
+_NEGATION_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(p) for p in _NEGATION_PREFIXES) + r")\b",
+    re.IGNORECASE,
+)
+
+# Maximum number of filler tokens allowed between a negation prefix and the
+# pattern match.  Five tokens covers "don't ever pretend to be" or
+# "never under any circumstances pretend to be" without allowing an attacker
+# to push the negation arbitrarily far away from the verb they're trying to
+# cloak.  Slightly tighter than ``_FILLER``'s 8 because a real negated threat
+# almost always binds within a single clause, while obfuscation attempts to
+# bury it.
+_NEGATION_WINDOW_TOKENS = 5
+
+# Patterns whose context-scope matches are subject to negation suppression.
+# These are the role / identity / restriction patterns that read as natural
+# guidance when negated ("don't pretend to be", "never answer without
+# filters") and as attacks when asserted positively.  C2 / exfil / classic
+# injection patterns are NOT in this set — "never ignore previous
+# instructions" does not turn an injection benign.
+_NEGATION_AWARE_PIDS = frozenset({
+    "role_pretend",
+    "role_hijack",
+    "remove_filters",
+    "fake_update",
+    "bypass_restrictions",
+    "deception_hide",
+})
+
 # Each entry: (regex, pattern_id, scope)
 # scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
@@ -220,6 +274,14 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     Also checks for invisible unicode characters (returned as
     ``"invisible_unicode_U+XXXX"`` so the caller can surface the offending
     codepoint in a log line).
+
+    Negation awareness: this entry point reports ALL pattern matches,
+    including ones that read as benign because a negation prefix
+    ("don't pretend to be") precedes them.  The strict-scope callers
+    (memory writes, skill installs) want those hits surfaced so an
+    operator can confirm the content.  The context-file pipeline uses
+    :func:`scan_for_threats_with_negation` instead, which suppresses
+    negated matches at the line level.
     """
     if not content:
         return []
@@ -255,6 +317,105 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     return findings
 
 
+# Result tuple for the negation-aware scanner.  ``span`` is the half-open
+# [start, end) character offsets of the pattern match in the NORMALISED text
+# (offsets in the raw text would shift after NFKC folding).  ``negated`` is
+# True if a negation prefix precedes the match within the configured window,
+# in which case the caller may downgrade the hit from "block" to "warn" or
+# redact only the offending line.
+ThreatMatch = Tuple[str, Tuple[int, int], bool]
+
+
+def scan_for_threats_with_negation(
+    content: str, scope: str = "context"
+) -> List[ThreatMatch]:
+    """Like :func:`scan_for_threats` but returns per-match spans and
+    whether each match is preceded by a negation prefix.
+
+    Returns one ``ThreatMatch`` per pattern that fires (i.e. a pattern
+    fires at most once even if it matches multiple times — the span points
+    at the first match).  Invisible-unicode hits are reported with a span
+    of ``(-1, -1)`` and ``negated=False``; they are never subject to
+    negation suppression.
+
+    The negation check looks for one of :data:`_NEGATION_PREFIXES` ending
+    within ``_NEGATION_WINDOW_TOKENS`` tokens before the match start.  Only
+    patterns in :data:`_NEGATION_AWARE_PIDS` are subject to suppression;
+    classic injection, C2, and exfil patterns always report ``negated=False``
+    so callers can keep blocking on them.
+    """
+    if not content:
+        return []
+
+    matches: List[ThreatMatch] = []
+
+    content = content[:MAX_SCAN_CHARS]
+    char_set = set(content)
+    invisible_hits = char_set & INVISIBLE_CHARS
+    for ch in invisible_hits:
+        matches.append((
+            f"invisible_unicode_U+{ord(ch):04X}",
+            (-1, -1),
+            False,
+        ))
+
+    normalised = unicodedata.normalize("NFKC", content)
+    patterns = _COMPILED.get(scope)
+    if patterns is None:
+        raise ValueError(
+            f"scan_for_threats_with_negation: unknown scope {scope!r}"
+        )
+    for compiled, pid in patterns:
+        m = compiled.search(normalised)
+        if m is None:
+            continue
+        negated = False
+        if pid in _NEGATION_AWARE_PIDS:
+            negated = _is_negated(normalised, m.start())
+        matches.append((pid, (m.start(), m.end()), negated))
+
+    return matches
+
+
+def _is_negated(text: str, match_start: int) -> bool:
+    """Return True if a negation prefix precedes ``match_start`` within
+    ``_NEGATION_WINDOW_TOKENS`` tokens.
+
+    The lookbehind is bounded by scanning at most ``_NEGATION_WINDOW_TOKENS
+    + 1`` whitespace-separated tokens backwards from ``match_start`` and
+    checking whether any of them is a negation prefix.  Bounded scanning
+    keeps worst-case runtime constant per match regardless of input size.
+    """
+    # Walk backwards from the match start collecting tokens.  We split the
+    # window into roughly token-sized chunks using ``split()`` on a small
+    # slice that ends at match_start; this is cheaper than a regex finditer
+    # over the whole prefix.  The slice is bounded by
+    # ``_NEGATION_WINDOW_TOKENS`` * (max reasonable token length + space)
+    # ≈ a few hundred chars at most, which stays well within input-size
+    # bounds even for very long files.
+    max_window_chars = (_NEGATION_WINDOW_TOKENS + 1) * 32
+    window_start = max(0, match_start - max_window_chars)
+    window = text[window_start:match_start]
+    tokens = window.split()
+    # Keep at most the last N tokens leading up to the match.
+    tail = tokens[-_NEGATION_WINDOW_TOKENS:] if tokens else []
+    for tok in tail:
+        # ``split()`` strips punctuation attached to tokens, so "don't" comes
+        # through cleanly.  But authoring like "Don't," or "do-not" can land
+        # as "Don't" or "do-not" — both handled below.
+        lower = tok.lower().strip(".,;:!?")
+        if lower in _NEGATION_PREFIXES:
+            return True
+        # Handle hyphenated authoring ("do-not pretend", "don-t pretend").
+        # Normalize hyphens to spaces and re-check the whole token sequence:
+        # we only need to know if ANY token is a bare negation prefix.
+        if "-" in tok:
+            for piece in tok.lower().split("-"):
+                if piece.strip(".,;:!?") in _NEGATION_PREFIXES:
+                    return True
+    return False
+
+
 def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
     """Return a human-readable error string for the first threat found, or None.
 
@@ -279,6 +440,8 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
 __all__ = [
     "INVISIBLE_CHARS",
     "MAX_SCAN_CHARS",
-    "scan_for_threats",
+    "ThreatMatch",
     "first_threat_message",
+    "scan_for_threats",
+    "scan_for_threats_with_negation",
 ]

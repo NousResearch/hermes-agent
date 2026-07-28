@@ -9,7 +9,6 @@ back to the legacy locked path when WAL or the read connection is missing.
 """
 
 import threading
-import time
 
 import pytest
 
@@ -26,6 +25,7 @@ def db(tmp_path):
     d.close()
 
 
+@pytest.mark.requires_wal
 def test_read_conn_is_per_thread(db):
     conns = {}
 
@@ -43,6 +43,7 @@ def test_read_conn_reused_within_thread(db):
     assert db._get_read_conn() is db._get_read_conn()
 
 
+@pytest.mark.requires_wal
 def test_reads_do_not_take_writer_lock(db):
     """Reads must complete while another thread holds self._lock."""
     acquired = db._lock.acquire()
@@ -66,6 +67,7 @@ def test_reads_do_not_take_writer_lock(db):
         db._lock.release()
 
 
+@pytest.mark.requires_wal
 def test_title_resolution_does_not_take_writer_lock(db):
     """Exact-title and numbered-variant resolution must not block on self._lock."""
     db.create_session(session_id="t1", source="cli", model="m")
@@ -112,6 +114,7 @@ def test_non_wal_uses_locked_path(db):
     assert db.get_session("s1")["id"] == "s1"
 
 
+@pytest.mark.requires_wal
 def test_read_conn_open_failure_marks_thread(db, monkeypatch, tmp_path):
     """A failed read-conn open must not retry per query; fallback still works."""
     import sqlite3 as _sqlite3
@@ -136,6 +139,7 @@ def test_read_conn_open_failure_marks_thread(db, monkeypatch, tmp_path):
         fresh.close()
 
 
+@pytest.mark.requires_wal
 def test_anchored_view_and_around_use_read_path(db):
     msgs = db.get_messages("s1")
     anchor = msgs[0]["id"]

@@ -2005,6 +2005,16 @@ class SessionDB:
         # read-only connections so they never queue behind writer flushes on
         # self._lock. See _read_ctx().
         self._read_local = threading.local()
+        # Strong set of all live read connections across all threads.  We
+        # hold a reference so short-lived reader threads' connections are
+        # not GC'd without close() — that would leak tracked fds in
+        # _live_connections.  close() drains this set.
+        self._read_conns: "set[sqlite3.Connection]" = set()
+        self._read_conns_lock = threading.Lock()
+        # Set when close() begins.  _get_read_conn checks this under the
+        # lock so a reader that finishes opening after the drain finds the
+        # shutdown in progress and closes its own connection immediately.
+        self._read_conns_closed = False
         self._wal_active = False
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
@@ -2183,13 +2193,28 @@ class SessionDB:
         if getattr(self._read_local, "failed", False):
             return None
         try:
-            conn = sqlite3.connect(
+            conn = _connect_tracked_db(
                 f"file:{self.db_path}?mode=ro",
+                tracking_path=self.db_path,
                 uri=True,
                 timeout=5.0,
                 isolation_level=None,
             )
             conn.row_factory = sqlite3.Row
+            # Load the CJK tokenizer extension on this connection so
+            # messages_fts_cjk queries work on the read path. The .so
+            # registers the tokenizer in the connection's in-memory
+            # registry, not the database file, so mode=ro is fine.
+            if self._fts_cjk_loaded:
+                load_fts5_cjk_extension(conn)
+            with self._read_conns_lock:
+                if self._read_conns_closed:
+                    # close() already drained — don't register; close
+                    # immediately so no tracked fd leaks.
+                    conn.close()
+                    self._read_local.failed = True
+                    return None
+                self._read_conns.add(conn)
         except sqlite3.Error:
             # Mark this thread failed so we don't retry the open on every
             # query; the locked writer connection still serves reads.
@@ -2749,8 +2774,11 @@ class SessionDB:
         # connections live in threading.local() and would otherwise be GC'd
         # without calling close(), leaking tracked fds in _live_connections.
         # The strong set holds references so short-lived reader threads'
-        # connections survive until close() drains them.
+        # connections survive until close() drains them.  Setting the closed
+        # flag under the lock prevents a reader from registering a new
+        # connection after the drain.
         with self._read_conns_lock:
+            self._read_conns_closed = True
             read_conns = list(self._read_conns)
             self._read_conns.clear()
         for conn in read_conns:
@@ -2809,11 +2837,21 @@ class SessionDB:
         "indexed": <rows backfilled>, "percent": <0-100 int>}.
         Consumed by search_messages() notes and by status surfaces
         (dashboard/desktop can poll this to render a progress indicator).
+
+        Reads state_meta directly via _read_ctx instead of calling
+        get_meta() (which takes self._lock) so search_messages doesn't
+        block on the writer lock when checking rebuild status.
         """
-        high_water = self.get_meta("fts_rebuild_high_water")
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT key, value FROM state_meta WHERE key IN (?, ?)",
+                ("fts_rebuild_high_water", "fts_rebuild_progress"),
+            ).fetchall()
+        meta = {r["key"]: r["value"] for r in row}
+        high_water = meta.get("fts_rebuild_high_water")
         if high_water is None:
             return None
-        progress = int(self.get_meta("fts_rebuild_progress") or 0)
+        progress = int(meta.get("fts_rebuild_progress") or 0)
         total = int(high_water)
         if total <= 0:
             return None
@@ -2986,10 +3024,16 @@ class SessionDB:
 
     def fts_cjk_rebuild_status(self) -> Optional[Dict[str, Any]]:
         """CJK-index backfill progress, or None when none is pending."""
-        high_water = self.get_meta("fts_cjk_rebuild_high_water")
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT key, value FROM state_meta WHERE key IN (?, ?)",
+                ("fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress"),
+            ).fetchall()
+        meta = {r["key"]: r["value"] for r in row}
+        high_water = meta.get("fts_cjk_rebuild_high_water")
         if high_water is None:
             return None
-        progress = int(self.get_meta("fts_cjk_rebuild_progress") or 0)
+        progress = int(meta.get("fts_cjk_rebuild_progress") or 0)
         total = int(high_water)
         if total <= 0:
             return None
@@ -8403,9 +8447,9 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
         tri_params.extend([limit, offset])
-        with self._lock:
+        with self._read_ctx() as conn:
             try:
-                tri_cursor = self._conn.execute(tri_sql, tri_params)
+                tri_cursor = conn.execute(tri_sql, tri_params)
             except sqlite3.OperationalError:
                 # Query failed at runtime — let the caller fall back.
                 return None
@@ -8686,8 +8730,8 @@ class SessionDB:
                 """
                 cjk_params.extend([limit, offset])
                 try:
-                    with self._lock:
-                        cjk_cursor = self._conn.execute(cjk_sql, cjk_params)
+                    with self._read_ctx() as conn:
+                        cjk_cursor = conn.execute(cjk_sql, cjk_params)
                         matches = [dict(row) for row in cjk_cursor.fetchall()]
                         _trigram_succeeded = True
                 except sqlite3.OperationalError:
@@ -8702,8 +8746,8 @@ class SessionDB:
                     # in place once and retry; on refusal/failure fall back.
                     if self._try_runtime_fts_rebuild(exc):
                         try:
-                            with self._lock:
-                                cjk_cursor = self._conn.execute(
+                            with self._read_ctx() as conn:
+                                cjk_cursor = conn.execute(
                                     cjk_sql, cjk_params
                                 )
                                 matches = [
@@ -8969,7 +9013,8 @@ class SessionDB:
                     matches = tri_matches
 
         # Add surrounding context (1 message before + after each match).
-        # Done outside the lock so we don't hold it across N sequential queries.
+        # Each query takes its own fresh read transaction via _read_ctx, so
+        # we never hold a lock across N sequential queries.
         for match in matches:
             try:
                 with self._read_ctx() as conn:
@@ -9105,8 +9150,8 @@ class SessionDB:
             LIMIT ?
         """
         params = [terms[0]] + params + [limit]
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        with self._read_ctx() as conn:
+            rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def search_sessions_by_id(
@@ -10515,6 +10560,12 @@ class SessionDB:
 
     def get_meta(self, key: str) -> Optional[str]:
         """Read a value from the state_meta key/value store."""
+        # Kept on self._lock (not _read_ctx) because callers like
+        # fts_rebuild_step read progress before entering a write
+        # transaction, and the read-only WAL connection sees only
+        # committed data — a pending write transaction's uncommitted
+        # meta writes would be invisible.  This is a cheap point lookup,
+        # not the convoy bottleneck the read-path split targets.
         with self._lock:
             row = self._conn.execute(
                 "SELECT value FROM state_meta WHERE key = ?", (key,)

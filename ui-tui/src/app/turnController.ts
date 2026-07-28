@@ -604,7 +604,27 @@ class TurnController {
     // only when the gateway elected not to send any (#16391).
     // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
     const wireText = typeof payload.text === 'string' ? payload.text : undefined
-    const rawText = (wireText ?? payload.rendered ?? this.bufRef).trimStart()
+    const completionText = wireText ?? payload.rendered
+    const rawText = (completionText ?? this.bufRef).trimStart()
+
+    // When the gateway sent its own final text, whatever is still sitting in
+    // `this.bufRef` is text the user watched stream AFTER the last segment
+    // flush — typically narration between a tool call and the end of the turn.
+    // `recordMessageComplete` was the only turn-end site that never flushed it,
+    // so `idle()` below wiped it and the transcript lost a block the user had
+    // already seen (#61520).
+    //
+    // Flush it as a segment rather than appending it to `finalMessages`: the
+    // segment spread below already sits ahead of the final assistant text, so
+    // stream order is preserved structurally, and `finalTail()` then strips the
+    // tail out of `finalText` when the completion payload already contains it.
+    // Skipped when `completionText` is absent, because then `rawText` IS the
+    // buffer (the #16391 fallback) and flushing would publish the final answer
+    // as a segment instead of the final message.
+    if (completionText !== undefined && this.bufRef.trim()) {
+      this.flushStreamingSegment()
+    }
+
     const split = splitReasoning(rawText)
     // Only dedupe segments AFTER the interim boundary — interim-sealed
     // segments are preserved even if the final text includes them.

@@ -2,8 +2,11 @@
  * Pure helpers for window zoom. The main process owns webContents.setZoomLevel,
  * so the menu items, the Ctrl/Cmd shortcuts, and the settings UI all funnel
  * through this one clamped scale. Percent is the user-facing unit (100 = the
- * default size); Chromium's internal unit is the zoom level, where
- * factor = 1.2 ^ level.
+ * Chromium actual-size baseline); Chromium's internal unit is the zoom level,
+ * where factor = 1.2 ^ level.
+ *
+ * Our shipped default is five Ctrl/Cmd+- steps out from Chromium 0 — a slightly
+ * tighter UI that still lands near the 90% Appearance preset.
  */
 
 export const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
@@ -12,9 +15,15 @@ const ZOOM_FACTOR_BASE = 1.2
 const MIN_ZOOM_LEVEL = -9
 const MAX_ZOOM_LEVEL = 9
 
+/** Half Chromium's default step; matching the shortcuts and View menu. */
+export const ZOOM_STEP = 0.1
+
+/** Five Ctrl/Cmd+- presses from Chromium 0 (~91%). Fresh installs + Actual Size. */
+export const DEFAULT_ZOOM_LEVEL = -5 * ZOOM_STEP
+
 export function clampZoomLevel(value) {
   if (!Number.isFinite(value)) {
-    return 0
+    return DEFAULT_ZOOM_LEVEL
   }
 
   return Math.min(Math.max(value, MIN_ZOOM_LEVEL), MAX_ZOOM_LEVEL)
@@ -26,7 +35,7 @@ export function zoomLevelToPercent(level) {
 
 export function percentToZoomLevel(percent) {
   if (!Number.isFinite(percent) || percent <= 0) {
-    return 0
+    return DEFAULT_ZOOM_LEVEL
   }
 
   return clampZoomLevel(Math.log(percent / 100) / Math.log(ZOOM_FACTOR_BASE))

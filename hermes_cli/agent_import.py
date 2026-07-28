@@ -40,16 +40,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from utils import atomic_replace
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -248,30 +246,6 @@ def backup_memory_file(path: Path) -> Optional[Path]:
     shutil.copy2(path, backup)
     return backup
 
-
-def atomic_write_text(path: Path, content: str) -> None:
-    """Write ``content`` to ``path`` via temp file + atomic rename.
-
-    Mirrors ``MemoryStore._write_file``: an interrupted or failed write can
-    never leave a truncated memory store on disk, and readers always see
-    either the old complete file or the new one.  ``atomic_replace`` also
-    keeps a symlinked destination a symlink.
-    """
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix=".import_"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        atomic_replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
 
 
 def merge_entries(
@@ -582,10 +556,16 @@ class AgentImporter:
                 return
             if backup is not None:
                 details["backup"] = str(backup)
-            atomic_write_text(
-                destination,
-                ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""),
-            )
+            try:
+                atomic_write_text(
+                    destination,
+                    ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""),
+                )
+            except OSError as exc:
+                self.record(kind, source, destination, "error",
+                            f"Could not write merged memory file: {exc}",
+                            **details)
+                return
             self.record(kind, source, destination, "imported", **details)
         else:
             self.record(kind, source, destination, "imported",

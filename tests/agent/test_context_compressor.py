@@ -4627,3 +4627,45 @@ class TestMinTailUserMessages:
         exactly the pre-feature single-anchor behavior."""
         from hermes_cli.config import DEFAULT_CONFIG
         assert DEFAULT_CONFIG["compression"]["min_tail_user_messages"] == 1
+
+
+class TestContextLengthSetterCoherence:
+    """The context_length setter must (a) not wipe runtime corrections on
+    no-op re-assignment of the same window (codex app-server usage callback
+    re-reports it every response), and (b) re-apply the small-context
+    threshold floor for a genuinely new window so percent and tokens derive
+    from the same window."""
+
+    def test_same_value_reassignment_preserves_threshold_override(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
+        # Runtime correction (aux-context threshold sync pattern).
+        c.threshold_tokens = 42_000
+        c.tail_token_budget = 8_400
+        # Codex usage callback re-reports the same window every response.
+        c.context_length = 200_000
+        assert c.threshold_tokens == 42_000
+        assert c.tail_token_budget == 8_400
+
+    def test_new_value_assignment_refloors_and_invalidates(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
+        assert c.threshold_percent == 0.50  # 1M >= 512K: configured value
+        # Switch to a small window via direct assignment (codex path).
+        c.context_length = 200_000
+        # Floor re-applied for the new window...
+        assert c.threshold_percent == 0.75
+        # ...and budgets recompute from the same window+percent.
+        assert c.threshold_tokens == 150_000
+
+    def test_new_value_assignment_drops_floor_when_growing(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
+        assert c.threshold_percent == 0.75  # floored
+        c.context_length = 1_000_000
+        # Raise-only floor no longer applies: back to configured value.
+        assert c.threshold_percent == 0.50
+        assert c.threshold_tokens == 500_000

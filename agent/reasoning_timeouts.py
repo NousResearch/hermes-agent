@@ -148,8 +148,10 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
 # gateway timing is the same).
 # Pre-compile all patterns at module load time to avoid per-call regex
 # compilation and thread-safety issues with the mutable _PATTERN_CACHE.
-# Tuples are immutable after creation, so this is safe for free-threaded
-# Python 3.13+ without any locking.
+# The list is built once at import and never mutated afterwards, so it is
+# safe for free-threaded Python 3.13+ without any locking. The slug is kept
+# in each entry for debuggability (log/inspection), even though _match_any
+# only consumes floor + pattern.
 _SORTED_REASONING_FLOORS: list[tuple[str, float, re.Pattern[str]]] = [
     (slug, floor, re.compile(r"^" + re.escape(slug) + r"(?:$|[\-._])"))
     for slug, floor in sorted(

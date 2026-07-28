@@ -259,6 +259,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "google-api-python-client==2.194.0",
         "google-auth-oauthlib==1.3.1",
         "google-auth-httplib2==0.3.1",
+        # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
+        # so lazy installs do not resolve vulnerable httplib2 0.31.2
+        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS).
+        "httplib2==0.32.0",
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 

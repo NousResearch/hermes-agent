@@ -165,46 +165,46 @@ describe('scanVenvBlockers', () => {
   })
 
   function execReturn(json: string): any {
-    return ((...args: any[]) => json) as any
+    return (async (...args: any[]) => ({ stdout: json, stderr: '' })) as any
   }
 
   function execThrow(status: number, stderr: string): any {
-    return ((...args: any[]) => { const e: any = new Error(); e.status = status; e.stderr = Buffer.from(stderr); throw e }) as any
+    return (async (...args: any[]) => { const e: any = new Error(); e.status = status; e.stderr = Buffer.from(stderr); throw e }) as any
   }
 
-  it('clear scan returns clear', () => {
-    assert.equal(scanVenvBlockers('/r', execReturn(okJson), stubVenv).kind, 'clear')
+  it('clear scan returns clear', async () => {
+    assert.equal((await scanVenvBlockers('/r', execReturn(okJson), stubVenv)).kind, 'clear')
   })
 
-  it('blocked scan returns blocked', () => {
-    assert.equal(scanVenvBlockers('/r', execReturn(blockedJson), stubVenv).kind, 'blocked')
+  it('blocked scan returns blocked', async () => {
+    assert.equal((await scanVenvBlockers('/r', execReturn(blockedJson), stubVenv)).kind, 'blocked')
   })
 
-  it('non-zero exit is probe-failure', () => {
-    const o = scanVenvBlockers('/r', execThrow(2, 'ModuleNotFoundError'), stubVenv)
+  it('non-zero exit is probe-failure', async () => {
+    const o = await scanVenvBlockers('/r', execThrow(2, 'ModuleNotFoundError'), stubVenv)
     assert.equal(o.kind, 'probe-failure')
   })
 
-  it('missing venv python is probe-failure', () => {
-    const o = scanVenvBlockers('/r', execReturn(okJson), () => null)
+  it('missing venv python is probe-failure', async () => {
+    const o = await scanVenvBlockers('/r', execReturn(okJson), () => null)
     assert.equal(o.kind, 'probe-failure')
   })
 
-  it('malformed subprocess output is probe-failure', () => {
-    const o = scanVenvBlockers('/r', execReturn('bad json'), stubVenv)
+  it('malformed subprocess output is probe-failure', async () => {
+    const o = await scanVenvBlockers('/r', execReturn('bad json'), stubVenv)
     assert.equal(o.kind, 'probe-failure')
   })
 
-  it('calls subprocess with correct args, cwd, timeout, stdio', () => {
+  it('calls subprocess with correct args, cwd and timeout', async () => {
     const calls: any[] = []
 
-    const spy = ((cmd: string, args: string[], opts: any) => {
-      calls.push({ cmd, args, cwd: opts.cwd, timeout: opts.timeout, stdio: opts.stdio })
+    const spy = (async (cmd: string, args: string[], opts: any) => {
+      calls.push({ cmd, args, cwd: opts.cwd, timeout: opts.timeout })
 
-      return okJson
+      return { stdout: okJson, stderr: '' }
     }) as any
 
-    scanVenvBlockers('/update/root', spy, stubVenv)
+    await scanVenvBlockers('/update/root', spy, stubVenv)
     assert.equal(calls.length, 1)
     const c = calls[0]
     assert.ok(c.cmd.endsWith('python.exe'))
@@ -212,6 +212,5 @@ describe('scanVenvBlockers', () => {
     assert.equal(c.cwd, '/update/root')
     assert.equal(typeof c.timeout, 'number')
     assert.ok(c.timeout > 0)
-    assert.deepEqual(c.stdio, ['ignore', 'pipe', 'pipe'])
   })
 })

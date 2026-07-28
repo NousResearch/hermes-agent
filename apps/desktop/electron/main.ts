@@ -2891,7 +2891,7 @@ async function applyUpdates(opts = {}) {
     // malformed output, missing psutil) abort the handoff — never proceed
     // to the detached updater when the venv state is unknown.
     if (IS_WINDOWS) {
-      const scanOutcome = scanVenvBlockers(updateRoot)
+      const scanOutcome = await scanVenvBlockers(updateRoot)
 
       if (scanOutcome.kind === 'blocked') {
         const message = formatBlockerMessage(scanOutcome.result)

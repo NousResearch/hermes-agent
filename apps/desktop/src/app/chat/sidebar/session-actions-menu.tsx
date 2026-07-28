@@ -22,7 +22,6 @@ import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle
@@ -403,7 +402,7 @@ export function SessionActionsMenu({
     <>
       <ActionsMenu
         align={align}
-        ariaLabel={t.sidebar.row.actionsFor(actions.title)}
+        ariaLabel={t.sidebar.row.sessionActions}
         contentClassName="w-40"
         items={renderItems}
         sideOffset={sideOffset}
@@ -426,7 +425,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
   return (
     <>
       <ActionsContextMenu
-        ariaLabel={t.sidebar.row.actionsFor(actions.title)}
+        ariaLabel={t.sidebar.row.sessionActions}
         contentClassName="w-40"
         items={renderItems}
       >
@@ -492,7 +491,6 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{r.renameTitle}</DialogTitle>
-          <DialogDescription>{r.renameDesc}</DialogDescription>
         </DialogHeader>
         <Input
           autoFocus

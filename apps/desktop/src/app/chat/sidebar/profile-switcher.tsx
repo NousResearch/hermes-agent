@@ -672,7 +672,7 @@ function ProfileSquare({
         {/* The rail sits at the very bottom, so pad off the chrome (esp. the
             statusbar) — Radix then flips the menu up instead of squishing it. */}
         <ContextMenuContent
-          aria-label={p.actionsFor(label)}
+          aria-label={p.actions}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
           // Menu close refocuses the trigger — which doubles as the popover
@@ -704,7 +704,7 @@ function ProfileSquare({
       </ContextMenu>
 
       <PopoverContent
-        aria-label={p.colorFor(label)}
+        aria-label={p.colorFor}
         className="w-auto p-2"
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         side="top"

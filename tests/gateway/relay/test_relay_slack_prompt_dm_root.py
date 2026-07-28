@@ -450,3 +450,37 @@ def test_run_py_keeps_self_anchor_in_thread_mode():
         _resolve_progress_thread_id("slack", None, "1700.001", reply_in_thread=True)
         == "1700.001"
     )
+
+
+# ---------------------------------------------------------------------------
+# Native parity escape hatch: platforms.relay.extra.slack.
+# dm_top_level_threads_as_sessions=false keeps threaded replies but ONE
+# rolling DM session (mirrors native SlackAdapter._dm_top_level_threads_as_sessions).
+# Without the knob, reply_in_thread alone couples placement AND session
+# keying — a posture native operators can express and relay ones could not.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_session_stamp_opt_out_keeps_rolling_dm_session():
+    adapter, stub = _wire("D1", "dm")
+    adapter.config.extra = {
+        "slack": {
+            "reply_in_thread": True,
+            "dm_top_level_threads_as_sessions": False,
+        }
+    }
+    event = _inbound_event("D1", message_id="1700.0001", thread_id=None)
+    adapter._stamp_slack_session_thread(event)
+    assert getattr(event.source, "thread_id", None) is None, (
+        "opt-out: top-level DM must NOT be stamped — one rolling session"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_stamp_default_remains_per_message():
+    adapter, stub = _wire("D1", "dm")
+    adapter.config.extra = {"slack": {"reply_in_thread": True}}
+    event = _inbound_event("D1", message_id="1700.0002", thread_id=None)
+    adapter._stamp_slack_session_thread(event)
+    assert getattr(event.source, "thread_id", None) == "1700.0002", (
+        "default (native parity): per-message sessions stay on"
+    )

@@ -13131,7 +13131,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from hermes_cli.route_identity import should_clear_context_pin
 
-                        if should_clear_context_pin(
+                        if await asyncio.to_thread(
+                            should_clear_context_pin,
                             None,  # model match already checked above
                             None,
                             _msg_model_cfg.get("base_url"),
@@ -13726,7 +13727,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from hermes_cli.route_identity import should_clear_context_pin
 
-                        if should_clear_context_pin(
+                        if await asyncio.to_thread(
+                            should_clear_context_pin,
                             _hyg_configured_model,
                             _hyg_model,
                             _hyg_configured_base_url,

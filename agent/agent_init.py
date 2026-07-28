@@ -118,7 +118,7 @@ def _provider_default_routes(provider: str) -> set[str]:
         from hermes_cli.providers import HERMES_OVERLAYS, get_provider
 
         overlay = HERMES_OVERLAYS.get(provider)
-        provider_def = get_provider(provider)
+        provider_def = get_provider(provider, allow_network=False)
         for value in (
             getattr(overlay, "base_url_override", ""),
             getattr(provider_def, "base_url", ""),

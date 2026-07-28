@@ -3244,23 +3244,20 @@ class TestStreamTtsTempfileFallback:
         import tools.voice_mode as vm
         from tools.tts_tool import stream_tts_to_speaker
 
-        # Fake ElevenLabs client so `client` is non-None and convert() yields PCM.
-        class _FakeTTS:
-            def convert(self, text, voice_id, model_id, output_format):
-                yield b"\x00\x00" * 240
-                yield b"\x00\x00" * 240
+        # Fake registry streamer so resolve_streaming_provider yields chunked
+        # PCM regardless of which real providers are configured in the env.
+        class _FakeStreamer:
+            sample_rate = 24000
+            channels = 1
 
-        class _FakeClient:
-            def __init__(self, api_key):
-                self.text_to_speech = _FakeTTS()
+            def stream(self, text):
+                yield b"\x00\x00" * 240
+                yield b"\x00\x00" * 240
 
         monkeypatch.setattr(
-            tts_mod, "get_env_value",
-            lambda name, default=None: (
-                "k" if name == "ELEVENLABS_API_KEY" else (default or "")
-            ),
+            "tools.tts_streaming.resolve_streaming_provider",
+            lambda tts_config, preferred=None: _FakeStreamer(),
         )
-        monkeypatch.setattr(tts_mod, "_import_elevenlabs", lambda: _FakeClient)
 
         # Force sounddevice unavailable → output_stream is None → tempfile fallback.
         def _no_sounddevice():

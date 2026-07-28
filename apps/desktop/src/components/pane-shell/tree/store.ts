@@ -351,14 +351,52 @@ export function treePanesWithPrefix(prefix: string): string[] {
  *  An atom so the strip re-renders when the action becomes available. */
 export const $newSessionTabAction = atom<(() => void) | null>(null)
 
-/** ⌘1…⌘9: activate the Nth tab of the FOCUSED zone (the interaction tracker's
- *  group), but only when it's a real tab strip (≥2 panes). Returns false so the
- *  caller falls back to its default (profile switch) — the number keys mean
- *  "switch tab" only while a multi-tab zone holds focus. */
+/**
+ * Keyboard slots (⌘1…⌘9, ⌃Tab) must index the SAME tabs the strip paints —
+ * chrome-hidden panes (files in Focus layout), unregistered ones, and
+ * narrow-collapsed collapsibles stay in `group.panes` but aren't chips. Walking
+ * the raw array made ⌘2 land on what the strip called tab 1 after a hidden
+ * pane sat earlier in the list (classic after-⌘W-shift offset).
+ */
+function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
+  const hidden = $hiddenTreePanes.get()
+  const registered = registry.getArea('panes')
+  const paneFor = (id: string) => registered.find(c => c.id === id)
+
+  return group.panes.filter(id => {
+    const pane = paneFor(id)
+
+    if (!pane) {
+      return false
+    }
+
+    if (hidden.has(id)) {
+      return false
+    }
+
+    // Match TreeGroup's paneShown for the narrow breakpoint — collapsible
+    // panes drop out of the strip when the viewport collapses them.
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia?.(SIDEBAR_COLLAPSE_MEDIA_QUERY).matches &&
+      Boolean((pane.data as { collapsible?: boolean } | undefined)?.collapsible)
+    ) {
+      return false
+    }
+
+    return true
+  })
+}
+
+/** ⌘1…⌘9: activate the Nth *visible* tab of the FOCUSED zone (the interaction
+ *  tracker's group), but only when it's a real tab strip (≥2 shown panes).
+ *  Returns false so the caller falls back to its default (profile switch) —
+ *  the number keys mean "switch tab" only while a multi-tab zone holds focus. */
 export function activateTreeTabSlot(slot: number): boolean {
   const groupId = $activeTreeGroup.get()
   const tree = $layoutTree.get()
-  const panes = (groupId && tree ? findGroup(tree, groupId)?.panes : null) ?? []
+  const group = groupId && tree ? findGroup(tree, groupId) : null
+  const panes = group ? shownPanesInGroup(group) : []
 
   if (panes.length < 2 || slot < 1 || slot > panes.length) {
     return false
@@ -369,20 +407,23 @@ export function activateTreeTabSlot(slot: number): boolean {
   return true
 }
 
-/** ⌃Tab / ⌃⇧Tab: cycle the FOCUSED zone's tabs (wrapping) — but only a
- *  session/main strip with ≥2 tabs. Returns false so the caller falls back to
- *  the recent-session switcher when the focus isn't a chat tab strip. */
+/** ⌃Tab / ⌃⇧Tab: cycle the FOCUSED zone's *visible* tabs (wrapping) — but only a
+ *  session/main strip with ≥2 shown tabs. Returns false so the caller falls
+ *  back to the recent-session switcher when the focus isn't a chat tab strip. */
 export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
   const groupId = $activeTreeGroup.get()
   const tree = $layoutTree.get()
   const group = groupId && tree ? findGroup(tree, groupId) : null
-  const panes = group?.panes ?? []
+  const panes = group ? shownPanesInGroup(group) : []
 
   if (panes.length < 2 || !panes.some(id => id === 'workspace' || id.startsWith('session-tile:'))) {
     return false
   }
 
-  const idx = Math.max(0, panes.indexOf(group!.active ?? ''))
+  // Active may itself be hidden (Files collapsed mid-cycle) — treat it as
+  // missing so the step starts from a real chip rather than landing on a ghost.
+  const current = Math.max(0, panes.indexOf(group!.active ?? ''))
+  const idx = panes.includes(group!.active ?? '') ? current : 0
   const nextId = panes[(idx + direction + panes.length) % panes.length]
   activateTreePane(group!.id, nextId)
 

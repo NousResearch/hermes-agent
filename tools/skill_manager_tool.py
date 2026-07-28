@@ -34,16 +34,14 @@ Directory layout for user skills:
 
 import json
 import logging
-import os
 import re
 import shutil
-import tempfile
 import contextvars as _ctxvars
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
-from utils import atomic_replace, is_truthy_value
+from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
@@ -817,35 +815,13 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
 
 
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Atomically write text content to a file.
+
+    Thin wrapper around :func:`utils.atomic_write_text` so that every
+    destructive file rewrite in the codebase shares one implementation.
     """
-    Atomically write text content to a file.
-    
-    Uses a temporary file in the same directory and os.replace() to ensure
-    the target file is never left in a partially-written state if the process
-    crashes or is interrupted.
-    
-    Args:
-        file_path: Target file path
-        content: Content to write
-        encoding: Text encoding (default: utf-8)
-    """
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(
-        dir=str(file_path.parent),
-        prefix=f".{file_path.name}.tmp.",
-        suffix="",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
-            f.write(content)
-        atomic_replace(temp_path, file_path)
-    except Exception:
-        # Clean up temp file on error
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            logger.error("Failed to remove temporary file %s during atomic write", temp_path, exc_info=True)
-        raise
+    atomic_write_text(file_path, content, encoding=encoding,
+                      tmp_prefix=f".{file_path.name}.tmp.")
 
 
 # =============================================================================

@@ -645,3 +645,46 @@ class TestWriterFailure:
             db.update_token_counts = original
 
         assert _totals(db, "s-stopdrain")["input_tokens"] == 6
+
+
+# =========================================================================
+# Contract guard
+# =========================================================================
+
+
+class TestCoalesceFieldContract:
+    def test_every_update_kwarg_is_classified_for_coalescing(self, db):
+        """Every keyword of update_token_counts must be classified into
+        exactly one coalescing bucket (sum / cost / route / control).
+
+        _coalesce_token_deltas keeps unclassified kwargs only from the
+        FIRST delta of a merged run — a new kwarg added to
+        update_token_counts but not classified here would be silently
+        dropped from merged deltas. This is an invariant test, not a
+        change-detector: it introspects the live signature.
+        """
+        import inspect
+
+        sig = inspect.signature(db.update_token_counts)
+        params = {name for name in sig.parameters if name != "session_id"}
+
+        classified = (
+            set(db._TOKEN_DELTA_SUM_FIELDS)
+            | set(db._TOKEN_DELTA_COST_FIELDS)
+            | set(db._TOKEN_DELTA_ROUTE_FIELDS)
+            | {"absolute"}  # control flag: absolute deltas never merge
+        )
+
+        unclassified = params - classified
+        assert not unclassified, (
+            f"update_token_counts kwargs not classified for coalescing: "
+            f"{sorted(unclassified)}. Add each to _TOKEN_DELTA_SUM_FIELDS, "
+            f"_TOKEN_DELTA_COST_FIELDS, or _TOKEN_DELTA_ROUTE_FIELDS (or the "
+            f"control-flag set in this test) — unclassified kwargs are "
+            f"silently dropped from merged deltas."
+        )
+        phantom = classified - params - {"absolute"}
+        assert not phantom, (
+            f"coalescing field lists reference kwargs update_token_counts "
+            f"no longer accepts: {sorted(phantom)}"
+        )

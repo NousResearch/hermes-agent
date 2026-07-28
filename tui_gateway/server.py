@@ -17895,6 +17895,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     try:
         from tools.wake_word import (
+            audio_is_silent,
             check_wake_word_requirements,
             is_listening,
             load_wake_word_config,
@@ -17905,17 +17906,26 @@ def _(rid, params: dict) -> dict:
         transport = current_transport() or _stdio_transport
         owner, owner_surface = _wake_owner_snapshot()
         owned_by_caller = owns_listener(transport)
+        listening = owned_by_caller and is_listening()
+        silent = listening and audio_is_silent()
+        hint = reqs.get("hint", "")
+        if silent and not hint:
+            hint = ("Microphone delivers only silence — on macOS grant the "
+                    "Hermes backend mic access (System Settings > Privacy & "
+                    "Security > Microphone), then toggle the wake word.")
         return _ok(rid, {
-            "listening": owned_by_caller and is_listening(),
+            "listening": listening,
             "owned_by_caller": owned_by_caller,
             "owner_surface": owner_surface if owner is not None else None,
             "phrase": reqs["phrase"],
             "provider": reqs["provider"],
             "available": reqs["available"],
-            "hint": reqs.get("hint", ""),
+            "hint": hint,
             # Config truth: clients use this to re-arm after a voice turn
             # ("permanent on") without guessing from runtime listener state.
             "enabled": bool(cfg.get("enabled")),
+            # Armed but deaf (macOS permission failure mode) — see hint.
+            "audio_silent": silent,
         })
     except Exception as e:
         return _err(rid, 5026, str(e))

@@ -32,6 +32,12 @@ const statusLine = (r: WakeStatusResponse): string => {
   const provider = r.provider ? ` · ${r.provider}` : ''
 
   if (r.listening) {
+    if (r.audio_silent) {
+      const hint = r.hint?.trim() ? ` — ${r.hint.trim()}` : ''
+
+      return `wake: listening${phrase}${provider} · ⚠ mic delivers only silence${hint}`
+    }
+
     return `wake: listening${phrase}${provider}`
   }
 

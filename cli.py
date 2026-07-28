@@ -12367,6 +12367,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _show_wake_word_status(self):
         """Show current wake-word listener status."""
         from tools.wake_word import (
+            audio_is_silent,
             check_wake_word_requirements,
             is_listening,
             load_wake_word_config,
@@ -12384,6 +12385,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cprint(f"  Provider:    {reqs['provider']}")
         _cprint(f"  Surface:     {cfg.get('surface', 'auto')}")
         _cprint(f"  New session: {'yes' if cfg.get('start_new_session', True) else 'no'}")
+        if state == "LISTENING" and audio_is_silent():
+            _cprint(f"  {_ACCENT}⚠ Microphone delivers only silence — the listener can't hear anything.{_RST}")
+            _cprint(f"  {_DIM}On macOS: System Settings > Privacy & Security > Microphone — allow your"
+                    f" terminal/Hermes, then /wake off + /wake on.{_RST}")
         if not reqs["available"] and reqs.get("hint"):
             _cprint(f"  {_DIM}{reqs['hint']}{_RST}")
         if not owned:

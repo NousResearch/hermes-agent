@@ -508,6 +508,64 @@ def _fake_audio(monkeypatch):
     monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
 
 
+class _Frame(list):
+    """List with numpy-ish abs()/max() so the silence probe sees real peaks."""
+
+    def __abs__(self):
+        return _Frame(abs(x) for x in self)
+
+    def max(self):
+        return max(self) if self else 0
+
+
+class _SilentStream(_FakeStream):
+    """Stream that always yields near-zero frames (dead macOS mic)."""
+
+    def read(self, n):
+        time.sleep(0.005)
+        return _Frame([0] * n), False
+
+
+class _LoudStream(_FakeStream):
+    """Stream that yields audible frames."""
+
+    def read(self, n):
+        time.sleep(0.005)
+        return _Frame([500] * n), False
+
+
+def test_detector_flags_silent_stream_and_recovers(monkeypatch):
+    """A stream of zeros sets audio_silent (macOS no-permission mode); audio clears it."""
+    monkeypatch.setattr(ww, "_SILENCE_ALERT_SECONDS", 0.001)  # trip on the first frame
+    stream_cls = {"cls": _SilentStream}
+    fake_sd = types.SimpleNamespace(InputStream=lambda **kw: stream_cls["cls"](**kw))
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
+    det.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while not det.audio_silent and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert det.audio_silent is True
+        assert ww.audio_is_silent() is False  # module accessor needs the singleton
+
+        monkeypatch.setattr(ww, "_detector", det)
+        assert ww.audio_is_silent() is True
+
+        # Audio returns (permission granted / real mic) — flag clears.
+        det.pause()
+        stream_cls["cls"] = _LoudStream
+        det.resume()
+        deadline = time.monotonic() + 2.0
+        while det.audio_silent and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert det.audio_silent is False
+    finally:
+        monkeypatch.setattr(ww, "_detector", None)
+        det.stop()
+
+
 def test_detector_fires_once_under_cooldown(monkeypatch):
     _fake_audio(monkeypatch)
     calls = []

@@ -419,7 +419,11 @@ export interface WakeStopResponse {
 }
 
 export interface WakeStatusResponse {
+  /** Armed but the mic delivers only silence (macOS backend-permission gap). */
+  audio_silent?: boolean
   available?: boolean
+  /** Config truth (wake_word.enabled). */
+  enabled?: boolean
   hint?: string
   listening?: boolean
   owned_by_caller?: boolean

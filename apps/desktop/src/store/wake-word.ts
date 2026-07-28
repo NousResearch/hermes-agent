@@ -31,6 +31,8 @@ const INITIAL_WAKE_WORD_STATE: WakeWordState = {
 export const $wakeWord = atom<WakeWordState>(INITIAL_WAKE_WORD_STATE)
 
 export interface WakeStatusResponse {
+  /** Armed but the mic delivers only silence (macOS backend-permission gap). */
+  audio_silent?: boolean
   available?: boolean
   /** Config truth (wake_word.enabled) — drives post-voice re-arm. */
   enabled?: boolean
@@ -62,6 +64,11 @@ export interface WakeStopResponse {
  *  `requestGateway` and the `$gateway` instance wrapper below. */
 export type WakeRequester = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+// First-use wake.start lazy-installs the detection engine (onnxruntime is a
+// large wheel) — that legitimately takes minutes. The default 30s WS timeout
+// fired mid-install, leaving a dead button that went blue on its own later.
+const WAKE_START_TIMEOUT_MS = 180_000
+
 const gatewayRequester: WakeRequester = async <T>(method: string, params: Record<string, unknown> = {}) => {
   const gateway = $gateway.get()
 
@@ -69,7 +76,9 @@ const gatewayRequester: WakeRequester = async <T>(method: string, params: Record
     throw new Error('Hermes gateway unavailable')
   }
 
-  return gateway.request<T>(method, params)
+  return method === 'wake.start'
+    ? gateway.request<T>(method, params, WAKE_START_TIMEOUT_MS)
+    : gateway.request<T>(method, params)
 }
 
 // Friendly text for the gateway's wake refusal codes (mirrors the TUI's
@@ -99,12 +108,15 @@ const noticeFrom = (result: { hint?: string; reason?: string | null } | null | u
 export function applyWakeStatus(status: WakeStatusResponse | null | undefined): void {
   const current = $wakeWord.get()
   const listening = Boolean(status?.listening)
+  // "Armed but deaf" (macOS backend without mic permission) keeps its hint
+  // visible in the tooltip even though the toggle shows listening.
+  const silent = Boolean(status?.audio_silent)
 
   $wakeWord.set({
     ...current,
     available: Boolean(status?.available),
     listening,
-    notice: listening ? '' : noticeFrom(status),
+    notice: listening && !silent ? '' : noticeFrom(status),
     phrase: status?.phrase?.trim() || current.phrase
   })
 }
@@ -182,7 +194,13 @@ export async function toggleWakeWord(request: WakeRequester = gatewayRequester):
     return
   }
 
-  $wakeWord.set({ ...state, pending: true })
+  $wakeWord.set({
+    ...state,
+    // First arm may lazy-install the detection engine — say so instead of
+    // freezing a silent disabled button for the duration.
+    notice: state.listening ? '' : 'arming — first use may take a minute while the engine installs',
+    pending: true
+  })
 
   try {
     if (state.listening) {

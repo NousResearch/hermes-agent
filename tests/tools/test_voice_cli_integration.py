@@ -1208,7 +1208,12 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
-        assert cli._pending_input.get_nowait() == "hello world"
+        queued = cli._pending_input.get_nowait()
+        # Voice transcripts are wrapped in the _VoiceInputMessage sentinel so
+        # only genuine STT output gets the voice prefix (#65827).
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "hello world"
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1424,7 +1429,10 @@ class TestVoiceBargeCaptureSubmit:
 
         cli._voice_submit_barge_utterance(str(wav))
 
-        assert cli._pending_input.get_nowait() == "stop, do it differently"
+        queued = cli._pending_input.get_nowait()
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "stop, do it differently"
         assert not cli._voice_barge_capture.is_set()
         assert not wav.exists()
 

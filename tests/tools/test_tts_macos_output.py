@@ -12,6 +12,16 @@ import threading
 import pytest
 
 
+class _FakeStreamer:
+    """Minimal chunked-streamer stand-in so the OutputStream setup path runs."""
+
+    sample_rate = 24000
+    channels = 1
+
+    def stream(self, text):
+        return iter([])
+
+
 def _run_stream(monkeypatch, system_name):
     """Drive stream_tts_to_speaker once with a mock client on *system_name*.
 
@@ -33,6 +43,10 @@ def _run_stream(monkeypatch, system_name):
             return iter([])  # no audio chunks needed for setup assertion
 
     monkeypatch.setattr("tools.tts_tool._import_elevenlabs", lambda: _FakeTTS)
+    monkeypatch.setattr(
+        "tools.tts_streaming.resolve_streaming_provider",
+        lambda cfg, preferred=None: _FakeStreamer(),
+    )
 
     sd_called = {"hit": False}
 
@@ -81,6 +95,10 @@ def _run_stream_offmac(monkeypatch):
             return iter([])
 
     monkeypatch.setattr("tools.tts_tool._import_elevenlabs", lambda: _FakeTTS)
+    monkeypatch.setattr(
+        "tools.tts_streaming.resolve_streaming_provider",
+        lambda cfg, preferred=None: _FakeStreamer(),
+    )
 
     sd_called = {"hit": False}
 

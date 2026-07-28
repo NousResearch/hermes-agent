@@ -1341,11 +1341,10 @@ def stop_playback() -> None:
 def _is_wsl() -> bool:
     """True when running inside Windows Subsystem for Linux."""
     try:
-        with open("/proc/version", "r") as f:
+        with open("/proc/version", "r", encoding="utf-8", errors="replace") as f:
             return "microsoft" in f.read().lower()
     except Exception:
         return False
-    return False
 
 
 def _is_wsl2_env() -> bool:

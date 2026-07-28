@@ -5201,7 +5201,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
 
     def _discord_history_backfill_limit(self) -> int:
-        """Max messages scanned backwards; a safety cap since scans usually stop at the bot's last message."""
+        """Max messages scanned backwards; a safety cap since scans usually stop at the bot's last message
+        (or walk the whole window when ``history_full_thread`` applies)."""
         configured = self.config.extra.get("history_backfill_limit")
         if configured is not None:
             try:
@@ -5214,15 +5215,42 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         except (ValueError, TypeError):
             return 50
 
+    def _discord_history_full_thread(self) -> bool:
+        """Return whether the bot should fetch the full thread instead of
+        stopping at the most recent self-message partition point.
+
+        Default: ``False`` (preserves existing behaviour — only the messages
+        since the bot's last reply are surfaced, matching the conversation
+        transcript window).
+
+        When enabled, the scan walks the entire thread (up to
+        ``history_backfill_limit``) without stopping at the partition point.
+        Useful when the user wants the bot to see the full thread context —
+        e.g. when resuming a long-running investigation in a thread where
+        the bot has replied multiple times.
+
+        Trade-off: the bot sees more context, but messages that are already
+        in the session transcript are duplicated in the prompt.  Token cost
+        scales linearly with the active window.
+        """
+        configured = self.config.extra.get("history_full_thread")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_HISTORY_FULL_THREAD", "false").lower() in {"true", "1", "yes", "on"}
+
     async def _fetch_channel_context(
         self, channel: Any, before: DiscordMessage, reply_target: Optional[Any] = None,
     ) -> str:
         """Fetch recent channel messages; returns a ``[Recent channel messages]`` block or "".
         Scans back from *before* to the bot's own message or ``history_backfill_limit``; with
-        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID."""
+        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID.
+        When ``history_full_thread`` is enabled, the self-message stop is skipped."""
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
+        full_thread = self._discord_history_full_thread()
         allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
         # Narrow via cached last-self-message id (`after`) only if it predates the trigger; miss => full scan.
@@ -5293,7 +5321,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 ):
                     continue
                 # Partition point: our own conversational message (needed for cold start).
-                if msg.author == self._client.user:
+                # Skipped in full-thread mode so earlier turns stay visible.
+                if not full_thread and msg.author == self._client.user:
                     break
                 line = _keep(msg)
                 if line is None:

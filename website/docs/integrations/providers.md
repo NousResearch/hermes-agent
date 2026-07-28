@@ -18,10 +18,6 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
-| **Claude Code ACP** | `hermes model` (spawns local `claude-code-acp`; reuses Claude Code login — see [ACP Agent Backends](#acp-agent-backends-claude-code-codex-gemini-qwen)) |
-| **Codex CLI ACP** | `hermes model` (spawns local `codex-acp`; reuses Codex CLI login) |
-| **Gemini CLI ACP** | `hermes model` (spawns local `gemini --experimental-acp`) |
-| **Qwen Code ACP** | `hermes model` (spawns local `qwen --experimental-acp`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
@@ -215,7 +211,7 @@ model:
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
 
-### ACP Agent Backends (Claude Code, Codex, Gemini, Qwen)
+### ACP Agent Backends (Claude Code, Codex, and more)
 
 The generalized ACP client (issue #5257) extends the `copilot-acp` pattern to any
 coding agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
@@ -223,15 +219,20 @@ through its official adapter. Hermes spawns the adapter as a stdio subprocess pe
 request; the agent uses **its own login/credentials** and picks **its own underlying
 model** — the model name you select in Hermes is only forwarded as a hint.
 
-| Provider | Spawns | Requires |
-|----------|--------|----------|
-| `claude-acp` | `claude-code-acp` | `npm i -g @zed-industries/claude-code-acp` + Claude Code login (or `ANTHROPIC_API_KEY`) |
-| `codex-acp` | `codex-acp` | `npm i -g @zed-industries/codex-acp` + Codex CLI login (or `OPENAI_API_KEY`) |
-| `gemini-acp` | `gemini --experimental-acp` | `npm i -g @google/gemini-cli` + Google login (or `GEMINI_API_KEY`) |
-| `qwen-acp` | `qwen --experimental-acp` | `npm i -g @qwen-code/qwen-code` + Qwen login |
-| `copilot-acp` | `copilot --acp --stdio` | GitHub Copilot CLI + `copilot login` (see above) |
+`copilot-acp` ships built into Hermes core. Every other agent — Claude Code, Codex
+CLI, and anything the community adds — is a **plugin**, not core: install
+[mvdbastos/hermes-acp-agents](https://github.com/mvdbastos/hermes-acp-agents) into
+`$HERMES_HOME/plugins/model-providers/` to get `claude-acp` and `codex-acp`. That
+repo also documents how to add an agent Hermes doesn't ship yet (Gemini CLI, Qwen
+Code, Cursor, ...) — contributions welcome.
 
-**One-off usage:**
+| Provider | Ships in | Spawns | Requires |
+|----------|----------|--------|----------|
+| `copilot-acp` | Hermes core | `copilot --acp --stdio` | GitHub Copilot CLI + `copilot login` (see above) |
+| `claude-acp` | [hermes-acp-agents](https://github.com/mvdbastos/hermes-acp-agents) plugin | `claude-agent-acp` (falls back to `claude-code-acp`) | `npm i -g @agentclientprotocol/claude-agent-acp` + Claude Code login (or `ANTHROPIC_API_KEY`) |
+| `codex-acp` | [hermes-acp-agents](https://github.com/mvdbastos/hermes-acp-agents) plugin | `codex-acp` | `npm i -g @zed-industries/codex-acp` + Codex CLI login (or `OPENAI_API_KEY`) |
+
+**One-off usage** (after installing the plugin):
 
 ```bash
 hermes --provider claude-acp --model claude-acp -z "your prompt"
@@ -248,13 +249,13 @@ model:
 ```
 
 **Custom or additional agents** — any ACP-speaking command can be wired up with env
-vars, no code changes needed:
+vars, no code or plugin needed:
 
 | Environment variable | Description |
 |---------------------|-------------|
 | `HERMES_ACP_{NAME}_COMMAND` | Full launch command for agent `{name}` (shlex-split, e.g. `HERMES_ACP_CLINE_COMMAND="npx cline-acp --stdio"` enables `acp://cline`) |
-| `HERMES_ACP_{NAME}_ARGS` | Override just the arguments for a registry agent |
-| `CLAUDE_ACP_BASE_URL` / `CODEX_ACP_BASE_URL` / … | Override the `acp://{agent}` backend marker per provider |
+| `HERMES_ACP_{NAME}_ARGS` | Override just the arguments for a registered agent |
+| `CLAUDE_ACP_BASE_URL` / `CODEX_ACP_BASE_URL` / … | Override the `acp://{agent}` backend marker per provider (declared by each plugin) |
 
 #### Permission requests (`approvals.acp_mode`)
 

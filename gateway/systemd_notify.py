@@ -60,6 +60,8 @@ def watchdog_interval_seconds() -> Optional[float]:
 class SystemdWatchdog:
     """Feed systemd while the asyncio event loop continues to make progress."""
 
+    _RECOVERY_TICKS = 2
+
     def __init__(
         self,
         *,
@@ -71,6 +73,7 @@ class SystemdWatchdog:
         self._lag_tolerance_seconds = lag_tolerance_seconds
         self._task: Optional[asyncio.Task[None]] = None
         self._unhealthy = False
+        self._timely_ticks = 0
         self._stopping = False
         self._stopping_notified = False
 
@@ -111,6 +114,7 @@ class SystemdWatchdog:
             return False
         self._stopping = False
         self._unhealthy = False
+        self._timely_ticks = 0
         self._stopping_notified = False
         self._task = asyncio.create_task(self._run(), name="hermes-systemd-watchdog")
         return True
@@ -123,8 +127,14 @@ class SystemdWatchdog:
         return notify(f"READY=1\nSTATUS={safe_status}")
 
     def record_tick(self, *, scheduled_at: float, now: float) -> bool:
-        """Feed systemd only when the event loop woke within its lag budget."""
-        if not self.enabled or self._stopping or self._unhealthy:
+        """Feed systemd whenever the event loop is making progress again.
+
+        A late wake-up is evidence of starvation, but the fact that this method
+        is running means the loop recovered before systemd killed the process.
+        Keep feeding the external watchdog while reporting a degraded status;
+        otherwise one transient delay permanently guarantees a later restart.
+        """
+        if not self.enabled or self._stopping:
             return False
         try:
             lag = float(now) - float(scheduled_at)
@@ -132,8 +142,20 @@ class SystemdWatchdog:
             lag = float("inf")
         if not math.isfinite(lag) or lag > self._lag_tolerance():
             self._unhealthy = True
-            notify("STATUS=watchdog unhealthy: event loop progress is late")
-            return False
+            self._timely_ticks = 0
+            notify("WATCHDOG=1\nSTATUS=watchdog degraded: event loop progress was late")
+            return True
+
+        if self._unhealthy:
+            self._timely_ticks += 1
+            if self._timely_ticks >= self._RECOVERY_TICKS:
+                self._unhealthy = False
+                self._timely_ticks = 0
+                notify(
+                    "WATCHDOG=1\nSTATUS=watchdog healthy: event loop progress recovered"
+                )
+                return True
+
         notify("WATCHDOG=1")
         return True
 
@@ -145,7 +167,7 @@ class SystemdWatchdog:
         loop = asyncio.get_running_loop()
         scheduled_at = loop.time() + cadence
         try:
-            while not self._stopping and not self._unhealthy:
+            while not self._stopping:
                 await asyncio.sleep(max(0.0, scheduled_at - loop.time()))
                 now = loop.time()
                 if not self.record_tick(scheduled_at=scheduled_at, now=now):

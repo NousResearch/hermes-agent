@@ -520,3 +520,118 @@ async def test_external_disconnect_still_cancels_supervisor(
         "External cleanup must still cancel a running supervisor task"
     )
     assert adapter._sidecar_supervisor_task is None
+
+
+# -- target_not_allowed: shared/free-tier outbound-send restriction ----------
+#
+# Spectrum throws AuthenticationError("Target not allowed for this project")
+# from space.send when a shared/free-tier line initiates an outbound send to
+# a new target. The sidecar classifies it as the structured code
+# `target_not_allowed`; the adapter must treat it as permanent in BOTH
+# _send_with_retry and _standalone_send, surfacing the canonical user-facing
+# message instead of raw upstream error text (issues #50971 / #51897).
+
+
+def test_target_not_allowed_maps_to_canonical_message() -> None:
+    err = photon_adapter._sidecar_error_from_response(
+        "/send",
+        500,
+        '{"ok":false,"error":"internal sidecar error",'
+        '"error_class":"target_not_allowed","retryable":false}',
+    )
+
+    assert err.error_class == "target_not_allowed"
+    assert err.retryable is False
+    assert err.error == photon_adapter._TARGET_NOT_ALLOWED_MESSAGE
+    # No raw upstream text may leak through the structured code path.
+    assert "Target not allowed for this project" not in str(err)
+
+
+def test_target_not_allowed_is_not_legacy_retryable() -> None:
+    error = str(
+        photon_adapter.PhotonSidecarError(
+            path="/send",
+            status_code=500,
+            error=photon_adapter._TARGET_NOT_ALLOWED_MESSAGE,
+            error_class="target_not_allowed",
+            retryable=False,
+        )
+    )
+
+    assert PhotonAdapter._is_retryable_error(error) is False
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_returns_immediately_on_target_not_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = 0
+
+    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise photon_adapter._sidecar_error_from_response(
+            path,
+            500,
+            '{"ok":false,"error":"internal sidecar error",'
+            '"error_class":"target_not_allowed","retryable":false}',
+        )
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_sidecar_call)
+
+    result = await adapter._send_with_retry("space-1", "hello", max_retries=3)
+
+    assert result.success is False
+    assert result.retryable is False
+    assert calls == 1, "permanent target_not_allowed must not be retried or resent"
+    assert photon_adapter._TARGET_NOT_ALLOWED_MESSAGE in (result.error or "")
+    assert isinstance(result.raw_response, dict)
+    assert result.raw_response.get("error_class") == "target_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_classifies_target_not_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "token")
+
+    class _Resp:
+        status_code = 500
+        text = (
+            '{"ok":false,"error":"internal sidecar error",'
+            '"error_class":"target_not_allowed","retryable":false}'
+        )
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {
+                "ok": False,
+                "error": "internal sidecar error",
+                "error_class": "target_not_allowed",
+                "retryable": False,
+            }
+
+    class _FakeClient:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *a: Any) -> bool:
+            return False
+
+        async def post(self, *a: Any, **k: Any) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    result = await photon_adapter._standalone_send(
+        PlatformConfig(name="photon", enabled=True), "space-1", "hello",
+    )
+
+    assert result.get("error") == photon_adapter._TARGET_NOT_ALLOWED_MESSAGE
+    assert result.get("error_class") == "target_not_allowed"
+    assert result.get("retryable") is False
+    assert "Target not allowed for this project" not in str(result)

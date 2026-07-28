@@ -600,6 +600,15 @@ function classifySidecarError(err) {
   const message = String(err && err.message ? err.message : err || "");
   const lowered = message.toLowerCase();
 
+  // Spectrum raises AuthenticationError("Target not allowed for this
+  // project") from space.send when a shared/free-tier line tries to
+  // initiate an outbound conversation with a new target. That is a plan
+  // limitation, not a transient fault — surface a dedicated class so the
+  // adapter can explain it instead of retrying (issues #50971/#51897).
+  if (lowered.includes("target not allowed")) {
+    return { errorClass: "target_not_allowed", retryable: false };
+  }
+
   if (
     lowered.includes("unauthorized") ||
     lowered.includes("forbidden") ||

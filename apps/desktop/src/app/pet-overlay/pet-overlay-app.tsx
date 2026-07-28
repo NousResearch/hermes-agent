@@ -6,11 +6,11 @@ import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
-import { $petActivity, $petAtRest, $petInfo, setPetInfo } from '@/store/pet'
+import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
 import { roamWalkRow } from '@/components/pet/pet-sprite'
 import { usePetRoam } from '@/components/pet/use-pet-roam'
-import { setAwaitingResponse, setBusy } from '@/store/session'
+import { $busy, setAwaitingResponse, setBusy } from '@/store/session'
 
 // Fallbacks mirror pet-sprite's defaults; the gateway normally sends real values.
 const DEFAULT_FRAME_W = 192
@@ -390,13 +390,12 @@ export function PetOverlayApp() {
 
   // ── roam ──────────────────────────────────────────────────────────────
 
-  const atRest = useStore($petAtRest)
+  const busy = useStore($busy)
   const petW = (info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)
   const petH = (info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)
   const active = info.enabled && Boolean(info.spritesheetBase64)
-  // Overlay always roams when idle — the $petRoam localStorage toggle is
-  // per-device and may not sync cleanly across BrowserWindow instances.
-  const roamActive = active && atRest
+  // Overlay roams when pet is loaded and agent is idle.
+  const roamActive = active && !busy
 
   // Seed a centered-bottom starting position once the pet loads.
   useEffect(() => {

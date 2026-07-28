@@ -1,10 +1,19 @@
 """Unit tests for hermes_cli/dingtalk_auth.py (QR device-flow registration)."""
 from __future__ import annotations
 
+import json
 import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _mock_response(payload: dict) -> MagicMock:
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.raw.read.return_value = json.dumps(payload).encode("utf-8")
+    mock_resp.close = MagicMock()
+    return mock_resp
 
 
 # ---------------------------------------------------------------------------
@@ -26,9 +35,7 @@ class TestApiPost:
     def test_raises_on_nonzero_errcode(self):
         from hermes_cli.dingtalk_auth import _api_post, RegistrationError
 
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"errcode": 42, "errmsg": "boom"}
+        mock_resp = _mock_response({"errcode": 42, "errmsg": "boom"})
 
         with patch("hermes_cli.dingtalk_auth.requests.post", return_value=mock_resp):
             with pytest.raises(RegistrationError, match=r"boom \(errcode=42\)"):
@@ -37,13 +44,34 @@ class TestApiPost:
     def test_returns_data_on_success(self):
         from hermes_cli.dingtalk_auth import _api_post
 
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"errcode": 0, "nonce": "abc"}
+        mock_resp = _mock_response({"errcode": 0, "nonce": "abc"})
 
-        with patch("hermes_cli.dingtalk_auth.requests.post", return_value=mock_resp):
+        with patch("hermes_cli.dingtalk_auth.requests.post", return_value=mock_resp) as mock_post:
             result = _api_post("/app/registration/init", {"source": "hermes"})
             assert result["nonce"] == "abc"
+
+        assert mock_post.call_args.kwargs["stream"] is True
+        mock_resp.raw.read.assert_called_once_with(
+            1024 * 1024 + 1,
+            decode_content=True,
+        )
+        mock_resp.close.assert_called_once()
+
+    def test_bounds_response_body(self, monkeypatch):
+        from hermes_cli import dingtalk_auth
+
+        monkeypatch.setattr(dingtalk_auth, "REGISTRATION_RESPONSE_BODY_MAX_BYTES", 8)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.raw.read.return_value = b"x" * 9
+        mock_resp.close = MagicMock()
+
+        with patch("hermes_cli.dingtalk_auth.requests.post", return_value=mock_resp):
+            with pytest.raises(dingtalk_auth.RegistrationError, match="Response too large"):
+                dingtalk_auth._api_post("/app/registration/init", {"source": "hermes"})
+
+        mock_resp.raw.read.assert_called_once_with(9, decode_content=True)
+        mock_resp.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

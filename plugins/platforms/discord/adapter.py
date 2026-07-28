@@ -5834,7 +5834,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
+            user_name=interaction.user.name,
             thread_id=thread_id,
             chat_topic=chat_topic,
         )
@@ -5928,7 +5928,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name=chat_name,
             chat_type="thread",
             user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
+            user_name=interaction.user.name,
             thread_id=thread_id,
             chat_topic=chat_topic,
         )
@@ -7602,7 +7602,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(message.author.id),
-            user_name=message.author.display_name,
+            user_name=message.author.name,
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),

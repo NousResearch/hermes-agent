@@ -234,6 +234,66 @@ async def test_no_thread_channel_skips_auto_thread(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_message_source_uses_account_username_not_display_name(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "800")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=800), content="hello")
+    message.author.name = "account_username"
+    message.author.display_name = "Mutable Display Name"
+
+    await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_name == "account_username"
+    assert event.source.user_id == "42"
+
+
+def test_slash_event_uses_account_username_not_display_name(adapter):
+    interaction = SimpleNamespace(
+        channel=FakeTextChannel(channel_id=801),
+        channel_id=801,
+        user=SimpleNamespace(
+            id=42,
+            name="account_username",
+            display_name="Mutable Display Name",
+        ),
+    )
+
+    event = adapter._build_slash_event(interaction, "/help")
+
+    assert event.source.user_name == "account_username"
+    assert event.source.user_id == "42"
+
+
+@pytest.mark.asyncio
+async def test_thread_dispatch_uses_account_username_not_display_name(adapter):
+    interaction = SimpleNamespace(
+        channel=FakeTextChannel(channel_id=802),
+        guild=SimpleNamespace(name="Hermes Server"),
+        user=SimpleNamespace(
+            id=42,
+            name="account_username",
+            display_name="Mutable Display Name",
+        ),
+    )
+
+    await adapter._dispatch_thread_session(
+        interaction,
+        thread_id="803",
+        thread_name="generated-thread",
+        text="hello",
+    )
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_name == "account_username"
+    assert event.source.user_id == "42"
+
+
+@pytest.mark.asyncio
 async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
     """Channels NOT in no_thread_channels still get auto-threading."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")

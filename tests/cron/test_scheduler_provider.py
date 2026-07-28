@@ -207,6 +207,52 @@ def test_inprocess_provider_stop_is_noop():
     assert InProcessCronScheduler().stop() is None
 
 
+def test_inprocess_provider_sleeps_for_interval_between_ticks():
+    """The built-in ticker parks on ``stop_event.wait(interval)`` between
+    iterations — i.e. it does NOT busy-loop. Existing coverage uses
+    ``interval=0`` to keep the loop tight, so the inter-tick sleep (the
+    behavior that actually paces the 60s cron cadence in production) is
+    unverified. This locks the real timing contract: with ``interval=0.2``
+    we should observe the second call to ``cron.scheduler.tick`` no sooner
+    than ~0.2s after the first, while still exiting cleanly on stop_event.
+
+    See issue #67102 — the cron ticker module lacked dedicated unit tests
+    covering tick-interval handling; this is the interval-boundary piece
+    that the rest of the suite (interval=0) does not exercise.
+    """
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    calls = []  # list of (monotonic_ts,)
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+    interval = 0.2
+
+    with patch("cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(time.monotonic()) or 0), \
+         patch("cron.jobs.record_ticker_heartbeat"):
+        t = threading.Thread(
+            target=prov.start, args=(stop,), kwargs={"interval": interval},
+            daemon=True,
+        )
+        t.start()
+        # Wait for ≥2 ticks so we can measure the gap between them.
+        assert _wait_until(lambda: len(calls) >= 2, timeout=10.0), \
+            "ticker did not fire a second tick within 10s"
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive(), "ticker did not exit after stop_event was set"
+    assert len(calls) >= 2, "ticker did not fire at least two ticks"
+    gap = calls[1] - calls[0]
+    # Allow a small scheduling-jitter margin (default = 1.5x interval) so this
+    # doesn't flake on a loaded CI box, but catch a 0-interval busy-loop
+    # regression (gap ≈ 0) firmly.
+    assert gap >= interval, (
+        f"ticker did not sleep for the configured interval between ticks: "
+        f"gap={gap:.3f}s, expected >={interval:.1f}s — likely a busy-loop "
+        "regression in InProcessCronScheduler.start()"
+    )
+
+
 # ── Phase 2: config key, discovery, resolver ─────────────────────────────────
 
 

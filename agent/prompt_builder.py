@@ -1014,11 +1014,11 @@ PLATFORM_HINTS = {
         "brief and natural. "
         "File/media delivery: images referenced as MEDIA:/absolute/path tags "
         "(.png/.jpg/.jpeg/.gif/.webp/.bmp, up to 5MB) are inlined as base64 data "
-        "URLs in responses on the chat, completions, and responses endpoints. "
-        "Non-image files are NOT intercepted anywhere, and the runs endpoint "
-        "intercepts nothing — a MEDIA: tag there renders as literal text exposing "
-        "a raw host filesystem path. For those cases, state the plain file path "
-        "in your response text instead of a MEDIA: tag."
+        "URLs in responses on the chat, completions, responses, and runs endpoints. "
+        "Non-image files are NOT intercepted on any of them — a MEDIA: tag for a "
+        "non-image file renders as literal text exposing a raw host filesystem "
+        "path. For non-image files, state the plain file path in your response "
+        "text instead of a MEDIA: tag."
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "

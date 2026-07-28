@@ -114,6 +114,11 @@ declare global {
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
+      /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */
+      dataUrlReadMax?: {
+        get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
+        set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
+      }
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       writeClipboard: (text: string) => Promise<boolean>

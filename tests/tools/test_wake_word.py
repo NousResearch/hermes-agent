@@ -294,11 +294,13 @@ def test_bundled_hey_hermes_model_ships_on_disk():
 def test_openwakeword_default_resolves_to_bundled_model(monkeypatch, model_value):
     # The default (and any "hey_hermes" alias) must load the bundled file, not be
     # passed through as a bogus built-in name that openWakeWord can't resolve.
+    # Which artifact is bundled follows the platform's default backend (tflite on
+    # macOS ARM64, where openWakeWord's onnx path scores near-zero).
     calls = _install_fake_openwakeword(monkeypatch)
     sub = {} if model_value is None else {"model": model_value}
     ww._OpenWakeWordEngine({"provider": "openwakeword", "openwakeword": sub})
     (downloaded,) = calls["download"]
-    assert downloaded == [ww._bundled_wakeword_path("onnx")]
+    assert downloaded == [ww._bundled_wakeword_path(ww.default_inference_framework())]
 
 
 def test_openwakeword_bundled_model_matches_framework(monkeypatch):
@@ -308,7 +310,78 @@ def test_openwakeword_bundled_model_matches_framework(monkeypatch):
     )
     (downloaded,) = calls["download"]
     assert downloaded == [ww._bundled_wakeword_path("tflite")]
-    assert downloaded[0].endswith(".tflite")
+
+
+# ── platform-aware backend selection (openWakeWord onnx is broken on macOS ARM64,
+#    upstream dscripka/openWakeWord#336) ────────────────────────────────────────
+
+def test_default_framework_is_tflite_on_macos_arm64(monkeypatch):
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    assert ww.default_inference_framework() == "tflite"
+
+
+@pytest.mark.parametrize(
+    "plat,machine",
+    [("linux", "x86_64"), ("linux", "aarch64"), ("win32", "AMD64"), ("darwin", "x86_64")],
+)
+def test_default_framework_is_onnx_elsewhere(monkeypatch, plat, machine):
+    # Only the broken platform changes behaviour; everyone else keeps onnx.
+    monkeypatch.setattr(ww.sys, "platform", plat)
+    monkeypatch.setattr("platform.machine", lambda: machine)
+    assert ww.default_inference_framework() == "onnx"
+
+
+def test_explicit_framework_overrides_platform_default(monkeypatch):
+    # An operator who pins a backend keeps it, even on macOS ARM64.
+    calls = _install_fake_openwakeword(monkeypatch)
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    ww._OpenWakeWordEngine(
+        {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
+    )
+    (downloaded,) = calls["download"]
+    assert downloaded == [ww._bundled_wakeword_path("onnx")]
+
+
+def test_macos_tflite_refuses_silent_onnx_downgrade(monkeypatch):
+    # openWakeWord silently falls back to onnx when no tflite runtime imports.
+    # On macOS ARM64 that lands on the broken backend, so we must raise instead
+    # of arming a listener that can never fire.
+    _install_fake_openwakeword(monkeypatch)
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
+    with pytest.raises(RuntimeError, match="ai-edge-litert"):
+        ww._OpenWakeWordEngine({"provider": "openwakeword", "openwakeword": {}})
+
+
+def test_non_macos_tflite_falls_back_to_onnx(monkeypatch):
+    # Off macOS the onnx backend works, so a missing tflite runtime is a
+    # downgrade, not a hard failure.
+    calls = _install_fake_openwakeword(monkeypatch)
+    monkeypatch.setattr(ww.sys, "platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
+    ww._OpenWakeWordEngine(
+        {"provider": "openwakeword", "openwakeword": {"inference_framework": "tflite"}}
+    )
+    (downloaded,) = calls["download"]
+    assert downloaded == [ww._bundled_wakeword_path("onnx")]
+
+
+def test_requirements_report_missing_tflite_runtime(monkeypatch):
+    # A missing runtime must surface as unavailable + an actionable hint rather
+    # than an armed-but-deaf detector.
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda feature: feature != "wake.openwakeword.tflite")
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
+    monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    reqs = ww.check_wake_word_requirements({"provider": "openwakeword", "openwakeword": {}})
+    assert reqs["available"] is False
+    assert "ai-edge-litert" in reqs["hint"]
 
 
 # ── sherpa-onnx open-vocabulary engine ───────────────────────────────────

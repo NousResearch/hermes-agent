@@ -189,6 +189,11 @@ wake = [
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
+  # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
+  # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
+  # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
+  # macOS equivalent, bridged in tools/wake_word.py.
+  "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py

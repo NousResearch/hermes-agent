@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -84,6 +85,56 @@ def _bundled_wakeword_path(framework: str = "onnx") -> str:
     """Path to the shipped hey_hermes model (.onnx/.tflite) for ``framework``."""
     ext = "tflite" if str(framework).strip().lower() == "tflite" else "onnx"
     return os.path.join(os.path.dirname(__file__), "wakewords", f"{_BUNDLED_MODEL_NAME}.{ext}")
+
+
+def _is_macos_arm64() -> bool:
+    import platform
+
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def default_inference_framework() -> str:
+    """The openWakeWord backend to use on this platform.
+
+    openWakeWord's ONNX backend produces near-zero scores on macOS ARM64 — its
+    shared *embedding* model is the broken stage (the melspectrogram front-end
+    and the wake classifier both match tflite exactly). The detector arms, the
+    microphone works, and no phrase can ever cross the threshold. Prefer the
+    tflite backend there; ONNX stays the default everywhere else.
+
+    Upstream: https://github.com/dscripka/openWakeWord/issues/336
+    """
+    return "tflite" if _is_macos_arm64() else "onnx"
+
+
+def ensure_tflite_runtime() -> bool:
+    """Make ``import tflite_runtime.interpreter`` resolve, returning success.
+
+    openWakeWord hardcodes that import but only declares ``tflite-runtime`` for
+    ``platform_system == "Linux"``; on macOS the equivalent wheel is
+    ``ai-edge-litert``. Alias the module so the upstream import succeeds. The
+    alias is process-local — nothing is written to site-packages.
+    """
+    try:
+        import tflite_runtime.interpreter  # noqa: F401
+
+        return True
+    except ImportError:
+        pass
+
+    try:
+        from ai_edge_litert import interpreter as _litert  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+
+    import types
+
+    pkg = types.ModuleType("tflite_runtime")
+    pkg.__path__ = []  # type: ignore[attr-defined]  # mark as package
+    sys.modules.setdefault("tflite_runtime", pkg)
+    sys.modules["tflite_runtime.interpreter"] = _litert
+    logger.debug("wake word: bridged tflite_runtime -> ai_edge_litert")
+    return True
 
 
 def load_wake_word_config() -> Dict[str, Any]:
@@ -250,8 +301,31 @@ class _OpenWakeWordEngine(_Engine):
 
         sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
         model_ref = str(sub.get("model") or _BUNDLED_MODEL_NAME).strip()
-        framework = str(sub.get("inference_framework") or "onnx").strip().lower()
+        framework = str(sub.get("inference_framework") or "").strip().lower()
+        if not framework:
+            framework = default_inference_framework()
         self._threshold = _sensitivity(cfg)
+
+        # openWakeWord silently downgrades tflite -> onnx when no tflite runtime
+        # imports (model.py). On macOS ARM64 that lands on the backend whose
+        # embedding model is broken, so the listener would arm and never fire.
+        # Install + bridge the runtime first, and refuse the downgrade rather
+        # than ship a dead ear.
+        if framework == "tflite" and not ensure_tflite_runtime():
+            # Same lazy-install contract as every other backend; the platform
+            # gate lives here because dep specs can't carry PEP 508 markers.
+            try:
+                lazy_deps.ensure("wake.openwakeword.tflite", prompt=False)
+            except Exception as e:
+                logger.debug("wake word: tflite runtime install failed: %s", e)
+            if not ensure_tflite_runtime():
+                if _is_macos_arm64():
+                    raise RuntimeError(
+                        "The wake word needs the tflite backend on this Mac, but its "
+                        "runtime is missing. Install it with: pip install ai-edge-litert"
+                    )
+                logger.warning("wake word: no tflite runtime available — falling back to onnx")
+                framework = "onnx"
 
         # Default (or explicit "hey_hermes") → the bundled model; a built-in name
         # or custom path is used as-is.
@@ -592,11 +666,22 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     tts_ok = _tts_ready()
     hint = ""
 
+    # The tflite backend needs a runtime openWakeWord doesn't declare off Linux.
+    # Report it as a real remediation instead of arming a detector that can't fire.
+    tflite_ok = True
+    if provider not in ("porcupine", "sherpa", "sherpa-onnx", "kws", "open"):
+        sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
+        framework = str(sub.get("inference_framework") or "").strip().lower() or default_inference_framework()
+        if framework == "tflite":
+            tflite_ok = ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok
+
     if provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
         key_ok = False
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
     elif not deps_ok and not lazy_ok:
         hint = lazy_deps.feature_install_command(feature) or ""
+    elif not tflite_ok:
+        hint = "The wake word needs the tflite runtime on this Mac: pip install ai-edge-litert"
     elif deps_ok and not audio_ok:
         hint = "Microphone capture needs sounddevice + numpy and a working audio device."
     elif not stt_ok or not tts_ok:
@@ -607,7 +692,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
                 f"(Voice section) or see the voice-mode docs.")
 
     return {
-        "available": key_ok and stt_ok and tts_ok
+        "available": key_ok and stt_ok and tts_ok and tflite_ok
         and ((deps_ok and audio_ok) or (not deps_ok and lazy_ok)),
         "provider": provider,
         "deps_available": deps_ok,

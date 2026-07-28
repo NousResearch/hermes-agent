@@ -136,6 +136,7 @@ const ThinkingDisclosure: FC<{
   return (
     <div
       className="text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)"
+      data-conversation-scaffold=""
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
     >

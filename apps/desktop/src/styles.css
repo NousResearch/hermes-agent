@@ -1416,16 +1416,18 @@ text-* variant utilities. */ .btn-arc {
   background: transparent !important;
 }
 
-/* Fade scaffolding so the prose reading column stays primary. Two targets:
-   a thinking disclosure fades as one block, and each *individual* tool row
-   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
-   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
-   context, so a child row can never be more opaque than the group — that made
-   it impossible to keep one row lit (an open diff) while its siblings faded.
-   With the fade per-row, each row hovers/focuses independently. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
-[data-slot='aui_assistant-message-content'] [data-tool-summary],
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
+/* Fade scaffolding so the prose reading column stays primary. Each surface
+   opts in with `data-conversation-scaffold` — thinking header, tool row, run
+   summary, live status line — instead of being named by its own selector here.
+   Spelling them out individually is how the status line came to sit a shade
+   brighter than the rows either side of it.
+
+   Marked per surface and never on a container: opacity opens a stacking
+   context, so nothing inside a faded parent can be more opaque than it, and
+   one row (an open diff) could not stay lit while its siblings dimmed. Hence
+   the tool group wrapper carries no mark and each row inside it carries its
+   own — no two marked elements nest, so the fade never compounds. */
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -1433,9 +1435,7 @@ text-* variant utilities. */ .btn-arc {
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
-[data-slot='aui_assistant-message-content'] [data-tool-summary]:is(:hover, :has(:focus-visible)),
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 

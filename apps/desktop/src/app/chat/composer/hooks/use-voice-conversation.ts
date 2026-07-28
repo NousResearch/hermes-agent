@@ -31,6 +31,9 @@ interface VoiceConversationOptions {
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
+  /** Awaited right before the mic is opened. Used to let the wake-word listener
+   *  fully release the capture device first, so the two never contend. */
+  beforeMicOpen?: () => Promise<void> | void
 }
 
 export function useVoiceConversation({
@@ -41,7 +44,8 @@ export function useVoiceConversation({
   onSubmit,
   onTranscribeAudio,
   pendingResponse,
-  consumePendingResponse
+  consumePendingResponse,
+  beforeMicOpen
 }: VoiceConversationOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
@@ -68,6 +72,13 @@ export function useVoiceConversation({
   useEffect(() => {
     onStopWordRef.current = onStopWord
   }, [onStopWord])
+
+  const beforeMicOpenRef = useRef(beforeMicOpen)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    beforeMicOpenRef.current = beforeMicOpen
+  }, [beforeMicOpen])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -185,6 +196,20 @@ export function useVoiceConversation({
     }
 
     if (statusRef.current !== 'idle') {
+      return
+    }
+
+    // Let the wake-word listener fully release the capture device before we
+    // open ours — opening the mic while wake still holds it makes getUserMedia
+    // fail (the "clicked voice but it never starts listening" bug).
+    try {
+      await beforeMicOpenRef.current?.()
+    } catch {
+      // A pause failure shouldn't block the user's explicit start.
+    }
+
+    // enabled/muted/busy or an interleaved turn may have changed while we waited.
+    if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
       return
     }
 

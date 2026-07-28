@@ -23,6 +23,7 @@ import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-s
 import {
   $activeTreeGroup,
   $layoutTree,
+  focusedSessionTabAnchor,
   moveTreePane,
   noteActiveTreeGroup,
   revealTreePane
@@ -522,7 +523,11 @@ function syncTileStripOrder() {
  *  move path is what lets a tile's own TAB be dragged like a sidebar row — drop
  *  it on a zone/edge/strip and the tile goes there (drop-on-a-composer links
  *  instead, handled by the drag resolver). The session LOADED IN MAIN never
- *  opens as a tile (same transcript twice, fighting one runtime — silly). */
+ *  opens as a tile (same transcript twice, fighting one runtime — silly).
+ *
+ *  An unanchored open (⌘T, ⌘⇧T on a tile that predates anchors) docks into the
+ *  FOCUSED chat zone — the same zone ⌘1…⌘9 and ⌘W act on — so a new tab lands
+ *  in the strip the user is looking at, not always main's. */
 export function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
@@ -535,8 +540,10 @@ export function openSessionTile(
     return
   }
 
+  const dock = anchor ?? focusedSessionTabAnchor() ?? undefined
+
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
-    saveTiles([...tiles, { anchor, before, dir, storedSessionId }])
+    saveTiles([...tiles, { anchor: dock, before, dir, storedSessionId }])
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
 
@@ -546,11 +553,11 @@ export function openSessionTile(
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
   const tree = $layoutTree.get()
-  const target = tree ? findGroupOfPane(tree, anchor ?? 'workspace')?.id : null
+  const target = tree ? findGroupOfPane(tree, dock ?? 'workspace')?.id : null
 
   if (target) {
     moveTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`, { before: before ?? null, groupId: target, pos: dir })
-    patchSessionTile(storedSessionId, { anchor, before: before ?? undefined, dir })
+    patchSessionTile(storedSessionId, { anchor: dock, before: before ?? undefined, dir })
     syncTileStripOrder()
   }
 }

@@ -113,6 +113,7 @@ import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } 
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import {
+  excludeProjectSessions,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -429,6 +430,16 @@ export function ChatSidebar({
   }, [pinnedSessionIds, sessionByAnyId])
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
+  const pinnedIdSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
+
+  // A pinned session belongs to the Pinned section and nowhere else, so every
+  // other list filters it out (the flat recents already did). Match on the live
+  // id AND the durable pin id — a backend snapshot can surface either side of a
+  // compression tip rotation.
+  const isPinnedSession = useCallback(
+    (session: SessionInfo) => pinnedRealIdSet.has(session.id) || pinnedIdSet.has(sessionPinId(session)),
+    [pinnedRealIdSet, pinnedIdSet]
+  )
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
@@ -492,8 +503,8 @@ export function ChatSidebar({
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
   const unpinnedAgentSessions = useMemo(
-    () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
-    [sortedSessions, pinnedRealIdSet]
+    () => sortedSessions.filter(s => !isPinnedSession(s)),
+    [sortedSessions, isPinnedSession]
   )
 
   useEffect(() => {
@@ -615,13 +626,18 @@ export function ChatSidebar({
     const sorted = sortProjectsForOverview(
       projectTree
         .filter(node => !(node.isAuto && dismissed.has(node.id)))
-        .map(project => ({
-          ...project,
-          // Home is synthetic, so its name is ours to translate — every other
-          // label is a repo basename or a name the user typed.
-          label: project.isNoProject ? s.projects.home : project.label,
-          repos: orderRepos(project.repos)
-        })),
+        .map(project =>
+          excludeProjectSessions(
+            {
+              ...project,
+              // Home is synthetic, so its name is ours to translate — every other
+              // label is a repo basename or a name the user typed.
+              label: project.isNoProject ? s.projects.home : project.label,
+              repos: orderRepos(project.repos)
+            },
+            isPinnedSession
+          )
+        ),
       activeProjectId
     )
 
@@ -629,7 +645,16 @@ export function ChatSidebar({
     // (default) returns `sorted` untouched; projects the user hasn't ordered yet
     // keep their sorted position rather than jumping the hand-picked list.
     return orderProjectsByIds(sorted, projectOrderIds)
-  }, [showAllProfiles, projectTree, dismissedAutoProjects, orderRepos, activeProjectId, projectOrderIds, s])
+  }, [
+    showAllProfiles,
+    projectTree,
+    dismissedAutoProjects,
+    orderRepos,
+    activeProjectId,
+    projectOrderIds,
+    isPinnedSession,
+    s
+  ])
 
   // The overview only renders in grouped mode; the model stays live regardless
   // so scoping is consistent across views.
@@ -690,11 +715,16 @@ export function ChatSidebar({
 
     // The live-session overlay (creates/evictions) is applied per-repo in
     // RepoFlatSection, AFTER the visual git-worktree lanes are merged in (so
-    // out-of-tree worktrees can be placed). Here we just order the snapshot.
+    // out-of-tree worktrees can be placed). Here we just order the snapshot and
+    // drop pinned rows — the hydrated lanes come straight from the backend, so
+    // they haven't been through projectModel's filter.
     // The label comes from the overview node either way — that's the model's
     // presentation copy (Home is translated there), not the raw payload's.
-    return { ...hydrated, label: overviewEnteredProject.label, repos: orderRepos(hydrated.repos) }
-  }, [overviewEnteredProject, enteredProjectTree, orderRepos])
+    return excludeProjectSessions(
+      { ...hydrated, label: overviewEnteredProject.label, repos: orderRepos(hydrated.repos) },
+      isPinnedSession
+    )
+  }, [overviewEnteredProject, enteredProjectTree, orderRepos, isPinnedSession])
 
   // Overlay live `$sessions` onto the entered project so a just-created session
   // (which the backend snapshot hasn't folded in yet) counts as content and
@@ -877,11 +907,21 @@ export function ChatSidebar({
     }
 
     const bySource = new Map<string, SessionInfo[]>()
+    // Rows this platform owns that the Pinned section is showing instead. The
+    // backend's per-platform total counts them, so discount it or "load more"
+    // promises rows that will never appear.
+    const pinnedBySource = new Map<string, number>()
 
     for (const session of messagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
+        continue
+      }
+
+      if (isPinnedSession(session)) {
+        pinnedBySource.set(sourceId, (pinnedBySource.get(sourceId) ?? 0) + 1)
+
         continue
       }
 
@@ -894,13 +934,14 @@ export function ChatSidebar({
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
         const known = messagingPlatformTotals[sourceId]
-        const total = Math.max(ordered.length, known ?? 0)
+        const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
+        const total = Math.max(ordered.length, unpinnedKnown ?? 0)
 
         return {
           // Known exact total → more exist iff total exceeds loaded; otherwise
           // the seed fetch was capped, so assume more until a per-platform load
           // resolves the count.
-          hasMore: known != null ? known > ordered.length : messagingTruncated,
+          hasMore: unpinnedKnown != null ? unpinnedKnown > ordered.length : messagingTruncated,
           label: sessionSourceLabel(sourceId) ?? sourceId,
           sessions: ordered,
           sourceId,
@@ -908,7 +949,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

@@ -49,6 +49,7 @@ class AuditEvent(enum.Enum):
     WS_TICKET_REJECTED = "ws_ticket_rejected"
     TOKEN_AUTH_SUCCESS = "token_auth_success"
     TOKEN_AUTH_FAILURE = "token_auth_failure"
+    DASHBOARD_MUTATION = "dashboard_mutation"
     # RFC 8252 native-app (system-browser + loopback + PKCE) flow.
     NATIVE_AUTHORIZE_START = "native_authorize_start"
     NATIVE_CODE_ISSUED = "native_code_issued"

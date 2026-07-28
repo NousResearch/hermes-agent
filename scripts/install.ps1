@@ -2819,7 +2819,7 @@ function Install-DesktopVoiceDeps {
     # leaving them to lazy first-use install. Policy change (Teknium, July
     # 2026, #70509 testing): the first ear-click used to trigger a
     # multi-minute onnxruntime pip install that froze the UI and blew RPC
-    # timeouts. Best-effort — lazy install remains the fallback for anything
+    # timeouts. Best-effort -- lazy install remains the fallback for anything
     # this step fails to fetch.
     if (-not $script:UvCmd) { Resolve-UvCmd }
     if (-not $script:UvCmd) {

@@ -1,7 +1,9 @@
 """Tests for save_config_value() in cli.py — atomic write behavior."""
 
-import yaml
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import yaml
 
 import pytest
 
@@ -19,6 +21,10 @@ class TestSaveConfigValueAtomic:
             "model": {"default": "test-model", "provider": "openrouter"},
             "display": {"skin": "default"},
         }))
+        # save_config_value resolves the target live via get_hermes_home(), so
+        # point HERMES_HOME at the temp dir (the _hermes_home import-time
+        # constant is no longer consulted).
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr("cli._hermes_home", hermes_home)
         return config_path
 
@@ -144,3 +150,51 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+
+class TestSaveConfigValueTargetsUserConfig:
+    """Regression: persisted runtime settings must land in HERMES_HOME/config.yaml
+    (which config readers actually read), never the repo's cli-config.yaml.
+
+    This was the "wake-word ear reverts to disabled after restart" bug: on an
+    install whose HERMES_HOME/config.yaml did not exist yet, save_config_value
+    fell back to the checked-in cli-config.yaml. The toggle reported success, but
+    startup read HERMES_HOME/config.yaml and never saw the setting."""
+
+    def test_creates_user_config_when_absent(self, tmp_path, monkeypatch):
+        # Fresh HERMES_HOME with NO config.yaml (managed/desktop first launch).
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from cli import save_config_value
+
+        assert save_config_value("wake_word.enabled", True) is True
+
+        config_path = hermes_home / "config.yaml"
+        assert config_path.exists(), "user config.yaml must be created, not skipped"
+        result = yaml.safe_load(config_path.read_text())
+        assert result["wake_word"]["enabled"] is True
+
+    def test_does_not_write_repo_cli_config(self, tmp_path, monkeypatch):
+        # Even when the repo's cli-config.yaml exists, the write goes to the
+        # user config, so a runtime setting is never buried in the shipped file.
+        import cli as cli_module
+
+        repo_cli_config = Path(cli_module.__file__).parent / "cli-config.yaml"
+        before = repo_cli_config.read_text() if repo_cli_config.exists() else None
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from cli import save_config_value
+
+        save_config_value("wake_word.enabled", True)
+
+        # The repo template is untouched…
+        after = repo_cli_config.read_text() if repo_cli_config.exists() else None
+        assert after == before
+        # …and the value landed in the user config.
+        result = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        assert result["wake_word"]["enabled"] is True

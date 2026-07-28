@@ -1753,6 +1753,93 @@ def test_history_to_messages_drops_display_hidden_scaffolding():
     assert all("api_content" not in m for m in projected)
 
 
+def test_history_to_messages_projects_a_skill_turn_to_its_invocation():
+    # A /skill invocation is persisted EXPANDED: the activation note plus the
+    # entire skill body. That payload is model-facing scaffolding -- this
+    # projection is the single display source every client reads, so it must
+    # hand back the invocation the user typed and never the body. Without it a
+    # chat bubble renders the whole skill as if the user had written it.
+    scaffolded = (
+        '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+        "want you to follow its instructions. The full skill content is "
+        "loaded below.]\n\n"
+        "# /work\n\nSPIN UP A WORKTREE, never the primary checkout.\n\n"
+        "The user has provided the following instruction alongside the skill "
+        "invocation: fix the title leak"
+    )
+
+    history = [
+        {"role": "user", "content": scaffolded},
+        {"role": "assistant", "content": "on it"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {
+            "role": "user",
+            "text": "/work fix the title leak",
+            "display_kind": "skill_invocation",
+        },
+        {"role": "assistant", "text": "on it"},
+    ]
+
+
+def test_history_to_messages_projects_a_bare_skill_turn_to_the_command():
+    scaffolded = (
+        '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+        "want you to follow its instructions. The full skill content is "
+        "loaded below.]\n\n# /work\n\nSPIN UP A WORKTREE."
+    )
+
+    assert server._history_to_messages([{"role": "user", "content": scaffolded}]) == [
+        {"role": "user", "text": "/work", "display_kind": "skill_invocation"}
+    ]
+
+
+def test_expand_skill_invocation_for_replay_round_trips_the_projection(
+    tmp_path, monkeypatch
+):
+    # Rewind/regenerate replays a turn from what the transcript SHOWS, and a
+    # skill turn shows its invocation. Re-running that verbatim would send the
+    # agent the literal "/work fix it" instead of the skill, so the server
+    # re-expands it — the exact inverse of _skill_scaffold_projection, with the
+    # body never leaving the server.
+    import agent.skill_commands as skill_commands
+    import agent.skill_utils as skill_utils
+    import tools.skills_tool as skills_tool
+
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "worktree-kickoff").mkdir(parents=True)
+    (skills_dir / "worktree-kickoff" / "SKILL.md").write_text(
+        "---\nname: worktree-kickoff\ndescription: Spin up a worktree\n---\n\n"
+        "# kickoff\n\nSPIN UP A WORKTREE, never the primary checkout.\n"
+    )
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    skill_commands.scan_skill_commands()
+
+    expanded = server._expand_skill_invocation_for_replay(
+        "/worktree-kickoff fix it", "task-1"
+    )
+
+    assert "SPIN UP A WORKTREE" in expanded
+    assert server._skill_scaffold_projection(expanded) == "/worktree-kickoff fix it"
+
+
+def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypatch):
+    import agent.skill_commands as skill_commands
+    import agent.skill_utils as skill_utils
+
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+
+    assert server._expand_skill_invocation_for_replay("just words", "t") == "just words"
+    # A core slash command is not a skill — nothing to expand.
+    assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
+
+
 def test_history_to_messages_keeps_real_user_bracket_text():
     # Only role=user rows whose text OPENS with the [System: marker sentinel are
     # bookkeeping notices. A genuine user turn that merely mentions the token is

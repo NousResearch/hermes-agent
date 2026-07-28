@@ -143,7 +143,11 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         return content, 0, None, "old_string is only whitespace — provide non-blank text to match"
 
     if old_string == new_string:
-        return content, 0, None, "old_string and new_string are identical"
+        return content, 0, None, (
+            "No edit was applied because old_string and new_string are identical. "
+            "Provide the existing text to replace in old_string and the changed "
+            "replacement text in new_string."
+        )
 
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [

@@ -85,8 +85,11 @@ def _emit_compaction_done(agent: Any) -> None:
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
         return
+    text = t("gateway.compaction_done")
+    if not text.strip():
+        return
     with _swallow('status_callback error in compaction completion', exc_info=True):
-        status_callback("compacted", t("gateway.compaction_done"))
+        status_callback("compacted", text)
 
 
 # Every ROUTINE compression status line lives here: suppressed on chat platforms

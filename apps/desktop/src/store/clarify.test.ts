@@ -6,6 +6,7 @@ import {
   type ClarifyRequest,
   clearClarifyRequest,
   hasClarifyRequest,
+  hasMalformedStructuredChoices,
   normalizeChoices,
   setClarifyRequest,
   skipClarifyRequest
@@ -163,5 +164,25 @@ describe('normalizeChoices', () => {
   it('returns empty array when nothing survives', () => {
     expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
     expect(normalizeChoices([])).toEqual([])
+  })
+})
+
+describe('hasMalformedStructuredChoices', () => {
+  it('distinguishes intentional open-ended prompts from invalid structured prompts', () => {
+    expect(hasMalformedStructuredChoices(undefined)).toBe(false)
+    expect(hasMalformedStructuredChoices(null)).toBe(false)
+    expect(hasMalformedStructuredChoices([])).toBe(false)
+    expect(hasMalformedStructuredChoices(['valid', ''])).toBe(false)
+  })
+
+  it('does not reject raw shapes that the backend converts to labels', () => {
+    expect(hasMalformedStructuredChoices([{ description: 'descriptive label' }])).toBe(false)
+    expect(hasMalformedStructuredChoices([1, 2])).toBe(false)
+    expect(hasMalformedStructuredChoices([[{ label: 'nested label' }]])).toBe(false)
+  })
+
+  it('detects non-empty arrays whose labels are all removed', () => {
+    expect(hasMalformedStructuredChoices(['', ' ', '\n'])).toBe(true)
+    expect(hasMalformedStructuredChoices([null, { value: 'raw-id' }, {}])).toBe(true)
   })
 })

@@ -3153,6 +3153,7 @@ export const zh: Translations = {
       gatewayDisconnected: 'Hermes 网关未连接',
       sendFailed: '无法发送澄清响应',
       loadingQuestion: '正在加载问题…',
+      invalidChoices: '此澄清请求没有可用选项。请跳过，以便代理重试。',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
       skip: '跳过',

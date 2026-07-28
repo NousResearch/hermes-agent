@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 
+import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
 
 const titleCache = new Map<string, string>()
@@ -210,6 +211,22 @@ export function ExternalLinkIcon({ className }: { className?: string }) {
   return <ArrowUpRight aria-hidden className={cn('ml-1 inline size-[0.78em] align-[-0.08em] opacity-70', className)} />
 }
 
+// Brand mark for a known host, sized in `em` so it tracks the surrounding text
+// at any font size. It paints in `currentColor` rather than the brand hex —
+// several brand colors (GitHub's near-black, Unity's white) vanish against one
+// theme or the other.
+//
+// `title=""` is load-bearing: Simple Icons always renders a <title> defaulting
+// to the brand name, which lands in the anchor's textContent and accessible
+// name — a PR link would read "GitHub#123".
+export function LinkBrandIcon({ className, href }: { className?: string; href: string }) {
+  const Icon = resolveBrandIcon(shortHostLabel(href))
+
+  return Icon ? (
+    <Icon aria-hidden className={cn('mr-1 inline size-[0.85em] align-[-0.12em] opacity-80', className)} title="" />
+  ) : null
+}
+
 export function ExternalLink({
   children,
   className,
@@ -261,6 +278,7 @@ export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: P
 
   return (
     <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>
+      <LinkBrandIcon href={target} />
       <span className="font-medium">{display}</span>
     </ExternalLink>
   )

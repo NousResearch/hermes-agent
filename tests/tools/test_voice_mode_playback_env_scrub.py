@@ -16,6 +16,7 @@ def test_play_audio_file_scrubbed_env(tmp_path, monkeypatch):
         captured["env"] = kwargs.get("env")
         proc = MagicMock()
         proc.wait.return_value = 0
+        proc.returncode = 0
         return proc
 
     import tools.voice_mode as vm

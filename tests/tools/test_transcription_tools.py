@@ -2465,7 +2465,8 @@ class TestCafConversion:
 
         assert result["success"] is True
         mock_convert.assert_not_called()
-=======
+
+
 class TestTranscribeCredentialReadGuard:
     """transcribe_audio must refuse credential/secret stores before dispatch."""
 

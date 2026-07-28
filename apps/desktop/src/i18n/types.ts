@@ -2365,6 +2365,7 @@ export interface Translations {
       gatewayDisconnected: string
       sendFailed: string
       loadingQuestion: string
+      invalidChoices: string
       other: string
       placeholder: string
       skip: string

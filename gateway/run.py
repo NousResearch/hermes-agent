@@ -56,6 +56,7 @@ from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
+    COMPACTION_DONE_STATUS,
     COMPACTION_STATUS,
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -100,6 +101,11 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+auxiliary\s+compression\s+provider\s+.+\s+unavailable"
     r"|skipping\s+concurrent\s+compression"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    # Paired terminal edge for the line above (COMPACTION_DONE_STATUS,
+    # agent/conversation_compression.py) — without this, a suppressed start
+    # left a stray, contextless "done" bubble as the only visible trace of
+    # a routine compaction.
+    r"|context\s+compaction\s+complete"
     r"|resumed\s+after\s+\d+s\s+idle\s+[—-]\s+compacting"
     r"|preflight\s+compression"
     r"|pre[- ]api\s+compression"
@@ -149,6 +155,7 @@ _COMPRESSION_PROGRESS_STATUS_RE = re.compile(
         _status_template_to_regex(_template)
         for _template in (
             COMPACTION_STATUS,
+            COMPACTION_DONE_STATUS,
             PRE_API_COMPRESSION_STATUS_TEMPLATE,
             PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
             IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -573,7 +580,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+    # event_type == "compacted" is the dedicated compaction-completion notice
+    # (agent/conversation_compression.py::_emit_compaction_done) — a distinct
+    # delivery lane from the routine "lifecycle" progress stream, and always
+    # deliverable regardless of the opt-in gate below (#69546). Its own text
+    # (COMPACTION_DONE_STATUS) is also a member of the noise-regex patterns
+    # so the routine-status membership/opt-in tests below can exercise it
+    # over the "lifecycle" lane; matching it here too would incorrectly
+    # subject the always-on completion notice to the opt-in gate.
+    if event_type != "compacted" and _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
         # membership check is derived from the #69550 template constants, so

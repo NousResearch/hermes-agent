@@ -117,6 +117,13 @@ class ProcessSession:
     watcher_thread_id: str = ""
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
+    # Spawn-time UI owner (TUI/desktop window session id). Captured for EVERY
+    # background spawn — not just notify/watch ones — because live
+    # ``agent.terminal.output`` chunks are emitted for every background
+    # process and the desktop router needs positive ownership: a delegated
+    # child's ``session_key`` is the subagent's internal key and never matches
+    # a live TUI session (#61719).
+    origin_ui_session_id: str = ""
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
@@ -2082,6 +2089,7 @@ class ProcessRegistry:
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
+                            "origin_ui_session_id": s.origin_ui_session_id,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
@@ -2160,6 +2168,7 @@ class ProcessRegistry:
                 watcher_thread_id=entry.get("watcher_thread_id", ""),
                 watcher_message_id=entry.get("watcher_message_id", ""),
                 watcher_interval=entry.get("watcher_interval", 0),
+                origin_ui_session_id=entry.get("origin_ui_session_id", ""),
                 notify_on_complete=entry.get("notify_on_complete", False),
                 watch_patterns=entry.get("watch_patterns", []),
             )

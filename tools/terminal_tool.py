@@ -2826,6 +2826,24 @@ def terminal_tool(
                             else canonical_hint
                         )
 
+                # Spawn-time UI owner — captured for EVERY background spawn,
+                # not just notify/watch ones: live ``agent.terminal.output``
+                # chunks are emitted for every background process, and the
+                # desktop router needs positive ownership to deliver them. A
+                # delegated child's session_key is the subagent's internal key
+                # and never matches a live TUI window, so without this its
+                # live output was emitted with sid "" and dropped (#61719).
+                # Empty outside TUI/desktop contexts — harmless no-op.
+                if background:
+                    try:
+                        from gateway.session_context import get_session_env as _gse_ui
+
+                        proc_session.origin_ui_session_id = (
+                            _gse_ui("HERMES_UI_SESSION_ID", "") or ""
+                        )
+                    except Exception:
+                        pass  # best-effort: routing falls back to session_key
+
                 # Populate routing metadata on the session so that
                 # watch-pattern and completion notifications can be
                 # routed back to the correct chat/thread.

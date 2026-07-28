@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
@@ -86,6 +86,18 @@ class PricingEntry:
     fetched_at: Optional[datetime] = None
 
 
+#: Billable component classes a :class:`CostResult` can be decomposed into.
+#: ``request`` is the per-request flat fee some provider models APIs report
+#: (OpenRouter's ``pricing.request``); the rest are per-token classes.
+COST_COMPONENTS: tuple[str, ...] = (
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "request",
+)
+
+
 @dataclass(frozen=True)
 class CostResult:
     amount_usd: Optional[Decimal]
@@ -95,6 +107,21 @@ class CostResult:
     fetched_at: Optional[datetime] = None
     pricing_version: Optional[str] = None
     notes: tuple[str, ...] = ()
+    #: Per-class dollar breakdown of ``amount_usd``, keyed by
+    #: :data:`COST_COMPONENTS`. Only classes that actually contributed are
+    #: present. Empty when ``amount_usd`` is ``None`` (no priced total to
+    #: decompose). When non-empty the values sum exactly to ``amount_usd`` —
+    #: both are built from the same ``Decimal`` terms, so the invariant holds
+    #: without rounding drift.
+    components: Dict[str, Decimal] = field(default_factory=dict)
+
+    def component(self, name: str) -> Decimal:
+        """Return the dollar amount billed for ``name``, or zero.
+
+        Convenience for consumers that want a total-preserving read of one
+        class without having to special-case absent keys.
+        """
+        return self.components.get(name, _ZERO)
 
 
 _UTC_NOW = lambda: datetime.now(timezone.utc)
@@ -1222,7 +1249,6 @@ def estimate_usage_cost(
         return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
 
     notes: list[str] = []
-    amount = _ZERO
 
     if usage.input_tokens and entry.input_cost_per_million is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
@@ -1247,16 +1273,27 @@ def estimate_usage_cost(
                 notes=("cache-write pricing unavailable for route",),
             )
 
-    if entry.input_cost_per_million is not None:
-        amount += Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
-    if entry.output_cost_per_million is not None:
-        amount += Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
-    if entry.cache_read_cost_per_million is not None:
-        amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
-    if entry.cache_write_cost_per_million is not None:
-        amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+    components: Dict[str, Decimal] = {}
+    if entry.input_cost_per_million is not None and usage.input_tokens:
+        components["input"] = (
+            Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
+        )
+    if entry.output_cost_per_million is not None and usage.output_tokens:
+        components["output"] = (
+            Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
+        )
+    if entry.cache_read_cost_per_million is not None and usage.cache_read_tokens:
+        components["cache_read"] = (
+            Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
+        )
+    if entry.cache_write_cost_per_million is not None and usage.cache_write_tokens:
+        components["cache_write"] = (
+            Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+        )
     if entry.request_cost is not None and usage.request_count:
-        amount += Decimal(usage.request_count) * entry.request_cost
+        components["request"] = Decimal(usage.request_count) * entry.request_cost
+
+    amount = sum(components.values(), _ZERO)
 
     status: CostStatus = "estimated"
     label = f"~${amount:.2f}"
@@ -1275,6 +1312,7 @@ def estimate_usage_cost(
         fetched_at=entry.fetched_at,
         pricing_version=entry.pricing_version,
         notes=tuple(notes),
+        components=components,
     )
 
 

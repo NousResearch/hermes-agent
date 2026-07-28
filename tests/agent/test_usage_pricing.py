@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
+from decimal import Decimal
+
 from agent.usage_pricing import (
+    COST_COMPONENTS,
     CanonicalUsage,
     estimate_usage_cost,
     get_pricing_entry,
@@ -636,3 +639,220 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+# ---------------------------------------------------------------------------
+# CostResult.components — per-class dollar breakdown
+#
+# Behaviour contracts, not snapshots: every assertion below relates the
+# breakdown to the total or to the pricing entry it was derived from, so a
+# rate change keeps them green while a decomposition bug turns them red.
+# ---------------------------------------------------------------------------
+
+
+def _openrouter_metadata(pricing):
+    return {"vendor/probe-model": {"pricing": pricing}}
+
+
+def _estimate_openrouter(monkeypatch, pricing, usage):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: _openrouter_metadata(pricing),
+    )
+    return estimate_usage_cost(
+        "vendor/probe-model",
+        usage,
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+
+def test_cost_components_sum_exactly_to_total(monkeypatch):
+    """The breakdown must reconstruct amount_usd with no residue.
+
+    This is the invariant that makes the breakdown safe to display alongside
+    the total: a consumer rendering per-class dollars and a consumer rendering
+    the total can never disagree.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "cache_read": "0.0000003",
+            "cache_write": "0.00000375",
+        },
+        CanonicalUsage(
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=2000,
+            cache_write_tokens=300,
+        ),
+    )
+
+    assert result.amount_usd is not None
+    assert set(result.components) == {"input", "output", "cache_read", "cache_write"}
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_include_flat_per_request_fee(monkeypatch):
+    """A per-request fee is a billable class and must appear in the breakdown.
+
+    ``_pricing_entry_from_metadata`` maps a models-API ``pricing.request``
+    field onto ``PricingEntry.request_cost``, and ``estimate_usage_cost``
+    already folds it into the total. A consumer that decomposes cost by
+    per-token class alone silently drops it, so the total it reconstructs is
+    short by exactly the fee.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "request": "0.01",
+        },
+        CanonicalUsage(input_tokens=1000, output_tokens=500, request_count=1),
+    )
+
+    assert result.components["request"] == Decimal("0.01")
+    # The fee is a real share of the bill, not a rounding artefact: per-token
+    # classes alone under-report the total.
+    per_token_only = sum(
+        v for k, v in result.components.items() if k != "request"
+    )
+    assert per_token_only < result.amount_usd
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_scale_with_request_count(monkeypatch):
+    """The request fee multiplies by request_count, matching the total."""
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=500, request_count=4)
+    result = _estimate_openrouter(
+        monkeypatch,
+        {"prompt": "0.000003", "completion": "0.000015", "request": "0.01"},
+        usage,
+    )
+
+    assert result.components["request"] == Decimal("0.01") * usage.request_count
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_omit_classes_with_no_tokens(monkeypatch):
+    """Classes that contributed nothing are absent, not zero-valued.
+
+    Presence of a key means "this class was billed", so a consumer can
+    distinguish "no cache reads happened" from "cache reads cost $0".
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "cache_read": "0.0000003",
+            "cache_write": "0.00000375",
+        },
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+    )
+
+    assert set(result.components) == {"input", "output"}
+    assert result.component("cache_read") == Decimal("0")
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_empty_when_total_is_unknown(monkeypatch):
+    """No total ⇒ no breakdown.
+
+    When a token class is used but unpriced, the whole estimate is refused
+    (status "unknown", amount None). The breakdown must not offer a partial
+    figure that looks like a complete cost — that is precisely the blind spot
+    a consumer decomposing cost by hand falls into.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {"prompt": "0.000003", "completion": "0.000015"},
+        CanonicalUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=900_000),
+    )
+
+    assert result.status == "unknown"
+    assert result.amount_usd is None
+    assert result.components == {}
+
+
+def test_cost_components_keys_are_declared_vocabulary(monkeypatch):
+    """Every emitted key is in COST_COMPONENTS.
+
+    Guards the contract consumers key off; adding a new billable class must
+    extend the declared vocabulary rather than silently widen the dict.
+    """
+    result = _estimate_openrouter(
+        monkeypatch,
+        {
+            "prompt": "0.000003",
+            "completion": "0.000015",
+            "cache_read": "0.0000003",
+            "cache_write": "0.00000375",
+            "request": "0.01",
+        },
+        CanonicalUsage(
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=2000,
+            cache_write_tokens=300,
+            request_count=2,
+        ),
+    )
+
+    assert set(result.components) <= set(COST_COMPONENTS)
+    assert set(result.components) == set(COST_COMPONENTS)
+    assert sum(result.components.values()) == result.amount_usd
+
+
+def test_cost_components_match_entry_rates(monkeypatch):
+    """Each component equals tokens x that class's published rate.
+
+    Relates the breakdown to the pricing entry rather than to frozen dollar
+    literals, so a rate change keeps this green.
+    """
+    usage = CanonicalUsage(
+        input_tokens=1234,
+        output_tokens=567,
+        cache_read_tokens=8901,
+        cache_write_tokens=234,
+    )
+    pricing = {
+        "prompt": "0.000003",
+        "completion": "0.000015",
+        "cache_read": "0.0000003",
+        "cache_write": "0.00000375",
+    }
+    result = _estimate_openrouter(monkeypatch, pricing, usage)
+    entry = get_pricing_entry(
+        "vendor/probe-model",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    one_m = Decimal("1000000")
+    assert result.components["input"] == Decimal(usage.input_tokens) * entry.input_cost_per_million / one_m
+    assert result.components["output"] == Decimal(usage.output_tokens) * entry.output_cost_per_million / one_m
+    assert (
+        result.components["cache_read"]
+        == Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / one_m
+    )
+    assert (
+        result.components["cache_write"]
+        == Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / one_m
+    )
+
+
+def test_cost_components_for_subscription_route_is_empty():
+    """A subscription-included route has a zero total and nothing to split."""
+    result = estimate_usage_cost(
+        "gpt-5.3-codex",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+
+    assert result.status == "included"
+    assert result.components == {}

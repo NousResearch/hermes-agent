@@ -460,8 +460,9 @@ class TestFileDedup(unittest.TestCase):
             f"    {_READ_DEDUP_STATUS_MESSAGE}\n\n"
             + ("This is documentation content. " * 200)
         )
+        target = os.path.join(self._tmpdir, "large_quote.txt")
         result = json.loads(write_file_tool(
-            self._tmpfile,
+            target,
             large_content,
             task_id="guard",
         ))
@@ -896,9 +897,11 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         # Read with different offsets to populate multiple dedup entries.
         read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off")
         read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off")
+        read_file_tool(self._tmpfile, offset=1, limit=500, task_id="off")
 
         # Write — should invalidate BOTH dedup entries.
-        write_file_tool(self._tmpfile, "replaced\n", task_id="off")
+        write = json.loads(write_file_tool(self._tmpfile, "replaced\n", task_id="off"))
+        self.assertNotIn("error", write)
 
         # Both reads should return fresh content.
         r1 = json.loads(read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off"))
@@ -926,9 +929,11 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
 
         # Read file B.
         read_file_tool(other, task_id="iso")
+        read_file_tool(self._tmpfile, task_id="iso")
 
         # Write file A.
-        write_file_tool(self._tmpfile, "changed A\n", task_id="iso")
+        write = json.loads(write_file_tool(self._tmpfile, "changed A\n", task_id="iso"))
+        self.assertNotIn("error", write)
 
         # File B should still dedup (untouched).
         r2 = json.loads(read_file_tool(other, task_id="iso"))
@@ -957,7 +962,8 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         read_file_tool(self._tmpfile, task_id="taskB")
 
         # Task A writes.
-        write_file_tool(self._tmpfile, "new\n", task_id="taskA")
+        write = json.loads(write_file_tool(self._tmpfile, "new\n", task_id="taskA"))
+        self.assertNotIn("error", write)
 
         # Task A's dedup should be invalidated.
         rA = json.loads(read_file_tool(self._tmpfile, task_id="taskA"))

@@ -227,7 +227,7 @@ interface PromptActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
-  branchCurrentSession: () => Promise<boolean>
+  branchCurrentSession: (messageId?: string, targetSessionId?: string) => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string

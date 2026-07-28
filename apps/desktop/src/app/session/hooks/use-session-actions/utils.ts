@@ -1225,25 +1225,32 @@ export function selectBranchMessages(
   return toBranchMessages(authoritativeMessages.slice(0, authoritativeIndex + 1))
 }
 
+interface OptimisticSessionContext {
+  cwd?: string
+  profile?: null | string
+}
+
 export function upsertOptimisticSession(
   created: SessionCreateResponse,
   id: string,
   title: string | null = null,
   preview: string | null = null,
   parentSessionId: string | null = null,
-  lastActive?: number
+  lastActive?: number,
+  context?: OptimisticSessionContext
 ) {
   const now = lastActive ?? Date.now() / 1000
-  // Stamp the profile the session was just created on (= the live gateway's
-  // profile) so the scoped sidebar shows the new row immediately instead of
-  // filtering it out as "default" until the aggregator re-fetches.
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  // Stamp an explicit owning profile when the caller already resolved it;
+  // otherwise use the live gateway profile. This keeps cross-profile runtime
+  // operations on their source socket without misfiling the optimistic row.
+  const profileKey = normalizeProfileKey(context?.profile ?? $activeGatewayProfile.get())
+  const fallbackCwd = context?.cwd?.trim() || $currentCwd.get().trim() || null
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
     // lane immediately (the overlay groups by path); fall back to the workspace
     // the session was just started in when the create response omits it.
-    cwd: created.info?.cwd ?? ($currentCwd.get().trim() || null),
+    cwd: created.info?.cwd ?? fallbackCwd,
     ended_at: null,
     id,
     input_tokens: 0,

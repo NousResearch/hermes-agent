@@ -700,6 +700,71 @@ class TestSyncSkills:
         assert "old-skill" not in result.get("user_modified", [])
         assert result["skipped"] >= 1
 
+    def test_unchanged_skill_does_not_hash_user_copy(self, tmp_path):
+        """An unchanged bundled origin must not read the bind-mounted copy."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        user_skill = skills_dir / "old-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# Old")
+        origin_hash = _dir_hash(bundled / "old-skill")
+        manifest_file.write_text(f"old-skill:{origin_hash}\n")
+        real_dir_hash = _dir_hash
+
+        def reject_user_hash(directory):
+            if directory == user_skill:
+                pytest.fail("unchanged sync read the user skill tree")
+            return real_dir_hash(directory)
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._index_active_skills", return_value={}), \
+                patch("tools.skills_sync._dir_hash", side_effect=reject_user_hash):
+            result = sync_skills(quiet=True)
+
+        assert result["skipped"] >= 1
+
+    def test_unchanged_skills_do_not_build_rename_index(self, tmp_path):
+        """Rename recovery should not scan the active tree when every dest exists."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        user_skill = skills_dir / "old-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# Old")
+        origin_hash = _dir_hash(bundled / "old-skill")
+        manifest_file.write_text(f"old-skill:{origin_hash}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch(
+                    "tools.skills_sync._index_active_skills",
+                    side_effect=AssertionError("rename index scanned eagerly"),
+                ):
+            result = sync_skills(quiet=True)
+
+        assert result["skipped"] >= 1
+
+    def test_fast_path_defers_user_hash_until_bundled_update(self, tmp_path):
+        """Local edits remain protected when a later bundled update arrives."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        user_skill = skills_dir / "old-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# Old")
+        origin_hash = _dir_hash(bundled / "old-skill")
+        manifest_file.write_text(f"old-skill:{origin_hash}\n")
+        (user_skill / "SKILL.md").write_text("# My local edit")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            unchanged = sync_skills(quiet=True)
+            (bundled / "old-skill" / "SKILL.md").write_text("# Upstream v2")
+            changed = sync_skills(quiet=True)
+
+        assert "old-skill" not in unchanged["user_modified"]
+        assert "old-skill" in changed["user_modified"]
+        assert (user_skill / "SKILL.md").read_text() == "# My local edit"
+
     def test_v1_manifest_migration_sets_baseline(self, tmp_path):
         """v1 manifest entries (no hash) should set baseline from user's current copy."""
         bundled = self._setup_bundled(tmp_path)
@@ -947,6 +1012,68 @@ class TestSyncSkills:
         entry = data["installed"]["chroma"]
         assert entry["source"] == "official"
         assert entry["install_path"] == "mlops/chroma"
+
+    def test_optional_backfill_scans_active_tree_once(self, tmp_path):
+        """Missing optional candidates must share one active-tree index."""
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        for name in ("optional-a", "optional-b", "optional-c"):
+            skill = optional / "category" / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        real_rglob = Path.rglob
+        active_tree_scans = 0
+
+        def count_active_tree_scans(path, pattern):
+            nonlocal active_tree_scans
+            if path == skills_dir:
+                active_tree_scans += 1
+            return real_rglob(path, pattern)
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._get_optional_dir", return_value=optional), \
+                patch.object(Path, "rglob", count_active_tree_scans):
+            sync_skills(quiet=True)
+
+        assert active_tree_scans <= 1
+
+    def test_optional_backfill_skips_already_tracked_skill_before_hashing(self, tmp_path):
+        """Existing hub provenance must bypass bind-mounted content hashing."""
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "category" / "tracked-skill"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text("# tracked\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        active = skills_dir / "category" / "tracked-skill"
+        active.mkdir(parents=True)
+        (active / "SKILL.md").write_text("# tracked\n")
+        lock_path = skills_dir / ".hub" / "lock.json"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text(json.dumps({
+            "version": 1,
+            "installed": {
+                "tracked-skill": {"install_path": "category/tracked-skill"},
+            },
+        }))
+        real_dir_hash = _dir_hash
+
+        def reject_active_hash(directory):
+            if directory == active:
+                pytest.fail("tracked optional skill was hashed again")
+            return real_dir_hash(directory)
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._get_optional_dir", return_value=optional), \
+                patch("tools.skills_sync._dir_hash", side_effect=reject_active_hash):
+            result = sync_skills(quiet=True)
+
+        assert result["optional_provenance_backfilled"] == []
 
     def test_relocated_backfill_still_requires_identical_content(self, tmp_path):
         """The name fallback must not weaken the content check.

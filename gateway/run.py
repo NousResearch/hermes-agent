@@ -24097,6 +24097,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
                     else:
                         _out = _raw
+                    _out = _redact_gateway_user_facing_secrets(_out)
                     completion_evt = {
                         "type": "completion",
                         "session_id": session_id,

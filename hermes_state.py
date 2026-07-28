@@ -1976,13 +1976,21 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
-    # Retain the existing coarse 1000-write maintenance cadence, but give each
-    # FTS5 index only one positive-rank merge command per pass. SQLite treats
-    # that rank as an approximate output-page budget. A 500-page budget keeps
-    # routine work small while automerge handles normal background compaction;
-    # unlike ``optimize``, it cannot chase every remaining segment in one write.
+    # Retain the existing coarse 1000-write maintenance cadence, but replace
+    # the unbounded FTS5 ``'optimize'`` (measured holding the write lock for
+    # 9-18 s per index on a 10 GB production DB — longer than a competing
+    # writer's full retry patience, surfacing as "database is locked" /
+    # session_persistence_failed) with bounded ``'merge'`` commands. A
+    # positive merge rank is an approximate output-page budget, so each
+    # command holds the write lock for milliseconds; up to
+    # ``_FTS_MERGE_COMMANDS_PER_PASS`` commands run per index per cadence,
+    # stopping early on the documented no-progress signal. ``usermerge`` is
+    # lowered to 2 so positive merges act on any level with >= 2 segments —
+    # without that, levels below the default threshold of 4 are skipped and
+    # a fragmented index never converges (SQLite FTS5 §6.8-6.9).
     _FTS_MERGE_EVERY_N_WRITES = 1000
     _FTS_MERGE_MAX_PAGES_PER_INDEX = 500
+    _FTS_MERGE_COMMANDS_PER_PASS = 4
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
     # gateway/CLI writers. The dashboard accepts one exported JSON/JSONL file
@@ -2020,6 +2028,9 @@ class SessionDB:
         # in place at most once per SessionDB instance so a genuinely
         # unrecoverable database can't put writers into a rebuild loop.
         self._fts_runtime_rebuild_attempted = False
+        # One-shot guard for the usermerge-floor config write on the
+        # incremental FTS merge cadence (see _merge_fts_incrementally).
+        self._fts_usermerge_floor_applied = False
         self._fts_enabled = False
         self._trigram_available = False
         # CJK-bigram index (cjk_unicode61 loadable tokenizer). _fts_cjk_loaded:
@@ -11295,41 +11306,76 @@ class SessionDB:
             logger.debug("Could not read logical DB size: %s", exc)
             return None
 
-    def _merge_fts_incrementally(self, *, max_pages: int) -> int:
-        """Issue one positive-rank FTS5 ``merge`` per present index.
+    def _merge_fts_incrementally(
+        self, *, max_pages: int, max_commands: Optional[int] = None
+    ) -> int:
+        """Run bounded FTS5 ``'merge'`` commands against each present index.
 
-        A positive rank tells SQLite to stop after approximately that many
-        output pages. This method deliberately does not loop: one invocation
-        executes at most one merge command for each table in ``_FTS_TABLES``.
-        Missing tables are valid schema variants; all other SQLite errors
-        propagate to the caller.
+        A positive merge rank tells SQLite to stop after approximately that
+        many output pages, so each command holds the write lock for
+        milliseconds regardless of index size — unlike ``'optimize'``, which
+        rewrites the whole index in one transaction (measured 9-18 s per
+        index on a 10 GB production DB, long enough to exhaust a competing
+        writer's entire lock-retry patience).
+
+        Protocol (SQLite FTS5 §6.8-6.9):
+
+        - ``usermerge`` is lowered to its minimum of 2 (persisted in the
+          ``%_config`` shadow table, applied once per instance) so a
+          positive merge acts on ANY level holding >= 2 segments. With the
+          default of 4, levels below that threshold are never merged by a
+          positive-rank command and a fragmented index cannot converge.
+        - Up to *max_commands* merge commands run per index, stopping early
+          on the documented no-progress signal: the delta in
+          ``total_changes`` is < 2 (the command's own INSERT accounts
+          for 1 change; >= 2 means real merge work happened).
+
+        Each command is its own implicit transaction (the connection runs
+        with ``isolation_level=None``), so the SQLite write lock is released
+        between commands and competing processes can interleave writes
+        mid-pass. Missing tables are valid schema variants (FTS variants are
+        optional, and ``optimize_fts_storage`` legitimately drops + backfills
+        these tables while writers keep running) and are skipped, mirroring
+        ``optimize_fts``. Other SQLite errors propagate to the caller.
+
+        Returns the number of merge commands executed.
         """
         if isinstance(max_pages, bool) or not isinstance(max_pages, int):
             raise TypeError("max_pages must be an integer")
         if max_pages <= 0:
             raise ValueError("max_pages must be greater than zero")
+        if max_commands is None:
+            max_commands = self._FTS_MERGE_COMMANDS_PER_PASS
+        if isinstance(max_commands, bool) or not isinstance(max_commands, int):
+            raise TypeError("max_commands must be an integer")
+        if max_commands <= 0:
+            raise ValueError("max_commands must be greater than zero")
 
-        merged = 0
+        executed = 0
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name IN (?, ?)",
-                self._FTS_TABLES,
-            ).fetchall()
-            present = {row[0] for row in rows}
-            if "messages_fts" not in present:
-                raise sqlite3.OperationalError(
-                    "required FTS5 index is missing: messages_fts"
-                )
             for tbl in self._FTS_TABLES:
-                if tbl not in present:
+                if not self._fts_table_exists(tbl):
                     continue
-                self._conn.execute(
-                    f"INSERT INTO {tbl}({tbl}, rank) VALUES('merge', ?)",
-                    (max_pages,),
-                )
-                merged += 1
-        return merged
+                # One-time (per instance) usermerge floor; the value is
+                # persisted in the index's config shadow table so future
+                # connections inherit it. Setting config is a metadata-only
+                # write — it never touches segment data.
+                if not getattr(self, "_fts_usermerge_floor_applied", False):
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}, rank) "
+                        "VALUES('usermerge', 2)"
+                    )
+                for _ in range(max_commands):
+                    before = self._conn.total_changes
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}, rank) VALUES('merge', ?)",
+                        (max_pages,),
+                    )
+                    executed += 1
+                    if self._conn.total_changes - before < 2:
+                        break
+            self._fts_usermerge_floor_applied = True
+        return executed
 
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.

@@ -654,7 +654,26 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProcess:
+def _command_stt_env_passthrough(config: Dict[str, Any]) -> list:
+    """Return the provider's ``env_passthrough`` allowlist (opt-out of scrub).
+
+    Command providers legitimately reference their own API keys in the shell
+    template (curl one-liners). The child env is scrubbed of Hermes secrets by
+    default; ``env_passthrough: [MY_API_KEY, ...]`` copies the named variables
+    back from the parent environment so a trusted template keeps working.
+    Mirrors ``tools.tts_tool._command_provider_env_passthrough``.
+    """
+    raw = config.get("env_passthrough")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _run_command_stt(
+    command: str,
+    timeout: float,
+    env_passthrough: Optional[list] = None,
+) -> subprocess.CompletedProcess:
     """Run a command-provider shell command with process-tree idle cleanup.
 
     Mirrors ``tools.tts_tool._run_command_tts``: ``timeout`` is an IDLE
@@ -668,6 +687,10 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
     from tools.environments.local import hermes_subprocess_env
 
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
+    for key in env_passthrough or []:
+        value = os.environ.get(key)
+        if value is not None:
+            scrubbed[key] = value
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
@@ -879,7 +902,11 @@ def _transcribe_command_stt(
                 audio.name, provider_name,
             )
             try:
-                result = _run_command_stt(command, timeout)
+                result = _run_command_stt(
+                    command,
+                    timeout,
+                    env_passthrough=_command_stt_env_passthrough(config),
+                )
             except subprocess.TimeoutExpired:
                 return {
                     "success": False,

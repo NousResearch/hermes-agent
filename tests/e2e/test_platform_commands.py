@@ -11,7 +11,7 @@ Tests are parametrized over platforms via the ``platform`` fixture in conftest.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -99,14 +99,25 @@ class TestSlashCommands:
             pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
-        runner.request_restart = MagicMock(return_value=True)
+        # Mock dispatch_gateway_restart (the async coordinator) rather than
+        # request_restart (the sync helper-starter).  An AsyncMock on
+        # request_restart does NOT set the ack_future, so
+        # dispatch_gateway_restart hangs forever waiting for the ACK and
+        # never sends a reply — the test times out and teardown cancels the
+        # coroutine (Captured log: "Handoff cancelled before timeout/cancel
+        # handling").  Mocking the async boundary directly gives us a
+        # deterministic success path.
+        runner.dispatch_gateway_restart = AsyncMock(return_value=(True, "Restarting..."))
 
         send = await send_and_capture(adapter, "restart gateway", platform)
 
         send.assert_called_once()
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert "restart" in response_text.lower() or "draining" in response_text.lower()
-        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+        runner.dispatch_gateway_restart.assert_awaited_once()
+        _kw = runner.dispatch_gateway_restart.call_args.kwargs
+        assert _kw.get("source") is not None
+        assert _kw.get("origin") == "slash_command"
 
     @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_in_group_stays_plain_text(self, adapter, runner, platform, monkeypatch):
@@ -114,7 +125,12 @@ class TestSlashCommands:
             pytest.skip("Shortcut scope is only verified for Telegram here")
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
-        runner.request_restart = MagicMock(return_value=True)
+        # In group chats, coerce_plaintext_gateway_command returns early
+        # (chat_type != "dm"), so the text stays as "restart gateway" and
+        # routes to _handle_message_with_agent.  dispatch_gateway_restart
+        # must NOT be reached.  Mock it as a safety net so we can assert
+        # not-awaited explicitly.
+        runner.dispatch_gateway_restart = AsyncMock()
         runner._handle_message_with_agent = AsyncMock(return_value="agent-handled")
 
         send = await send_and_capture(adapter, "restart gateway", platform, chat_id="group-chat-1", user_id="u1", chat_type="group")
@@ -122,7 +138,8 @@ class TestSlashCommands:
         send.assert_called_once()
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert response_text == "agent-handled"
-        runner.request_restart.assert_not_called()
+        runner.dispatch_gateway_restart.assert_not_awaited()
+        runner._handle_message_with_agent.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_personality_lists_options(self, adapter, platform):

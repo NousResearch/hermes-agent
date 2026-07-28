@@ -2,7 +2,7 @@ import asyncio
 import shutil
 import subprocess
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,11 +11,49 @@ from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
-from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from gateway.slash_commands import (
+    _RestartTransaction,
+    _TransitionResult,
+)
+from tests.gateway.restart_test_helpers import (
+    attach_real_launcher_under_mocked_popen,
+    make_restart_runner,
+    make_restart_source,
+)
+
+
+# ---------------------------------------------------------------------------
+# Module-level Popen hard block
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _forbid_real_popen(monkeypatch):
+    """Hard module-level guard: every test in this file runs with
+    ``subprocess.Popen`` replaced by an assertion-raising stub.
+
+    The four Popen-inspection tests in this file (``test_launch_detached_*``,
+    ``test_windows_detached_*``) MUST replace ``subprocess.Popen`` with a
+    controlled fake inside their own test body BEFORE invoking the
+    launcher-under-test.
+
+    This fixture catches the regression that produced PID 5896 — a
+    detached restart watcher leaked from a test that did not mock
+    ``subprocess.Popen``.
+    """
+
+    def _unexpected_popen(*args, **kwargs):
+        raise AssertionError(
+            "Real subprocess.Popen is forbidden in drain/restart tests. "
+            "If this test intentionally inspects Popen arguments, replace "
+            "subprocess.Popen with a controlled fake via monkeypatch.setattr "
+            "BEFORE invoking the launcher-under-test."
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", _unexpected_popen)
+    yield
 
 
 @pytest.mark.asyncio
-async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
+async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch, tmp_path):
     # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
     # which changes the restart call signature.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
@@ -29,7 +67,55 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
         "gateway.restart.is_container_restart_context", lambda: False
     )
     runner, _adapter = make_restart_runner()
-    runner.request_restart = MagicMock(return_value=True)
+    # Fail-closed safety: launcher and stop are AsyncMocks from fixture.
+    assert isinstance(runner._launch_detached_restart_command, AsyncMock)
+    assert isinstance(runner.stop, AsyncMock)
+
+    # Safe fake protocol: create a minimal stub that mimics the
+    # request_restart side effects without touching the OS.
+    captured: dict = {}
+
+    def safe_request_restart(
+        *,
+        detached: bool,
+        via_service: bool,
+        transaction: _RestartTransaction | None = None,
+    ) -> bool:
+        captured["detached"] = detached
+        captured["via_service"] = via_service
+        captured["transaction"] = transaction
+
+        # Set the runner's restart flags (done by real request_restart).
+        runner._restart_requested = True
+        runner._restart_detached = detached
+        runner._restart_via_service = via_service
+        runner._restart_task_started = True
+
+        async def _run_restart() -> None:
+            # Complete the handoff protocol so the ack is ready.
+            claimed = await transaction.claim_handoff()  # type: ignore[union-attr]
+            assert claimed is True, "claim_handoff must succeed before complete_started"
+            transition = await transaction.complete_started()  # type: ignore[union-attr]
+            assert transition in (
+                _TransitionResult.TRANSITIONED,
+                _TransitionResult.ALREADY_COMPLETE,
+            ), (
+                f"complete_started must produce TRANSITIONED or ALREADY_COMPLETE, "
+                f"got {transition!r}"
+            )
+
+            await runner.stop(
+                restart=True,
+                detached_restart=detached,
+                service_restart=via_service,
+            )
+
+        task = asyncio.create_task(_run_restart())
+        transaction.restart_task = task  # type: ignore[union-attr]
+        return True
+
+    runner.request_restart = safe_request_restart  # type: ignore[method-assign]
+
     event = MessageEvent(
         text="/restart",
         message_type=MessageType.TEXT,
@@ -40,7 +126,16 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     running_agent = MagicMock()
     runner._running_agents[session_key] = running_agent
 
-    result = await runner._handle_message(event)
+    popen_calls: list = []
+
+    def _unexpected_popen(*a, **k):
+        popen_calls.append((a, k))
+        raise AssertionError("real Popen in drain test — must not happen")
+
+    with patch("gateway.run._hermes_home", tmp_path), patch(
+        "subprocess.Popen", side_effect=_unexpected_popen
+    ):
+        result = await runner._handle_message(event)
 
     expected = t("gateway.draining", count=1)
     assert result == expected
@@ -53,7 +148,13 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     assert expected != "gateway.draining"
     assert "Draining" in expected and "1" in expected
     running_agent.interrupt.assert_not_called()
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    # request_restart was called once via the safe protocol.
+    assert captured["detached"] is True
+    assert captured["via_service"] is False
+    assert captured["transaction"] is not None
+    assert isinstance(captured["transaction"], _RestartTransaction)
+    assert captured["transaction"].request_id.startswith("req-")
+    assert popen_calls == [], f"real Popen called: {popen_calls}"
 
 
 def test_load_busy_text_mode_follows_input_mode_and_honors_legacy(tmp_path, monkeypatch):
@@ -222,11 +323,92 @@ async def test_run_restart_excluded_from_stop_cancel_loop():
 
 @pytest.mark.windows_only
 @pytest.mark.asyncio
+async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    # This test inspects Popen arguments — opt into real launcher.
+    # Caller MUST mock subprocess.Popen before invoking the launcher.
+    attach_real_launcher_under_mocked_popen(runner)
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
+    assert "gateway restart" in cmd[-1]
+    assert "kill -0 321" in cmd[-1]
+    assert "deadline=$(( $(date +%s) +" in cmd[-1]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    # The watcher must NOT inherit the gateway marker, or the CLI's
+    # self-restart loop guard refuses to run `hermes gateway restart`.
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+
+
+@pytest.mark.asyncio
+async def test_detached_restart_helper_is_idempotent(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    # This test inspects Popen arguments — opt into real launcher.
+    # Caller MUST mock subprocess.Popen before invoking the launcher.
+    attach_real_launcher_under_mocked_popen(runner)
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_calls.append((a, k)))
+
+    await runner._launch_detached_restart_command()
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+
+
+def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    pth_extra = tmp_path / "pywin32_system32"
+    site_packages.mkdir(parents=True)
+    pth_extra.mkdir()
+    (site_packages / "pywin32.pth").write_text(str(pth_extra), encoding="utf-8")
+    project_root = str(gateway_run.Path(gateway_run.__file__).resolve().parent.parent)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+    monkeypatch.setenv("PYTHONPATH", "already-there")
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert gateway_run.sys.path[:2] == [project_root, str(site_packages)]
+    assert str(pth_extra) in gateway_run.sys.path
+    assert gateway_run.os.environ["VIRTUAL_ENV"] == str(venv_dir.resolve())
+    pythonpath = gateway_run.os.environ["PYTHONPATH"].split(gateway_run.os.pathsep)
+    assert pythonpath[:3] == [project_root, str(site_packages), "already-there"]
+
+
+@pytest.mark.asyncio
 async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
     """Faking sys.platform="win32" on Linux could not reach the real Windows
     detach branch (msvcrt/creationflags spawn, Lib/site-packages venv layout);
     this runs on the Windows CI job instead."""
     runner, _adapter = make_restart_runner()
+    # This test inspects Popen arguments — opt into real launcher.
+    # Caller MUST mock subprocess.Popen before invoking the launcher.
+    attach_real_launcher_under_mocked_popen(runner)
     popen_calls = []
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"
@@ -275,6 +457,9 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
     spawn branch this asserts on, so it runs on the Windows CI job.
     """
     runner, _adapter = make_restart_runner()
+    # This test inspects Popen arguments — opt into real launcher.
+    # Caller MUST mock subprocess.Popen before invoking the launcher.
+    attach_real_launcher_under_mocked_popen(runner)
     popen_calls = []
     venv_dir = tmp_path / "venv"
     site_packages = venv_dir / "Lib" / "site-packages"

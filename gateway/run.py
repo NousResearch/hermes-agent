@@ -10944,7 +10944,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self,
+        *,
+        detached: bool = False,
+        via_service: bool = False,
+        transaction: Optional[Any] = None,
+    ) -> bool:
         if self._restart_task_started:
             return False
         self._restart_requested = True
@@ -10957,38 +10963,213 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._draining = True
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
-            # Launch the detached helper only AFTER the after-turn wait.
-            # Its deadline is drain_timeout+5 and covers stop() teardown —
-            # launching earlier would fire `hermes gateway restart` while
-            # the requesting turn was still running.
-            if detached:
-                try:
-                    launched = await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart helper: %s", e)
-                    launched = False
+            # Lazy import to avoid circular import at module load time.
+            try:
+                from gateway.slash_commands import (
+                    _LauncherResult,
+                    _RestartAckOutcome,
+                    _RestartFinalOutcome,
+                    _RestartStage,
+                    _TransitionResult,
+                )
+            except ImportError:
+                _LauncherResult = None  # type: ignore
+                _RestartAckOutcome = None  # type: ignore
+                _RestartFinalOutcome = None  # type: ignore
+                _RestartStage = None  # type: ignore
 
-                if not launched:
-                    logger.error("Detached restart helper launch failed. Aborting gateway shutdown and rolling back state.")
-                    self._rollback_restart_state(getattr(self, "_restart_backup", None))
-                    ack_fut = getattr(self, "_handoff_ack_future", None)
-                    if ack_fut is not None and not ack_fut.done():
-                        ack_fut.set_result(False)
+            # Drain in-flight work before any restart side-effect (upstream #77184): refuse new turns and wait for active
+            # agents/cron/api work to reach zero, then let the launch / stop path run against an idle gateway. This also
+            # honors upstream's guidance to launch the detached helper only AFTER the after-turn wait.
+            await self._await_active_work_before_restart()
+
+            if transaction is not None:
+                # ----- CLAIM HANDOFF (spec section 二) ------------------
+                # The helper MUST win the handoff gate BEFORE performing
+                # any irreversible external side-effect (Popen, supervisor
+                # signal). The lock is released before we call out to any
+                # external operation. If the caller already won the abort
+                # gate, claim_handoff returns False and we must NOT
+                # launch.
+                #
+                # CancelledError propagates naturally (spec section 三):
+                # if the helper is cancelled before claiming handoff,
+                # the caller owns the abort and must not be overridden.
+                try:
+                    handoff_won = await transaction.claim_handoff()
+                except asyncio.CancelledError:
+                    # Helper was cancelled before claiming handoff.
+                    # The caller-side abort path handles state; do NOT
+                    # write NOT_STARTED here.
+                    raise
+                if not handoff_won:
+                    logger.warning(
+                        "Restart helper refused: caller owns abort gate "
+                        "(request_id=%s).",
+                        transaction.request_id,
+                    )
+                    # The caller owns the abort; do NOT write ack or
+                    # final_outcome here. The caller's
+                    # _handle_timeout_or_cancel will do that.
                     return
+
+                # ----- LAUNCH (no lock held) -----------------------------
+                # Map the helper's outcome to the three-state terminal
+                # transition. Each complete_* method updates stage,
+                # final_outcome, and launcher_result atomically in a
+                # single critical section, then publishes the matching
+                # ack and sets final_outcome_event.
+                launcher_result = _LauncherResult.UNKNOWN
+                launched = False
+                if detached:
+                    try:
+                        launched = await self._launch_detached_restart_command()
+                        launcher_result = (
+                            _LauncherResult.STARTED if launched
+                            else _LauncherResult.NOT_STARTED
+                        )
+                    except asyncio.CancelledError:
+                        # Helper was cancelled mid-launch while IN_FLIGHT.
+                        # Complete unknown, re-raise.
+                        await transaction.complete_unknown()
+                        raise
+                    except (KeyboardInterrupt, SystemExit):
+                        await transaction.complete_unknown()
+                        raise
+                    except Exception:
+                        # Popen raised after potentially forking; or any
+                        # other launch-time exception. Per spec section
+                        # 三: NOT_STARTED must only be claimed when we can
+                        # prove no side-effect occurred. A generic
+                        # exception cannot prove that — UNKNOWN.
+                        launcher_result = _LauncherResult.UNKNOWN
+                        launched = False
+                else:
+                    # Service path: supervisor accepted the restart
+                    # synchronously inside _launch_detached_restart_command.
+                    try:
+                        launched = await self._launch_detached_restart_command()
+                        # Service-managed: False does NOT prove no
+                        # side-effect (the supervisor may have already
+                        # scheduled a restart). Always UNKNOWN.
+                        launcher_result = (
+                            _LauncherResult.STARTED if launched
+                            else _LauncherResult.UNKNOWN
+                        )
+                    except asyncio.CancelledError:
+                        await transaction.complete_unknown()
+                        raise
+                    except (KeyboardInterrupt, SystemExit):
+                        await transaction.complete_unknown()
+                        raise
+                    except Exception:
+                        launcher_result = _LauncherResult.UNKNOWN
+                        launched = False
+
+                if launcher_result is _LauncherResult.STARTED:
+                    tr = await transaction.complete_started()
+                    if tr is _TransitionResult.LOST_RACE:
+                        # Another terminal stage won. This is a consistency
+                        # error — after Fix 1, the dispatcher no longer
+                        # terminates IN_FLIGHT, so the only way to reach
+                        # another terminal before STARTED is a genuine
+                        # state machine violation. Log and do NOT stop.
+                        if transaction.stage is _RestartStage.ABORTED:
+                            runner_logger.error(
+                                "STARTED → ABORTED: state machine conflict "
+                                "(request_id=%s). stop() NOT called.",
+                                transaction.request_id,
+                            )
+                        elif transaction.stage is _RestartStage.OUTCOME_UNKNOWN:
+                            runner_logger.error(
+                                "STARTED → OUTCOME_UNKNOWN: internal inconsistency "
+                                "(request_id=%s). stop() NOT called.",
+                                transaction.request_id,
+                            )
+                        return
+                elif launcher_result is _LauncherResult.NOT_STARTED:
+                    # NOT_STARTED: helper claims ownership of CAS rollback
+                    # because the dispatcher may have already returned
+                    # OUTCOME_UNKNOWN and left.
+                    # Per spec section 三: detached NOT_STARTED guarantees
+                    # no side-effect (Popen never ran). Safe to rollback.
+                    # Rollback BEFORE complete_* so it happens even if the
+                    # transaction is already in a terminal state (LOST_RACE).
+                    if transaction.backup is not None:
+                        try:
+                            transaction.backup.rollback(self)
+                        except Exception:
+                            pass
+                    tr = await transaction.complete_not_started()
+                    if tr is _TransitionResult.LOST_RACE:
+                        return
+                    return
+                else:  # UNKNOWN
+                    tr = await transaction.complete_unknown()
+                    if tr is _TransitionResult.LOST_RACE:
+                        return
+                    return
+
+                # ----- POST-LAUNCH (helper may be cancelled here) ------
+                # Spec section 四: any BaseException (including
+                # CancelledError) AFTER HANDOFF_COMMITTED must NOT regress
+                # stage to PREPARING, and MUST leave ack / final_outcome
+                # in a consistent state. complete_started() already
+                # published the ACCEPTED ack and set the event.
+                try:
+                    await asyncio.sleep(0.05)
+                    await self.stop(
+                        restart=True,
+                        detached_restart=detached,
+                        service_restart=via_service,
+                    )
+                except Exception:
+                    # Stage is HANDOFF_COMMITTED already. DO NOT regress.
+                    # Re-raise so the task is properly cancelled.
+                    raise
+            else:
+                # Legacy fallback for callers without a transaction object
+                if detached:
+                    try:
+                        launched = await self._launch_detached_restart_command()
+                    except Exception as e:
+                        logger.error(
+                            "Failed to launch detached gateway restart helper: %s", e
+                        )
+                        launched = False
+
+                    if not launched:
+                        logger.error(
+                            "Detached restart helper launch failed. "
+                            "Aborting gateway shutdown."
+                        )
+                        self._rollback_restart_state(
+                            getattr(self, "_restart_backup", None)
+                        )
+                        ack_fut = getattr(self, "_handoff_ack_future", None)
+                        if ack_fut is not None and not ack_fut.done():
+                            ack_fut.set_result(False)
+                        return
+                    else:
+                        ack_fut = getattr(self, "_handoff_ack_future", None)
+                        if ack_fut is not None and not ack_fut.done():
+                            ack_fut.set_result(True)
                 else:
                     ack_fut = getattr(self, "_handoff_ack_future", None)
                     if ack_fut is not None and not ack_fut.done():
                         ack_fut.set_result(True)
-            else:
-                ack_fut = getattr(self, "_handoff_ack_future", None)
-                if ack_fut is not None and not ack_fut.done():
-                    ack_fut.set_result(True)
 
-            await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+                await asyncio.sleep(0.05)
+                await self.stop(
+                    restart=True,
+                    detached_restart=detached,
+                    service_restart=via_service,
+                )
 
-        self._restart_task = asyncio.create_task(_run_restart())
+        task = asyncio.create_task(_run_restart())
+        self._restart_task = task
+        if transaction is not None:
+            transaction.restart_task = task
         return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is

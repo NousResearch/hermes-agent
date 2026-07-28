@@ -409,12 +409,20 @@ def _compute_git_bash_bin_dirs() -> list[str]:
         bash = _find_bash()
     except Exception:
         return []
-    parent = os.path.dirname(os.path.dirname(bash))  # bash in <root>\bin or <root>\usr\bin (MinGit)
-    root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
-    subs = ("mingw64/bin", "mingw32/bin", "usr/local/bin", "usr/bin", "bin")
-    dirs = (os.path.join(root, *sub.split("/")) for sub in subs)
-    return list(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
+    # Use ntpath deliberately: tests exercise Windows semantics while running
+    # under a Windows Python process, but the discovered Git Bash path can be
+    # either ``C:\\...`` or MSYS ``/c/...``. os.path.join on Windows would
+    # inject backslashes into the latter and break the shell PATH.
+    import ntpath
+    import posixpath
 
+    is_msys_path = bash.startswith("/") and not bash.startswith("//")
+    pathmod = posixpath if is_msys_path else ntpath
+    parent = pathmod.dirname(pathmod.dirname(bash))  # bash in <root>\bin or <root>\usr\bin (MinGit)
+    root = pathmod.dirname(parent) if pathmod.basename(parent).lower() == "usr" else parent
+    subs = ("mingw64/bin", "mingw32/bin", "usr/local/bin", "usr/bin", "bin")
+    dirs = (pathmod.join(root, *sub.split("/")) for sub in subs)
+    return list(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
 
 def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:
     """Prepend *dirs* missing from *existing_path* (``os.pathsep``); an already-listed
@@ -540,6 +548,12 @@ def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
     if _IS_WINDOWS:
         env.setdefault("MSYS_NO_PATHCONV", "1")
         env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
+    else:
+        # Do not leak Windows-only MSYS controls into POSIX subprocesses when
+        # the parent environment itself came from Git Bash (or when tests
+        # monkeypatch the platform flag).
+        env.pop("MSYS_NO_PATHCONV", None)
+        env.pop("MSYS2_ARG_CONV_EXCL", None)
 
 
 def _path_env_key(run_env: dict) -> str | None:

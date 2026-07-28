@@ -201,18 +201,21 @@ def clear_photon_token() -> None:
 def check_photon_token_valid(token: str) -> bool:
     """Return True if the token is accepted by the dashboard API.
 
-    Makes a lightweight ``GET /api/auth/get-session`` call.  A non-401
-    response (including non-auth errors like network blips) is treated as
-    "probably valid" so transient failures don't force unnecessary re-login.
-    Only a definitive 401 / 403 is treated as stale.
+    Delegates to :func:`validate_photon_token`, which checks both
+    ``/api/auth/get-session`` and ``/api/projects/`` — the device flow can
+    mint tokens that pass the session lookup but are rejected by the project
+    APIs, and setup's management calls all hit the project APIs.  A
+    definitive rejection (``PhotonDashboardAuthError``) is treated as stale;
+    transient failures (network blips, 5xx) are treated as "probably valid"
+    so they don't force an unnecessary re-login.
     """
     if not token:
         return False
     try:
-        resp = _dashboard_get("/api/auth/get-session", token)
-        if resp.status_code in (401, 403):
-            return False
+        validate_photon_token(token)
         return True
+    except PhotonDashboardAuthError:
+        return False
     except Exception:
         # Transient error — don't force a re-auth; let the caller's
         # management-call error propagate if the token really is bad.

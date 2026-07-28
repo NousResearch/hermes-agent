@@ -1788,8 +1788,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
         assert len(fallback) <= 8300
         assert "deterministic fallback" in fallback
-        assert "1 compacted message(s)" in fallback
-        assert "ASSISTANT: head assistant" in fallback
+        assert "important detail" in fallback
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
@@ -3203,6 +3202,8 @@ class TestThresholdTokensCap:
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=2_000_000,
             )
+            # Resolve while mock is active (lazy init defers this past __init__).
+            _ = comp.context_length
         # Ratio-based: 1000000 * 0.50 = 500000. Cap: 2000000, clamped to 1000000.
         # Effective: min(500000, 1000000) = 500000.
         assert comp.threshold_tokens == 500_000
@@ -3213,6 +3214,7 @@ class TestThresholdTokensCap:
             comp = ContextCompressor(
                 "model-a", threshold_percent=0.50, quiet_mode=True,
             )
+            _ = comp.context_length
         assert comp.threshold_tokens == 500_000
         assert comp.threshold_tokens_cap is None
 
@@ -3259,6 +3261,7 @@ class TestThresholdTokensCap:
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=500_000,
             )
+            _ = comp.context_length
         # 64000 * 0.50 = 32000, floored to 64000 (MINIMUM_CONTEXT_LENGTH),
         # degenerate: floored >= window → 85% of 64000 = 54400.
         # Cap 500000 clamped to 64000. min(54400, 64000) = 54400.
@@ -3368,6 +3371,7 @@ class TestThresholdTokensCap:
                 "model-a", threshold_percent=0.50, quiet_mode=True,
                 threshold_tokens_cap=100_000,
             )
+            _ = comp.context_length
         # Floor raised pct to 0.75 (200K < 512K) regardless of the cap.
         assert comp.threshold_percent == 0.75
         # Cap clamps the token trigger below the floored pct value (150K).
@@ -3513,6 +3517,7 @@ class TestLazyContextResolution:
         should only be called on first access of .context_length."""
         with patch(
             "agent.context_compressor.get_model_context_length",
+            return_value=200_000,
         ) as mock_get:
             c = ContextCompressor(
                 model="test/model",

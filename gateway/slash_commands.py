@@ -3914,7 +3914,11 @@ class GatewaySlashCommandsMixin:
             # unbound/default "cli" host source — see #50422. _platform_config_key
             # maps LOCAL->"cli" exactly like the live turn, avoiding a new
             # "local" vs "cli" mismatch.
-            from gateway.run import _platform_config_key
+            from gateway.run import (
+                _GATEWAY_HYGIENE_PLATFORM,
+                _platform_config_key,
+                _seed_hygiene_system_prompt,
+            )
             platform_key = (
                 _platform_config_key(source.platform) if source.platform else None
             )
@@ -3963,6 +3967,25 @@ class GatewaySlashCommandsMixin:
             if platform_key is not None:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
+
+            # The manual compression helper skips memory-provider initialization,
+            # but _compress_context may persist its cached system prompt. Restore
+            # the exact live-session prompt so provider blocks are retained.
+            session_row = None
+            get_session = getattr(self._session_db, "get_session", None)
+            if callable(get_session):
+                try:
+                    session_row = await get_session(session_entry.session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Manual compression could not restore the system prompt "
+                        "for session %s: %s. Preserving an empty prompt so the "
+                        "live turn rebuilds it with its configured providers.",
+                        session_entry.session_id,
+                        exc,
+                        exc_info=True,
+                    )
+
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -3973,6 +3996,12 @@ class GatewaySlashCommandsMixin:
                 session_id=session_entry.session_id,
                 session_db=getattr(self._session_db, "_db", self._session_db),
             )
+            _seed_hygiene_system_prompt(tmp_agent, session_row)
+            # Keep the real source platform during construction so external
+            # context engines bind correctly. If compression has to rebuild the
+            # prompt, stamp that provider-less fallback as stale for the next
+            # real gateway turn.
+            tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
                 # Prevent close() from ending the newly rotated session —

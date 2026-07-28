@@ -316,7 +316,13 @@ def _finalize_child_env(env: dict) -> dict:
     strip_supervised_process_identity(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
-    return delegated_child_subprocess_env(env)
+    env = delegated_child_subprocess_env(env)
+    # Non-interactive git: never hang a tool subprocess on credential prompts
+    # (clone/fetch/push over https). Users can still set credentials via
+    # git credential helpers or URL-embedded tokens; GIT_TERMINAL_PROMPT=0 only
+    # disables interactive stdin prompts.
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    return env
 
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
@@ -812,6 +818,9 @@ def _make_run_env(env: dict) -> dict:
     if published:
         run_env.update(published)
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    # See _finalize_child_env — same non-interactive git policy for the
+    # primary terminal run path, after the Bot Desktop overlay.
+    run_env.setdefault("GIT_TERMINAL_PROMPT", "0")
     return run_env
 
 

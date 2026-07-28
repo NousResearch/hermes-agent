@@ -40,6 +40,10 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
+    # Package-registry / publish tokens — high value if a tool subprocess
+    # exfiltrates env; not part of the user shell AWS posture exception.
+    "NPM_TOKEN", "NPM_AUTH_TOKEN", "NODE_AUTH_TOKEN",
+    "PYPI_TOKEN", "TWINE_PASSWORD", "CARGO_REGISTRY_TOKEN",
     # Keys the OAuth provider profiles (nous, qwen-oauth) also accept when pasted. The auth
     # registry mirrors env_vars only for api_key profiles, and discovering the provider plugins
     # from here, at import, would re-mirror them over a plugin's own registry entry.

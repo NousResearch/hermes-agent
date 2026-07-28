@@ -50,6 +50,7 @@ HERMES_DASHBOARD_OIDC_CLIENT_SECRET HERMES_ANON_API_SECRET HERMES_MEET_REALTIME_
 GATEWAY_ALLOWED_USERS GATEWAY_ALLOW_ALL_USERS GH_TOKEN GITHUB_APP_ID
 GITHUB_APP_PRIVATE_KEY_PATH GITHUB_APP_INSTALLATION_ID MODAL_TOKEN_ID MODAL_TOKEN_SECRET
 DAYTONA_API_KEY VERCEL_OIDC_TOKEN VERCEL_TOKEN VERCEL_PROJECT_ID VERCEL_TEAM_ID GATEWAY_RELAY_ID
+NPM_TOKEN NPM_AUTH_TOKEN NODE_AUTH_TOKEN PYPI_TOKEN TWINE_PASSWORD CARGO_REGISTRY_TOKEN
 AUXILIARY_VISION_API_KEY AUXILIARY_WEB_EXTRACT_API_KEY AUXILIARY_APPROVAL_API_KEY
 AUXILIARY_MY_PLUGIN_TASK_API_KEY AUXILIARY_VISION_BASE_URL AUXILIARY_COMPRESSION_BASE_URL
 GATEWAY_RELAY_SECRET GATEWAY_RELAY_DELIVERY_KEY GATEWAY_RELAY_SESSION_TOKEN
@@ -1618,3 +1619,38 @@ class TestSanePathIncludesHomebrew:
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]
         assert "PATH" not in result
+
+
+class TestPackageRegistryTokens:
+    """npm/PyPI/Cargo publish tokens must not leak into agent subprocesses."""
+
+    def test_package_registry_tokens_stripped(self):
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        tokens = {
+            "NPM_TOKEN": "npm-secret",
+            "NPM_AUTH_TOKEN": "npm-auth",
+            "NODE_AUTH_TOKEN": "node-auth",
+            "PYPI_TOKEN": "pypi-secret",
+            "TWINE_PASSWORD": "twine-secret",
+            "CARGO_REGISTRY_TOKEN": "cargo-secret",
+        }
+        with patch.dict(os.environ, {"PATH": "/usr/bin", **tokens}, clear=True):
+            result_env = _make_run_env({})
+        for var in tokens:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+        sanitized = _sanitize_subprocess_env({"PATH": "/usr/bin", **tokens})
+        for var in tokens:
+            assert var not in sanitized, f"{var} leaked into sanitized env"
+        for var in tokens:
+            assert var in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    def test_git_terminal_prompt_disabled(self):
+        """Subprocess env must set GIT_TERMINAL_PROMPT=0 (non-interactive git)."""
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        result = _sanitize_subprocess_env({"PATH": "/usr/bin"})
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
+            run_env = _make_run_env({})
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"

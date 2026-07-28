@@ -85,6 +85,7 @@ class GatewayRuntimeSnapshot:
     service_running: bool = False
     gateway_pids: tuple[int, ...] = ()
     service_scope: str | None = None
+    service_status_known: bool = True
 
     @property
     def running(self) -> bool:
@@ -92,7 +93,8 @@ class GatewayRuntimeSnapshot:
 
     @property
     def has_process_service_mismatch(self) -> bool:
-        return self.service_installed and self.running and not self.service_running
+        return (self.service_status_known and self.service_installed
+                and self.running and not self.service_running)
 
 
 @dataclass(frozen=True)
@@ -1519,9 +1521,15 @@ def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]
     return (None, None)
 
 
-def _probe_launchd_service_running() -> bool:
-    """True when the plist exists AND launchd is running a process for the current label."""
-    return get_launchd_plist_path().exists() and _launchctl_label_supervising_process(get_launchd_label())
+def _probe_launchd_service_running() -> bool | None:
+    """Whether launchd runs this profile's service; None when this shell cannot query it."""
+    from hermes_cli.gateway_launchd import _query_launchd_service
+    if not get_launchd_plist_path().exists():
+        return False
+    listed, output = _query_launchd_service(get_launchd_label())
+    if listed is not True:
+        return listed
+    return _parse_launchd_pid_from_list_output(output) is not None
 
 
 def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapshot | None:
@@ -1581,10 +1589,12 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         )
 
     if is_macos():
+        launchd_running = _probe_launchd_service_running()
         return GatewayRuntimeSnapshot(
             manager="launchd",
             service_installed=get_launchd_plist_path().exists(),
-            service_running=_probe_launchd_service_running(),
+            service_running=launchd_running is True,
+            service_status_known=launchd_running is not None,
             gateway_pids=gateway_pids,
             service_scope="launchd",
         )

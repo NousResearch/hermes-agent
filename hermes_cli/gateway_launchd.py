@@ -898,16 +898,27 @@ def wait_for_launchd_gateway_supervision(
         time.sleep(max(poll_interval, 0.01))
 
 
+def _query_launchd_service(label: str) -> tuple[bool | None, str]:
+    """Registered state and list output; None preserves a blocked or unavailable query.
+
+    Lifecycle recovery treats exit 125 as an unloaded job to retry bootstrap, but
+    an unsupported domain is not evidence of absence in a read-only status probe.
+    """
+    try:
+        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT, check=False)
+    except (subprocess.TimeoutExpired, OSError):
+        return None, ""
+    if result.returncode == 0:
+        return True, result.stdout
+    if result.returncode in {3, 113} or "could not find service" in (result.stderr or "").lower():
+        return False, ""
+    return None, ""
+
+
 def launchd_status(deep: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
-    try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT, check=False)
-        service_listed = result.returncode == 0
-        list_output = result.stdout
-    except subprocess.TimeoutExpired:
-        service_listed = False
-        list_output = ""
+    service_listed, list_output = _query_launchd_service(label)
 
     # `launchctl list` exits 0 for any registered definition (even `state = not running`); only a PID proves a process.
     launchd_pid = _gw()._parse_launchd_pid_from_list_output(list_output) if service_listed else None
@@ -928,7 +939,13 @@ def launchd_status(deep: bool = False):
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
 
-    if not service_listed:
+    if service_listed is None:
+        print("⚠ Unable to verify launchd service state from this shell")
+        print("  The launchctl query was blocked or unavailable; supervision is unknown.")
+        if fallback_pid:
+            print(f"  Gateway process is running (PID {fallback_pid}), but launchd supervision could not be verified.")
+        print("  Run from an unrestricted host shell: hermes gateway status")
+    elif not service_listed:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")

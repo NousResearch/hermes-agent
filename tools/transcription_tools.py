@@ -35,6 +35,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -131,6 +132,10 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+# Guards the check-then-load of the module-global model cache above.
+# Without it, two concurrent voice messages can both see `_local_model is
+# None` and download/load the whisper model twice (#24767).
+_local_model_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -1395,20 +1400,24 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         local_cfg = _load_stt_config().get("local", {})
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
+        # Lazy-load the model (downloads on first use, ~150 MB for 'base').
+        # Double-checked lock: concurrent voice messages must not both
+        # download/load the model (#24767).
         if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            # Honour stt.local.device / stt.local.compute_type from config so
-            # users on hosts where ``auto`` mis-detects (NVIDIA libs present but
-            # not usable, etc.) can pin a working configuration (#9088).
-            # _load_local_whisper_model retains the CUDA→CPU fallback for the
-            # auto/CUDA paths.
-            _local_model = _load_local_whisper_model(
-                model_name,
-                device=local_cfg.get("device", "auto"),
-                compute_type=local_cfg.get("compute_type", "auto"),
-            )
-            _local_model_name = model_name
+            with _local_model_lock:
+                if _local_model is None or _local_model_name != model_name:
+                    logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+                    # Honour stt.local.device / stt.local.compute_type from config so
+                    # users on hosts where ``auto`` mis-detects (NVIDIA libs present but
+                    # not usable, etc.) can pin a working configuration (#9088).
+                    # _load_local_whisper_model retains the CUDA→CPU fallback for the
+                    # auto/CUDA paths.
+                    _local_model = _load_local_whisper_model(
+                        model_name,
+                        device=local_cfg.get("device", "auto"),
+                        compute_type=local_cfg.get("compute_type", "auto"),
+                    )
+                    _local_model_name = model_name
 
         # Language: stt.local.language > stt.language > env var > auto-detect.
         stt_config = _load_stt_config()
@@ -2204,6 +2213,31 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
+def _is_local_or_private_url(url: str) -> bool:
+    """True when *url* points at a loopback/RFC-1918/LAN-internal host.
+
+    Used to decide whether an empty ``stt.openai.api_key`` is acceptable:
+    local OpenAI-compatible STT servers (faster-whisper-server, speaches,
+    vLLM whisper variants...) ignore the auth header, so users shouldn't
+    have to write a sham ``api_key: not-needed`` in config.yaml.
+    """
+    try:
+        from urllib.parse import urlparse
+        import ipaddress
+
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return False
+        if host == "localhost" or host.endswith((".local", ".lan", ".internal")):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+    except Exception:
+        return False
+
+
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback."""
     stt_config = _load_stt_config()
@@ -2212,6 +2246,11 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     cfg_base_url = openai_cfg.get("base_url", "")
     if cfg_api_key:
         return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+
+    # A local OpenAI-compatible server needs no key — send a placeholder so
+    # the SDK doesn't refuse to construct a client (#25193, credit @nnnet).
+    if cfg_base_url and _is_local_or_private_url(cfg_base_url):
+        return "not-needed", cfg_base_url
 
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key:

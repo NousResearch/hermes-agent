@@ -1988,3 +1988,102 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+class TestLocalModelLock:
+    """#24767 — concurrent first-use must not double-load the whisper model."""
+
+    def test_lock_exists_and_is_a_lock(self):
+        import threading
+        from tools import transcription_tools
+        assert isinstance(transcription_tools._local_model_lock, type(threading.Lock()))
+
+    def test_concurrent_transcribe_loads_model_once(self, tmp_path):
+        import threading
+        from tools import transcription_tools
+        from tools.transcription_tools import _transcribe_local
+
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "hello"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        load_count = 0
+        load_started = threading.Event()
+
+        def slow_load(model_name, device="auto", compute_type="auto"):
+            nonlocal load_count
+            load_count += 1
+            load_started.set()
+            import time
+            time.sleep(0.05)
+            model = MagicMock()
+            model.transcribe.return_value = ([seg], info)
+            return model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._load_local_whisper_model", side_effect=slow_load), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            threads = [
+                threading.Thread(target=_transcribe_local, args=(str(audio), "base"))
+                for _ in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        assert load_count == 1
+
+
+class TestLocalBaseUrlNoApiKey:
+    """#25193 — empty api_key with a local base_url should not raise."""
+
+    def test_local_base_url_returns_placeholder_key(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"openai": {"base_url": "http://localhost:8504/v1"}},
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+        assert api_key == "not-needed"
+        assert base_url == "http://localhost:8504/v1"
+
+    def test_private_ip_base_url_returns_placeholder_key(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"openai": {"base_url": "http://192.168.1.10:8000/v1"}},
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+        assert api_key == "not-needed"
+
+    def test_public_base_url_still_requires_key(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"openai": {"base_url": "https://api.example.com/v1"}},
+        ), patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key", return_value="",
+        ), patch(
+            "tools.transcription_tools.resolve_managed_tool_gateway", return_value=None,
+        ), patch(
+            "tools.transcription_tools.managed_nous_tools_enabled", return_value=False,
+        ):
+            with pytest.raises(ValueError):
+                _resolve_openai_audio_client_config()
+
+    def test_is_local_or_private_url(self):
+        from tools.transcription_tools import _is_local_or_private_url
+        assert _is_local_or_private_url("http://localhost:8504/v1")
+        assert _is_local_or_private_url("http://127.0.0.1:9000")
+        assert _is_local_or_private_url("http://10.0.0.5/v1")
+        assert _is_local_or_private_url("http://stt.internal/v1")
+        assert not _is_local_or_private_url("https://api.openai.com/v1")
+        assert not _is_local_or_private_url("")

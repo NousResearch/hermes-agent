@@ -5143,10 +5143,15 @@ class SessionDB:
             )
             if not writer_stopped:
                 self._token_queue.append((session_id, kwargs))
-                if thread is None:
+                if thread is None or not thread.is_alive():
                     # Daemon so process exit never hangs on accounting; the
                     # atexit hook drains anything still queued at interpreter
                     # shutdown (registered once per instance, on first use).
+                    # ``not is_alive()`` (rather than ``is None`` only)
+                    # respawns the writer if it ever died from an unexpected
+                    # escape — otherwise a dead thread object would block
+                    # respawn forever and deltas would pile up on the deque
+                    # until a reader's flush drained them synchronously.
                     thread = threading.Thread(
                         target=self._token_writer_loop,
                         name="session-db-token-writer",
@@ -5240,7 +5245,18 @@ class SessionDB:
 
     def _apply_token_batch(self, batch: List[Tuple[str, Dict[str, Any]]]) -> None:
         """Apply queued deltas in order, coalescing where safe. Never raises."""
-        for session_id, kwargs in self._coalesce_token_deltas(batch):
+        try:
+            coalesced = self._coalesce_token_deltas(batch)
+        except Exception as exc:
+            # Coalescing must never kill the writer thread (a dead writer
+            # can't be observed by callers). Fall back to applying the raw
+            # batch delta-by-delta — the merge is an optimization only.
+            logger.warning(
+                "async token accounting: coalesce failed, applying raw "
+                "batch: %s", exc,
+            )
+            coalesced = batch
+        for session_id, kwargs in coalesced:
             try:
                 self.update_token_counts(session_id, **kwargs)
             except Exception as exc:

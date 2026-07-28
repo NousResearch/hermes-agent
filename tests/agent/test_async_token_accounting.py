@@ -562,3 +562,49 @@ class TestWriterFailure:
             db.update_token_counts = original
 
         assert _totals(db, "s-f")["input_tokens"] == 7
+
+    def test_coalesce_failure_falls_back_to_raw_batch(self, db, caplog):
+        """A coalescing bug must never kill the writer: the batch is applied
+        raw (delta-by-delta) and the failure is logged."""
+        db.create_session("s-co", "test")
+
+        original = db._coalesce_token_deltas
+
+        def broken(batch):
+            raise TypeError("unclassified kwarg broke the merge")
+
+        db._coalesce_token_deltas = broken
+        try:
+            with caplog.at_level("WARNING", logger="hermes_state"):
+                db.queue_token_counts("s-co", input_tokens=3, api_call_count=1)
+                db.queue_token_counts("s-co", input_tokens=4, api_call_count=1)
+                assert db.flush_token_counts()
+            assert any(
+                "coalesce failed" in rec.getMessage() for rec in caplog.records
+            )
+        finally:
+            db._coalesce_token_deltas = original
+
+        totals = _totals(db, "s-co")
+        assert totals["input_tokens"] == 7
+        assert totals["api_call_count"] == 2
+
+    def test_dead_writer_respawns_on_next_enqueue(self, db):
+        """If the writer thread ever dies unexpectedly, the next enqueue
+        must respawn it instead of parking deltas on a queue forever."""
+        db.create_session("s-respawn", "test")
+        db.queue_token_counts("s-respawn", input_tokens=1, api_call_count=1)
+        assert db.flush_token_counts()
+        first = db._token_writer_thread
+        assert first is not None
+
+        # Simulate an unexpected writer death: a finished dummy thread.
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        db._token_writer_thread = dead
+
+        db.queue_token_counts("s-respawn", input_tokens=2, api_call_count=1)
+        assert db._token_writer_thread is not dead
+        assert db.flush_token_counts()
+        assert _totals(db, "s-respawn")["input_tokens"] == 3

@@ -177,16 +177,22 @@ const HERMES_DIRECTIVE_RE = new RegExp(
   'g'
 )
 
-// A skill referenced mid-prose (`clean this up with /clean`). The composer
-// inserts it as a pill, so the sent message renders it as one too rather than
-// flattening back to raw text. Only matches after whitespace — a leading `/`
-// is a command invocation, which never reaches a rendered message as text.
+// A skill referenced in a sent message — either the invocation that opens it
+// (`/work fix the leak`, which is all a skill turn ever renders as) or one
+// named mid-prose (`clean this up with /clean`). The composer inserts both as
+// pills, so the sent message renders them as pills too rather than flattening
+// back to raw text.
+//
+// #71664 deliberately excluded a LEADING slash, and was right then: a command
+// only ever executed, so it never reached a rendered message as text. Skill
+// turns now project back onto their invocation, so that precondition is gone
+// and `^` joins the lookbehind.
 //
 // Unlike the composer's caret-anchored trigger, this scans finished text, so
 // it must reject a token that continues into a path: `/usr/local/bin` would
 // otherwise chip as `/usr`. `(?![\w-]*\/)` requires the token to end at
 // something other than another slash.
-const SLASH_SKILL_RE = /(?<=\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
+const SLASH_SKILL_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
 
 const TRAILING_PUNCTUATION_RE = /[,.;!?]+$/
 

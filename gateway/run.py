@@ -1461,6 +1461,52 @@ def _collect_auto_append_media_tags(
     return media_tags, has_voice_directive
 
 
+def _append_auto_media_tags_to_response(
+    final_response: str,
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+    history_media_paths: Optional[set] = None,
+) -> str:
+    """Append producer artifacts missing from the assistant's final response.
+
+    A literal or stale ``MEDIA:`` token is not proof that the response already
+    references the artifact produced this turn. In particular, models may echo
+    a sandbox-only path while ``image_generate`` also returned the distinct
+    host path that the gateway can deliver. Deduplicate by recognized path
+    instead of suppressing all auto-append behavior on a substring match.
+    """
+    media_tags, has_voice_directive = _collect_auto_append_media_tags(
+        messages,
+        history_offset=history_offset,
+        history_media_paths=history_media_paths,
+    )
+
+    existing_paths = {
+        match.group(1).strip().rstrip('",}')
+        for match in _TOOL_MEDIA_RE.finditer(final_response)
+    }
+    missing_tags: List[str] = []
+    seen_paths = set(existing_paths)
+    for tag in media_tags:
+        match = _TOOL_MEDIA_RE.fullmatch(tag)
+        if not match:
+            continue
+        path = match.group(1).strip().rstrip('",}')
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        missing_tags.append(tag)
+
+    directives: List[str] = []
+    if has_voice_directive and "[[audio_as_voice]]" not in final_response:
+        directives.append("[[audio_as_voice]]")
+    directives.extend(missing_tags)
+    if not directives:
+        return final_response
+    return final_response + "\n" + "\n".join(directives)
+
+
+
 def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     """Dedup set of media paths already delivered (JSON-payload and assistant-message shapes alike).
 

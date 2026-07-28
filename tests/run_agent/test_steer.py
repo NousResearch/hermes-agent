@@ -242,10 +242,68 @@ class TestActiveTurnRedirectCheckpoint:
 
         assert [m["role"] for m in messages] == ["user", "assistant", "user"]
         assert messages[-1]["role"] == "user"
-        assert messages[-1]["content"].endswith("Use Postgres instead.")
+        assert messages[-1]["content"] == "Use Postgres instead."
         assert sum(1 for m in messages if m["role"] == "assistant") == 1
-        assert "Visible draft." in messages[-1]["content"]
-        assert "Context from the interrupted assistant response" in messages[-1]["content"]
+        # Scaffolding is provider-replay text, carried in the sidecar so the
+        # model still sees the interrupted context — never in the transcript.
+        replayed = messages[-1]["api_content"]
+        assert "Visible draft." in replayed
+        assert "Context from the interrupted assistant response" in replayed
+        assert replayed.endswith("Use Postgres instead.")
+
+    def test_scaffolding_never_lands_in_transcript_content(self):
+        """The checkpoint machinery is for the MODEL, not the transcript.
+
+        Persisting ``[This response was interrupted by a user correction.]``
+        into ``content`` painted raw scaffolding as an assistant bubble on
+        every reload. It must ride in ``api_content`` (replayed to the
+        provider) while ``content`` stays clean, or be marked
+        ``display_kind="hidden"`` when there is no clean form at all.
+        """
+        from agent.conversation_loop import _apply_active_turn_redirect
+
+        scaffolding = (
+            "[This response was interrupted by a user correction.]",
+            "Visible response before the interruption:",
+            "[Context from the interrupted assistant response]",
+        )
+
+        for tail_role in ("tool", "assistant"):
+            for streamed in ("Partial reply on screen.", ""):
+                agent = _bare_agent()
+                agent._current_streamed_assistant_text = streamed
+                messages = [{"role": "user", "content": "start"}]
+                if tail_role == "assistant":
+                    messages.append({"role": "assistant", "content": "committed"})
+                else:
+                    messages.append(
+                        {"role": "assistant", "tool_calls": [{"id": "a"}]}
+                    )
+                    messages.append(
+                        {"role": "tool", "content": "out", "tool_call_id": "a"}
+                    )
+
+                _apply_active_turn_redirect(agent, messages, "New direction.")
+
+                for msg in messages:
+                    if msg.get("display_kind") == "hidden":
+                        continue  # dropped by every transcript surface
+                    content = str(msg.get("content", ""))
+                    for marker in scaffolding:
+                        assert marker not in content, (
+                            f"scaffolding leaked into visible content "
+                            f"(tail={tail_role}, streamed={bool(streamed)}): {content!r}"
+                        )
+
+                # The user's correction is always shown verbatim.
+                assert messages[-1]["content"] == "New direction."
+                # ...and the model still receives the interrupted context.
+                replayed = "".join(
+                    str(m.get("api_content") or m.get("content", "")) for m in messages
+                )
+                assert "[This response was interrupted by a user correction.]" in replayed
+                if streamed:
+                    assert streamed in replayed
 
     def test_checkpoint_never_replays_chain_of_thought(self):
         """Raw CoT serialized into checkpoint content reads to Anthropic's
@@ -268,7 +326,12 @@ class TestActiveTurnRedirectCheckpoint:
 
             _apply_active_turn_redirect(agent, messages, "Change course.")
 
-            serialized = "".join(str(m.get("content", "")) for m in messages)
+            # Check BOTH the transcript content and the replayed sidecar —
+            # the sidecar is what actually reaches the provider.
+            serialized = "".join(
+                str(m.get("content", "")) + str(m.get("api_content") or "")
+                for m in messages
+            )
             assert "SECRET chain of thought." not in serialized
             assert "Reasoning shown before the interruption" not in serialized
             assert "Visible draft." in serialized
@@ -282,8 +345,14 @@ class TestActiveTurnRedirectCheckpoint:
 
         _apply_active_turn_redirect(agent, messages, "New direction.")
 
-        checkpoint = messages[-2]["content"]
-        assert checkpoint == "[This response was interrupted by a user correction.]"
+        checkpoint_row = messages[-2]
+        # Nothing was on screen, so the row exists only for the model: hidden
+        # from every transcript surface, scaffolding replayed via the sidecar.
+        assert checkpoint_row["display_kind"] == "hidden"
+        assert (
+            checkpoint_row["api_content"]
+            == "[This response was interrupted by a user correction.]"
+        )
         assert messages[-1]["content"] == "New direction."
 
 

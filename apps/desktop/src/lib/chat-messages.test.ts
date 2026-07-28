@@ -220,6 +220,19 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
 
+  it('leaves an inline @ ref in place instead of hoisting a duplicate', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content:
+          'summarize @file:`src/main.ts` for me\n\n--- Attached Context ---\n\n📄 @file:`src/main.ts` (10 tokens)\n```ts\nconst x = 1\n```',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('summarize @file:`src/main.ts` for me')
+  })
+
   it('projects durable timeline kinds without inspecting their text', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'real user turn', timestamp: 1 },

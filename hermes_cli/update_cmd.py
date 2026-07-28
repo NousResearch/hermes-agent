@@ -6181,12 +6181,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # not behind, fall through to the up-to-date path.
             commit_count = counted if counted is not None else -1
 
+        # A fork can match origin while still trailing upstream. The sync can
+        # therefore advance HEAD even though the origin comparison found no
+        # commits. Detect that BEFORE taking the no-update return so dependency
+        # refreshes, gateway restarts, AND the fleet version matrix still run
+        # for the pulled code (#73108 — previously the sync lived inside the
+        # commit_count == 0 branch, which returns immediately after: an update
+        # that pulled hundreds of upstream commits printed "Already up to
+        # date!" and verified nothing).
+        if commit_count == 0 and is_fork and branch == "main":
+            pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
+            post_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            if pre_sync_sha and post_sync_sha and pre_sync_sha != post_sync_sha:
+                synced_count = _count_commits_between(
+                    git_cmd,
+                    _m().PROJECT_ROOT,
+                    pre_sync_sha,
+                    post_sync_sha,
+                )
+                # HEAD moving is itself proof of an update. Keep the update
+                # path active even if the informational count cannot be read.
+                commit_count = max(1, synced_count)
+
         if commit_count == 0:
             _invalidate_update_cache()
-
-            # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and branch == "main":
-                _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
 
             # Restore stash and switch back to original branch if we moved.
             # EXCEPTION: a parked feature branch we verified clean + fully

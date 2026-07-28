@@ -25,7 +25,7 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
+import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -75,13 +75,10 @@ import { isToolCallPart, summarizeToolRun } from './run-summary'
 // future embedding surface.
 const ToolEmbedContext = createContext(false)
 
-// Shared header chrome for tool rows. Both the single-tool DisclosureRow
-// and the multi-tool group header pass through these constants so a
-// "Patch" row and a "Tool actions · 2 steps" row are visually identical.
-const TOOL_HEADER_TITLE_CLASS =
+// A search hit's title is result *content* inside an expanded row, not one of
+// the scaffolding lines, so it keeps the brighter secondary grey.
+const SEARCH_HIT_TITLE_CLASS =
   'text-[length:var(--conversation-tool-font-size)] font-medium leading-(--conversation-line-height) text-(--ui-text-secondary)'
-
-const TOOL_HEADER_DURATION_CLASS = 'shrink-0 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)'
 
 const TOOL_HEADER_SUBTITLE_CLASS =
   'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)'
@@ -257,13 +254,13 @@ function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
           <li className="grid min-w-0 gap-0.5" key={key}>
             {hit.url ? (
               <PrettyLink
-                className={cn(TOOL_HEADER_TITLE_CLASS, 'block max-w-full')}
+                className={cn(SEARCH_HIT_TITLE_CLASS, 'block max-w-full')}
                 fallbackLabel={trimmedTitle || urlSlugTitleLabel(hit.url)}
                 href={hit.url}
                 label={trimmedTitle || undefined}
               />
             ) : (
-              <span className={TOOL_HEADER_TITLE_CLASS}>{trimmedTitle}</span>
+              <span className={SEARCH_HIT_TITLE_CLASS}>{trimmedTitle}</span>
             )}
             {hit.snippet && <p className={cn(TOOL_HEADER_SUBTITLE_CLASS, 'm-0 line-clamp-3')}>{hit.snippet}</p>}
           </li>
@@ -291,8 +288,8 @@ function ToolTitle({
   return (
     <FadeText
       className={cn(
-        TOOL_HEADER_TITLE_CLASS,
-        isPending && 'text-(--ui-text-tertiary)',
+        SCAFFOLD_LABEL_CLASS,
+        isPending && 'text-(--conversation-scaffold-meta)',
         status === 'error' && 'text-destructive',
         status === 'warning' && 'text-amber-700 dark:text-amber-300'
       )}
@@ -465,7 +462,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   // the disclosure caret hard to hit. Copy now lives in the expanded body's
   // top-right, where it can't fight the caret for the right edge.
   const trailing =
-    isPending && !embedded ? <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} /> : undefined
+    isPending && !embedded ? <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} /> : undefined
 
   // Once a turn has settled, a hover/focus-revealed dismiss lets the user clear
   // a completed/failed row that would otherwise sit at the tail of the chat.
@@ -537,7 +534,7 @@ function ToolEntry({ part }: ToolEntryProps) {
               status={leadingStatus(isPending, view.status)}
             />
             <ToolTitle isPending={isPending} status={view.status} title={view.title} titleAction={view.titleAction} />
-            {!isPending && view.countLabel && <span className={TOOL_HEADER_DURATION_CLASS}>{view.countLabel}</span>}
+            {!isPending && view.countLabel && <span className={SCAFFOLD_META_CLASS}>{view.countLabel}</span>}
             {showDiffStats && diffStats && (
               <span className="flex shrink-0 items-center gap-1 font-mono text-[0.625rem] tabular-nums">
                 {diffStats.added > 0 && (
@@ -549,7 +546,7 @@ function ToolEntry({ part }: ToolEntryProps) {
               </span>
             )}
             {!isFileEdit && !isPending && view.durationLabel && (
-              <span className={TOOL_HEADER_DURATION_CLASS}>{view.durationLabel}</span>
+              <span className={SCAFFOLD_META_CLASS}>{view.durationLabel}</span>
             )}
           </span>
         </DisclosureRow>

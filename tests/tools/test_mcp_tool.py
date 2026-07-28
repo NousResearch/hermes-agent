@@ -7,6 +7,7 @@ import asyncio
 import concurrent.futures
 import json
 import os
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -4619,6 +4620,22 @@ class TestMcpParallelToolCalls:
 class TestMCPDiscoveryCrossProcessLock:
     """Tests for the cross-process MCP discovery guard in discover_mcp_tools()."""
 
+    @staticmethod
+    def _lock_exclusive(fh):
+        """Lock a file handle exclusively, cross-platform.
+
+        Mirrors production _try_acquire_mcp_discovery_lock: fcntl on POSIX,
+        portalocker on Windows (portalocker only ships on win32 installs).
+        """
+        if sys.platform == "win32":
+            import portalocker
+
+            self._lock_exclusive(fh)
+        else:
+            import fcntl
+
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     @pytest.fixture(autouse=True)
     def _fast_retries(self):
         """Override retry constants so tests are fast."""
@@ -4663,7 +4680,6 @@ class TestMCPDiscoveryCrossProcessLock:
         )
 
         import tempfile
-        import portalocker
         from tools.mcp_tool import _LockCookie
 
         lock_path = [None]
@@ -4678,7 +4694,7 @@ class TestMCPDiscoveryCrossProcessLock:
                 prefix="mcp-lock-", suffix=".tmp", delete=False
             )
             lock_path[0] = tf.name
-            portalocker.lock(tf, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            self._lock_exclusive(tf)
             return _LockCookie(tf)
 
         mock_config = {"test_srv": {"command": "echo", "enabled": True}}
@@ -4737,7 +4753,6 @@ class TestMCPDiscoveryCrossProcessLock:
         """_LockCookie keeps file handle alive until release()."""
         import tempfile
 
-        import portalocker
         from tools.mcp_tool import _LockCookie
 
         with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
@@ -4745,7 +4760,7 @@ class TestMCPDiscoveryCrossProcessLock:
 
         try:
             fh = open(lock_path, "w", encoding="utf-8")
-            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            self._lock_exclusive(fh)
             cookie = _LockCookie(fh)
             assert not fh.closed
             fno = fh.fileno()
@@ -4762,7 +4777,6 @@ class TestMCPDiscoveryCrossProcessLock:
         """Calling release() twice is safe (no exception)."""
         import tempfile
 
-        import portalocker
         from tools.mcp_tool import _LockCookie
 
         with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
@@ -4770,7 +4784,7 @@ class TestMCPDiscoveryCrossProcessLock:
 
         try:
             fh = open(lock_path, "w", encoding="utf-8")
-            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            self._lock_exclusive(fh)
             cookie = _LockCookie(fh)
             cookie.release()
             assert fh.closed
@@ -4854,7 +4868,6 @@ class TestMCPDiscoveryCrossProcessLock:
 
         # Build two real cookie handles so release() works
         import tempfile
-        import portalocker
         tf1 = tempfile.NamedTemporaryFile(
             prefix="mcp-lock-1-", suffix=".tmp", delete=False
         )
@@ -4865,8 +4878,8 @@ class TestMCPDiscoveryCrossProcessLock:
         lock_path2 = tf2.name
         cookie1 = _LockCookie(tf1)
         cookie2 = _LockCookie(tf2)
-        portalocker.lock(tf1, portalocker.LOCK_EX | portalocker.LOCK_NB)
-        portalocker.lock(tf2, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        self._lock_exclusive(tf1)
+        self._lock_exclusive(tf2)
 
         def make_sequencer():
             state = {"call": 0, "cookie1": cookie1, "cookie2": cookie2}

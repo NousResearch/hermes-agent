@@ -1,21 +1,26 @@
 /**
- * Dev-only Chrome DevTools Protocol exposure for the desktop renderer.
+ * Dev Chrome DevTools Protocol exposure for the desktop renderer.
  *
  * The renderer is a Chromium page, so `--remote-debugging-port` turns it into
  * something the repo's existing CDP tooling (`scripts/eval.mjs`,
  * `scripts/perf/lib/cdp.mjs`, the `diag-*` / `probe-*` family) can attach to
- * and read the live DOM from. That is genuinely useful while iterating on the
- * UI — and it is also arbitrary code execution against whatever the running
- * app can reach, so it stays off unless three independent conditions all hold:
+ * and read the live DOM from. Every one of those scripts already defaults to
+ * 9222, so a dev-server run opens 9222 and they just work.
  *
- *  1. The build is NOT packaged. A shipped app never opens this port, whatever
- *     the environment says.
- *  2. A dev server is wired up (`HERMES_DESKTOP_DEV_SERVER`). That is the
- *     signature of `npm run dev` / `hgui`; a packaged or `dist`-loading run
- *     has no dev server and does not qualify.
- *  3. The developer opted in explicitly with a valid `HERMES_DESKTOP_CDP_PORT`.
- *     Absent that, a plain `npm run dev` behaves exactly as it does today —
- *     nobody gets a debugging port they did not ask for.
+ * If you are running a dev server you are already executing arbitrary local
+ * JS — vite's module graph and every postinstall in node_modules — so a
+ * loopback debugging port does not meaningfully widen that. `perf:serve`
+ * already opens one unconditionally. What must never happen is a *packaged*
+ * app exposing it, which is the one hard gate here.
+ *
+ *  - packaged build              → always closed, whatever the env says.
+ *  - no HERMES_DESKTOP_DEV_SERVER → closed (an unpackaged `electron .` against
+ *    dist/ is how the packaged app gets smoke tested; it should behave like
+ *    the packaged app).
+ *  - otherwise                    → open on 9222, or HERMES_DESKTOP_CDP_PORT.
+ *
+ * `HERMES_DESKTOP_CDP_PORT=off` (or `0` / `false`) opts out for anyone who
+ * wants the port closed on a dev run.
  *
  * The port binds to loopback (Chromium's default) and the address is
  * deliberately not configurable: there is no reason to expose a renderer
@@ -23,7 +28,7 @@
  */
 
 /** Why the port is closed, for a one-line log the developer can act on. */
-type ClosedReason = 'packaged' | 'no-dev-server' | 'not-requested' | 'invalid-port'
+type ClosedReason = 'packaged' | 'no-dev-server' | 'opted-out' | 'invalid-port'
 
 type DevCdpDecision = { port: number; reason: null } | { port: null; reason: ClosedReason }
 
@@ -33,10 +38,14 @@ type DevCdpInput = {
   devServer: string | undefined
 }
 
-// Below 1024 needs privileges; the ephemeral range is fair game but the
-// well-known CDP port (9222) is what every script in scripts/ defaults to.
+/** What every script under scripts/ already reaches for. */
+const DEFAULT_PORT = 9222
+
+// Below 1024 needs privileges on most platforms; 65535 is the ceiling.
 const MIN_PORT = 1024
 const MAX_PORT = 65535
+
+const OPT_OUT = new Set(['0', 'off', 'false', 'no'])
 
 /**
  * Decide whether this run may expose a renderer debugging port, and on which
@@ -50,17 +59,19 @@ function resolveDevCdpPort({ env, isPackaged, devServer }: DevCdpInput): DevCdpD
     return { port: null, reason: 'packaged' }
   }
 
+  // A dev server means a source-tree run (`npm run dev` / `hgui`).
+  if (!devServer) {
+    return { port: null, reason: 'no-dev-server' }
+  }
+
   const requested = (env.HERMES_DESKTOP_CDP_PORT ?? '').trim()
 
   if (!requested) {
-    return { port: null, reason: 'not-requested' }
+    return { port: DEFAULT_PORT, reason: null }
   }
 
-  // A dev server means a source-tree run (`npm run dev` / `hgui`). An
-  // unpackaged `electron .` against dist/ is how the packaged app is smoke
-  // tested, and it should behave like the packaged app here.
-  if (!devServer) {
-    return { port: null, reason: 'no-dev-server' }
+  if (OPT_OUT.has(requested.toLowerCase())) {
+    return { port: null, reason: 'opted-out' }
   }
 
   const port = Number(requested)
@@ -78,19 +89,20 @@ function describeDevCdpDecision(decision: DevCdpDecision): string | null {
     case null:
       return null
 
+    case 'invalid-port':
+      return `HERMES_DESKTOP_CDP_PORT is not a valid port (expected an integer ${MIN_PORT}-${MAX_PORT}, or "off"); renderer debugging is disabled.`
+
+    case 'opted-out':
+      return 'renderer debugging disabled by HERMES_DESKTOP_CDP_PORT.'
+
+    // Packaged and dist-run builds are closed by design — the common case, not
+    // worth a line of startup noise.
     case 'packaged':
-      return 'HERMES_DESKTOP_CDP_PORT ignored: renderer debugging is dev-only and this is a packaged build.'
 
     case 'no-dev-server':
-      return 'HERMES_DESKTOP_CDP_PORT ignored: no HERMES_DESKTOP_DEV_SERVER, so this is not a dev-server run.'
-
-    case 'invalid-port':
-      return `HERMES_DESKTOP_CDP_PORT ignored: not a valid port (expected an integer ${MIN_PORT}-${MAX_PORT}).`
-
-    case 'not-requested':
       return null
   }
 }
 
-export { describeDevCdpDecision, resolveDevCdpPort }
+export { DEFAULT_PORT, describeDevCdpDecision, resolveDevCdpPort }
 export type { DevCdpDecision }

@@ -273,9 +273,10 @@ if (REMOTE_DISPLAY_REASON) {
   )
 }
 
-// Renderer debugging port for `hgui` / `npm run dev`. Opt-in, dev-server-only,
-// never packaged — see electron/dev-cdp.ts for the gate. Must run before app
-// `ready` like the switches above; Chromium binds it at launch.
+// Renderer debugging port. On for dev-server runs (`hgui` / `npm run dev`) so
+// the CDP tooling in scripts/ can attach; never for a packaged build — see
+// electron/dev-cdp.ts. Must run before app `ready` like the switches above;
+// Chromium binds it at launch.
 const DEV_CDP = resolveDevCdpPort({ env: process.env, isPackaged: IS_PACKAGED, devServer: DEV_SERVER })
 
 if (DEV_CDP.port) {
@@ -284,8 +285,8 @@ if (DEV_CDP.port) {
   // so a future edit can't widen it by omission.
   app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
   console.log(
-    `[hermes] renderer debugging on http://127.0.0.1:${DEV_CDP.port} (dev only; HERMES_DESKTOP_CDP_PORT). ` +
-      'Anything that can reach this port can run code in the renderer.'
+    `[hermes] renderer debugging on http://127.0.0.1:${DEV_CDP.port} — anything that can reach it ` +
+      'can run code in the renderer. HERMES_DESKTOP_CDP_PORT=off to disable.'
   )
 } else {
   const why = describeDevCdpDecision(DEV_CDP)

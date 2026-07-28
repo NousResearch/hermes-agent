@@ -195,13 +195,13 @@ async def _lifespan(app: "FastAPI"):
     # event loop during lifespan startup — see _get_event_state's docstring.
     app.state.chat_argv_lock = asyncio.Lock()
 
-    # Fire hermes_cli.gateway import into a background thread so the event
-    # loop is not blocked and HERMES_DASHBOARD_READY fires without delay.
-    # On a cold Windows install the module chain triggers .pyc compilation
-    # and Defender real-time scans that can stall the event loop for 15-30s.
-    # Running in an executor means the cost is paid in a worker thread while
-    # the server socket is already open and accepting probes.
-    asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+    # Import hermes_cli.gateway eagerly *before* the lifespan yield so the
+    # GIL-heavy .pyc compilation and Defender scan cost is absorbed during
+    # backend initialisation — before the server socket accepts probes.
+    # On Windows + Python 3.11 the import does not release the GIL, so
+    # run_in_executor still froze the event loop for 15-22 s, causing the
+    # Desktop's 10-second WebSocket ready-probe to time out (GH-73083).
+    _warm_gateway_module()
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes

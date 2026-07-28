@@ -770,3 +770,48 @@ def test_sanitize_preserves_populated_tool_calls():
     out = sanitize_api_messages(list(messages))
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
+def test_sanitize_dedup_drops_tool_calls_key_when_all_removed():
+    """When dedup removes ALL tool_calls from an assistant message,
+    the key is dropped instead of writing tool_calls: [].
+
+    DeepSeek v4 and newer OpenAI reject empty tool_calls with HTTP 400.
+    The dedup pass introduced by #58327 can produce this state when
+    all tool_call_ids are duplicates of earlier messages in a long
+    history. The fix (#64335) drops the key entirely rather than
+    writing an empty array.
+    """
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    # Simulate a long conversation where the same tool_call_id appears
+    # in multiple assistant messages (e.g., crash/resume glitch or
+    # compression window re-emission). The first occurrence is kept,
+    # later duplicates are removed.
+    messages = [
+        {"role": "user", "content": "step 1"},
+        {"role": "assistant", "content": "running",
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "result 1"},
+        # Simulate a later assistant message that reuses call_A
+        # (this would be invalid, but the dedup pass handles it)
+        {"role": "assistant", "content": "retrying",
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "foo", "arguments": "{}"}}]},
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    # First assistant should keep tool_calls (first occurrence)
+    assistant1 = [m for m in out if m.get("role") == "assistant"][0]
+    assert "tool_calls" in assistant1
+    assert len(assistant1["tool_calls"]) == 1
+    assert assistant1["tool_calls"][0]["id"] == "call_A"
+
+    # Second assistant should have tool_calls key DROPPED
+    # (all tool_calls were deduped as duplicates of call_A)
+    assistant2 = [m for m in out if m.get("role") == "assistant"][1]
+    assert "tool_calls" not in assistant2
+    # Content should be preserved
+    assert assistant2["content"] == "retrying"

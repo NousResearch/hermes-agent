@@ -28,6 +28,11 @@ export interface TriggerState {
 //    there are no args to complete — the trigger is a single token that ends at
 //    the next space, exactly like `@`.
 //
+// Only the FIRST slash can be an invocation, so the inline shape is tested
+// first: the command regex's argument tail (`(?:\s+\S*)*`) happily swallows a
+// later `/skill` as if it were an argument, which killed completion for every
+// slash after a leading command (`/work /cle` → nothing).
+//
 // The inline shape is what makes skills reachable anywhere in a prompt. Both
 // shapes need the trailing `$`: detection runs against the text BEFORE the
 // caret, so the match must end where the user is typing.
@@ -124,20 +129,22 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {
-  const command = SLASH_COMMAND_TRIGGER_RE.exec(textBefore)
-
-  if (command) {
-    return { kind: '/', query: command[2], tokenLength: 1 + command[2].length }
-  }
-
   // An inline `/skill` is a reference dropped into prose, so it carries no args
-  // and the whole match is the token the chip replaces.
+  // and the whole match is the token the chip replaces. Checked before the
+  // anchored command shape so a second slash isn't mistaken for the first
+  // command's argument.
   const inline = SLASH_INLINE_TRIGGER_RE.exec(textBefore)
 
   if (inline) {
     const query = inline[2] ?? ''
 
     return { inline: true, kind: '/', query, tokenLength: 1 + query.length }
+  }
+
+  const command = SLASH_COMMAND_TRIGGER_RE.exec(textBefore)
+
+  if (command) {
+    return { kind: '/', query: command[2], tokenLength: 1 + command[2].length }
   }
 
   const at = AT_TRIGGER_RE.exec(textBefore)

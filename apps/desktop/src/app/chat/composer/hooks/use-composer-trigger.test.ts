@@ -120,6 +120,29 @@ describe('useComposerTrigger — slash anywhere in the prompt', () => {
 
     expect(hook.result.current.trigger).toBeNull()
   })
+
+  it('opens the list for a second slash after a leading command', () => {
+    // `/work /cle`: the command regex's argument tail would otherwise swallow
+    // `/cle` as an argument to `/work`, and a no-arg command suppresses the
+    // popover — so every slash after the first went dead.
+    const editor = mountEditor('/work /cle')
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.trigger).toMatchObject({ kind: '/', inline: true, query: 'cle' })
+    expect(hook.result.current.triggerItems).toHaveLength(1)
+  })
+
+  it('inserts the second command without disturbing the first', () => {
+    const editor = mountEditor('/work rewrite the composer /cle')
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('/work rewrite the composer /clean ')
+  })
 })
 
 describe('useComposerTrigger — free-text slash arguments', () => {

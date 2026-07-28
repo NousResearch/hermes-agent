@@ -249,6 +249,13 @@ function profileScoped(profile?: null | string): { profile?: string } {
   return selected ? { profile: selected } : {}
 }
 
+/** Profile that profile-scoped REST/WS calls should target (null → primary).
+ *  Read-only twin of setApiRequestProfile for modules (e.g. voice playback)
+ *  that build their own connection URLs and must stay on the same backend. */
+export function getApiRequestProfile(): null | string {
+  return _apiProfile
+}
+
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {

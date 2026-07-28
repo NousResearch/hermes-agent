@@ -1,6 +1,6 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
-import { speakText } from '@/hermes'
+import { getApiRequestProfile, speakText } from '@/hermes'
 import {
   $voicePlayback,
   setVoicePlaybackState,
@@ -74,9 +74,11 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
   }
 
   try {
-    // Mint a fresh credential (single-use ticket in OAuth mode), then swap the
-    // gateway endpoint for the PCM one — auth is shared across WS routes.
-    const wsUrl = await resolveGatewayWsUrl(desktop, await desktop.getConnection())
+    // Mint a fresh credential (single-use ticket in OAuth mode) for the
+    // ACTIVE profile's backend, then swap the gateway endpoint for the PCM
+    // one — auth is shared across WS routes.
+    const profile = getApiRequestProfile()
+    const wsUrl = await resolveGatewayWsUrl(desktop, await desktop.getConnection(profile))
     const url = new URL(wsUrl)
 
     if (!url.pathname.endsWith('/api/ws')) {
@@ -84,6 +86,12 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
     }
 
     url.pathname = url.pathname.replace(/\/api\/ws$/, '/api/audio/speak-stream')
+
+    // The backend resolves the TTS provider chain from this profile's
+    // config/.env (same seam as /api/pty?profile=).
+    if (profile) {
+      url.searchParams.set('profile', profile)
+    }
 
     return url.toString()
   } catch {

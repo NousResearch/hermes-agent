@@ -1,4 +1,5 @@
 import {
+import { QuoteSelectionContextMenu } from '@/components/assistant-ui/thread/quote-selection'
   ActionBarPrimitive,
   BranchPickerPrimitive,
   ErrorPrimitive,
@@ -117,6 +118,7 @@ export const AssistantMessage: FC<{
   const onDoubleClick = useTapbackDoubleClick(messageId, 'assistant')
 
   return (
+    <QuoteSelectionContextMenu>
     <MessagePrimitive.Root
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
@@ -165,6 +167,7 @@ export const AssistantMessage: FC<{
           turn on its summary rather than burying it above the controls. */}
       <ChangedFilesCard parts={settledParts} />
     </MessagePrimitive.Root>
+    </QuoteSelectionContextMenu>
   )
 }
 

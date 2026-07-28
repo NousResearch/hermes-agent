@@ -6365,41 +6365,244 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
-def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
-    """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
+def _desktop_macos_bundle_id(bundle: Path) -> Optional[str]:
+    """Return a bundle/framework CFBundleIdentifier for local macOS signing."""
+    import plistlib
 
-    An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
-    when the self-updater rebuilds the bundle in place with a fresh build (a new,
-    different cdhash) Gatekeeper/LaunchServices treats the changed code as
-    tampering and macOS reports "Hermes is damaged and can't be opened." The
-    bundle also inherits the com.apple.quarantine flag from the downloaded
-    installer process chain. Both make the relaunch fail.
+    info = bundle / "Contents" / "Info.plist"
+    if not info.exists() and bundle.suffix == ".framework":
+        candidates = list(bundle.glob("Versions/*/Resources/Info.plist")) + list(
+            bundle.glob("Resources/Info.plist")
+        )
+        if candidates:
+            info = candidates[0]
+    if not info.exists():
+        return None
+    try:
+        data = plistlib.loads(info.read_bytes())
+    except Exception:
+        return None
+    ident = data.get("CFBundleIdentifier")
+    return str(ident) if ident else None
 
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
-    (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+
+def _desktop_macos_local_signing_identity() -> Optional[str]:
+    """Return the opt-in keychain identity for local macOS desktop signing.
+
+    ``desktop.macos_signing_identity`` in config.yaml names a persistent
+    code-signing certificate in the user's login keychain (a self-signed
+    "Code Signing" cert made in Keychain Access is enough — no Apple Developer
+    account needed). Signing with any identity gives the app a
+    certificate-anchored Designated Requirement, which is the strongest way to
+    keep macOS TCC grants (Full Disk Access, Accessibility, Automation, Files
+    and Folders) stable across local rebuilds. Empty/unset keeps the default
+    identifier-pinned ad-hoc signing.
     """
     if sys.platform != "darwin":
-        return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
-        return
+        return None
+    try:
+        from hermes_cli.config import load_config
+
+        desktop = load_config().get("desktop", {})
+        if not isinstance(desktop, dict):
+            return None
+        identity = desktop.get("macos_signing_identity")
+        if not isinstance(identity, str):
+            return None
+        return identity.strip() or None
+    except Exception as exc:
+        print(
+            "  (warning: could not load desktop.macos_signing_identity: "
+            f"{exc}; falling back to ad-hoc signing)"
+        )
+        return None
+
+
+def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
+    """True when the bundle carries an intact non-ad-hoc (Team ID) signature.
+
+    Used to make the relaunch fixup a no-op on properly signed/notarized
+    builds even when CSC_LINK / APPLE_SIGNING_IDENTITY aren't in the
+    environment (e.g. a release DMG install being repaired) — clobbering a
+    Developer ID signature with an ad-hoc one would reset TCC grants and can
+    break the hardened runtime. A *stale* real signature (in-place rebuild
+    tampered with the bundle) fails --verify and returns False so the fixup
+    can repair it.
+    """
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+    try:
+        info = subprocess.run(
+            [codesign, "-dv", str(app)], check=False, capture_output=True, text=True
+        )
+        output = f"{info.stdout}\n{info.stderr}"
+        if info.returncode != 0 or "TeamIdentifier=" not in output \
+                or "TeamIdentifier=not set" in output:
+            return False
+        verify = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(app)],
+            check=False, capture_output=True,
+        )
+        return verify.returncode == 0
+    except Exception:
+        return False
+
+
+def _desktop_macos_local_codesign(
+    app: Path, *, desktop_dir: Path, identity: str = "-"
+) -> bool:
+    """Re-sign a local Desktop build so macOS TCC grants survive rebuilds.
+
+    A plain ``codesign --deep --sign -`` leaves the bundle with a cdhash-only
+    Designated Requirement and strips electron-builder's entitlements. Every
+    rebuild changes the cdhash, so TCC (Full Disk Access, Accessibility,
+    Automation, Files and Folders: Desktop/Downloads/Documents, microphone)
+    treats the rebuilt app as different code and the user must re-grant
+    everything — and the lost entitlements break microphone/JIT under the
+    hardened runtime.
+
+    Instead, sign inside-out (standalone Mach-O binaries, then nested
+    frameworks/helper apps, then the main bundle), preserving the repo's
+    entitlement plists, and pin an explicit identifier-based Designated
+    Requirement when signing ad-hoc. With a real ``identity`` the certificate
+    anchors the DR, so no explicit requirement is needed. Raises on signing
+    failure; returns True after strict verification passes.
+    """
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+
+    ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
+    ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+
+    def sign_path(
+        path: Path,
+        *,
+        entitlements: Optional[Path] = None,
+        identifier: Optional[str] = None,
+        runtime: bool = True,
+    ) -> None:
+        args = [codesign, "--force", "--sign", identity, "--timestamp=none"]
+        if runtime:
+            args += ["--options", "runtime"]
+        if entitlements is not None and entitlements.exists():
+            args += ["--entitlements", str(entitlements)]
+        if identifier and identity == "-":
+            # Ad-hoc signatures get a cdhash-only DR by default; pin an
+            # identifier-based DR so TCC has something stable to persist.
+            args += ["--requirements", f'=designated => identifier "{identifier}"']
+        args.append(str(path))
+        subprocess.run(args, check=True, capture_output=True)
+
+    # 1) Standalone Mach-O files (native modules, dylibs, crashpad handler).
+    #    Compare paths relative to the app root — the absolute path always
+    #    contains the outer Hermes.app component, so an absolute-parts check
+    #    would skip every file.
+    contents = app / "Contents"
+    standalone: list[Path] = []
+    for root, _dirs, files in os.walk(contents):
+        root_path = Path(root)
+        rel_parts = root_path.relative_to(app).parts
+        if any(part.endswith(".app") for part in rel_parts):
+            continue  # nested helper apps are signed as bundles below
+        for name in files:
+            fp = root_path / name
+            if name in {"chrome_crashpad_handler", "spawn-helper"} or fp.suffix in {
+                ".node",
+                ".dylib",
+            }:
+                standalone.append(fp)
+    for fp in sorted(standalone, key=lambda p: len(p.parts), reverse=True):
+        sign_path(fp, runtime=False)
+
+    # 2) Nested frameworks and helper apps, deepest first.
+    bundles: list[Path] = []
+    frameworks_dir = contents / "Frameworks"
+    if frameworks_dir.exists():
+        for root, _dirs, _files in os.walk(frameworks_dir):
+            p = Path(root)
+            if p.suffix in {".framework", ".app"}:
+                bundles.append(p)
+    for bundle in sorted(set(bundles), key=lambda p: len(p.parts), reverse=True):
+        ent = ent_inherit if bundle.suffix == ".app" and "Helper" in bundle.name else None
+        sign_path(bundle, entitlements=ent, identifier=_desktop_macos_bundle_id(bundle))
+
+    # 3) The main bundle, with the app's own entitlements.
+    sign_path(app, entitlements=ent_main, identifier=_desktop_macos_bundle_id(app))
+    subprocess.run(
+        [codesign, "--verify", "--deep", "--strict", str(app)],
+        check=True, capture_output=True,
+    )
+    return True
+
+
+def _desktop_macos_relaunchable_fixup(
+    desktop_dir: Path,
+    *,
+    publisher_signing_configured: Optional[bool] = None,
+) -> bool:
+    """Make a locally-built macOS desktop app survive in-place self-update
+    without resetting the user's TCC permission grants.
+
+    An ad-hoc-signed .app has no stable Designated Requirement, so when the
+    self-updater rebuilds the bundle in place (new cdhash) Gatekeeper reports
+    "Hermes is damaged and can't be opened" — and macOS TCC forgets every
+    permission the user granted (Full Disk Access, Desktop/Downloads/Documents,
+    Accessibility, Automation, microphone), re-prompting on every launch after
+    every update.
+
+    Clear the quarantine xattrs, then re-sign with a stable identity:
+    ``desktop.macos_signing_identity`` (a persistent keychain cert — strongest)
+    when configured, else ad-hoc with identifier-pinned Designated Requirements,
+    preserving the repo's entitlement plists either way. No-op when a real
+    publisher identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) or the
+    bundle already carries an intact Developer ID signature, so a properly
+    signed/notarized build is never clobbered. Callers that already made the
+    publisher-signing decision may pass it explicitly so a later dotenv load
+    can't reverse it. Falls back to the legacy deep ad-hoc sign if the
+    entitlement-preserving path fails. Best-effort: never raises. Returns True
+    when no work was needed or signing + strict verification succeeded.
+    """
+    if sys.platform != "darwin":
+        return True
+    if publisher_signing_configured is None:
+        publisher_signing_configured = bool(
+            os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY")
+        )
+    if publisher_signing_configured:
+        return True
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
-        return
+        return True
     # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
     app = exe.parents[2]
     if not str(app).endswith(".app") or not app.is_dir():
-        return
+        return True
     codesign = shutil.which("codesign")
     if not codesign:
-        return
+        return False
+    if _desktop_macos_has_valid_real_signature(app):
+        return True
+    subprocess.run(["xattr", "-cr", str(app)], check=False)
+    identity = _desktop_macos_local_signing_identity() or "-"
     try:
-        subprocess.run(["xattr", "-cr", str(app)], check=False)
+        if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
+            label = "keychain identity" if identity != "-" else "stable ad-hoc identity"
+            print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
+            return True
+    except Exception as exc:
+        if identity != "-":
+            print(
+                f"  (warning: configured macOS signing identity failed: {identity!r}; "
+                "falling back to ad-hoc — TCC grants may need to be re-granted)"
+            )
+        print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
+    try:
         subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
+    return False
 
 
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:

@@ -67,6 +67,11 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import {
+  classifyProbeRejection,
+  shouldProbe,
+  isZombieSuspect,
+} from "./stream-staleness.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
@@ -93,6 +98,22 @@ const STREAM_DEGRADED_RESTART_MS =
   Number(process.env.PHOTON_STREAM_DEGRADED_RESTART_MS) || 90 * 1000;
 const STREAM_INTERRUPTED_DEGRADE_COUNT =
   Number(process.env.PHOTON_STREAM_INTERRUPTED_DEGRADE_COUNT) || 3;
+// Zombie-stream (half-open gRPC) watchdog. The inbound iterator can hang
+// forever without erroring; we track when it last yielded and, once it has
+// been silent past this threshold, drive a cheap authenticated probe. Silence
+// alone NEVER degrades the stream (shared lines can be quiet for hours) and a
+// rejected probe is INCONCLUSIVE, never proof either way — degradation
+// requires silence past the threshold plus a probe-proven live channel.
+// A non-positive threshold disables the watchdog.
+const STREAM_SILENCE_PROBE_MS = (() => {
+  const raw = Number(process.env.PHOTON_STREAM_SILENCE_PROBE_MS);
+  return Number.isFinite(raw) ? raw : 10 * 60 * 1000;
+})();
+const STREAM_PROBE_COOLDOWN_MS =
+  Number(process.env.PHOTON_STREAM_PROBE_COOLDOWN_MS) || 2 * 60 * 1000;
+const STREAM_PROBE_TIMEOUT_MS =
+  Number(process.env.PHOTON_STREAM_PROBE_TIMEOUT_MS) || 10 * 1000;
+const STREAM_WATCHDOG_TICK_MS = 30 * 1000;
 
 const streamHealth = {
   state: "starting",
@@ -103,6 +124,33 @@ const streamHealth = {
   issueCount: 0,
 };
 let streamRestartTimer = null;
+
+// Zombie-watchdog runtime state (see stream-staleness.mjs for the rules).
+const staleness = {
+  lastInboundAt: Date.now(),
+  lastProbeAt: 0,
+  lastProbeOutcome: null, // "alive" | "inconclusive" | null
+  zombieSuspected: false,
+};
+
+function noteInboundYield() {
+  staleness.lastInboundAt = Date.now();
+  staleness.zombieSuspected = false;
+}
+
+function stalenessSnapshot(now) {
+  return {
+    lastInboundAt: new Date(staleness.lastInboundAt).toISOString(),
+    silentForMs: now - staleness.lastInboundAt,
+    silenceThresholdMs: STREAM_SILENCE_PROBE_MS,
+    lastProbeAt:
+      staleness.lastProbeAt > 0
+        ? new Date(staleness.lastProbeAt).toISOString()
+        : null,
+    lastProbeOutcome: staleness.lastProbeOutcome,
+    zombieSuspected: staleness.zombieSuspected,
+  };
+}
 
 function streamHealthSnapshot() {
   const now = Date.now();
@@ -117,6 +165,7 @@ function streamHealthSnapshot() {
     lastIssueAt: streamHealth.lastIssueAt,
     lastIssue: streamHealth.lastIssue,
     issueCount: streamHealth.issueCount,
+    staleness: stalenessSnapshot(now),
   };
 }
 
@@ -599,6 +648,8 @@ function inboundStreamErrorMessage(e) {
       for await (const [space, message] of app.messages) {
         backoff = 1000; // healthy traffic — reset
         markStreamHealthy();
+        // Every yield — any direction — proves the inbound stream is live.
+        noteInboundYield();
         // Only forward inbound messages (ignore our own outbound echoes).
         if (message && message.direction && message.direction !== "inbound") {
           continue;
@@ -622,6 +673,99 @@ function inboundStreamErrorMessage(e) {
     backoff = Math.min(backoff * 2, 30000);
   }
 })();
+
+// ---------------------------------------------------------------------------
+// Zombie-stream watchdog: detect a half-open gRPC stream the SDK can't see.
+//
+// The inbound iterator above can hang forever on a half-open socket — no
+// error, no end — so the re-subscribe loop never fires and classifyStreamLog
+// never sees a "[spectrum.stream]" line. We track the iterator's last yield
+// (noteInboundYield) and, once it has been silent past
+// STREAM_SILENCE_PROBE_MS, drive a cheap unary read (space.getMessage on a
+// synthetic id) over the same authenticated channel. Decision rules (see
+// stream-staleness.mjs):
+//   probe proves connectivity while the stream is silent -> the stream itself
+//     is the dead part -> markStreamDegraded -> existing exit-75 restart path.
+//   probe inconclusive (rejected/hung) -> do NOTHING: the network may just be
+//     down, and in that case the iterator eventually throws and the
+//     re-subscribe loop recovers on its own. Never restart on silence alone —
+//     shared lines can be legitimately quiet for hours.
+
+async function probeUpstream() {
+  if (typeof app?.stop !== "function") {
+    return { alive: false, hung: false, reason: "spectrum app not constructed" };
+  }
+  const probeId =
+    PROBE_MSG_PREFIX + Date.now() + "-" + Math.random().toString(36).slice(2);
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(
+      () => resolve({ alive: false, hung: true, reason: "probe timed out" }),
+      STREAM_PROBE_TIMEOUT_MS
+    );
+    timer.unref();
+  });
+  const attempt = (async () => {
+    try {
+      const im = imessage(app);
+      const space = await im.space.get(PROBE_SPACE_ID);
+      await space.getMessage(probeId);
+      // Resolving for a synthetic id is unexpected but is still a completed
+      // round-trip: the channel is alive.
+      return { alive: true, hung: false, reason: "round-trip completed" };
+    } catch (e) {
+      const verdict = classifyProbeRejection(e);
+      return { alive: verdict.alive, hung: false, reason: verdict.reason };
+    }
+  })();
+  const outcome = await Promise.race([attempt, timeout]);
+  if (timer) clearTimeout(timer);
+  staleness.lastProbeAt = Date.now();
+  staleness.lastProbeOutcome = outcome.alive ? "alive" : "inconclusive";
+  return outcome;
+}
+
+let watchdogProbeInFlight = false;
+async function zombieWatchdogTick() {
+  if (watchdogProbeInFlight) return;
+  const now = Date.now();
+  const silentForMs = now - staleness.lastInboundAt;
+  if (
+    !shouldProbe(
+      silentForMs,
+      STREAM_SILENCE_PROBE_MS,
+      now - staleness.lastProbeAt,
+      STREAM_PROBE_COOLDOWN_MS
+    )
+  ) {
+    return;
+  }
+  watchdogProbeInFlight = true;
+  try {
+    const outcome = await probeUpstream();
+    if (isZombieSuspect(silentForMs, STREAM_SILENCE_PROBE_MS, outcome)) {
+      staleness.zombieSuspected = true;
+      const reason =
+        `inbound stream silent for ${silentForMs}ms while an upstream probe ` +
+        "succeeded — half-open (zombie) gRPC stream suspected";
+      console.error("photon-sidecar: " + reason);
+      markStreamDegraded(reason);
+    }
+    // Inconclusive: deliberately no action (see block comment above).
+  } catch (e) {
+    console.error(
+      "photon-sidecar: zombie watchdog tick failed: " +
+        (e && e.message ? e.message : String(e))
+    );
+  } finally {
+    watchdogProbeInFlight = false;
+  }
+}
+
+if (STREAM_SILENCE_PROBE_MS > 0) {
+  const watchdogTimer = setInterval(zombieWatchdogTick, STREAM_WATCHDOG_TICK_MS);
+  watchdogTimer.unref();
+}
 
 // ---------------------------------------------------------------------------
 // HTTP control + inbound server (loopback only).
@@ -842,37 +986,24 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.url === "/probe") {
       // Upstream liveness probe. Drives a cheap unary read over the SAME gRPC
-      // channel the inbound stream uses. On a live channel this round-trips
-      // fast (the server returns "not found" for the synthetic id, which the
-      // SDK surfaces as a thrown error — that's a SUCCESS for our purposes:
-      // the wire is alive). On a half-open zombie socket the call hangs and
-      // the caller's timeout fires, so the adapter can respawn us. It sends
-      // nothing to any user and creates no chat (space.get is local; only the
-      // message read touches the network).
-      if (typeof app?.stop !== "function") {
-        // app failed to construct — definitely not live.
-        return serverError(res);
+      // channel the inbound stream uses. STRICT semantics: only a completed
+      // round-trip (resolution, or a not-found rejection for our synthetic
+      // id) counts as alive; any other rejection or a timeout is
+      // INCONCLUSIVE — never reported as alive.
+      const outcome = await probeUpstream();
+      if (outcome.alive) {
+        return ok(res, { alive: true, outcome: "alive" });
       }
-      try {
-        const im = imessage(app);
-        const space = await im.space.get(PROBE_SPACE_ID);
-        const probeId = PROBE_MSG_PREFIX + Date.now() + "-" + Math.random().toString(36).slice(2);
-        try {
-          await space.getMessage(probeId);
-        } catch {
-          // Expected: the synthetic id doesn't exist. Reaching here means the
-          // unary call completed a round-trip — the channel is ALIVE.
-        }
-        return ok(res, { alive: true });
-      } catch (e) {
-        // space.get is local; an error here is unexpected but means we can't
-        // even build a probe — report not-alive so the adapter recycles us.
-        console.error(
-          "photon-sidecar: probe failed: " +
-            (e && e.message ? e.message : String(e))
-        );
-        return serverError(res);
-      }
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json");
+      return res.end(
+        JSON.stringify({
+          ok: false,
+          alive: false,
+          outcome: outcome.hung ? "hung" : "inconclusive",
+          reason: outcome.reason,
+        })
+      );
     }
     if (req.url === "/shutdown") {
       ok(res, {});

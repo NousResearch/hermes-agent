@@ -30,7 +30,9 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> PhotonAdapte
 
 def test_probe_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     a = _make_adapter(monkeypatch)
-    assert a._probe_interval == 60.0
+    # Conservative by default: probe only after 10+ minutes of stream silence
+    # so quiet shared lines never trigger restart storms.
+    assert a._probe_interval == 600.0
     assert a._probe_timeout == 10.0
     assert a._probe_max_failures == 3
     assert a._probe_enabled is True
@@ -78,26 +80,31 @@ async def test_probe_once_alive_on_200(monkeypatch: pytest.MonkeyPatch) -> None:
             return _Resp()
 
     a._http_client = _Client()  # type: ignore[assignment]
-    assert await a._probe_once() is True
+    assert await a._probe_once() == "alive"
 
 
 @pytest.mark.asyncio
-async def test_probe_once_dead_on_500(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_probe_once_inconclusive_on_error_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-200 from /probe is INCONCLUSIVE, never alive: the sidecar's
+    strict probe returns 503 when it cannot prove upstream liveness, and
+    that must not count as proof in either direction."""
     a = _make_adapter(monkeypatch)
 
     class _Resp:
-        status_code = 500
+        status_code = 503
 
     class _Client:
         async def post(self, *args: Any, **kwargs: Any) -> Any:
             return _Resp()
 
     a._http_client = _Client()  # type: ignore[assignment]
-    assert await a._probe_once() is False
+    assert await a._probe_once() == "inconclusive"
 
 
 @pytest.mark.asyncio
-async def test_probe_once_dead_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_probe_once_hung_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     a = _make_adapter(monkeypatch)
 
     class _Client:
@@ -105,17 +112,17 @@ async def test_probe_once_dead_on_timeout(monkeypatch: pytest.MonkeyPatch) -> No
             raise TimeoutError("zombie stream — probe hung")
 
     a._http_client = _Client()  # type: ignore[assignment]
-    # A hung/half-open probe must read as NOT alive (this is the zombie case).
-    assert await a._probe_once() is False
+    # A hung probe HTTP call is the only verdict that counts toward respawn.
+    assert await a._probe_once() == "hung"
 
 
 @pytest.mark.asyncio
-async def test_probe_once_false_without_client(
+async def test_probe_once_inconclusive_without_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     a = _make_adapter(monkeypatch)
     a._http_client = None
-    assert await a._probe_once() is False
+    assert await a._probe_once() == "inconclusive"
 
 
 @pytest.mark.asyncio
@@ -129,17 +136,17 @@ async def test_respawn_after_max_failures(monkeypatch: pytest.MonkeyPatch) -> No
         respawns.append(reason)
         a._note_upstream_activity()  # mirror real respawn (clears failures)
 
-    async def _dead_probe() -> bool:
-        return False
+    async def _hung_probe() -> str:
+        return "hung"
 
     monkeypatch.setattr(a, "_respawn_sidecar", _fake_respawn)
-    monkeypatch.setattr(a, "_probe_once", _dead_probe)
+    monkeypatch.setattr(a, "_probe_once", _hung_probe)
 
     # Simulate the watchdog's per-iteration decision logic directly (no sleeps).
     a._last_upstream_activity = time.monotonic() - 999  # force a probe each time
     for _ in range(3):
-        alive = await a._probe_once()
-        assert alive is False
+        verdict = await a._probe_once()
+        assert verdict == "hung"
         a._probe_failures += 1
         if a._probe_failures >= a._probe_max_failures:
             await a._respawn_sidecar("test")

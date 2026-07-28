@@ -50,11 +50,24 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
+def _make_event(
+    text: str,
+    chat_id: str = "12345",
+    user_id: str = "12345",
+    chat_type: str = "dm",
+    ephemeral_user_context: str | None = None,
+    message_type: MessageType = MessageType.TEXT,
+) -> MessageEvent:
     return MessageEvent(
         text=text,
-        message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        message_type=message_type,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+        ),
+        ephemeral_user_context=ephemeral_user_context,
     )
 
 
@@ -95,6 +108,76 @@ class TestTextBatching:
         dispatched = adapter.handle_message.call_args[0][0]
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
+
+    @pytest.mark.asyncio
+    async def test_fixed_location_pin_batches_with_recent_same_sender_text(self):
+        """A fixed pin and its nearby request form one normal user turn."""
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(_make_event("Find coffee near me"))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(
+            _make_event(
+                "[The user shared a one-time location pin.]\nlatitude: 48.8584\n"
+                "longitude: 2.2945",
+                message_type=MessageType.LOCATION,
+            )
+        )
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert "Find coffee near me" in dispatched.text
+        assert "[The user shared a one-time location pin.]" in dispatched.text
+        assert dispatched.ephemeral_user_context is None
+
+    @pytest.mark.asyncio
+    async def test_split_messages_keep_newest_ephemeral_user_context(self):
+        adapter = _make_adapter()
+
+        adapter._enqueue_text_event(
+            _make_event("first fragment", ephemeral_user_context="old location")
+        )
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(
+            _make_event("second fragment", ephemeral_user_context="new location")
+        )
+
+        await asyncio.sleep(0.2)
+
+        dispatched = adapter.handle_message.call_args.args[0]
+        assert dispatched.ephemeral_user_context == "new location"
+
+    @pytest.mark.asyncio
+    async def test_shared_session_never_batches_different_senders_or_locations(self):
+        adapter = _make_adapter()
+        adapter.config.extra["group_sessions_per_user"] = False
+        first = _make_event(
+            "from user A",
+            chat_id="group-1",
+            user_id="user-a",
+            chat_type="group",
+            ephemeral_user_context="location A",
+        )
+        second = _make_event(
+            "from user B",
+            chat_id="group-1",
+            user_id="user-b",
+            chat_type="group",
+            ephemeral_user_context="location B",
+        )
+
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+        await asyncio.sleep(0.2)
+
+        dispatched = [call.args[0] for call in adapter.handle_message.call_args_list]
+        assert len(dispatched) == 2
+        assert {(event.text, event.ephemeral_user_context) for event in dispatched} == {
+            ("from user A", "location A"),
+            ("from user B", "location B"),
+        }
 
     @pytest.mark.asyncio
     async def test_three_way_split_aggregated(self):
@@ -171,8 +254,12 @@ class TestTextBatching:
                 thread_sessions_per_user=False,
             )
 
-        assert _key("222") in adapter._pending_text_batches
-        assert _key("1") not in adapter._pending_text_batches
+        assert f"{_key('222')}:ingress-sender:user-1" in (
+            adapter._pending_text_batches
+        )
+        assert f"{_key('1')}:ingress-sender:user-1" not in (
+            adapter._pending_text_batches
+        )
         assert event.source.thread_id == "222"
 
         await asyncio.sleep(0.2)

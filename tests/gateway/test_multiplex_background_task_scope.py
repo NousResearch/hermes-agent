@@ -82,7 +82,10 @@ class TestBackgroundTaskProfileScope:
                     event_message_id="m1",
                     media_urls=["u"],
                     media_types=["image"],
+                    ephemeral_user_context="location context",
                 )
             )
 
-        inner.assert_awaited_once_with("p", source, "t", "m1", ["u"], ["image"])
+        inner.assert_awaited_once_with(
+            "p", source, "t", "m1", ["u"], ["image"], "location context"
+        )

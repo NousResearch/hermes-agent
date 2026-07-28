@@ -218,6 +218,7 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
         source=source,
         media_urls=["/tmp/test.png"],
         media_types=["image/png"],
+        ephemeral_user_context="new location",
     )
 
     merge_pending_message_event(pending, session_key, text_event, merge_text=True)
@@ -228,6 +229,71 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
     assert merged.text == "first follow-up\n\nsee screenshot"
     assert merged.media_urls == ["/tmp/test.png"]
     assert merged.media_types == ["image/png"]
+    assert merged.ephemeral_user_context == "new location"
+
+
+def test_merge_pending_message_event_prefers_newest_ephemeral_context_for_text():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="first fragment",
+        message_type=MessageType.TEXT,
+        source=source,
+        ephemeral_user_context="old location",
+    )
+    second = MessageEvent(
+        text="second fragment",
+        message_type=MessageType.TEXT,
+        source=source,
+        ephemeral_user_context="new location",
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+
+    assert pending[session_key].text == "first fragment\nsecond fragment"
+    assert pending[session_key].ephemeral_user_context == "new location"
+
+
+def test_merge_pending_message_event_clears_context_across_senders():
+    pending = {}
+    first_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="group-1",
+        chat_type="group",
+        user_id="user-a",
+    )
+    second_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="group-1",
+        chat_type="group",
+        user_id="user-b",
+    )
+    session_key = build_session_key(first_source, group_sessions_per_user=False)
+    first = MessageEvent(
+        text="first",
+        message_type=MessageType.TEXT,
+        source=first_source,
+        ephemeral_user_context="location A",
+    )
+    second = MessageEvent(
+        text="second",
+        message_type=MessageType.TEXT,
+        source=second_source,
+        ephemeral_user_context="location B",
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+
+    assert pending[session_key].text == "first\nsecond"
+    assert pending[session_key].ephemeral_user_context is None
 
 
 def test_merge_pending_message_event_promotes_document_followups_over_text():

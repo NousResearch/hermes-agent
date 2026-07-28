@@ -1515,6 +1515,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    bound_skills: "list[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1547,6 +1548,14 @@ def build_skills_system_prompt(
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    # Scope the index to an explicit skill allow-list (cron jobs with
+    # ``skills=[...]``). ``None`` = unrestricted (show everything); a list
+    # (even empty) activates filtering. Keep None and [] DISTINCT in both the
+    # filter and the cache key: ``None`` means "no scoping" while ``[]`` means
+    # "scope to nothing", and collapsing them would let an unrestricted prompt
+    # and a scope-to-nothing prompt collide on one cache entry.
+    bound_set = None if bound_skills is None else set(bound_skills)
+    _bound_cache_key = None if bound_skills is None else tuple(sorted(bound_set))
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
@@ -1555,6 +1564,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        _bound_cache_key,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1581,6 +1591,8 @@ def build_skills_system_prompt(
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
+            if bound_set is not None and frontmatter_name not in bound_set and skill_name not in bound_set:
+                continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
                 available_tools,
@@ -1605,6 +1617,8 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            if bound_set is not None and entry["frontmatter_name"] not in bound_set and skill_name not in bound_set:
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -1660,6 +1674,8 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if bound_set is not None and frontmatter_name not in bound_set and skill_name not in bound_set:
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

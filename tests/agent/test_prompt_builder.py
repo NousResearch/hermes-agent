@@ -579,6 +579,71 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def _make_skills(self, tmp_path, *names):
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        for name in names:
+            d = skills_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} skill\n---\n"
+            )
+
+    def test_bound_skills_scopes_index_to_listed_skills(self, monkeypatch, tmp_path):
+        """bound_skills=[X] shows only X — other installed skills are hidden."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path, "web-crawler", "freshrss")
+
+        result = build_skills_system_prompt(bound_skills=["web-crawler"])
+
+        assert "web-crawler" in result
+        assert "freshrss" not in result
+
+    def test_bound_skills_none_returns_full_index(self, monkeypatch, tmp_path):
+        """bound_skills=None (default) leaves the full index unchanged."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path, "web-crawler", "freshrss", "github")
+
+        result = build_skills_system_prompt(bound_skills=None)
+
+        assert "web-crawler" in result
+        assert "freshrss" in result
+        assert "github" in result
+
+    def test_bound_skills_empty_list_scopes_to_nothing(self, monkeypatch, tmp_path):
+        """bound_skills=[] activates filtering that matches no skill."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path, "web-crawler", "freshrss")
+
+        result = build_skills_system_prompt(bound_skills=[])
+
+        assert "web-crawler" not in result
+        assert "freshrss" not in result
+
+    def test_bound_skills_none_and_empty_do_not_collide_in_cache(self, monkeypatch, tmp_path):
+        """None (no scoping) and [] (scope to nothing) must occupy distinct
+        cache entries — both collapsed to () previously, letting the first
+        call's result be served to the second regardless of semantics.
+
+        Exercise BOTH call orders against the shared in-process cache so a
+        collision is caught whichever value warms the entry first.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path, "alpha", "beta")
+
+        # None first (full), then [] (empty).
+        full = build_skills_system_prompt(bound_skills=None)
+        empty = build_skills_system_prompt(bound_skills=[])
+        assert "alpha" in full and "beta" in full
+        assert "alpha" not in empty and "beta" not in empty
+
+        # [] first (now cached), then None — None must NOT get the stale empty
+        # entry.
+        empty_again = build_skills_system_prompt(bound_skills=[])
+        full_again = build_skills_system_prompt(bound_skills=None)
+        assert "alpha" not in empty_again
+        assert "alpha" in full_again and "beta" in full_again
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)

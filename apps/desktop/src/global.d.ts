@@ -128,6 +128,10 @@ declare global {
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
+      /** Watch a directory for entry churn (disk-plugin door); same watcher
+       *  registry + onPreviewFileChanged channel as watchPreviewFile. Optional:
+       *  older Electron shells predate it and fall back to the readdir poll. */
+      watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void

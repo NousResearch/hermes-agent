@@ -5210,7 +5210,8 @@ class TestRunConversation:
         }
 
     def test_redirect_during_thinking_retries_same_turn_with_context(self, agent):
-        """A corrective follow-up keeps displayed reasoning and does not end the turn."""
+        """A corrective follow-up does not end the turn, and displayed reasoning
+        never re-enters the transcript (classifier-poisoning guard)."""
         self._setup_agent(agent)
         agent.reasoning_callback = lambda _text: None
         final = _mock_response(content="Using Postgres instead.", finish_reason="stop")
@@ -5252,7 +5253,11 @@ class TestRunConversation:
         ]
         checkpoint = replay[-2]["content"]
         assert "interrupted by a user correction" in checkpoint
-        assert "I should implement this with SQLite." in checkpoint
+        # Displayed chain-of-thought must NOT be replayed: an assistant turn
+        # inlining its own reasoning trips Anthropic's output classifier and
+        # bricks the session with deterministic empty responses (July 2026).
+        assert "I should implement this with SQLite." not in checkpoint
+        assert "Reasoning shown before the interruption" not in checkpoint
         assert replay[-1]["content"] == "No, use Postgres instead."
         assert agent._pending_redirect is None
         assert any(
@@ -5334,7 +5339,10 @@ class TestRunConversation:
         assert results["result"]["completed"] is True
         assert results["result"]["final_response"] == "Corrected answer."
         checkpoint = results["result"]["messages"][-3]
-        assert "Following the original approach." in checkpoint["content"]
+        assert "interrupted by a user correction" in checkpoint["content"]
+        # Displayed reasoning is display-only — replaying it as assistant
+        # content trips Anthropic's output classifier (July 2026 brickings).
+        assert "Following the original approach." not in checkpoint["content"]
         assert results["result"]["messages"][-2]["content"] == (
             "Use the corrected approach."
         )

@@ -121,22 +121,31 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
 
     Incomplete provider reasoning blocks are not valid replay items (Anthropic
     signs them; Responses reasoning items require their following output).
-    Preserve only what Hermes actually displayed, demoted to ordinary text,
-    then add the correction as a real user message. This keeps role alternation
+    Preserve only the *visible* response text, demoted to ordinary text, then
+    add the correction as a real user message. This keeps role alternation
     valid and leaves every previously cached message byte-for-byte unchanged.
+
+    INVARIANT — raw chain-of-thought must never be serialized into replayable
+    message content. Streamed reasoning is display-only state: it may be shown
+    live, but it does not re-enter the transcript as assistant (or user) text.
+    An assistant turn whose content inlines its own chain-of-thought reads to
+    Anthropic's output classifier as reasoning-injection/prefill jailbreak,
+    and because the poisoned checkpoint is persisted and replayed on every
+    subsequent call, the session dies permanently with deterministic
+    "Provider returned an empty response" storms that no retry, nudge, or
+    empty-recovery branch can escape (July 2026: four sessions bricked this
+    way; every reasoning-free checkpoint that week was untouched — same
+    mechanism as the ~/.hermes/prefill.json incident, 20/20 blocked with
+    assistant-exposed CoT vs 0/20 without). The interrupted reasoning was
+    incomplete by definition; the model regenerates it on the retried turn.
+    If a future path needs to preserve interrupted thinking, carry it in a
+    provider-gated reasoning *field*, never in content.
     """
-    reasoning = str(
-        getattr(agent, "_current_streamed_reasoning_text", "") or ""
-    ).strip()
     visible = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
 
     checkpoint_parts = ["[This response was interrupted by a user correction.]"]
-    if reasoning:
-        checkpoint_parts.extend(
-            ["Reasoning shown before the interruption:", reasoning]
-        )
     if visible:
         checkpoint_parts.extend(
             ["Visible response before the interruption:", visible]
@@ -159,7 +168,6 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         messages.append({"role": "user", "content": text})
 
     agent._current_streamed_assistant_text = ""
-    agent._current_streamed_reasoning_text = ""
     agent._stream_needs_break = True
 
 

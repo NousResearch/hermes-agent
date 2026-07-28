@@ -242,6 +242,176 @@ class TestSupervisorDaemonPageSplit:
         sup.evaluate_runtime.assert_not_called()
 
 
+class TestPageDivergenceAfterInteractions:
+    """The URL-match gate is only meaningful while the recorded URL still
+    describes the daemon's page — review feedback on the gate's blind spot:
+
+    A ``browser_click`` can open a new tab. The daemon rebinds to the new
+    tab, the supervisor keeps showing the old page — whose URL still
+    *matches* the recorded last-navigated URL — so the URL comparison alone
+    would wrongly keep the fast path and eval in the old tab. Click results
+    carry no URL (and probing the daemon would cost a subprocess call per
+    click), so interactions that can move the page mark the session as
+    possibly-diverged and the fast path stands down until the next
+    authoritative URL: a navigate, or a back (whose result reports the
+    landing URL) re-records and clears the mark.
+    """
+
+    URL = "https://example.com/page"
+
+    @pytest.fixture(autouse=True)
+    def _isolate_divergence_state(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        # raising=False so a pre-fix run (no divergence tracking yet) shows
+        # the behavioral failure instead of a fixture AttributeError.
+        monkeypatch.setattr(bt, "_page_maybe_diverged", set(), raising=False)
+        monkeypatch.setattr(bt, "_last_navigated_urls", {})
+        monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda *a, **kw: False)
+
+    @staticmethod
+    def _sup_with_page(url, result="WRONG-TAB-RESULT"):
+        sup = MagicMock()
+        snap = MagicMock()
+        snap.frame_tree = {"top": {"frame_id": "TOP", "url": url}, "children": []}
+        sup.snapshot.return_value = snap
+        sup.evaluate_runtime.return_value = {
+            "ok": True,
+            "result": result,
+            "result_type": "string",
+        }
+        return sup
+
+    @staticmethod
+    def _command_mux(responses):
+        """_run_browser_command stand-in dispatching on the command name."""
+        def _fake(task_id, cmd, args, **kwargs):
+            assert cmd in responses, f"unexpected browser command: {cmd}"
+            return responses[cmd]
+        return _fake
+
+    def test_click_then_eval_falls_through_to_subprocess(self, monkeypatch):
+        """Reviewer scenario: click opened a new tab; supervisor still shows
+        the old page whose URL matches the stale record. The eval must come
+        from the subprocess path (daemon's page), not the supervisor's tab."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page(self.URL)
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+            "click": {"success": True},
+            "eval": {"success": True, "data": {"result": "NEW-TAB-RESULT"}},
+        }))
+
+        assert json.loads(bt.browser_click("@e1"))["success"] is True
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["success"] is True
+        assert out["result"] == "NEW-TAB-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_press_enter_then_eval_falls_through_to_subprocess(self, monkeypatch):
+        """Enter can submit a form and navigate — same trust problem as a click."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page(self.URL)
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+            "press": {"success": True},
+            "eval": {"success": True, "data": {"result": "POST-SUBMIT-RESULT"}},
+        }))
+
+        assert json.loads(bt.browser_press("Enter"))["success"] is True
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "POST-SUBMIT-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_press_non_enter_keeps_fast_path(self, monkeypatch):
+        """Typing/focus keys don't navigate — no reason to give up the fast path."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page(self.URL, result="fast")
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+            "press": {"success": True},
+        }))
+
+        assert json.loads(bt.browser_press("Tab"))["success"] is True
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "fast"
+        assert out["method"] == "cdp_supervisor"
+
+    def test_failed_click_keeps_fast_path(self, monkeypatch):
+        """A click that never happened can't have moved the page."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page(self.URL, result="fast")
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+            "click": {"success": False, "error": "no such ref"},
+        }))
+
+        assert json.loads(bt.browser_click("@e1"))["success"] is False
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["method"] == "cdp_supervisor"
+
+    def test_back_reported_url_rerecords_and_restores_fast_path(self, monkeypatch):
+        """back's result reports the landing URL — an authoritative daemon
+        URL that both re-records the gate's comparison target and clears a
+        prior click's divergence mark."""
+        import tools.browser_tool as bt
+
+        landing = "https://example.com/prev"
+        sup = self._sup_with_page(landing, result="fast")
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+            "click": {"success": True},
+            "back": {"success": True, "data": {"url": landing}},
+        }))
+
+        assert json.loads(bt.browser_click("@e1"))["success"] is True
+        assert json.loads(bt.browser_back())["success"] is True
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "fast"
+        assert out["method"] == "cdp_supervisor"
+
+    def test_back_without_reported_url_disables_fast_path(self, monkeypatch):
+        """A back that can't say where it landed leaves the page unknown."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page(self.URL)
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
+            "back": {"success": True, "data": {}},
+            "eval": {"success": True, "data": {"result": "SUBPROCESS-RESULT"}},
+        }))
+
+        assert json.loads(bt.browser_back())["success"] is True
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "SUBPROCESS-RESULT"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_record_daemon_url_clears_divergence(self, monkeypatch):
+        """_record_daemon_url is what navigate/back call on success — it must
+        clear the mark so a fresh navigation restores the fast path."""
+        import tools.browser_tool as bt
+
+        bt._page_maybe_diverged.add("test-task")
+        sup = self._sup_with_page(self.URL)
+        assert bt._supervisor_page_matches_daemon("test-task", sup) is False
+
+        bt._record_daemon_url("test-task", self.URL)
+        assert "test-task" not in bt._page_maybe_diverged
+        assert bt._supervisor_page_matches_daemon("test-task", sup) is True
+
+
 # ---------------------------------------------------------------------------
 # Response shaping: CDPSupervisor.evaluate_runtime
 # ---------------------------------------------------------------------------

@@ -1621,11 +1621,32 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # sidecar would fall back to the cloud session on its next snapshot call.
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
 
-# Tracks the final (post-redirect) URL of the last successful navigation per
-# session_key. Read by the _browser_eval supervisor fast-path gate: the
-# supervisor's attached page must be showing this URL before its eval result
-# can be trusted — see _supervisor_page_matches_daemon for why they diverge.
-_last_navigated_urls: Dict[str, str] = {}  # session_key -> final_url
+# Tracks the daemon's last known page URL per session_key — the final
+# (post-redirect) URL of the last successful navigation, refreshed by
+# browser_back (whose result reports the landing URL). Read by the
+# _browser_eval supervisor fast-path gate: the supervisor's attached page
+# must be showing this URL before its eval result can be trusted — see
+# _supervisor_page_matches_daemon for why they diverge.
+_last_navigated_urls: Dict[str, str] = {}  # session_key -> daemon page URL
+
+# Session keys whose daemon page may have moved somewhere the recorded URL
+# no longer describes: a click can follow a link or open a new tab (the
+# daemon rebinds to the new tab while the supervisor keeps showing the old
+# page — whose URL still *matches* the recorded one, so the URL comparison
+# alone would wrongly trust the fast path), and Enter can submit a form.
+# While marked, the eval fast path is off; the next authoritative URL
+# (navigate, or back reporting its landing URL) clears the mark.
+_page_maybe_diverged: set = set()  # of session_key
+
+
+def _record_daemon_url(session_key: str, url: str) -> None:
+    """Record the daemon's authoritative current URL and clear any
+    divergence mark — the two must move together so the eval fast-path gate
+    compares the supervisor against the page the daemon is actually on."""
+    _last_navigated_urls[session_key] = url
+    _page_maybe_diverged.discard(session_key)
+
+
 _LOCAL_SUFFIX = "::local"
 
 # Flag to track if cleanup has been done
@@ -3490,7 +3511,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Failed opens and blocked redirects must not retarget follow-up clicks
         # or snapshots to a newly-created but irrelevant session.
         _last_active_session_key[effective_task_id] = nav_session_key
-        _last_navigated_urls[nav_session_key] = str(final_url or "")
+        _record_daemon_url(nav_session_key, str(final_url or ""))
         _copy_fallback_warning(response, result)
 
         # Detect common "blocked" page patterns from title/url
@@ -3674,6 +3695,12 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):
+        # A click can follow a link or open a new tab, and its result carries
+        # no URL — so the recorded daemon URL can no longer be trusted (and
+        # probing the daemon here would cost a subprocess call per click).
+        # Mark the session so the eval fast path stands down until the next
+        # authoritative URL (navigate, or back's reported landing URL).
+        _page_maybe_diverged.add(effective_task_id)
         response = {
             "success": True,
             "clicked": ref
@@ -3832,6 +3859,14 @@ def browser_back(task_id: Optional[str] = None) -> str:
                     ),
                 }, ensure_ascii=False)
         data = result.get("data", {})
+        # back's result reports the landing URL — re-record it so the eval
+        # fast-path gate tracks the page the daemon is actually on (and any
+        # click-induced divergence mark is cleared by the authoritative URL).
+        _back_url = str(data.get("url") or "")
+        if _back_url:
+            _record_daemon_url(effective_task_id, _back_url)
+        else:
+            _page_maybe_diverged.add(effective_task_id)
         response = {
             "success": True,
             "url": data.get("url", "")
@@ -3867,6 +3902,11 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
+        # Enter can submit a form and navigate (possibly into a new tab via
+        # target=_blank) — same trust problem as a click. Other keys type or
+        # move focus and keep the fast path available.
+        if key in ("Enter", "NumpadEnter"):
+            _page_maybe_diverged.add(effective_task_id)
         response = {
             "success": True,
             "pressed": key
@@ -4210,15 +4250,24 @@ def _supervisor_page_matches_daemon(effective_task_id: str, supervisor) -> bool:
       a different tab than the one the supervisor attached.
 
     Zero-subprocess check: compare the supervisor's live top-frame URL
-    (tracked from CDP frame events) with the final URL of the task's last
-    successful ``browser_navigate``. No recorded navigation → trust the
-    fast path (legacy behaviour for ``/browser connect``-then-eval flows,
-    where nothing has diverged yet). Mismatch or unreadable supervisor
-    state → the caller falls through to the agent-browser subprocess path,
-    which always evaluates in the daemon's session — SPA route changes
-    after navigation cost only the subprocess spawn, never a wrong-page
-    result.
+    (tracked from CDP frame events) with the daemon's last known URL
+    (recorded by ``browser_navigate``, refreshed by ``browser_back``). No
+    recorded navigation → trust the fast path (legacy behaviour for
+    ``/browser connect``-then-eval flows, where nothing has diverged yet).
+    Mismatch or unreadable supervisor state → the caller falls through to
+    the agent-browser subprocess path, which always evaluates in the
+    daemon's session — SPA route changes after navigation cost only the
+    subprocess spawn, never a wrong-page result.
+
+    The URL comparison is only meaningful while the recorded URL still
+    describes the daemon's page. A click (or Enter) can move the daemon
+    without updating it — including to a *new tab*, where the supervisor
+    keeps showing the old page whose URL still matches the stale record —
+    so sessions marked in ``_page_maybe_diverged`` never take the fast
+    path until the next authoritative URL clears the mark.
     """
+    if effective_task_id in _page_maybe_diverged:
+        return False
     last_url = _last_navigated_urls.get(effective_task_id, "")
     if not last_url:
         return True
@@ -4991,6 +5040,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
         _last_navigated_urls.pop(session_key, None)
+        _page_maybe_diverged.discard(session_key)
 
     # Drop stale last-active ownership. Cleaning a bare task drops its binding;
     # cleaning a sidecar drops the binding only if that sidecar was still the

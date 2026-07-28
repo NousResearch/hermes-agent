@@ -1548,9 +1548,38 @@ def switch_model(
                 error_message=msg,
             )
 
-    # Apply auto-correction if validation found a closer match
+    # Apply auto-correction if validation found a closer match.
+    # Guard: skip the correction when the original model name is a
+    # strict superset of the candidate — i.e. the original contains
+    # every segment the correction has, plus extra segments of its own.
+    # E.g. the user chose `gemini-3.5-flash-lite-preview` and the fuzzy
+    # matcher returned `gemini-3.5-flash-preview` (similarity 0.9057 ≥
+    # 0.9 cutoff).  The "-lite" segment is a deliberate qualifier, not
+    # a typo, so overriding it silently changes the user's intent.
+    # Conversely, `gemini-3.5-flash-perview` → `gemini-3.5-flash-preview`
+    # is a genuine typo (the segments differ by replacement, not addition),
+    # and the correction should still be applied.  See #73208.
     if validation.get("corrected_model"):
-        new_model = validation["corrected_model"]
+        corrected = validation["corrected_model"]
+        _orig_segments = set(s for s in re.split(r"[-_]", raw_input.strip().lower()) if s)
+        _corr_segments = set(s for s in re.split(r"[-_]", corrected.lower()) if s)
+        # Only skip when original is a strict superset: it has every
+        # segment from the correction AND additional segments of its own.
+        if _corr_segments < _orig_segments:
+            logger.info(
+                "Skipping auto-correct %r → %r: original is a strict superset "
+                "(extra segments: %s)",
+                raw_input.strip(), corrected, _orig_segments - _corr_segments,
+            )
+            validation.pop("corrected_model", None)
+            # Downgrade the message to a suggestion instead of a correction.
+            if validation.get("message", "").startswith("Auto-corrected"):
+                validation["message"] = (
+                    f"Note: `{raw_input.strip()}` was not found in the model listing. "
+                    f"Did you mean `{corrected}`?"
+                )
+        else:
+            new_model = corrected
 
     # --- Copilot api_mode override ---
     if target_provider in {"copilot", "github-copilot"}:

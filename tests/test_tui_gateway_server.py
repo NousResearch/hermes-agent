@@ -1714,6 +1714,45 @@ def test_history_to_messages_hides_gateway_system_markers():
     ]
 
 
+def test_history_to_messages_drops_display_hidden_scaffolding():
+    # A mid-stream steer persists an interrupted-turn checkpoint. When nothing
+    # reached the screen the row carries only model-facing scaffolding and is
+    # marked display_kind="hidden"; the scaffolded bytes live in the server-only
+    # api_content sidecar for provider replay. This projection -- the single
+    # display source every client reads -- must drop the row by its declared
+    # display_kind, not just the "[System:" string convention, or the raw
+    # "[This response was interrupted by a user correction.]" paints as an
+    # assistant bubble (and api_content must never ship to a client).
+    history = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "[This response was interrupted by a user correction.]",
+            "api_content": "[This response was interrupted by a user correction.]",
+            "display_kind": "hidden",
+        },
+        {"role": "user", "content": "i love you"},
+        {
+            "role": "assistant",
+            "content": "Love you too",
+            "api_content": (
+                "[This response was interrupted by a user correction.]\n\n"
+                "Visible response before the interruption:\n\nLove you too"
+            ),
+        },
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [
+        {"role": "user", "text": "go"},
+        {"role": "user", "text": "i love you"},
+        {"role": "assistant", "text": "Love you too"},
+    ]
+    # Server-only sidecar never crosses the wire.
+    assert all("api_content" not in m for m in projected)
+
+
 def test_history_to_messages_keeps_real_user_bracket_text():
     # Only role=user rows whose text OPENS with the [System: marker sentinel are
     # bookkeeping notices. A genuine user turn that merely mentions the token is

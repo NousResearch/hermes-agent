@@ -6247,6 +6247,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
+        # An explicit display_kind="hidden" row is model-facing scaffolding
+        # (compaction references, interrupted-turn checkpoints). The string
+        # sniff below only catches the "[System:" convention; honor the
+        # declared field too, or scaffolding reaches every surface that reads
+        # this projection.
+        if m.get("display_kind") == "hidden":
+            continue
         content_text = _coerce_message_text(m.get("content"))
         if _is_display_hidden_marker(role, content_text):
             continue

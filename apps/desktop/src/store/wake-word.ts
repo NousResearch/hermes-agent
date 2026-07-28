@@ -8,8 +8,10 @@ import { $gateway } from '@/store/gateway'
 // cache of that truth, refreshed from every wake.* RPC response we see.
 
 export interface WakeWordState {
-  /** Wake word can run at all (deps + mic + key). False hides the toggle. */
+  /** Wake word can run at all (deps + mic + key). With `enabled` false too, hides the toggle. */
   available: boolean
+  /** Config truth (wake_word.enabled) — keeps the ear mounted through transient refusals. */
+  enabled: boolean
   /** The listener is armed and owned by this surface. */
   listening: boolean
   /** Last failure reason/hint (start refused, unavailable, …) for the tooltip. */
@@ -22,6 +24,7 @@ export interface WakeWordState {
 
 const INITIAL_WAKE_WORD_STATE: WakeWordState = {
   available: false,
+  enabled: false,
   listening: false,
   notice: '',
   pending: false,
@@ -115,6 +118,7 @@ export function applyWakeStatus(status: WakeStatusResponse | null | undefined): 
   $wakeWord.set({
     ...current,
     available: Boolean(status?.available),
+    enabled: Boolean(status?.enabled),
     listening,
     notice: listening && !silent ? '' : noticeFrom(status),
     phrase: status?.phrase?.trim() || current.phrase
@@ -130,6 +134,7 @@ export function applyWakeStartResult(result: WakeStartResponse | null | undefine
     $wakeWord.set({
       ...current,
       available: true,
+      enabled: true,
       listening: true,
       notice: '',
       pending: false,
@@ -142,7 +147,9 @@ export function applyWakeStartResult(result: WakeStartResponse | null | undefine
   $wakeWord.set({
     ...current,
     // The backend probes requirements on start; an explicit "unavailable"
-    // refusal means the feature can't run here, so hide the toggle.
+    // refusal means the feature can't run here right now. Keep `enabled`
+    // (config truth) as-is so the button stays mounted through transient
+    // refusals instead of vanishing mid-session.
     available: result?.reason === 'unavailable' ? false : current.available,
     listening: false,
     notice: noticeFrom(result),
@@ -157,6 +164,7 @@ export function applyWakeStopResult(result: WakeStopResponse | null | undefined)
 
   $wakeWord.set({
     ...current,
+    enabled: result?.disabled_persisted ? false : current.enabled,
     listening: false,
     notice: result?.stopped ? '' : noticeFrom(result),
     pending: false

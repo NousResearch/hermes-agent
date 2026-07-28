@@ -1960,6 +1960,7 @@ export const en: Translations = {
     stopSpeakingReplies: 'Stop reading replies aloud',
     wakeWordListening: phrase => `Wake word: "${phrase}" — listening`,
     wakeWordOff: phrase => `Wake word: "${phrase}" — off`,
+    wakeWordPausedVoice: phrase => `Wake word: "${phrase}" — paused during voice chat`,
     lookupLoading: 'Looking up…',
     lookupNoMatches: 'No matches.',
     lookupTry: 'Try',

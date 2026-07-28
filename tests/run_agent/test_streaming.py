@@ -1585,36 +1585,29 @@ class TestPartialToolCallWarning:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_empty_partial_stream_never_yields_empty_content(
+    def test_empty_partial_stream_stub_stays_empty_for_loop_guard(
         self, mock_close, mock_create,
     ):
-        """Stream dies with 0 recovered chars and no tool call → stub content
-        must be a non-empty placeholder, never None/''.
+        """Stream dies with 0 recovered chars and no tool call → the stub
+        keeps its empty content ON PURPOSE.
 
-        Root-cause regression for the empty-assistant-stub bug: a stream
-        delivered some deltas, then died before any text landed in
-        ``_current_streamed_assistant_text`` (and no tool call was captured).
-        The stub was built with ``content=None`` → an empty assistant message
-        got persisted mid-transcript.  The Anthropic message schema (and the
-        litellm/Bedrock proxies in front of it) then reject EVERY subsequent
-        request:
-            "all messages must have non-empty content except for the optional
-             final assistant message"  (400 INVALID_REQUEST_BODY)
-        which the loop misreads as a context-overflow "Cannot compress
-        further" spiral.  The stub must carry a minimal placeholder so the
-        message is always API-valid.
+        The conversation loop's truncation path detects an EMPTY
+        partial-stream stub (PARTIAL_STREAM_STUB_ID + no content) and skips
+        appending it to history entirely — only the continuation nudge is
+        sent (the #68041 class fix).  An earlier iteration substituted
+        '[response interrupted]' placeholder text HERE, which defeated that
+        guard: the stub no longer looked empty, entered history, and the
+        placeholder leaked into the stitched final response.  Transcripts
+        that already carry a persisted empty turn are healed at the send
+        boundary by repair_empty_non_final_messages instead.
         """
         from run_agent import AIAgent
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
 
         class _StallError(RuntimeError):
             pass
 
         def _stalling_stream():
-            # A real content delta fires (deltas_were_sent=True → the
-            # post-delivery stub path runs), but the recovered-text
-            # accumulator is empty by the time the stub is built (cleared on
-            # reset in prod), and no tool call was captured — the exact
-            # "0 chars recovered, no tool call" production condition.
             yield _make_stream_chunk(content="partial token")
             raise _StallError("simulated upstream stall after a delta")
 
@@ -1635,8 +1628,8 @@ class TestPartialToolCallWarning:
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
         agent._fire_stream_delta = lambda text: None
-        # Empty recovered text — this is what produced the empty stub in prod
-        # even though a delta was delivered to the platform above.
+        # Empty recovered text — the exact "0 chars recovered, no tool call"
+        # production condition.
         agent._current_streamed_assistant_text = ""
 
         import os as _os
@@ -1650,14 +1643,14 @@ class TestPartialToolCallWarning:
             else:
                 _os.environ["HERMES_STREAM_RETRIES"] = _prev
 
+        # The stub must be RECOGNIZABLY empty so the loop guard can skip it.
+        assert getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
         content = response.choices[0].message.content
-        assert content, (
-            f"Empty-partial-stream stub must NOT have empty/None content "
-            f"(it poisons the transcript and 400s every later request). "
-            f"Got content={content!r}"
-        )
-        assert content.strip() != "", (
-            f"Stub content is whitespace-only, still API-invalid: {content!r}"
+        assert not content, (
+            f"Empty-partial-stream stub must keep empty content so the "
+            f"conversation loop's empty-stub guard can detect and skip it — "
+            f"substituted text defeats the guard and leaks into the final "
+            f"response. Got content={content!r}"
         )
         assert response.choices[0].message.tool_calls is None
 

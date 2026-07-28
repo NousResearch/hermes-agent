@@ -868,3 +868,35 @@ def test_sanitize_preserves_reasoning_only_and_toolcall_turns():
     assert tc_asst.get("tool_calls") and tc_asst["tool_calls"][0]["id"] == "call_R"
     assert tc_asst["content"] != "[response interrupted]"
 
+
+
+def test_sanitize_preserves_codex_item_carrier_turns():
+    """Negative control: a codex commentary-phase assistant turn persists with
+    content:'' by DESIGN — its text lives in codex_message_items (delivered
+    via the interim callback, replayed as structured items for prefix-cache
+    hits).  The empty-content repair must treat the item carriers as payload
+    and never rewrite these turns (July 2026: a write-time pad that ignored
+    this broke codex commentary replay in CI)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "analyze repo"},
+        {"role": "assistant", "content": "", "codex_message_items": [
+            {"id": "msg_1", "phase": "commentary",
+             "content": [{"type": "output_text", "text": "I'll inspect first."}]},
+        ]},
+        {"role": "user", "content": "go on"},
+        {"role": "assistant", "content": "", "codex_reasoning_items": [
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"},
+        ]},
+        {"role": "user", "content": "final"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    commentary = out[1]
+    reasoning_carrier = out[3]
+    assert commentary["content"] == "", (
+        "codex_message_items carrier must keep its designed-empty content"
+    )
+    assert reasoning_carrier["content"] == "", (
+        "codex_reasoning_items carrier must keep its designed-empty content"
+    )

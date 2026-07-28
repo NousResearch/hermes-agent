@@ -42,6 +42,7 @@ Payment / credit exhaustion fallback:
 
 import contextlib
 import contextvars
+import functools
 import hashlib
 import inspect
 import json
@@ -50,9 +51,10 @@ import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
@@ -2492,6 +2494,167 @@ _RUNTIME_MAIN_AUTH_MODE: str = ""
 _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_runtime_main", default=None)
 )
+
+_RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("auxiliary_relay_call", default=None)
+)
+
+
+def _relay_auxiliary_call(callback):
+    """Give every physical retry in one auxiliary call a shared Relay identity."""
+
+    @functools.wraps(callback)
+    def wrapped(*args, **kwargs):
+        task = args[0] if args else kwargs.get("task")
+        token = _RELAY_AUX_CALL_CONTEXT.set({
+            "task": str(task or "unknown"),
+            "request_id": f"aux-{uuid.uuid4().hex}",
+            "attempt_count": 0,
+            "provider": "",
+            "model": "",
+            "api_mode": "chat_completions",
+        })
+        try:
+            return callback(*args, **kwargs)
+        except BaseException:
+            _fail_relay_auxiliary_call()
+            raise
+        finally:
+            _RELAY_AUX_CALL_CONTEXT.reset(token)
+
+    return wrapped
+
+
+def _relay_auxiliary_call_async(callback):
+    """Async counterpart to :func:`_relay_auxiliary_call`."""
+
+    @functools.wraps(callback)
+    async def wrapped(*args, **kwargs):
+        task = args[0] if args else kwargs.get("task")
+        token = _RELAY_AUX_CALL_CONTEXT.set({
+            "task": str(task or "unknown"),
+            "request_id": f"aux-{uuid.uuid4().hex}",
+            "attempt_count": 0,
+            "provider": "",
+            "model": "",
+            "api_mode": "chat_completions",
+        })
+        try:
+            return await callback(*args, **kwargs)
+        except BaseException:
+            _fail_relay_auxiliary_call()
+            raise
+        finally:
+            _RELAY_AUX_CALL_CONTEXT.reset(token)
+
+    return wrapped
+
+
+def _set_relay_auxiliary_route(
+    provider: str | None,
+    model: str | None,
+    api_mode: str | None,
+) -> None:
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    context["provider"] = str(provider or "auxiliary")
+    context["model"] = str(model or "unknown")
+    context["api_mode"] = str(api_mode or "chat_completions")
+
+
+def _relay_auxiliary_metadata(
+    *,
+    provider: str | None = None,
+    api_mode: str | None = None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return None
+    attempt_count = int(context.get("attempt_count") or 0)
+    context["attempt_count"] = attempt_count + 1
+    provider_name = str(provider or context.get("provider") or "auxiliary")
+    model_name = str(context.get("model") or "unknown")
+    return provider_name, model_name, {
+        "api_mode": str(api_mode or context.get("api_mode") or "chat_completions"),
+        "api_request_id": str(context["request_id"]),
+        "call_role": f"auxiliary:{context['task']}",
+        "retry_count": attempt_count,
+        "auxiliary_task": str(context["task"]),
+    }
+
+
+def _relay_sync_completion(
+    client: Any,
+    kwargs: dict[str, Any],
+    *,
+    provider: str | None = None,
+    api_mode: str | None = None,
+    create: Callable[[dict[str, Any]], Any] | None = None,
+) -> Any:
+    callback = create or (lambda request: client.chat.completions.create(**request))
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    if route is None:
+        return callback(kwargs)
+    provider_name, fallback_model, metadata = route
+    from agent import relay_llm
+
+    return relay_llm.execute_current(
+        kwargs,
+        callback,
+        name=provider_name,
+        model_name=str(kwargs.get("model") or fallback_model),
+        metadata=metadata,
+        defer_logical_completion=True,
+    )
+
+
+async def _relay_async_completion(
+    client: Any,
+    kwargs: dict[str, Any],
+    *,
+    provider: str | None = None,
+    api_mode: str | None = None,
+    create: Callable[[dict[str, Any]], Any] | None = None,
+) -> Any:
+    callback = create or (lambda request: client.chat.completions.create(**request))
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    if route is None:
+        return await callback(kwargs)
+    provider_name, fallback_model, metadata = route
+    from agent import relay_llm
+
+    return await relay_llm.execute_current_async(
+        kwargs,
+        callback,
+        name=provider_name,
+        model_name=str(kwargs.get("model") or fallback_model),
+        metadata=metadata,
+        defer_logical_completion=True,
+    )
+
+
+def _relay_sync_stream(
+    client: Any,
+    kwargs: dict[str, Any],
+    *,
+    provider: str | None = None,
+    api_mode: str | None = None,
+) -> Any:
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    if route is None:
+        return client.chat.completions.create(**kwargs)
+    provider_name, fallback_model, metadata = route
+    from agent import relay_llm
+
+    return relay_llm.stream_current(
+        kwargs,
+        lambda request: client.chat.completions.create(**request),
+        name=provider_name,
+        model_name=str(kwargs.get("model") or fallback_model),
+        finalizer=dict,
+        metadata=metadata,
+    )
 _RUNTIME_MAIN_COMPAT_SNAPSHOT: Tuple[Any, ...] = ("", "", "", "", "", "")
 _RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
 
@@ -3801,7 +3964,13 @@ def _retry_same_provider_sync(
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
-        retry_client.chat.completions.create(**retry_kwargs), task,
+        _relay_sync_completion(
+            retry_client,
+            retry_kwargs,
+            provider=resolved_provider,
+            api_mode=resolved_api_mode,
+        ),
+        task,
     )
 
 
@@ -3866,7 +4035,13 @@ async def _retry_same_provider_async(
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
-        await retry_client.chat.completions.create(**retry_kwargs), task,
+        await _relay_async_completion(
+            retry_client,
+            retry_kwargs,
+            provider=resolved_provider,
+            api_mode=resolved_api_mode,
+        ),
+        task,
     )
 
 
@@ -4071,7 +4246,7 @@ def _call_fallback_candidate_sync(
         base_url=fb_base, task=task)
     try:
         return _validate_llm_response(
-            fb_client.chat.completions.create(**fb_kwargs), task)
+            _relay_sync_completion(fb_client, fb_kwargs, provider=fb_label), task)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -4088,7 +4263,13 @@ def _call_fallback_candidate_sync(
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base), task=task)
                 try:
                     return _validate_llm_response(
-                        retry_client.chat.completions.create(**retry_kwargs), task)
+                        _relay_sync_completion(
+                            retry_client,
+                            retry_kwargs,
+                            provider=fb_provider,
+                        ),
+                        task,
+                    )
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -4137,7 +4318,13 @@ async def _call_fallback_candidate_async(
         base_url=fb_base, task=task)
     try:
         return _validate_llm_response(
-            await fb_client.chat.completions.create(**fb_kwargs), task)
+            await _relay_async_completion(
+                fb_client,
+                fb_kwargs,
+                provider=fb_label,
+            ),
+            task,
+        )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -4155,7 +4342,13 @@ async def _call_fallback_candidate_async(
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base), task=task)
                 try:
                     return _validate_llm_response(
-                        await retry_client.chat.completions.create(**retry_kwargs), task)
+                        await _relay_async_completion(
+                            retry_client,
+                            retry_kwargs,
+                            provider=fb_provider,
+                        ),
+                        task,
+                    )
                 except Exception as retry_err:
                     if not _is_auth_error(retry_err):
                         raise
@@ -7270,6 +7463,7 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is not None:
+            _complete_relay_auxiliary_call()
             return recovered
         response_type = type(response).__name__
         response_preview = str(response)[:120]
@@ -7279,7 +7473,32 @@ def _validate_llm_response(
             f"Expected object with .choices[0].message — check provider "
             f"adapter or custom endpoint compatibility."
         ) from exc
+    _complete_relay_auxiliary_call()
     return response
+
+
+def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
+    """Close one auxiliary logical call after acceptance or terminal failure."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    from agent import relay_llm
+
+    relay_llm.complete_logical_call(
+        str(context.get("request_id") or ""),
+        outcome=outcome,
+    )
+
+
+def _fail_relay_auxiliary_call() -> None:
+    """Close a terminally failed call without replacing its original error."""
+    try:
+        _complete_relay_auxiliary_call(outcome="failed")
+    except Exception:
+        logger.warning(
+            "Relay auxiliary failure finalization failed",
+            exc_info=True,
+        )
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:
@@ -7680,6 +7899,7 @@ async def _acreate_with_stream(
     )
 
 
+@_relay_auxiliary_call
 def call_llm(
     task: str = None,
     *,
@@ -7820,6 +8040,11 @@ def call_llm(
                 f"Run: hermes setup")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
+    _set_relay_auxiliary_route(
+        resolved_provider,
+        final_model,
+        resolved_api_mode,
+    )
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
@@ -7857,7 +8082,12 @@ def call_llm(
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
-        return client.chat.completions.create(**kwargs)
+        return _relay_sync_stream(
+            client,
+            kwargs,
+            provider=resolved_provider,
+            api_mode=resolved_api_mode,
+        )
 
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
@@ -7880,10 +8110,18 @@ def call_llm(
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
-                _create_with_progress(
-                    client, kwargs, task,
-                    force_stream=_provider_requires_stream(
-                        resolved_provider, _base_info or resolved_base_url,
+                _relay_sync_completion(
+                    client,
+                    kwargs,
+                    provider=resolved_provider,
+                    api_mode=resolved_api_mode,
+                    create=lambda request: _create_with_progress(
+                        client,
+                        request,
+                        task,
+                        force_stream=_provider_requires_stream(
+                            resolved_provider, _base_info or resolved_base_url,
+                        ),
                     ),
                 ),
                 task,
@@ -7919,10 +8157,19 @@ def call_llm(
                 time.sleep(_backoff)
                 try:
                     return _validate_llm_response(
-                        _create_with_progress(
-                            client, kwargs, task,
-                            force_stream=_provider_requires_stream(
-                                resolved_provider, _base_info or resolved_base_url,
+                        _relay_sync_completion(
+                            client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                            create=lambda request: _create_with_progress(
+                                client,
+                                request,
+                                task,
+                                force_stream=_provider_requires_stream(
+                                    resolved_provider,
+                                    _base_info or resolved_base_url,
+                                ),
                             ),
                         ),
                         task)
@@ -7942,7 +8189,12 @@ def call_llm(
             )
             try:
                 return _validate_llm_response(
-                    client.chat.completions.create(**retry_kwargs), task)
+                    _relay_sync_completion(
+                        client,
+                        retry_kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
             except Exception as retry_err:
                 retry_err_str = str(retry_err)
                 # If retry still fails, fall through to the max_tokens /
@@ -7980,7 +8232,12 @@ def call_llm(
             kwargs.pop("max_completion_tokens", None)
             try:
                 return _validate_llm_response(
-                    client.chat.completions.create(**kwargs), task)
+                    _relay_sync_completion(
+                        client,
+                        kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
@@ -8010,7 +8267,12 @@ def call_llm(
                 kwargs["model"] = healed_model
                 try:
                     return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                        _relay_sync_completion(
+                            client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
                 except Exception as retry_err:
                     first_err = retry_err
 
@@ -8043,7 +8305,12 @@ def call_llm(
                     kwargs["model"] = refreshed_model
                 try:
                     return _validate_llm_response(
-                        refreshed_client.chat.completions.create(**kwargs), task)
+                        _relay_sync_completion(
+                            refreshed_client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
                 except Exception as retry_err:
                     if not (
                         _is_auth_error(retry_err)
@@ -8071,7 +8338,12 @@ def call_llm(
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
                 return _validate_llm_response(
-                    refreshed_client.chat.completions.create(**kwargs), task)
+                    _relay_sync_completion(
+                        refreshed_client,
+                        kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
 
         # ── Auth refresh retry ───────────────────────────────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -8121,7 +8393,12 @@ def call_llm(
             if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
                     return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                        _relay_sync_completion(
+                            client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
                 except Exception as retry_err:
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
@@ -8379,6 +8656,7 @@ def extract_content_or_reasoning(response) -> str:
     return ""
 
 
+@_relay_auxiliary_call_async
 async def async_call_llm(
     task: str = None,
     *,
@@ -8470,6 +8748,11 @@ async def async_call_llm(
                 f"Run: hermes setup")
 
     effective_timeout = _effective_aux_timeout(task, timeout)
+    _set_relay_auxiliary_route(
+        resolved_provider,
+        final_model,
+        resolved_api_mode,
+    )
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
@@ -8508,7 +8791,14 @@ async def async_call_llm(
 
         try:
             return _validate_llm_response(
-                await _acreate(kwargs), task,
+                await _relay_async_completion(
+                    client,
+                    kwargs,
+                    provider=resolved_provider,
+                    api_mode=resolved_api_mode,
+                    create=_acreate,
+                ),
+                task,
                 provider=resolved_provider, base_url=_client_base)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
@@ -8529,7 +8819,14 @@ async def async_call_llm(
                 task or "call", transient_err,
             )
             return _validate_llm_response(
-                await _acreate(kwargs), task)
+                await _relay_async_completion(
+                    client,
+                    kwargs,
+                    provider=resolved_provider,
+                    api_mode=resolved_api_mode,
+                    create=_acreate,
+                ),
+                task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -8540,7 +8837,12 @@ async def async_call_llm(
             )
             try:
                 return _validate_llm_response(
-                    await client.chat.completions.create(**retry_kwargs), task)
+                    await _relay_async_completion(
+                        client,
+                        retry_kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
             except Exception as retry_err:
                 retry_err_str = str(retry_err)
                 if not (
@@ -8574,7 +8876,12 @@ async def async_call_llm(
             kwargs.pop("max_completion_tokens", None)
             try:
                 return _validate_llm_response(
-                    await client.chat.completions.create(**kwargs), task)
+                    await _relay_async_completion(
+                        client,
+                        kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment or connection
                 # error, fall through to the fallback chain below.
@@ -8603,7 +8910,12 @@ async def async_call_llm(
                 kwargs["model"] = healed_model
                 try:
                     return _validate_llm_response(
-                        await client.chat.completions.create(**kwargs), task)
+                        await _relay_async_completion(
+                            client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
                 except Exception as retry_err:
                     first_err = retry_err
 
@@ -8635,7 +8947,12 @@ async def async_call_llm(
                     kwargs["model"] = refreshed_model
                 try:
                     return _validate_llm_response(
-                        await refreshed_client.chat.completions.create(**kwargs), task)
+                        await _relay_async_completion(
+                            refreshed_client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
                 except Exception as retry_err:
                     if not (
                         _is_auth_error(retry_err)
@@ -8662,7 +8979,12 @@ async def async_call_llm(
                 if refreshed_model and refreshed_model != kwargs.get("model"):
                     kwargs["model"] = refreshed_model
                 return _validate_llm_response(
-                    await refreshed_client.chat.completions.create(**kwargs), task)
+                    await _relay_async_completion(
+                        refreshed_client,
+                        kwargs,
+                        provider=resolved_provider,
+                        api_mode=resolved_api_mode,
+                    ), task)
 
         # ── Auth refresh retry (mirrors sync call_llm) ───────────────
         auth_refresh_provider = _auth_refresh_provider_for_route(
@@ -8706,7 +9028,12 @@ async def async_call_llm(
             if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
                     return _validate_llm_response(
-                        await client.chat.completions.create(**kwargs), task)
+                        await _relay_async_completion(
+                            client,
+                            kwargs,
+                            provider=resolved_provider,
+                            api_mode=resolved_api_mode,
+                        ), task)
                 except Exception as retry_err:
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise

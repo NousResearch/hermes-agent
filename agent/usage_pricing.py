@@ -997,6 +997,32 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return name
 
 
+# A release date appended to an ALREADY-VERSIONED new-scheme Anthropic id, e.g.
+# claude-haiku-4-5-20251001 → the dated alias of claude-haiku-4-5.
+#
+# The trailing "-N-N" version segment before the date is required, and that is
+# the whole point of the pattern: it distinguishes a date APPENDED to a
+# versioned name (strippable, the base entry is the same SKU) from an
+# OLD-scheme id whose date is an inseparable part of the name
+# (claude-3-5-haiku-20241022 — stripping would land on the non-existent
+# claude-3-5-haiku).  ``_normalize_bedrock_model_name`` already performs the
+# equivalent ``-\d{8}$`` strip for Bedrock inference-profile ids; this is the
+# same normalization for the direct Anthropic route, which lacked it.
+_ANTHROPIC_DATED_SUFFIX_RE = re.compile(r"^(claude-.*-\d+-\d+)-\d{8}$")
+
+
+def _strip_anthropic_release_date(name: str) -> Optional[str]:
+    """Strip a trailing -YYYYMMDD from a versioned new-scheme Anthropic id.
+
+    ``claude-haiku-4-5-20251001`` → ``claude-haiku-4-5``.  Returns None when
+    there is no such suffix to strip, including for old-scheme ids like
+    ``claude-3-5-haiku-20241022`` which lack the ``-N-N`` version tail before
+    the date and so are left intact for their own direct entry.
+    """
+    match = _ANTHROPIC_DATED_SUFFIX_RE.match(name)
+    return match.group(1) if match else None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     # Direct lookup first
@@ -1008,6 +1034,18 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
         normalized = _normalize_anthropic_model_name(model)
         if normalized != model:
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+        # Last resort: strip a trailing -YYYYMMDD release date appended to an
+        # already-versioned id and retry on the base (claude-haiku-4-5-20251001
+        # → claude-haiku-4-5).  Runs AFTER the direct and dot-normalized
+        # lookups, so an id that has its own table entry — dated or not —
+        # always wins on its own key and this never overrides a real rate.
+        # Without it, the dated aliases Anthropic publishes (and that this repo
+        # ships in hermes_cli/models.py) record cost_usd NULL for every turn.
+        base = _strip_anthropic_release_date(normalized)
+        if base and base != normalized:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, base))
             if entry:
                 return entry
     # Bedrock cross-region inference profiles carry a region prefix

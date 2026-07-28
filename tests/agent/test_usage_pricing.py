@@ -1,3 +1,4 @@
+import re
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -636,3 +637,115 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_anthropic_dated_alias_resolves_to_its_base_pricing():
+    """A dated Anthropic id must price identically to its undated base.
+
+    Anthropic publishes each model under both a rolling alias
+    (``claude-haiku-4-5``) and a dated alias pinning a specific release
+    (``claude-haiku-4-5-20251001``).  They are the same SKU at the same rate,
+    but only the rolling form is a pricing-table key, so a session pinned to
+    the dated id recorded ``cost_usd`` NULL for every turn.
+
+    Asserted as a relation to the base entry rather than as literal dollar
+    figures, so the guard survives a rate update.
+    """
+    for dated, base in (
+        ("claude-haiku-4-5-20251001", "claude-haiku-4-5"),
+        ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+        ("claude-opus-4-5-20251101", "claude-opus-4-5"),
+    ):
+        base_entry = get_pricing_entry(base, provider="anthropic")
+        assert base_entry is not None, base
+        dated_entry = get_pricing_entry(dated, provider="anthropic")
+        assert dated_entry is not None, dated
+        for field in (
+            "input_cost_per_million",
+            "output_cost_per_million",
+            "cache_read_cost_per_million",
+            "cache_write_cost_per_million",
+        ):
+            assert getattr(dated_entry, field) == getattr(base_entry, field), (
+                f"{dated} must price as {base} on {field}"
+            )
+
+
+def test_anthropic_old_scheme_dated_ids_keep_their_own_pricing():
+    """Old-scheme ids whose date is part of the name must NOT be rewritten.
+
+    ``claude-3-5-haiku-20241022`` is the model's actual id, not an alias of a
+    ``claude-3-5-haiku`` that does not exist.  Stripping its date would either
+    miss (best case) or, worse, collide with an unrelated family entry — so
+    these must continue to resolve on their own key at their own rate.
+    """
+    haiku_35 = get_pricing_entry("claude-3-5-haiku-20241022", provider="anthropic")
+    sonnet_35 = get_pricing_entry("claude-3-5-sonnet-20241022", provider="anthropic")
+
+    assert haiku_35 is not None
+    assert sonnet_35 is not None
+    # Distinct models must not have been collapsed onto one entry.
+    assert haiku_35.input_cost_per_million != sonnet_35.input_cost_per_million
+
+
+def test_anthropic_dated_fallback_never_overrides_an_explicit_entry():
+    """A dated id that HAS its own table key must resolve on that key.
+
+    The date-stripping fallback runs last, after the direct and dot-normalized
+    lookups, so a deliberately priced dated entry always wins over its base.
+    """
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    explicitly_dated = [
+        model
+        for (provider, model) in _OFFICIAL_DOCS_PRICING
+        if provider == "anthropic" and re.search(r"-\d{8}$", model)
+    ]
+    assert explicitly_dated, "expected the snapshot to carry some dated keys"
+
+    for model in explicitly_dated:
+        resolved = get_pricing_entry(model, provider="anthropic")
+        assert resolved is not None, model
+        assert resolved is _OFFICIAL_DOCS_PRICING[("anthropic", model)], model
+
+
+def test_every_shipped_dated_anthropic_id_is_priceable():
+    """Invariant: every dated Anthropic id this repo ships in its own catalog
+    resolves to pricing.
+
+    ``hermes_cli/models.py`` is what the picker offers users, so a dated id
+    listed there that the pricing table cannot resolve is a guaranteed
+    unpriced session.  Asserting the relation between the two structures
+    (rather than freezing either list) keeps this correct as models are added
+    — a newly listed dated model that nobody adds a rate for turns this red.
+
+    Scoped to dated ids on purpose: undated catalog entries include
+    subscription-bridge slugs (e.g. ``claude-code``) that are priced by a
+    different mechanism and are out of scope here.
+    """
+    from hermes_cli import models as catalog
+
+    def _walk(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from _walk(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield from _walk(item)
+
+    shipped_dated = {
+        model
+        for value in vars(catalog).values()
+        for model in _walk(value)
+        if model.startswith("claude-") and re.search(r"-\d{8}$", model)
+    }
+    assert shipped_dated, "expected the catalog to list some dated claude-* ids"
+
+    unpriced = sorted(
+        model
+        for model in shipped_dated
+        if get_pricing_entry(model, provider="anthropic") is None
+    )
+    assert not unpriced, f"catalog models with no resolvable pricing: {unpriced}"

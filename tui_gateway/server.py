@@ -2957,14 +2957,135 @@ def _broadcast_skin_if_changed() -> None:
         pass
 
 
+def _watcher_home() -> Path:
+    """Active profile home for the change watcher's signature probes."""
+    override = get_hermes_home_override()
+    return Path(override if isinstance(override, str) and override else _hermes_home)
+
+
+def _pet_sig() -> tuple:
+    """(slug, spritesheet revision, scale) of the active pet — ("off",) when none.
+
+    Cheap by construction: config comes from the mtime-cached ``_load_cfg`` and
+    the sheet revision is one stat. Moves when ``/pet`` (de)activates a pet, the
+    hatch flow rebuilds a sheet, or the scale changes."""
+    display = _load_cfg().get("display") or {}
+    pet_cfg = display.get("pet") if isinstance(display.get("pet"), dict) else {}
+    if not pet_cfg or not pet_cfg.get("enabled"):
+        return ("off",)
+    try:
+        enabled, pet, scale = _pet_active_selection()
+        if not enabled or pet is None or not pet.exists:
+            return ("off",)
+        return (pet.slug, _pet_sheet_revision(pet.spritesheet), scale)
+    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
+        return ("off",)
+
+
+def _pet_changed_payload() -> dict:
+    """``pet.info.meta``-shaped payload for ``pet.changed`` — enough for the
+    renderer to decide whether the heavy sprite payload needs a refetch."""
+    try:
+        enabled, pet, scale = _pet_active_selection()
+        if not enabled or pet is None or not pet.exists:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "slug": pet.slug,
+            "displayName": pet.display_name,
+            "scale": scale,
+            "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+        }
+    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
+        return {"enabled": False}
+
+
+def _cron_sig():
+    """mtime of the profile's cron/jobs.json — moves on create/edit/pause/
+    remove AND on scheduler tick bookkeeping (last_run/next_run)."""
+    try:
+        return (_watcher_home() / "cron" / "jobs.json").stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _sessions_sig():
+    """Newest mtime across state.db and its WAL — the cross-process change
+    signal. Messaging-gateway turns and cron runs are written by OTHER
+    processes that never touch this gateway's transports; the shared SQLite
+    file is the one thing they all move (#58671)."""
+    home = _watcher_home()
+    sig = None
+    for name in ("state.db", "state.db-wal"):
+        try:
+            mtime = (home / name).stat().st_mtime_ns
+        except OSError:
+            continue
+        sig = mtime if sig is None else max(sig, mtime)
+    return sig
+
+
+# Watched change signals: event → (check interval, signature fn, payload fn).
+# Signatures are stat/dict-lookup cheap, same bar as the skin watcher; the
+# check interval keeps the pricier probes (pet resolves the active sheet off
+# disk) off the 0.5s tick.
+_CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
+    "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
+    "cron.changed": (1.0, _cron_sig, lambda: {}),
+    "sessions.changed": (0.5, _sessions_sig, lambda: {}),
+}
+
+# state.db moves on every message append during a streaming turn; the floor
+# coalesces that burst to one broadcast per window (trailing edge included —
+# a floored change keeps its old signature and re-fires next tick).
+_CHANGE_BROADCAST_FLOOR_S = {"sessions.changed": 2.0}
+
+_change_sigs: dict[str, Any] = {}
+_change_checked_at: dict[str, float] = {}
+_change_broadcast_at: dict[str, float] = {}
+
+
+def _broadcast_watched_changes(now: float | None = None) -> None:
+    """One pass over ``_CHANGE_WATCHES``: recompute due signatures, broadcast
+    the events whose signature moved. First sighting seeds silently so a
+    gateway boot never fires a spurious refresh storm."""
+    now = time.monotonic() if now is None else now
+    for event, (interval, sig_fn, payload_fn) in _CHANGE_WATCHES.items():
+        if now - _change_checked_at.get(event, -interval) < interval:
+            continue
+        _change_checked_at[event] = now
+        try:
+            sig = sig_fn()
+        except Exception:  # noqa: BLE001 - a broken probe must not kill the loop
+            continue
+        if event not in _change_sigs:
+            _change_sigs[event] = sig
+            continue
+        if sig == _change_sigs[event]:
+            continue
+        floor = _CHANGE_BROADCAST_FLOOR_S.get(event, 0.0)
+        if floor and now - _change_broadcast_at.get(event, -floor) < floor:
+            # Floored: leave the old signature in place so the change re-fires
+            # once the window opens (the trailing edge of the burst).
+            continue
+        _change_sigs[event] = sig
+        _change_broadcast_at[event] = now
+        try:
+            _broadcast_global_event(event, payload_fn())
+        except Exception:  # noqa: BLE001
+            pass
+
+
 _skin_watcher_started = False
 
 
 def _ensure_skin_watcher() -> None:
-    """Poll the config for skin changes and broadcast ``skin.changed`` — so a skin
-    Hermes activates (``hermes config set display.skin``) or recolors goes live on
-    every surface within ~half a second, on its own, with no tool-hook or slash
-    command in the loop. Idempotent; started at gateway.ready."""
+    """Watch cheap on-disk signatures and broadcast change events — so a skin
+    Hermes activates, a pet ``/pet`` adopts, a cron the scheduler fires, or a
+    messaging turn another process writes goes live on every surface within a
+    couple seconds, on its own, with no client-side poll in the loop.
+    Idempotent; started at gateway.ready. (Named for its original skin-only
+    duty; it is the process's one change watcher.)"""
     global _skin_watcher_started
     if _skin_watcher_started:
         return
@@ -2975,8 +3096,9 @@ def _ensure_skin_watcher() -> None:
         while True:
             time.sleep(0.5)
             _broadcast_skin_if_changed()
+            _broadcast_watched_changes()
 
-    threading.Thread(target=_loop, name="hermes-skin-watcher", daemon=True).start()
+    threading.Thread(target=_loop, name="hermes-change-watcher", daemon=True).start()
 
 
 def _resolve_model() -> str:

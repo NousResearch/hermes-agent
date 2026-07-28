@@ -483,10 +483,10 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   )
 }
 
-/** Opens the referenced session as a tab — same as middle-clicking its sidebar
- *  row. The tile store loads on click, not at import: the composer's rich
- *  editor pulls this module in, and a static import would boot the profile
- *  store (and its REST routing) along with it. */
+/** Opens the referenced session the way a sidebar ⌘-click would: jump to it if
+ *  it's already a tile/main, otherwise open a stacked tab (never steals main
+ *  from under the chat you're reading). Lazy-imports so the composer's rich
+ *  editor can pull this module in without booting the profile/REST stack. */
 function openSessionRef(value: string) {
   const { sessionId } = parseSessionRefValue(value)
 
@@ -495,7 +495,8 @@ function openSessionRef(value: string) {
   }
 
   triggerHaptic('selection')
-  void import('@/store/session-states').then(({ openSessionTile }) => openSessionTile(sessionId, 'center'))
+  // navigate is unused for the `tab` intent (focus-or-tile only).
+  void import('@/app/open-session').then(({ openSession }) => openSession(sessionId, () => undefined, 'tab'))
 }
 
 /** A `@session:<profile>/<id>` reference in the user transcript (directive

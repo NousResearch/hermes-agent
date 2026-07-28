@@ -1707,6 +1707,52 @@ def _collect_auto_append_media_tags(
     return media_tags, has_voice_directive
 
 
+def _append_auto_media_tags_to_response(
+    final_response: str,
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+    history_media_paths: Optional[set] = None,
+) -> str:
+    """Append producer artifacts missing from the assistant's final response.
+
+    A literal or stale ``MEDIA:`` token is not proof that the response already
+    references the artifact produced this turn. In particular, models may echo
+    a sandbox-only path while ``image_generate`` also returned the distinct
+    host path that the gateway can deliver. Deduplicate by recognized path
+    instead of suppressing all auto-append behavior on a substring match.
+    """
+    media_tags, has_voice_directive = _collect_auto_append_media_tags(
+        messages,
+        history_offset=history_offset,
+        history_media_paths=history_media_paths,
+    )
+
+    existing_paths = {
+        match.group(1).strip().rstrip('",}')
+        for match in _TOOL_MEDIA_RE.finditer(final_response)
+    }
+    missing_tags: List[str] = []
+    seen_paths = set(existing_paths)
+    for tag in media_tags:
+        match = _TOOL_MEDIA_RE.fullmatch(tag)
+        if not match:
+            continue
+        path = match.group(1).strip().rstrip('",}')
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        missing_tags.append(tag)
+
+    directives: List[str] = []
+    if has_voice_directive and "[[audio_as_voice]]" not in final_response:
+        directives.append("[[audio_as_voice]]")
+    directives.extend(missing_tags)
+    if not directives:
+        return final_response
+    return final_response + "\n" + "\n".join(directives)
+
+
+
 def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     """Collect every media path already delivered in prior assistant/tool output.
 
@@ -5853,23 +5899,12 @@ class TurnRunner:
         # also the sole guard on the fallback branch taken when mid-run
         # context compression shrinks the message list below the original
         # history length, preserving the compression-safe behaviour of #160.
-        if "MEDIA:" not in final_response:
-            media_tags, has_voice_directive = _collect_auto_append_media_tags(
-                result.get("messages", []),
-                history_offset=len(agent_history),
-                history_media_paths=_history_media_paths,
-            )
-
-            if media_tags:
-                seen = set()
-                unique_tags = []
-                for tag in media_tags:
-                    if tag not in seen:
-                        seen.add(tag)
-                        unique_tags.append(tag)
-                if has_voice_directive:
-                    unique_tags.insert(0, "[[audio_as_voice]]")
-                final_response = final_response + "\n" + "\n".join(unique_tags)
+        final_response = _append_auto_media_tags_to_response(
+            final_response,
+            result.get("messages", []),
+            history_offset=len(agent_history),
+            history_media_paths=_history_media_paths,
+        )
 
         # Auto-titling runs at TURN START (agent/turn_context.py) from the
         # user's message alone, so it no longer waits on final_response — a

@@ -10,9 +10,7 @@ describe('sanitizeTextForSpeech', () => {
   })
 
   it('still keeps normal prose and inline code readable', () => {
-    expect(sanitizeTextForSpeech('Use `git status` after the change.')).toBe(
-      'Use git status after the change.'
-    )
+    expect(sanitizeTextForSpeech('Use `git status` after the change.')).toBe('Use git status after the change.')
   })
 
   it('skips markdown table data while preserving surrounding human text', () => {

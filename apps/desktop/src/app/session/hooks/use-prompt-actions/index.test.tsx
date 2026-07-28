@@ -2192,7 +2192,6 @@ describe('usePromptActions file attachment sync', () => {
     })
   })
 
-
   it('uploads Windows file bytes when local mode fronts a POSIX WSL/Docker backend', async () => {
     $connection.set({ mode: 'local' } as never)
     $currentCwd.set('/root')
@@ -2207,6 +2206,7 @@ describe('usePromptActions file attachment sync', () => {
       path: 'C:\\Users\\alice\\Downloads\\report.txt',
       refText: '@file:`C:\\Users\\alice\\Downloads\\report.txt`'
     }
+
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {

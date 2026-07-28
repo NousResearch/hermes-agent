@@ -477,7 +477,6 @@ export interface Translations {
     }
     envActions: {
       actionsFor: (label: string) => string
-      credentialActions: string
       manageInKeys: string
       docs: string
       hideValue: string

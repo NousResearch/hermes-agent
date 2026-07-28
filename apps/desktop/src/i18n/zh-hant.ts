@@ -659,7 +659,6 @@ export const zhHant = defineLocale({
     },
     envActions: {
       actionsFor: label => `${label} 的動作`,
-      credentialActions: '憑證動作',
       manageInKeys: '在 API 金鑰中管理',
       docs: '文件',
       hideValue: '隱藏值',

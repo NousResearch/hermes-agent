@@ -19,7 +19,6 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
@@ -192,13 +191,9 @@ export function ProjectMenu({
     </DropdownMenuItem>
   )
 
-  // The bare trigger button (no Tip, no anchor) — composed with whichever of
-  // Tip / PopoverAnchor apply below, always OUTSIDE the asChild chain that
-  // ends at this button, never wrapping it directly. asChild clones only its
-  // immediate child, so any of these wrappers placed inside another
-  // asChild-consuming component (instead of around it) would have its
-  // injected props silently swallowed by that inner component instead of
-  // reaching the real DOM button (see #67500).
+  // When anchorRef is absent, PopoverAnchor wraps the trigger so the
+  // appearance popover positions against this button. Keep asChild chains free
+  // of non-forwarding wrappers (#67500).
   const triggerButton = (
     <DropdownMenuTrigger asChild>
       <button
@@ -217,16 +212,7 @@ export function ProjectMenu({
     </DropdownMenuTrigger>
   )
 
-  // Tip always wraps the outermost element of whatever we render — either the
-  // trigger directly (anchorRef present: the popover anchors to the whole row
-  // via a separate virtualRef, so PopoverAnchor isn't involved here), or the
-  // PopoverAnchor-wrapped trigger (anchorRef absent: the popover anchors to
-  // this button itself). Either way, Tip > PopoverAnchor > DropdownMenuTrigger
-  // > button, so asChild composes props/ref all the way down to the real DOM
-  // node instead of stopping at an intermediate wrapper.
-  const trigger = (
-    <Tip label={p.menu}>{anchorRef ? triggerButton : <PopoverAnchor asChild>{triggerButton}</PopoverAnchor>}</Tip>
-  )
+  const trigger = anchorRef ? triggerButton : <PopoverAnchor asChild>{triggerButton}</PopoverAnchor>
 
   return (
     <Popover onOpenChange={setAppearanceOpen} open={appearanceOpen}>

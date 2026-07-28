@@ -574,7 +574,6 @@ export const en: Translations = {
     },
     envActions: {
       actionsFor: label => `Actions for ${label}`,
-      credentialActions: 'Credential actions',
       manageInKeys: 'Manage in API Keys',
       docs: 'Docs',
       hideValue: 'Hide value',

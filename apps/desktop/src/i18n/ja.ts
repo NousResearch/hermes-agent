@@ -672,7 +672,6 @@ export const ja = defineLocale({
     },
     envActions: {
       actionsFor: label => `${label} のアクション`,
-      credentialActions: '認証情報のアクション',
       manageInKeys: 'API キーで管理',
       docs: 'ドキュメント',
       hideValue: '値を非表示',

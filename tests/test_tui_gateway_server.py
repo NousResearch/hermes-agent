@@ -1840,6 +1840,29 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
     assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
 
 
+def test_history_to_messages_types_a_legacy_auto_continue_row():
+    # A crash-interrupted turn used to be typed only AFTER it finished, so a
+    # turn killed a second time (or any row written before turn-start typing
+    # landed) sits in the DB untyped and painted the raw recovery note as a
+    # user bubble. The projection recognizes the synthetic note's fixed
+    # prefix so those rows still read as a timeline event.
+    history = [
+        {"role": "user", "content": "keep going"},
+        {"role": "user", "content": server._auto_continue_note("keep going")},
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [
+        {"role": "user", "text": "keep going"},
+        {
+            "role": "user",
+            "text": server._auto_continue_note("keep going"),
+            "display_kind": "auto_continue",
+        },
+    ]
+
+
 def test_history_to_messages_keeps_real_user_bracket_text():
     # Only role=user rows whose text OPENS with the [System: marker sentinel are
     # bookkeeping notices. A genuine user turn that merely mentions the token is

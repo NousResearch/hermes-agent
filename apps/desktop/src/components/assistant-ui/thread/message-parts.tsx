@@ -8,6 +8,7 @@ import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useSta
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -36,10 +37,24 @@ const ImageGenerateTool: FC<ToolCallMessagePartProps> = props => {
   )
 }
 
+const DelegateToolPart: FC<ToolCallMessagePartProps> = props => {
+  // A call that failed outright dispatched nothing — there are no children to
+  // list, only an error. The generic row extracts and expands it properly.
+  if (props.isError) {
+    return <ToolFallback {...props} />
+  }
+
+  return <DelegateTool args={props.args} result={props.result} toolCallId={props.toolCallId} />
+}
+
 const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
     return null
+  }
+
+  if (props.toolName === 'delegate_task') {
+    return <DelegateToolPart {...props} />
   }
 
   if (props.toolName === 'image_generate') {

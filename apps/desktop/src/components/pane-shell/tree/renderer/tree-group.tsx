@@ -24,7 +24,7 @@ import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
-import { hiddenPaneProps, PaneVisibleContext } from '../../pane-visibility'
+import { hiddenPaneProps, PaneGroupContext, PaneVisibleContext } from '../../pane-visibility'
 import type { DropPosition, GroupNode, RootEdge } from '../model'
 import { adjacentGroup } from '../model'
 import {
@@ -39,7 +39,9 @@ import {
   collapseTreePane,
   dismissTreePane,
   isCollapsePane,
+  isSessionStripPane,
   moveTreePane,
+  noteActiveTreeGroup,
   restoreTreePane,
   SESSION_TILE_DRAG,
   setTreeGroupHeaderHidden,
@@ -507,16 +509,26 @@ export function TreeGroup({
                 return <Fragment key={paneId}>{chrome.tabWrap ? chrome.tabWrap(tab) : tab}</Fragment>
               })}
 
-              {/* Plain "+" after the last tab of the MAIN strip (the workspace
-                  zone) — always shown, no tab/button chrome, just the glyph.
-                  Creates a new session tab (mirrors ⌘T) via the app-registered
-                  action; hidden when unwired or the zone is minimized. */}
-              {node.panes.includes('workspace') && newSessionTabAction && !node.minimized && (
+              {/* Plain "+" after the last tab of a CHAT strip (the workspace
+                  zone, or any zone holding session tabs) — always shown, no
+                  tab/button chrome, just the glyph. Creates a new session tab
+                  (mirrors ⌘T) via the app-registered action; the pointerdown
+                  focuses this zone first, so the tab lands in THIS strip.
+                  Hidden when unwired or the zone is minimized. */}
+              {shown.some(isSessionStripPane) && newSessionTabAction && !node.minimized && (
                 <button
                   aria-label={t.zones.newSessionTab}
                   className="grid size-7 shrink-0 place-items-center self-center bg-transparent text-(--ui-text-quaternary) transition-colors hover:text-foreground [-webkit-app-region:no-drag]"
                   onClick={() => newSessionTabAction()}
-                  onPointerDown={e => e.stopPropagation()}
+                  onPointerDown={e => {
+                    e.stopPropagation()
+                    // The action docks into the FOCUSED chat zone; clicking a
+                    // background strip's "+" must make THAT zone the focused
+                    // one first, or the tab opens in whichever zone was last
+                    // clicked. (pointerdown's own focus tracking would land
+                    // after the click handler reads the anchor.)
+                    noteActiveTreeGroup(node.id)
+                  }}
                   title={t.zones.newSessionTab}
                   type="button"
                 >
@@ -567,10 +579,14 @@ export function TreeGroup({
                 >
                   {pane?.render ? (
                     // Visibility flows to the pane so a kept-alive chat surface
-                    // can gate its hot (per-token) subscriptions while hidden.
-                    <PaneVisibleContext.Provider value={isActive}>
-                      <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
-                    </PaneVisibleContext.Provider>
+                    // can gate its hot (per-token) subscriptions while hidden;
+                    // the group id identifies the ZONE it lives in, for state
+                    // that is per-zone rather than per-tab (composer pop-out).
+                    <PaneGroupContext.Provider value={node.id}>
+                      <PaneVisibleContext.Provider value={isActive}>
+                        <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
+                      </PaneVisibleContext.Provider>
+                    </PaneGroupContext.Provider>
                   ) : (
                     isActive && (
                       <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">
@@ -712,7 +728,7 @@ function ZoneDropOverlay({ node }: { node: GroupNode }) {
   // now (stack into its tabs / split its edges); only a CHAT zone's center is
   // a link-to-chat (the composer overlay owns that visual).
   const sessionDrag = dragging === SESSION_TILE_DRAG
-  const chatZone = node.panes.some(p => p === 'workspace' || p.startsWith('session-tile:'))
+  const chatZone = node.panes.some(isSessionStripPane)
 
   const isDragSource = node.panes.includes(dragging)
 

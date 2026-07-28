@@ -21,6 +21,7 @@ import {
   findGroup,
   findGroupOfPane,
   groupLeafIds,
+  type GroupNode,
   insertAtGroup,
   isLayoutNode,
   type LayoutNode,
@@ -282,12 +283,49 @@ const isUncloseablePane = (paneId: string): boolean =>
     (registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable
   )
 
-/** ⌘W "main tabs always": close the MAIN (workspace) zone's active tab, unless
- *  it's the uncloseable workspace itself. Returns false when there's nothing to
- *  close, so ⌘W stays a no-op — it never closes the window. */
-export function closeWorkspaceTab(): boolean {
+/** A pane that belongs to a CHAT tab strip — the workspace or a session tile. */
+export const isSessionStripPane = (paneId: string): boolean =>
+  paneId === 'workspace' || paneId.startsWith('session-tile:')
+
+/** The zone the session-tab verbs (⌘W / ⌘T / ⌘⇧T / the strip's "+") act on:
+ *  the FOCUSED zone when it hosts a chat strip, else the workspace's zone.
+ *  Same source ⌘1…⌘9 indexes ($activeTreeGroup), so the number keys and the
+ *  tab verbs can't disagree about which strip is "the" strip. Focus parked in
+ *  the sidebar / terminal / files must NOT retarget them — those zones fall
+ *  back to main rather than letting ⌘W close the file tree. */
+function focusedSessionGroup(): GroupNode | null {
   const tree = $layoutTree.get()
-  const active = tree ? findGroupOfPane(tree, 'workspace')?.active : null
+
+  if (!tree) {
+    return null
+  }
+
+  const groupId = $activeTreeGroup.get()
+  const focused = groupId ? findGroup(tree, groupId) : null
+
+  return focused?.panes.some(isSessionStripPane) ? focused : findGroupOfPane(tree, 'workspace')
+}
+
+/** The pane a NEW session tab should dock beside (⌘T): the focused chat zone's
+ *  active session pane, else its first. Null when no zone hosts a chat strip —
+ *  the caller falls back to the workspace. */
+export function focusedSessionTabAnchor(): null | string {
+  const group = focusedSessionGroup()
+
+  if (!group) {
+    return null
+  }
+
+  const active = group.active
+
+  return active && isSessionStripPane(active) ? active : (group.panes.find(isSessionStripPane) ?? null)
+}
+
+/** ⌘W: close the FOCUSED chat zone's active tab, unless it's the uncloseable
+ *  workspace itself. Returns false when there's nothing to close, so ⌘W stays a
+ *  no-op — it never closes the window. */
+export function closeFocusedSessionTab(): boolean {
+  const active = focusedSessionGroup()?.active
 
   if (!active || isUncloseablePane(active)) {
     return false
@@ -416,7 +454,7 @@ export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
   const group = groupId && tree ? findGroup(tree, groupId) : null
   const panes = group ? shownPanesInGroup(group) : []
 
-  if (panes.length < 2 || !panes.some(id => id === 'workspace' || id.startsWith('session-tile:'))) {
+  if (panes.length < 2 || !panes.some(isSessionStripPane)) {
     return false
   }
 

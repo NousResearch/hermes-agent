@@ -8,7 +8,7 @@ import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/co
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { IdleMount } from '@/components/idle-mount'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
-import { allPaneIds, group, split } from '@/components/pane-shell/tree/model'
+import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
@@ -41,6 +41,7 @@ import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { LayoutDashboard, PanelBottom } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -414,6 +415,15 @@ watchContributedPanes()
 // main.
 watchSessionTiles()
 watchRouteTiles()
+
+// Composer pop-out state is keyed by layout zone, so drop entries for zones the
+// user has since closed or merged away — otherwise a long-lived install keeps a
+// row for every split it has ever had.
+$layoutTree.subscribe(tree => {
+  if (tree) {
+    pruneComposerPopoutZones(groupLeafIds(tree))
+  }
+})
 
 // Mirror sidebar pins into the backend keep-flag so the auto-archive sweep
 // never hides a pinned chat (and pre-existing pins migrate transparently).

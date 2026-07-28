@@ -10976,7 +10976,10 @@ def _(rid, params: dict) -> dict:
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
+            user_indices = [
+                i for i, m in enumerate(history)
+                if m.get("role") == "user" and not m.get("display_kind")
+            ]
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
             # indexing below (user_indices[-1] -> the LAST user turn), silently
@@ -17868,12 +17871,17 @@ def _(rid, params: dict) -> dict:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
-                    while history and history[-1].get("role") in {"assistant", "tool"}:
-                        history.pop()
-                        removed += 1
-                    if history and history[-1].get("role") == "user":
-                        history.pop()
-                        removed += 1
+                    # Truncate from the last *real* user turn (no display_kind).
+                    # Same predicate as list_recent_user_messages / /undo / /retry.
+                    last_user_idx = None
+                    for i in range(len(history) - 1, -1, -1):
+                        msg = history[i]
+                        if msg.get("role") == "user" and not msg.get("display_kind"):
+                            last_user_idx = i
+                            break
+                    if last_user_idx is not None:
+                        removed = len(history) - last_user_idx
+                        del history[last_user_idx:]
                     if removed:
                         session["history_version"] = (
                             int(session.get("history_version", 0)) + 1

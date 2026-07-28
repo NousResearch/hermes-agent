@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
@@ -217,6 +217,41 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
 // cmdk selection values must be unique; labels alone can repeat (the same
 // theme lists under both Light and Dark). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
+
+const PaletteRow = memo(function PaletteRow({
+  bindings,
+  item,
+  onSelectMods,
+  onSelectItem
+}: {
+  bindings: Record<string, string[]>
+  item: PaletteItem
+  onSelectMods: (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void
+  onSelectItem: (item: PaletteItem) => void
+}) {
+  const Icon = item.icon
+  const combo = item.action ? bindings[item.action]?.[0] : undefined
+
+  return (
+    <CommandItem
+      className={cn(HUD_ITEM, HUD_TEXT)}
+      keywords={item.keywords}
+      onMouseDown={onSelectMods}
+      onSelect={() => onSelectItem(item)}
+      value={paletteValue(item)}
+    >
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{item.label}</span>
+      {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
+      {item.to && (
+        <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />
+      )}
+      {item.active && (
+        <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />
+      )}
+    </CommandItem>
+  )
+})
 
 // Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
 // "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
@@ -996,35 +1031,15 @@ export function CommandPalette() {
                       heading={group.heading}
                       key={group.heading ?? `palette-group-${index}`}
                     >
-                      {group.items.map(item => {
-                        const Icon = item.icon
-                        const combo = item.action ? bindings[item.action]?.[0] : undefined
-
-                        return (
-                          <CommandItem
-                            className={cn(HUD_ITEM, HUD_TEXT)}
-                            key={item.id}
-                            keywords={item.keywords}
-                            onMouseDown={noteSelectMods}
-                            onSelect={() => handleSelect(item)}
-                            value={paletteValue(item)}
-                          >
-                            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-                            <span className="truncate">{item.label}</span>
-                            {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
-                            {item.to && (
-                              <ChevronRight
-                                className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
-                              />
-                            )}
-                            {item.active && (
-                              <Check
-                                className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')}
-                              />
-                            )}
-                          </CommandItem>
-                        )
-                      })}
+                      {group.items.map(item => (
+                        <PaletteRow
+                          bindings={bindings}
+                          item={item}
+                          key={item.id}
+                          onSelectItem={handleSelect}
+                          onSelectMods={noteSelectMods}
+                        />
+                      ))}
                     </CommandGroup>
                   ))}
                 </>

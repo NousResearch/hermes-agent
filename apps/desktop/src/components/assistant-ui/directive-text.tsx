@@ -183,6 +183,11 @@ const HERMES_DIRECTIVE_RE = new RegExp(
 // pills, so the sent message renders them as pills too rather than flattening
 // back to raw text.
 //
+// #71664 deliberately excluded a LEADING slash, and was right then: a command
+// only ever executed, so it never reached a rendered message as text. Skill
+// turns now project back onto their invocation, so that precondition is gone
+// and `^` joins the lookbehind.
+//
 // Unlike the composer's caret-anchored trigger, this scans finished text, so
 // it must reject a token that continues into a path: `/usr/local/bin` would
 // otherwise chip as `/usr`. `(?![\w-]*\/)` requires the token to end at

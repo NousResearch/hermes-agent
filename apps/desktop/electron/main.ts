@@ -5187,7 +5187,7 @@ function buildApplicationMenu() {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
         click: () => {
-          setAndPersistZoomLevel(mainWindow, 0)
+          setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
         }
       },
       {
@@ -5195,7 +5195,7 @@ function buildApplicationMenu() {
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + 0.1)
+            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + ZOOM_STEP)
           }
         }
       },
@@ -5204,7 +5204,7 @@ function buildApplicationMenu() {
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - 0.1)
+            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - ZOOM_STEP)
           }
         }
       },
@@ -5283,8 +5283,10 @@ function installPreviewShortcut(window) {
 // read it back on did-finish-load to re-apply after reloads or crash recovery.
 import {
   applyZoomLevel,
+  DEFAULT_ZOOM_LEVEL,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
+  ZOOM_STEP,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomWiringForWindowKind
@@ -5328,31 +5330,33 @@ function restorePersistedZoomLevel(window) {
     return
   }
 
-  // Fall back to localStorage for installs that predate zoom-state.json,
-  // migrating the value into the JSON store on first read.
+  // No JSON yet: paint the shipped default immediately so a fresh install
+  // doesn't flash Chromium 100%, then try localStorage for pre-JSON installs
+  // and overwrite if a legacy value is there.
+  applyZoomLevel(window.webContents, DEFAULT_ZOOM_LEVEL)
+
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
     )
     .then(stored => {
-      if (stored == null || !window || window.isDestroyed()) {
+      if (!window || window.isDestroyed()) {
         return
       }
 
-      // Notify the renderer too — otherwise the Appearance UI Scale control
-      // can stay stuck at 100% even though the window zoom was restored.
-      const applied = applyZoomLevel(window.webContents, Number(stored))
+      const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
+      const applied = applyZoomLevel(window.webContents, level)
       writeZoomState(applied)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
 
 function installZoomShortcuts(window) {
-  // Override Ctrl/Cmd + +/-/0 with half the default zoom step (0.1 vs 0.2).
-  // The menu items handle this on macOS (where the menu is always present),
-  // but on Linux/Windows the menu is null and Chromium's default handler
-  // would use the full 0.2 step, so we intercept here for consistency.
-  const ZOOM_STEP = 0.1
+  // Override Ctrl/Cmd + +/-/0 with half Chromium's default zoom step (ZOOM_STEP
+  // is 0.1 vs Chromium's 0.2). The menu items handle this on macOS (where the
+  // menu is always present), but on Linux/Windows the menu is null and
+  // Chromium's default handler would use the full 0.2 step, so we intercept
+  // here for consistency. Ctrl/Cmd+0 resets to DEFAULT_ZOOM_LEVEL, not Chromium 0.
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
 
@@ -5368,7 +5372,7 @@ function installZoomShortcuts(window) {
       }
 
       event.preventDefault()
-      setAndPersistZoomLevel(window, 0)
+      setAndPersistZoomLevel(window, DEFAULT_ZOOM_LEVEL)
     } else if (key === '=' || key === '+') {
       // Zoom-in must accept the shift modifier: on US layouts Plus is
       // physically Shift+=, so Cmd+Plus arrives as Cmd+Shift+'+' (or '='
@@ -9266,7 +9270,8 @@ ipcMain.handle('hermes:window:openInstance', async () => {
 // shortcuts and the View menu. Reads and writes target the asking window.
 ipcMain.handle('hermes:zoom:get', event => {
   const window = BrowserWindow.fromWebContents(event.sender)
-  const level = window && !window.isDestroyed() ? window.webContents.getZoomLevel() : 0
+  const level =
+    window && !window.isDestroyed() ? window.webContents.getZoomLevel() : DEFAULT_ZOOM_LEVEL
 
   return { level, percent: zoomLevelToPercent(level) }
 })

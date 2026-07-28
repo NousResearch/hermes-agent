@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -434,6 +435,97 @@ def test_stream_provider_callbacks_preserve_caller_context(relay_turn):
         ("chunk", "caller"),
         ("finalizer", "caller"),
     ]
+
+
+def test_anthropic_stream_callbacks_do_not_reenter_captured_context(
+    relay_turn,
+    monkeypatch,
+):
+    del relay_turn
+    caller_value = contextvars.ContextVar(
+        "anthropic_stream_caller_value",
+        default="default",
+    )
+    caller_value.set("caller")
+    callback_context = contextvars.copy_context()
+    real_copy_context = contextvars.copy_context
+    copy_count = 0
+
+    def capture_callback_context():
+        nonlocal copy_count
+        copy_count += 1
+        if copy_count == 1:
+            return callback_context
+        return real_copy_context()
+
+    monkeypatch.setattr(
+        relay_llm.contextvars,
+        "copy_context",
+        capture_callback_context,
+    )
+    observed = []
+    accumulator = relay_llm.AnthropicStreamAccumulator()
+
+    def observe_chunk(chunk):
+        observed.append(caller_value.get())
+        accumulator.observe(chunk)
+
+    chunks = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "message-1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-test",
+                "usage": {"input_tokens": 1, "output_tokens": 0},
+            },
+        },
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 1},
+        },
+    ]
+    stream = relay_llm.stream(
+        {
+            "model": "claude-test",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        lambda _request: iter(chunks),
+        session_id="session-1",
+        name="anthropic",
+        model_name="claude-test",
+        finalizer=accumulator.finalize,
+        on_chunk=observe_chunk,
+        metadata={
+            "api_mode": "anthropic_messages",
+            "api_request_id": "request-anthropic-context-reentry",
+        },
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_callback_context() -> None:
+        def wait() -> None:
+            entered.set()
+            assert release.wait(timeout=5)
+
+        callback_context.run(wait)
+
+    holder = threading.Thread(target=hold_callback_context)
+    holder.start()
+    assert entered.wait(timeout=1)
+    try:
+        assert list(stream) == chunks
+    finally:
+        release.set()
+        holder.join(timeout=1)
+
+    assert holder.is_alive() is False
+    assert observed == ["caller", "caller"]
 
 
 def test_non_stream_does_not_forward_relay_session_headers(relay_turn):

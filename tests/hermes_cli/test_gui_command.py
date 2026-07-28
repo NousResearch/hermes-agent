@@ -1170,6 +1170,24 @@ def test_desktop_macos_local_codesign_false_without_codesign(tmp_path, monkeypat
     assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is False
 
 
+def test_desktop_macos_local_codesign_refuses_without_entitlements(tmp_path, monkeypatch):
+    """Hardened runtime without allow-jit bricks Electron — must raise, not sign.
+
+    Hardened-runtime restrictions are enforced even for ad-hoc signatures, so
+    signing with --options runtime while the entitlement plists are missing
+    would produce a bundle that crashes on launch. The fixup catches the raise
+    and falls back to the legacy plain ad-hoc sign instead.
+    """
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    (desktop_dir / "electron" / "entitlements.mac.plist").unlink()
+    calls = _collect_codesign_calls(monkeypatch)
+
+    with pytest.raises(FileNotFoundError):
+        cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir)
+    assert calls == []  # nothing was signed with a runtime flag sans entitlements
+
+
 def test_relaunchable_fixup_noop_when_publisher_signing_configured(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)

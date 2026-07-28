@@ -1,11 +1,12 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform, StreamingConfig
-from gateway.platforms.base import resolve_proxy_url
+from gateway.platforms.base import BasePlatformAdapter, SendResult, resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -226,6 +227,76 @@ class TestRunAgentProxyDispatch:
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
+
+    @pytest.mark.asyncio
+    async def test_signal_streaming_opt_out_skips_proxy_preview(self, monkeypatch):
+        """Proxy SSE must not bypass a platform's streaming-edit opt-out."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+
+        class _SignalLikeAdapter:
+            SUPPORTS_MESSAGE_EDITING = True
+            SUPPORTS_STREAMING_EDITS = False
+            MAX_MESSAGE_LENGTH = 4096
+
+            def __init__(self):
+                self.sent = []
+                self.edits = []
+
+            async def send_typing(self, chat_id, metadata=None):
+                return None
+
+            async def send(self, chat_id, content, metadata=None, reply_to=None):
+                self.sent.append(content)
+                return SendResult(success=True, message_id="ts-1")
+
+            async def edit_message(self, chat_id, message_id, content, metadata=None):
+                self.edits.append((message_id, content))
+                return SendResult(success=True, message_id="ts-2")
+
+        runner = _make_runner()
+        runner.config.streaming = StreamingConfig(
+            enabled=True,
+            transport="edit",
+            edit_interval=0,
+            buffer_threshold=1,
+        )
+        adapter = _SignalLikeAdapter()
+        runner.adapters[Platform.SIGNAL] = cast(BasePlatformAdapter, adapter)
+        source = _make_source(Platform.SIGNAL)
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        session = _FakeSession(resp)
+        config = {
+            "display": {
+                "platforms": {
+                    "signal": {"streaming": True},
+                }
+            }
+        }
+
+        with patch("gateway.run._load_gateway_config", return_value=config):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="signal-proxy",
+                    )
+
+        assert result["final_response"] == "Hello world"
+        assert result["response_previewed"] is False
+        assert adapter.sent == []
+        assert adapter.edits == []
 
     @pytest.mark.asyncio
     async def test_builds_correct_request(self, monkeypatch):

@@ -572,6 +572,7 @@ gateway:
 
     For full setup instructions run: `/skill hermes-agent-setup`'
   compress_aborted: ⚠️ Context compression aborted ({err}). No messages were removed — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model setting.
+  compaction_done: ✓ Context compaction complete — continuing turn...
   compress_aux_model_failed: ℹ️ Configured compression model `{model}` errored ({err}). Fell back to the primary model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml.
   admin_only_with_allowed: '⛔ /{cmd} is admin-only. You can run: {allowed_list}. Use /whoami for the full list.'
   admin_only_no_commands: ⛔ /{cmd} is admin-only. No commands are enabled for non-admins on this platform. Ask the admin to add you to allow_admin_from or set user_allowed_commands.

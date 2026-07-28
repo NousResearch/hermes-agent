@@ -111,7 +111,7 @@ def _emit_compaction_done(agent: Any) -> None:
     if not status_callback:
         return
     try:
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback("compacted", t("gateway.compaction_done"))
     except Exception:
         logger.debug("status_callback error in compaction completion", exc_info=True)
 

@@ -568,6 +568,7 @@ gateway:
 
     Для получения полных инструкций по настройке введите: `/skill hermes-agent-setup`'
   compress_aborted: ⚠️ Сжатие контекста прервано ({err}). Сообщения не удалялись — беседа не изменена. Запустите /compress для повторной попытки, /reset для чистой сессии или проверьте настройку вашей модели auxiliary.compression.
+  compaction_done: ✓ Сжатие контекста завершено — продолжаю ход...
   compress_aux_model_failed: ℹ️ Настроенная модель сжатия `{model}` завершилась с ошибкой ({err}). Выполнено восстановление с использованием основной модели — контекст цел — но возможно стоит проверить `auxiliary.compression.model` в config.yaml.
   admin_only_with_allowed: '⛔ /{cmd} доступна только администраторам. Вы можете запустить: {allowed_list}. Используйте /whoami для полного списка.'
   admin_only_no_commands: ⛔ /{cmd} доступна только администраторам. Для не-администраторов команды не включены на этой платформе. Попросите администратора добавить вас в allow_admin_from или задать user_allowed_commands.
@@ -707,7 +708,7 @@ gateway:
   tg_select_model: Выберите модель:{extra}
   tg_provider_family: 'Семейство провайдеров: *{family}*'
   tg_error_switching_model: 'Ошибка при переключении модели: {error}'
-  tg_resolved: Решено
+  tg_resolved: Обработано
   tg_decision_by: '{label} — {user}'
   tg_decision_appended: '{original}
 

@@ -133,6 +133,24 @@ def _import_elevenlabs():
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
+
+def _elevenlabs_environment_kwargs(el_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Build ElevenLabs client kwargs honoring config base_url/wss_url.
+
+    ``tts.elevenlabs.base_url`` (and optionally ``wss_url``) redirect the SDK
+    to a self-hosted / proxy endpoint via an ``ElevenLabsEnvironment``. When
+    neither is set the SDK default environment is used. ``wss_url`` defaults
+    to the ``base_url`` host with a ``wss://`` scheme when omitted.
+    """
+    base_url = (el_config.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return {}
+    wss_url = (el_config.get("wss_url") or "").rstrip("/")
+    if not wss_url:
+        wss_url = re.sub(r"^http", "ws", base_url)
+    from elevenlabs.environment import ElevenLabsEnvironment
+    return {"environment": ElevenLabsEnvironment(base=base_url, wss=wss_url)}
+
 def _import_openai_client():
     """Lazy import OpenAI client. Returns the class or raises ImportError."""
     from openai import OpenAI as OpenAIClient
@@ -1124,7 +1142,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
         output_format = "mp3_44100_128"
 
     ElevenLabs = _import_elevenlabs()
-    client = ElevenLabs(api_key=api_key)
+    client = ElevenLabs(api_key=api_key, **_elevenlabs_environment_kwargs(el_config))
     audio_generator = client.text_to_speech.convert(
         text=text,
         voice_id=voice_id,

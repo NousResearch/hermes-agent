@@ -178,10 +178,14 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         from tools.tts_tool import (
             DEFAULT_ELEVENLABS_STREAMING_MODEL_ID,
             DEFAULT_ELEVENLABS_VOICE_ID,
+            _elevenlabs_environment_kwargs,
             _import_elevenlabs,
         )
 
-        client = _import_elevenlabs()(api_key=get_env_value("ELEVENLABS_API_KEY"))
+        client = _import_elevenlabs()(
+            api_key=get_env_value("ELEVENLABS_API_KEY"),
+            **_elevenlabs_environment_kwargs(self.section),
+        )
         voice_id = self.section.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
         model_id = self.section.get(
             "streaming_model_id",

@@ -81,6 +81,7 @@ import {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
+import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import { findGitBash as _findGitBash } from './find-git-bash'
@@ -270,6 +271,28 @@ if (REMOTE_DISPLAY_REASON) {
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
+}
+
+// Renderer debugging port for `hgui` / `npm run dev`. Opt-in, dev-server-only,
+// never packaged — see electron/dev-cdp.ts for the gate. Must run before app
+// `ready` like the switches above; Chromium binds it at launch.
+const DEV_CDP = resolveDevCdpPort({ env: process.env, isPackaged: IS_PACKAGED, devServer: DEV_SERVER })
+
+if (DEV_CDP.port) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(DEV_CDP.port))
+  // Loopback only. Chromium already defaults to 127.0.0.1, but say it out loud
+  // so a future edit can't widen it by omission.
+  app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
+  console.log(
+    `[hermes] renderer debugging on http://127.0.0.1:${DEV_CDP.port} (dev only; HERMES_DESKTOP_CDP_PORT). ` +
+      'Anything that can reach this port can run code in the renderer.'
+  )
+} else {
+  const why = describeDevCdpDecision(DEV_CDP)
+
+  if (why) {
+    console.warn(`[hermes] ${why}`)
+  }
 }
 
 // WSLg: Chromium blocklists the Mesa vGPU → software compositing → typing lag.

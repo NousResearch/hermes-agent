@@ -530,6 +530,7 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DESKTOP_CWD` | Initial project directory for Desktop chat sessions. Set by `hermes desktop --cwd`. |
 | `HERMES_DESKTOP_PYTHON` | Absolute path to a Python interpreter for the backend, checked before Electron auto-resolves one for the source checkout. Used by worktree dev helpers (see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md)) to reuse a shared venv. |
 | `HERMES_DESKTOP_DEV_SERVER` | Vite dev-server URL the Electron shell loads instead of the packaged bundle (e.g. `http://127.0.0.1:5174`). Set automatically by `npm run dev`; only relevant when hacking on the app. |
+| `HERMES_DESKTOP_CDP_PORT` | Opens a Chrome DevTools Protocol port on `127.0.0.1` for the renderer, so DOM/CSS inspection tooling can attach (see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md)). Ignored unless the build is unpackaged **and** `HERMES_DESKTOP_DEV_SERVER` is set — a packaged app never opens it. Anything that can reach the port can execute code in the renderer, so leave it unset unless you're actively debugging. |
 
 ### Microsoft Graph (Teams Meetings)
 

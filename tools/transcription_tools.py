@@ -2397,6 +2397,15 @@ def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> D
 
 def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Safely validate, preprocess supported inputs, and dispatch transcription."""
+    # Refuse to feed a credential / secret store (auth.json, .env, OAuth
+    # tokens, mcp-tokens/, ...) to an STT provider — before ANY validation or
+    # preprocessing, so the refusal names the real reason rather than a
+    # format error. Mirrors the image-gen / video-gen read guards.
+    from agent.file_safety import get_read_block_error
+    blocked = get_read_block_error(file_path)
+    if blocked:
+        return {"success": False, "transcript": "", "error": blocked}
+
     # Cap .silk sources before the decoder runs (decoder safety). For all
     # other inputs the remote-upload size cap is provider-scoped and enforced
     # in _transcribe_prepared_audio, so local whisper can handle big files.

@@ -2911,6 +2911,16 @@ DEFAULT_CONFIG = {
         # adapter. ``0`` disables the cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
 
+        # Per-file and aggregate byte caps for files uploaded through a
+        # Discord rich-clarify modal form. Both bounds are checked against
+        # each attachment's reported size *before* any bytes are read or
+        # cached (tools/discord_interactive_views.py), so an oversized or
+        # over-large submission is rejected without spiking memory or leaving
+        # a partial cache file. A per-field ``file_policy`` (max_bytes /
+        # max_total_bytes) can tighten these; ``0`` disables a cap.
+        "modal_upload_max_per_file_bytes": 10485760,    # 10 MiB
+        "modal_upload_max_aggregate_bytes": 26214400,   # 25 MiB
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,

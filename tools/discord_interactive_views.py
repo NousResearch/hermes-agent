@@ -14,7 +14,7 @@ the same primitive used by the simple-choices clarify path.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 # Conditional discord import — gracefully degrades when discord.py is absent
 # or stubbed (e.g. another test replaces sys.modules["discord"] with a mock).
@@ -38,6 +38,78 @@ _DISCORD_MODAL_TITLE_MAX = 45
 _DISCORD_LABEL_MAX = 45
 _DISCORD_LABEL_DESCRIPTION_MAX = 100
 _DISCORD_MODAL_CHILD_MAX = 5
+
+# ---------------------------------------------------------------------------
+# Modal upload resource limits
+# ---------------------------------------------------------------------------
+# Modal file-upload submissions are written to disk under the active Hermes
+# home.  Without explicit caps a single oversized attachment (Discord Nitro
+# permits 500 MB) or a large aggregate submission can spike RAM/disk and OOM
+# the gateway.  Both bounds are checked against each attachment's reported
+# ``size`` *before* any bytes are read or written, so a rejected upload never
+# produces a partial cache file and never resolves the prompt as successful.
+#
+# The defaults live in config.yaml under ``gateway`` so operators can tune
+# them for constrained deployments; per-field overrides live in the field's
+# ``file_policy`` (part of the prompt definition the agent controls):
+# ``max_bytes`` (per-file) and ``max_total_bytes`` (aggregate).  Unspecified /
+# invalid values fall back to the configured default — uploads are always
+# bounded by at least the floor.
+_MODAL_UPLOAD_MAX_PER_FILE_DEFAULT = 10 * 1024 * 1024   # 10 MiB (Discord free-tier cap)
+_MODAL_UPLOAD_MAX_AGGREGATE_DEFAULT = 25 * 1024 * 1024  # 25 MiB per submission
+
+# Reusable, safe rejection copy for unreadable attachments (no paths/exceptions).
+_UPLOAD_READ_FAILURE_MESSAGE = (
+    "Upload rejected: could not read one of your files. "
+    "Please re-attach it and try again."
+)
+
+
+def _get_modal_upload_limits() -> tuple:
+    """Resolve (per_file_bytes, aggregate_bytes) from config.yaml ``gateway``.
+
+    Falls back to the module defaults when config is unreadable or a value is
+    missing/non-positive.  Mirrors the defensive ``load_config()`` pattern used
+    by ``clarify_gateway.get_clarify_timeout``.
+    """
+    per_file = _MODAL_UPLOAD_MAX_PER_FILE_DEFAULT
+    aggregate = _MODAL_UPLOAD_MAX_AGGREGATE_DEFAULT
+    try:
+        from hermes_cli.config import load_config
+        gw = (load_config() or {}).get("gateway", {}) or {}
+    except Exception:
+        return per_file, aggregate
+    raw_pf = gw.get("modal_upload_max_per_file_bytes")
+    if isinstance(raw_pf, int) and raw_pf >= 0:
+        per_file = raw_pf
+    raw_agg = gw.get("modal_upload_max_aggregate_bytes")
+    if isinstance(raw_agg, int) and raw_agg >= 0:
+        aggregate = raw_agg
+    return per_file, aggregate
+
+
+def _humanize_bytes(n: int) -> str:
+    """Render a byte count as a short human-readable string (e.g. ``"10.0 MB"``)."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "?"
+    value = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024.0 or unit == "GB":
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{n} B"
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    """Return ``int(value)`` when it is a positive int, else ``default``."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
 
 # ---------------------------------------------------------------------------
 # Shared utility
@@ -139,6 +211,14 @@ class FileResult:
     content_type: str
     size: int
     cached_path: str = ""
+
+
+class _FileSpec(NamedTuple):
+    """A collected file-upload field awaiting validation / caching."""
+
+    field_key: str
+    attachments: List[Any]
+    file_policy: Dict[str, Any]
 
 
 # =========================================================================
@@ -410,6 +490,10 @@ if discord is not None:
 
             # Store the field keys in order so we can map submitted values.
             self._field_keys: List[str] = []
+            # field_key → file_policy dict, so ``on_submit`` can enforce the
+            # file-count and byte limits declared in the prompt definition
+            # *before* it reads or caches any attachment bytes.
+            self._field_policies: Dict[str, Dict[str, Any]] = {}
 
             for field_spec in modal_spec.get("fields", []):
                 field_type = field_spec.get("type", "text")
@@ -528,6 +612,7 @@ if discord is not None:
                         component=file_upload,
                     )
                     self._field_keys.append(key)
+                    self._field_policies[key] = dict(file_policy or {})
                     self.add_item(label)
 
                 else:
@@ -559,7 +644,9 @@ if discord is not None:
             """Collect field values and resolve the prompt via the gateway."""
             # Gather values from children in order.
             fields: Dict[str, Any] = {}
-            files_collected: List[FileResult] = []
+            # One entry per file-upload field, collected without reading any
+            # bytes so Phase 2 can enforce count/size limits first.
+            file_specs: List[_FileSpec] = []
             children = getattr(self, "children", [])
             unwrapped = unwrap_modal_children(children)
             for idx, inner in enumerate(unwrapped):
@@ -572,50 +659,38 @@ if discord is not None:
                 # select → .values (list[str]), checkbox → .values (list[str])
                 elif isinstance(inner, (discord.ui.Select, discord.ui.CheckboxGroup)):
                     fields[field_key] = getattr(inner, "values", [])
-                # file_upload → download attachments to cache
+                # file_upload → defer reading to Phase 2/3 so count/size
+                # limits are enforced before any bytes are pulled into
+                # memory or written to disk.
                 elif isinstance(inner, _ui.FileUpload):
-                    attachments = getattr(inner, "values", [])
-                    file_results = []
-                    for att in attachments:
-                        try:
-                            data = await att.read() if hasattr(att, "read") else None
-                        except Exception as read_err:
-                            logger.warning(
-                                "Failed to download attachment %s for prompt %s: %s",
-                                getattr(att, "id", "?"),
-                                self.prompt_id,
-                                read_err,
-                            )
-                            data = None
-                        cached_path = ""
-                        if data:
-                            import os
-                            import uuid
-
-                            from hermes_constants import get_hermes_home
-                            cache_dir = os.path.join(get_hermes_home(), "cache", "uploads")
-                            os.makedirs(cache_dir, exist_ok=True)
-                            ext = os.path.splitext(att.filename)[1] or ".bin"
-                            cached_path = os.path.join(
-                                cache_dir, f"{uuid.uuid4().hex}{ext}"
-                            )
-                            with open(cached_path, "wb") as f:
-                                f.write(data)
-                        file_results.append(
-                            FileResult(
-                                field_key=field_key,
-                                attachment_id=str(att.id),
-                                filename=att.filename or "unknown",
-                                content_type=att.content_type
-                                or "application/octet-stream",
-                                size=att.size or 0,
-                                cached_path=cached_path,
-                            )
-                        )
-                    if file_results:
-                        files_collected.extend(file_results)
+                    attachments = list(getattr(inner, "values", []) or [])
+                    file_specs.append(
+                        _FileSpec(field_key, attachments, self._field_policies.get(field_key, {}))
+                    )
                 else:
                     fields[field_key] = getattr(inner, "value", None)
+
+            # ── Phase 2: validate counts + sizes BEFORE any read/write ──
+            # A rejected upload must not resolve the prompt and must not leave
+            # partial cache files behind, so every bound is enforced against
+            # each attachment's reported ``size`` here, before Phase 3 reads
+            # or writes anything.
+            rejection = self._validate_file_uploads(file_specs)
+            if rejection is not None:
+                await self._send_rejection(interaction, rejection)
+                return
+
+            # ── Phase 3: read + cache files ──
+            # Validation already proved every file is within bounds; the only
+            # remaining failure is a read/write error.  On any such error we
+            # purge every cache file written so far and reject the whole
+            # submission so no partial upload survives and the prompt stays
+            # pending for the user to retry.
+            files_collected, read_rejection = await self._collect_files(file_specs)
+            if read_rejection is not None:
+                self._purge_cached_files(files_collected)
+                await self._send_rejection(interaction, read_rejection)
+                return
 
             # Build actor info.
             user = getattr(interaction, "user", None)
@@ -698,6 +773,223 @@ if discord is not None:
                     logger.debug(
                         "InteractivePromptModal original message update failed",
                         exc_info=True,
+                    )
+
+        # ---- File-upload bounding helpers (issue #10) -------------------
+
+        def _validate_file_uploads(
+            self,
+            file_specs: List[_FileSpec],
+        ) -> Optional[str]:
+            """Enforce file-count and byte limits before any read or write.
+
+            ``file_specs`` is a list of :class:`_FileSpec` collected in Phase 1.
+            Returns a safe, actionable rejection message string when the
+            submission violates a bound, or ``None`` when it is acceptable.
+
+            Every check runs against each attachment's reported ``size`` —
+            no bytes are read here — so an oversized upload never reaches the
+            cache and the prompt is never resolved as successful.
+            """
+            default_per_file, default_aggregate = _get_modal_upload_limits()
+            specified_aggregate: List[int] = []
+            total_size = 0
+
+            for spec in file_specs:
+                policy = spec.file_policy or {}
+                max_files = _coerce_positive_int(policy.get("max_files", 1), 1)
+                min_files = max(
+                    0, _coerce_positive_int(policy.get("min_files", 0), 0)
+                )
+                count = len(spec.attachments)
+                if count > max_files:
+                    return (
+                        f"Upload rejected: you attached {count} file(s) to "
+                        f"'{spec.field_key}', but the limit is {max_files}."
+                    )
+                if count < min_files:
+                    return (
+                        f"Upload rejected: '{spec.field_key}' requires at least "
+                        f"{min_files} file(s); you attached {count}."
+                    )
+
+                per_file_limit = _coerce_positive_int(
+                    policy.get("max_bytes"),
+                    default_per_file,
+                )
+                mtb = policy.get("max_total_bytes")
+                if mtb is not None:
+                    specified_aggregate.append(_coerce_positive_int(mtb, default_aggregate))
+
+                for att in spec.attachments:
+                    size = getattr(att, "size", None)
+                    if size is None:
+                        # An unknown size cannot be bounded ahead of the read.
+                        # Fail closed rather than perform an unbounded read.
+                        return (
+                            "Upload rejected: could not determine the size of "
+                            "an attached file. Please re-attach it and try "
+                            "again."
+                        )
+                    try:
+                        size = int(size)
+                    except (TypeError, ValueError):
+                        return (
+                            "Upload rejected: could not determine the size of "
+                            "an attached file. Please re-attach it and try "
+                            "again."
+                        )
+                    if per_file_limit and size > per_file_limit:
+                        return (
+                            f"Upload rejected: a file in '{spec.field_key}' is too "
+                            f"large ({_humanize_bytes(size)} exceeds the "
+                            f"{_humanize_bytes(per_file_limit)} per-file limit)."
+                        )
+                    total_size += size
+
+            # Most-restrictive aggregate cap across all file fields.
+            effective_aggregate = (
+                min(specified_aggregate) if specified_aggregate else default_aggregate
+            )
+            if effective_aggregate and total_size > effective_aggregate:
+                return (
+                    f"Upload rejected: total upload size "
+                    f"({_humanize_bytes(total_size)}) exceeds the "
+                    f"{_humanize_bytes(effective_aggregate)} limit."
+                )
+            return None
+
+        async def _collect_files(
+            self,
+            file_specs: List[_FileSpec],
+        ) -> "tuple[List[FileResult], Optional[str]]":
+            """Read and cache each attachment under the active Hermes home.
+
+            Returns ``(results, rejection)`` where ``rejection`` is ``None``
+            on full success, or a safe message string when any read or write
+            failed.  On failure the caller purges ``results`` (the files
+            written before the failure) so no partial upload survives.
+            """
+            import os
+            import uuid
+
+            from hermes_constants import get_hermes_home
+
+            cache_dir = os.path.join(get_hermes_home(), "cache", "uploads")
+            os.makedirs(cache_dir, exist_ok=True)
+
+            default_per_file, _default_aggregate = _get_modal_upload_limits()
+            results: List[FileResult] = []
+            for spec in file_specs:
+                per_file_limit = _coerce_positive_int(
+                    (spec.file_policy or {}).get("max_bytes"),
+                    default_per_file,
+                )
+                for att in spec.attachments:
+                    if not hasattr(att, "read"):
+                        return results, _UPLOAD_READ_FAILURE_MESSAGE
+                    try:
+                        data = await att.read()
+                    except Exception as read_err:
+                        logger.warning(
+                            "Failed to download attachment %s for prompt %s: %s",
+                            getattr(att, "id", "?"),
+                            self.prompt_id,
+                            read_err,
+                        )
+                        return results, _UPLOAD_READ_FAILURE_MESSAGE
+                    if data is None:
+                        return results, _UPLOAD_READ_FAILURE_MESSAGE
+                    # Defense-in-depth: a lying/absent size could slip past the
+                    # reported-size gate in Phase 2.  Re-check the actual byte
+                    # count before caching so an oversized payload is rejected
+                    # (and purged) rather than written to disk.
+                    if per_file_limit and len(data) > per_file_limit:
+                        return results, (
+                            f"Upload rejected: a file in '{spec.field_key}' is too "
+                            f"large ({_humanize_bytes(len(data))} exceeds the "
+                            f"{_humanize_bytes(per_file_limit)} per-file limit)."
+                        )
+
+                    ext = os.path.splitext(getattr(att, "filename", "") or "")[1] or ".bin"
+                    cached_path = os.path.join(cache_dir, f"{uuid.uuid4().hex}{ext}")
+                    try:
+                        with open(cached_path, "wb") as f:
+                            f.write(data)
+                    except Exception as write_err:
+                        logger.warning(
+                            "Failed to cache uploaded file for prompt %s: %s",
+                            self.prompt_id,
+                            write_err,
+                        )
+                        # The half-written file (if any) must not survive.
+                        try:
+                            if os.path.exists(cached_path):
+                                os.remove(cached_path)
+                        except Exception:
+                            pass
+                        return results, (
+                            "Upload rejected: could not save one of your "
+                            "files. Please try again."
+                        )
+
+                    results.append(
+                        FileResult(
+                            field_key=spec.field_key,
+                            attachment_id=str(getattr(att, "id", "")),
+                            filename=getattr(att, "filename", None) or "unknown",
+                            content_type=getattr(att, "content_type", None)
+                            or "application/octet-stream",
+                            size=int(getattr(att, "size", 0) or 0),
+                            cached_path=cached_path,
+                        )
+                    )
+            return results, None
+
+        def _purge_cached_files(self, files: List["FileResult"]) -> None:
+            """Remove every cache file in ``files`` (cleanup on rejection)."""
+            import os
+
+            for fr in files:
+                path = getattr(fr, "cached_path", "") or ""
+                if not path:
+                    continue
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    logger.debug(
+                        "Failed to purge partial cache file %s", path, exc_info=True,
+                    )
+
+        async def _send_rejection(
+            self,
+            interaction: discord.Interaction,
+            message: str,
+        ) -> None:
+            """Acknowledge a rejected submission without resolving the prompt.
+
+            The original prompt is left pending and its buttons stay enabled
+            so the user can retry.  ``message`` is always safe — it never
+            contains internal paths or exception details.
+            """
+            logger.info(
+                "InteractivePrompt modal upload rejected (id=%s): %s",
+                self.prompt_id,
+                message,
+            )
+            try:
+                await interaction.response.send_message(
+                    f"⚠️ {message}", ephemeral=True,
+                )
+            except Exception:
+                try:
+                    await interaction.followup.send(
+                        f"⚠️ {message}", ephemeral=True,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not deliver modal upload rejection", exc_info=True,
                     )
 
         async def on_error(

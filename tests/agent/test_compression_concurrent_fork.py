@@ -252,7 +252,7 @@ def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: 
     touch_calls: list[str] = []
     touch_provenances: list = []
 
-    def _capture(desc, *, provenance=None):
+    def _capture(desc, *, provenance=None, force_persist=False):
         touch_calls.append(desc)
         touch_provenances.append(provenance)
 
@@ -272,6 +272,47 @@ def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: 
     ]
 
 
+def test_compression_heartbeat_stop_persists_completed_over_in_progress(
+    tmp_path: Path,
+) -> None:
+    """/compress is outside run_conversation, so turn-end clear never runs.
+
+    Heartbeat progress stamps persist to SessionDB; completion is often
+    rate-limited out. stop() must force-persist the terminal label so idle
+    sessions show "context compression completed", not a stale "in progress".
+    """
+    from agent.conversation_compression import _CompressionActivityHeartbeat
+    from agent.session_activity import ActivityProvenance
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "HEARTBEAT_PERSIST_COMPLETED_TEST"
+    db.create_session(session_id, source="test")
+
+    agent = _build_agent_with_db(db, session_id)
+    # Long interval: only start/stop touch; we inject the progress stamp.
+    hb = _CompressionActivityHeartbeat(agent, interval_seconds=3600.0)
+    hb.start()
+
+    agent._session_activity_last_persist_mono = 0.0
+    agent._touch_activity(
+        "context compression in progress",
+        provenance=ActivityProvenance.AGENT_COMPRESSION,
+    )
+    row = db.get_session(session_id)
+    assert row["last_activity_description"] == "context compression in progress"
+    assert row["last_activity_provenance"] == ActivityProvenance.AGENT_COMPRESSION.value
+
+    # Mimic the common case: completion falls inside the 60s persist window.
+    agent._session_activity_last_persist_mono = time.monotonic()
+    hb.stop("context compression completed")
+
+    row = db.get_session(session_id)
+    assert row["last_activity_description"] == "context compression completed"
+    assert row["last_activity_provenance"] == ActivityProvenance.AGENT_COMPRESSION.value
+    assert agent._last_activity_desc == "context compression completed"
+    assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
+
+
 def test_compression_heartbeat_does_not_clobber_timeout_provenance() -> None:
     """Detached heartbeat/stop must not overwrite a host timeout stamp."""
     from types import SimpleNamespace
@@ -285,7 +326,7 @@ def test_compression_heartbeat_does_not_clobber_timeout_provenance() -> None:
         touches=[],
     )
 
-    def _touch(desc, *, provenance=None):
+    def _touch(desc, *, provenance=None, force_persist=False):
         agent.touches.append((desc, provenance))
         agent._last_activity_provenance = provenance
         agent._last_activity_desc = desc
@@ -314,7 +355,7 @@ def test_compression_heartbeat_does_not_clobber_cooldown_provenance() -> None:
         touches=[],
     )
 
-    def _touch(desc, *, provenance=None):
+    def _touch(desc, *, provenance=None, force_persist=False):
         agent.touches.append((desc, provenance))
         agent._last_activity_provenance = provenance
         agent._last_activity_desc = desc
@@ -342,7 +383,7 @@ def test_compression_heartbeat_start_republishes_after_terminal_provenance() -> 
         touches=[],
     )
 
-    def _touch(desc, *, provenance=None):
+    def _touch(desc, *, provenance=None, force_persist=False):
         agent.touches.append((desc, provenance))
         agent._last_activity_provenance = provenance
         agent._last_activity_desc = desc
@@ -377,7 +418,7 @@ def test_compression_heartbeat_does_not_rearm_after_unknown_provenance() -> None
         touches=[],
     )
 
-    def _touch(desc, *, provenance=None):
+    def _touch(desc, *, provenance=None, force_persist=False):
         agent.touches.append((desc, provenance))
         agent._last_activity_provenance = provenance
         agent._last_activity_desc = desc
@@ -415,7 +456,7 @@ def test_compression_heartbeat_stops_when_commit_fence_cancelled() -> None:
         touches=[],
     )
 
-    def _touch(desc, *, provenance=None):
+    def _touch(desc, *, provenance=None, force_persist=False):
         agent.touches.append((desc, provenance))
         agent._last_activity_provenance = provenance
         agent._last_activity_desc = desc

@@ -1031,7 +1031,11 @@ class _CompressionActivityHeartbeat:
         # late stop must not republish agent.compression / "completed".
         if self._should_suppress():
             return
-        self._touch(desc)
+        # Terminal completed/failed must reach SessionDB even inside the
+        # ordinary 60s activity persist window — otherwise durable labels
+        # stay on "context compression in progress" after /compress (which
+        # never hits run_conversation's turn-end clear).
+        self._touch(desc, force_persist=True)
 
     def _fence_cancelled(self) -> bool:
         fence = self._commit_fence
@@ -1045,7 +1049,13 @@ class _CompressionActivityHeartbeat:
             return True
         return False
 
-    def _touch(self, desc: str, *, allow_terminal_overwrite: bool = False) -> None:
+    def _touch(
+        self,
+        desc: str,
+        *,
+        allow_terminal_overwrite: bool = False,
+        force_persist: bool = False,
+    ) -> None:
         try:
             if not allow_terminal_overwrite:
                 if self._should_suppress():
@@ -1062,7 +1072,11 @@ class _CompressionActivityHeartbeat:
                 # TIMEOUT between the earlier guard and the write.
                 if not allow_terminal_overwrite and self._should_suppress():
                     return
-                touch(desc, provenance=ActivityProvenance.AGENT_COMPRESSION)
+                touch(
+                    desc,
+                    provenance=ActivityProvenance.AGENT_COMPRESSION,
+                    force_persist=force_persist,
+                )
         except Exception:
             logger.debug("compression activity heartbeat touch failed", exc_info=True)
 

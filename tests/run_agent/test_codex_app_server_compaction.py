@@ -72,7 +72,7 @@ class DummyAgent:
         self.touch_provenances = []
         self._compression_activity_heartbeat_interval = 0.1
 
-    def _touch_activity(self, desc, *, provenance=None):
+    def _touch_activity(self, desc, *, provenance=None, force_persist=False):
         self.touch_calls.append(desc)
         self.touch_provenances.append(provenance)
 

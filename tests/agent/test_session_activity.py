@@ -1,10 +1,13 @@
 """Unit tests for the shared session activity observation contract."""
 
+from types import SimpleNamespace
+
 from agent.session_activity import (
     ActivityProvenance,
     bound_activity_description,
     build_activity_snapshot,
     normalize_activity_provenance,
+    reset_session_activity_persist_window,
 )
 
 
@@ -13,6 +16,16 @@ def test_bound_activity_description_truncates():
     out = bound_activity_description(long)
     assert len(out) == 120
     assert out.endswith("…")
+
+
+def test_reset_session_activity_persist_window_clears_rate_limit():
+    agent = SimpleNamespace(_session_activity_last_persist_mono=1234.5)
+    reset_session_activity_persist_window(agent)
+    assert agent._session_activity_last_persist_mono == 0.0
+
+
+def test_reset_session_activity_persist_window_swallows_missing_attr():
+    reset_session_activity_persist_window(object())
 
 
 def test_normalize_activity_provenance_defaults_to_unknown():

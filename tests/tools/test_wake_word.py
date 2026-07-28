@@ -27,7 +27,9 @@ def test_config_defaults_and_clamping():
     assert ww._provider({"provider": "Porcupine"}) == "porcupine"
     assert ww._sensitivity({"sensitivity": 5}) == 1.0
     assert ww._sensitivity({"sensitivity": -1}) == 0.0
-    assert ww._sensitivity({"sensitivity": "nope"}) == 0.5
+    # Invalid input falls back to the configured default, not a hardcoded 0.5.
+    assert ww._sensitivity({"sensitivity": "nope"}) == ww._DEFAULTS["sensitivity"]
+    assert ww._sensitivity({}) == ww._DEFAULTS["sensitivity"]
     assert ww.wake_phrase({"phrase": "hey hermes"}) == "hey hermes"
     assert ww.wake_phrase({}) == "hey hermes"
 
@@ -426,6 +428,44 @@ def test_confirmation_frames_config_clamped(monkeypatch):
     assert ww._confirmation_frames({"confirmation_frames": 99}) == 10
     assert ww._confirmation_frames({"confirmation_frames": "x"}) == ww._DEFAULT_CONFIRMATION_FRAMES
     assert ww._confirmation_frames({}) == ww._DEFAULT_CONFIRMATION_FRAMES
+
+
+def test_porcupine_sensitivity_is_inverted_to_match_shared_contract(monkeypatch):
+    # Our config contract is "higher sensitivity = stricter" for every engine.
+    # Porcupine's own `sensitivities` param means the OPPOSITE (higher = looser,
+    # more false alarms), so the engine must pass 1 - sensitivity.
+    captured = {}
+
+    class _FakePorcupine:
+        frame_length = 512
+
+        def process(self, frame):
+            return -1
+
+    def _create(**kwargs):
+        captured.update(kwargs)
+        return _FakePorcupine()
+
+    pv = types.ModuleType("pvporcupine")
+    pv.create = _create
+    monkeypatch.setitem(sys.modules, "pvporcupine", pv)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    monkeypatch.setenv("PORCUPINE_ACCESS_KEY", "test-key")
+
+    # Strict (0.9) → Porcupine gets a low 0.1 (few false alarms).
+    ww._PorcupineEngine({"provider": "porcupine", "sensitivity": 0.9})
+    assert captured["sensitivities"] == [pytest.approx(0.1)]
+
+    # Loose (0.2) → Porcupine gets a high 0.8.
+    ww._PorcupineEngine({"provider": "porcupine", "sensitivity": 0.2})
+    assert captured["sensitivities"] == [pytest.approx(0.8)]
+
+
+def test_default_sensitivity_is_stricter_than_openwakeword_baseline():
+    # Regression: the 0.5 default let near-misses ("hey hor") through. The
+    # default must sit above openWakeWord's permissive 0.5 baseline.
+    assert ww._DEFAULTS["sensitivity"] >= 0.6
+    assert ww._sensitivity({}) >= 0.6
 
 
 def test_macos_tflite_refuses_silent_onnx_downgrade(monkeypatch):

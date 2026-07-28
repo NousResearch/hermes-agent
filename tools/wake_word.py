@@ -78,7 +78,7 @@ _DEFAULTS: Dict[str, Any] = {
     "surface": "auto",
     "provider": "openwakeword",
     "phrase": "hey hermes",
-    "sensitivity": 0.5,
+    "sensitivity": 0.6,
     "confirmation_frames": _DEFAULT_CONFIRMATION_FRAMES,
     "start_new_session": True,
 }
@@ -170,7 +170,7 @@ def _sensitivity(cfg: Dict[str, Any]) -> float:
     try:
         s = float(raw)
     except (TypeError, ValueError):
-        s = 0.5
+        s = float(_DEFAULTS["sensitivity"])
     return min(max(s, 0.0), 1.0)
 
 
@@ -327,6 +327,10 @@ class _OpenWakeWordEngine(_Engine):
         framework = str(sub.get("inference_framework") or "").strip().lower()
         if not framework:
             framework = default_inference_framework()
+        # openWakeWord returns a 0..1 score per frame; sensitivity IS the raw
+        # threshold a score must clear. Higher = stricter (fewer false fires).
+        # Default 0.6 sits above openWakeWord's permissive 0.5 baseline, which
+        # let near-misses like "hey hor" through.
         self._threshold = _sensitivity(cfg)
         self._confirm_needed = _confirmation_frames(cfg)
         self._confirm_streak = 0
@@ -575,9 +579,13 @@ class _PorcupineEngine(_Engine):
 
         sub = cfg.get("porcupine") if isinstance(cfg.get("porcupine"), dict) else {}
         keyword = str(sub.get("keyword") or "jarvis").strip()
-        sensitivity = _sensitivity(cfg)
+        # Porcupine's `sensitivities` runs the OPPOSITE way to our shared knob:
+        # per Picovoice, higher = more true positives AND more false alarms
+        # (looser). Our config contract is "higher = stricter" everywhere, so
+        # invert it here to keep one consistent meaning across all engines.
+        porcupine_sensitivity = 1.0 - _sensitivity(cfg)
 
-        kwargs: Dict[str, Any] = {"access_key": access_key, "sensitivities": [sensitivity]}
+        kwargs: Dict[str, Any] = {"access_key": access_key, "sensitivities": [porcupine_sensitivity]}
         if _looks_like_path(keyword):
             kwargs["keyword_paths"] = [keyword]
         else:

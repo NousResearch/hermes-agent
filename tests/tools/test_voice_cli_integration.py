@@ -64,7 +64,9 @@ class TestMarkdownStripping:
         assert "Done." in result
 
     def test_strips_headers(self):
-        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary\nSome text"
+        # The shared cleaner folds a heading into the following sentence as a
+        # spoken lead-in ("Summary, Some text.") instead of a bare label.
+        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary, Some text."
 
     def test_strips_list_markers(self):
         text = "- item one\n- item two\n* item three"
@@ -915,6 +917,59 @@ class TestVoiceBeepConfigReal:
         mock_beep.assert_not_called()
 
 
+class TestMaxRecordingSecondsConfigReal:
+    """voice.max_recording_seconds must reach the recorder from config.
+
+    Regression for the dead-config fix: the predicate alone can stay green
+    while the CLI wiring regresses, so pin the actual assignment made by
+    ``_voice_start_recording`` for the valid / disabled / corrupted cases.
+    """
+
+    def _start_with_voice_cfg(self, voice_cfg):
+        with patch("cli._cprint"), \
+             patch("cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.create_audio_recorder") as mock_create, \
+             patch(
+                 "tools.voice_mode.check_voice_requirements",
+                 return_value={
+                     "available": True,
+                     "audio_available": True,
+                     "stt_available": True,
+                     "details": "OK",
+                     "missing_packages": [],
+                 },
+             ), \
+             patch("hermes_cli.config.load_config", return_value={"voice": voice_cfg}):
+            recorder = MagicMock()
+            recorder.supports_silence_autostop = True
+            mock_create.return_value = recorder
+
+            cli = _make_voice_cli()
+            cli._voice_start_recording()
+
+        return recorder
+
+    def test_configured_cap_reaches_recorder(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 45})
+        assert recorder._max_recording_seconds == 45
+
+    def test_non_positive_value_disables_cap(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 0})
+        assert recorder._max_recording_seconds == 0.0
+
+    def test_bool_falls_back_to_documented_default(self):
+        # bool is a subclass of int — ``max_recording_seconds: true`` must not
+        # become a 1-second cap; it falls back to the documented 120 default,
+        # mirroring the silence-param corruption handling.
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": True})
+        assert recorder._max_recording_seconds == 120.0
+
+    def test_garbage_falls_back_to_documented_default(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": "long"})
+        assert recorder._max_recording_seconds == 120.0
+
+
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
 
@@ -1060,6 +1115,47 @@ class TestVoiceSpeakResponseReal:
         cli._voice_speak_response("Hello world")
         mock_play.assert_called_once()
 
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch(
+        "tools.tts_tool.text_to_speech_tool",
+        return_value='{"success": true, "file_path": "/tmp/hermes_voice/actual.flac"}',
+    )
+    def test_play_audio_uses_returned_tts_file_path(
+        self, _tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        _isf.side_effect = lambda path: path == "/tmp/hermes_voice/actual.flac"
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+        mock_play.assert_called_once_with("/tmp/hermes_voice/actual.flac")
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("tools.tts_tool.text_to_speech_tool")
+    def test_play_audio_prefers_requested_mp3_over_returned_ogg(
+        self, mock_tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        def fake_tts(**kwargs):
+            mp3_path = kwargs["output_path"]
+            ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+
+        mock_tts.side_effect = fake_tts
+
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+
+        requested_path = mock_tts.call_args.kwargs["output_path"]
+        mock_play.assert_called_once_with(requested_path)
+
 
 class TestVoiceStopAndTranscribeReal:
     """Tests _voice_stop_and_transcribe with real CLI instance."""
@@ -1112,7 +1208,12 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
-        assert cli._pending_input.get_nowait() == "hello world"
+        queued = cli._pending_input.get_nowait()
+        # Voice transcripts are wrapped in the _VoiceInputMessage sentinel so
+        # only genuine STT output gets the voice prefix (#65827).
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "hello world"
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1203,6 +1304,56 @@ class TestVoiceStopAndTranscribeReal:
         cli._voice_stop_and_transcribe()
         cli._voice_start_recording.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("stt_config", "expected_model"),
+        [
+            ({"provider": "local", "model": "whisper-1", "local": {"model": "small"}}, "small"),
+            ({"provider": "local", "local": {"model": "tiny"}}, "tiny"),
+            ({"provider": "local", "model": "whisper-1"}, "base"),
+        ],
+    )
+    def test_local_stt_shows_model_download_status(self, stt_config, expected_model):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch("hermes_cli.config.load_config", return_value={"stt": stt_config}), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any(
+            f"local STT model '{expected_model}'" in message
+            and "first use may download it from Hugging Face" in message
+            for message in messages
+        )
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model=expected_model)
+
+    def test_non_local_stt_keeps_generic_transcribing_status(self):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"stt": {"provider": "openai", "model": "whisper-1"}},
+             ), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any("Transcribing..." in message for message in messages)
+        assert all("Hugging Face" not in message for message in messages)
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
+
     @patch("cli._cprint")
     @patch("cli.os.unlink")
     @patch("cli.os.path.isfile", return_value=True)
@@ -1278,7 +1429,10 @@ class TestVoiceBargeCaptureSubmit:
 
         cli._voice_submit_barge_utterance(str(wav))
 
-        assert cli._pending_input.get_nowait() == "stop, do it differently"
+        queued = cli._pending_input.get_nowait()
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "stop, do it differently"
         assert not cli._voice_barge_capture.is_set()
         assert not wav.exists()
 

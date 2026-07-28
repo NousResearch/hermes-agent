@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import weakref
@@ -26,9 +27,18 @@ from utils import normalize_proxy_url
 logger = logging.getLogger(__name__)
 
 # Audio file extensions Hermes recognizes for native audio delivery.
-# Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
-# should_send_media_as_audio() below.
-_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
+# Keep Telegram's narrower attachment/voice sets below separate: formats such
+# as MPEG-2 Layer II are audio to Hermes but unsupported by sendAudio/sendVoice.
+_AUDIO_MIME_TYPES = {
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".mp3": "audio/mpeg",
+    ".m2a": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/m4a",
+    ".flac": "audio/flac",
+}
+_AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either need to go through sendVoice (Opus/OGG) or must be
 # delivered as a regular document.
@@ -149,6 +159,32 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
             return is_voice
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
     return True
+
+
+def build_auto_tts_output_path(platform) -> str:
+    """Return a unique temp output path for gateway auto-TTS synthesis.
+
+    Platform-awareness lives HERE (the caller knows its platform), not in the
+    TTS tool's ``HERMES_SESSION_PLATFORM`` contextvar — that contextvar is
+    cleared by ``_clear_session_env`` before the post-handler auto-TTS block
+    in ``BasePlatformAdapter`` runs, so relying on it always produced MP3
+    (#57049, #36685). Platforms whose native voice bubbles require Ogg/Opus
+    (``tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the single source of truth)
+    get an explicit ``.ogg`` path; the tool's central container repair
+    (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every
+    provider, including MP3-only backends like Edge TTS. Everything else
+    keeps the MP3 default.
+    """
+    from tools.tts_tool import OPUS_VOICE_PLATFORMS
+
+    ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
+    audio_path = os.path.join(
+        tempfile.gettempdir(),
+        "hermes_voice",
+        f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}",
+    )
+    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+    return audio_path
 
 
 def utf16_len(s: str) -> int:
@@ -844,6 +880,18 @@ def get_audio_cache_dir() -> Path:
     return d
 
 
+def _sniff_audio_ext(data: bytes, fallback_ext: str) -> str:
+    """Prefer a container-matching extension when audio magic bytes are obvious.
+
+    Thin wrapper around the shared sniffer in ``tools.audio_container`` —
+    ONE module owns container detection for both the outbound TTS repair
+    (``tools/tts_tool.py``) and this inbound cache path.
+    """
+    from tools.audio_container import sniff_audio_ext
+
+    return sniff_audio_ext(data, fallback_ext)
+
+
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """
     Save raw audio bytes to the cache and return the absolute file path.
@@ -857,7 +905,8 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """
     validate_inbound_media_size(len(data), media_type="audio")
     cache_dir = get_audio_cache_dir()
-    filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
+    sniffed_ext = _sniff_audio_ext(data, ext)
+    filename = f"audio_{uuid.uuid4().hex[:12]}{sniffed_ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
@@ -1480,7 +1529,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Video (embed inline where supported)
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",
     # Audio (delivered as voice/audio where supported)
-    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
+    ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
     ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data
@@ -1838,7 +1887,7 @@ def cache_media_bytes(
         or default_kind == "image"
     )
     is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
-    is_audio = mime.startswith("audio/") or default_kind == "audio"
+    is_audio = mime.startswith("audio/") or ext in _AUDIO_EXTS or default_kind == "audio"
 
     if is_image:
         img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
@@ -1855,9 +1904,9 @@ def cache_media_bytes(
         return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
 
     if is_audio:
-        aud_ext = ext if ext in {".ogg", ".mp3", ".wav", ".m4a", ".opus", ".flac"} else ".ogg"
+        aud_ext = ext if ext in _AUDIO_EXTS else ".ogg"
         path = cache_audio_from_bytes(data, ext=aud_ext)
-        out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
+        out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES[aud_ext]
         return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
 
     # Any other file type is cached and surfaced to the agent as a local path
@@ -2267,11 +2316,16 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
     ``_transcribe_pending_audio_event_once``); if the cached event gains new
     media after the cache was populated, the stale transcript must be
     discarded so the next transcription call picks up the merged attachments.
+
+    Only the *derived* transcription cache is dropped.  The echo ledger
+    (``_gateway_pending_stt_echoed``) records which transcripts were already
+    delivered to the user and must survive the merge: the re-run transcription
+    returns the earlier notes again, so clearing the ledger would echo them a
+    second time.
     """
     for attr in (
         "_gateway_pending_stt_text",
         "_gateway_pending_stt_transcripts",
-        "_gateway_pending_stt_echo_sent",
     ):
         if hasattr(event, attr):
             delattr(event, attr)
@@ -3809,11 +3863,21 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     def prepare_tts_text(self, text: str) -> str:
-        """Prepare text for TTS. Override to filter tool output, code, etc.
+        """Prepare a spoken script for TTS.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Auto-TTS should not feed raw chat Markdown, ``<think>`` reasoning
+        blocks, or compact symbols to the speech provider.  It should receive
+        a transcript-like script: reasoning blocks removed, headings and
+        bullets flattened into sentence pauses, and units like ``°C``
+        expanded to words such as ``degrees Celsius``.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            return prepare_spoken_text(text, max_chars=4000)
+        except Exception:
+            # Keep auto-TTS best-effort if the normalizer ever fails.
+            text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
+            return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(
         self,
@@ -4138,6 +4202,15 @@ class BasePlatformAdapter(ABC):
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
+                # ``[[audio_as_voice]]`` is message-global, but it must only
+                # affect audio files. Tagging a non-audio file (image, video,
+                # document) as is_voice taints it: an image flagged is_voice is
+                # excluded from the embedded-photo batch and falls through to
+                # send_document, arriving as a file attachment instead of an
+                # inline photo. Gating on the extension lets one message carry
+                # an embedded image AND a voice bubble together.
+                ext = os.path.splitext(path)[1].lower()
+                is_voice = has_voice_tag and ext in _AUDIO_EXTS
                 try:
                     expanded = os.path.expanduser(path)
                 except (OSError, RuntimeError, ValueError):
@@ -4146,7 +4219,7 @@ class BasePlatformAdapter(ABC):
                     continue
                 if expanded not in seen_paths:
                     seen_paths.add(expanded)
-                    media.append((expanded, has_voice_tag))
+                    media.append((expanded, is_voice))
 
         for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
@@ -4157,7 +4230,8 @@ class BasePlatformAdapter(ABC):
                 continue
             safe = resolved[0]
             if safe not in seen_paths:
-                media.append((safe, has_voice_tag))
+                _safe_ext = os.path.splitext(safe)[1].lower()
+                media.append((safe, has_voice_tag and _safe_ext in _AUDIO_EXTS))
                 seen_paths.add(safe)
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
@@ -5515,6 +5589,7 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
+                _tts_requested_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -5526,18 +5601,37 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            # Pass an explicit platform-aware output path: the
+                            # HERMES_SESSION_PLATFORM contextvar the tool would
+                            # otherwise consult is already cleared by the time
+                            # this post-handler block runs, which silently
+                            # produced MP3 (audio attachment, not a native
+                            # voice bubble) on Opus platforms (#57049, #36685).
+                            _tts_requested_path = build_auto_tts_output_path(
+                                self.platform
+                            )
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool,
+                                text=speech_text,
+                                output_path=_tts_requested_path,
                             )
                             tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
+                            if tts_data.get("success", True):
+                                _tts_path = tts_data.get("file_path") or _tts_requested_path
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
+                _tts_cleanup_paths = {_tts_requested_path, _tts_path} - {None}
                 if _tts_path and Path(_tts_path).exists():
                     try:
+                        # Caption eligibility and payload stay on the ORIGINAL
+                        # reply text. The spoken script is for synthesis only:
+                        # normalization can shrink a long reply below the
+                        # 1024-char caption limit, and captioning that spoken
+                        # form would suppress the full formatted reply the
+                        # user is meant to receive as a separate message.
                         telegram_tts_caption = None
                         if (
                             self.platform == Platform.TELEGRAM
@@ -5555,8 +5649,15 @@ class BasePlatformAdapter(ABC):
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
                     finally:
+                        for _cleanup_path in _tts_cleanup_paths:
+                            try:
+                                os.remove(_cleanup_path)
+                            except OSError:
+                                pass
+                elif _tts_cleanup_paths:
+                    for _cleanup_path in _tts_cleanup_paths:
                         try:
-                            os.remove(_tts_path)
+                            os.remove(_cleanup_path)
                         except OSError:
                             pass
 

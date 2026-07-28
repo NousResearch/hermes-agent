@@ -37,7 +37,7 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
     yield
 
 
-def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
+def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text("max_concurrent_sessions: 1\n", encoding="utf-8")
@@ -56,23 +56,31 @@ def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
         monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
 
+        # Opening a chat must NOT take a slot. Every tile paint and every
+        # background reconnect-resume calls session.create, and an unprompted
+        # draft has no DB row and is filtered out of the sidebar — so a slot
+        # held here is invisible to the user while still starving the other
+        # surfaces that share this cap.
         first = server._methods["session.create"]("r1", {"cols": 80})
-        assert "result" in first
-        sid = first["result"]["session_id"]
-
         second = server._methods["session.create"]("r2", {"cols": 80})
-        assert second["error"]["message"] == (
-            "Hermes is at the active session limit (1/1). "
-            "Try again when another session finishes."
-        )
-        assert list(server._sessions) == [sid]
+        assert "result" in first and "result" in second
+        sid = first["result"]["session_id"]
+        other = second["result"]["session_id"]
+        assert active_session_registry_snapshot() == []
+
+        # The first turn is what claims the slot, and is re-entrant.
+        assert server._ensure_active_session_slot(sid, server._sessions[sid]) is None
+        assert server._ensure_active_session_slot(sid, server._sessions[sid]) is None
+        assert len(active_session_registry_snapshot()) == 1
+
+        blocked = server._ensure_active_session_slot(other, server._sessions[other])
+        assert "active session limit (1/1)" in blocked
 
         closed = server._methods["session.close"]("r3", {"session_id": sid})
         assert closed["result"]["closed"] is True
         assert active_session_registry_snapshot() == []
 
-        third = server._methods["session.create"]("r4", {"cols": 80})
-        assert "result" in third
+        assert server._ensure_active_session_slot(other, server._sessions[other]) is None
     finally:
         _clear_server_sessions()
         server._cfg_cache = None
@@ -1563,6 +1571,55 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
     finally:
         server._wake_owner_transport = None
         server._wake_owner_surface = ""
+
+
+def test_voice_record_start_forwards_max_recording_seconds(monkeypatch):
+    """voice.max_recording_seconds must reach start_continuous from the TUI.
+
+    The CLI wiring alone doesn't cover TUI recordings: the gateway forwards
+    recorder params explicitly, so a missing kwarg here silently leaves the
+    cap dead in the TUI while CLI tests stay green. Semantics mirror the
+    silence params: non-numeric / bool / missing falls back to the documented
+    120 default, an explicit numeric value <= 0 disables the cap.
+    """
+    captured: dict = {}
+
+    def fake_start_continuous(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=fake_start_continuous, stop_continuous=lambda: None
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    for cfg, expected in (
+        ({"max_recording_seconds": 45}, 45),        # explicit cap forwarded as-is
+        ({"max_recording_seconds": 0}, 0.0),        # explicit 0 = disabled
+        ({"max_recording_seconds": -5}, 0.0),       # negative = disabled
+        ({}, 120.0),                                # missing = documented default
+        ({"max_recording_seconds": True}, 120.0),   # bool must not become 1s cap
+        ({"max_recording_seconds": "long"}, 120.0), # garbage = documented default
+    ):
+        captured.clear()
+        monkeypatch.setattr(server, "_load_cfg", lambda c=cfg: {"voice": c})
+
+        resp = server.dispatch(
+            {
+                "id": "voice-record-cap",
+                "method": "voice.record",
+                "params": {"action": "start"},
+            }
+        )
+
+        assert "result" in resp, f"voice.record raised for cfg={cfg!r}: {resp.get('error')}"
+        assert resp["result"]["status"] == "recording"
+        assert (
+            captured["max_recording_seconds"] == expected
+        ), f"cfg={cfg!r} forwarded {captured.get('max_recording_seconds')!r}, expected {expected!r}"
 
 
 def test_voice_record_stop_forces_transcription(monkeypatch):

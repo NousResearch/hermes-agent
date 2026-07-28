@@ -18,6 +18,7 @@ from gateway.platforms.base import (
     validate_inbound_media_size,
     _log_safe_path,
     _prefix_within_utf16_limit,
+    cache_audio_from_bytes,
 )
 
 
@@ -118,6 +119,26 @@ class TestSafeUrlForLog:
         assert safe_url_for_log(url, max_len=3) == "..."
         assert safe_url_for_log(url, max_len=2) == ".."
         assert safe_url_for_log(url, max_len=0) == ""
+
+
+class TestCacheAudioFromBytes:
+    def test_sniffs_mp4_quicktime_audio_even_when_ext_is_ogg(self, tmp_path):
+        payload = b"\x00\x00\x00\x14ftypqt  " + b"\x00" * 32
+        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+            result = cache_audio_from_bytes(payload, ext=".ogg")
+
+        saved = tmp_path / os.path.basename(result)
+        assert saved.suffix == ".m4a"
+        assert saved.read_bytes() == payload
+
+    def test_preserves_fallback_ext_when_audio_header_is_unknown(self, tmp_path):
+        payload = b"not-a-known-audio-header"
+        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+            result = cache_audio_from_bytes(payload, ext=".aac")
+
+        saved = tmp_path / os.path.basename(result)
+        assert saved.suffix == ".aac"
+        assert saved.read_bytes() == payload
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +369,29 @@ class TestExtractMedia:
         assert len(media) == 1
         assert media[0][0] == "/path/to/voice.ogg"
         assert media[0][1] is True  # voice tag present
+
+    def test_voice_directive_only_taints_audio_files(self):
+        """[[audio_as_voice]] is message-global but must only flag audio files.
+
+        A non-audio file marked is_voice is excluded from the embedded-photo
+        batch and falls through to send_document, so an image sharing a
+        message with a voice note used to arrive as a file attachment
+        (#44826).
+        """
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/pic.png\nMEDIA:/tmp/voice.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        flags = dict(media)
+        assert flags["/tmp/pic.png"] is False
+        assert flags["/tmp/voice.ogg"] is True
+        assert "[[audio_as_voice]]" not in cleaned
+
+    def test_voice_directive_skips_video_and_documents(self):
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/clip.mp4\nMEDIA:/tmp/report.pdf\nMEDIA:/tmp/note.opus"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        flags = dict(media)
+        assert flags["/tmp/clip.mp4"] is False
+        assert flags["/tmp/report.pdf"] is False
+        assert flags["/tmp/note.opus"] is True
 
     def test_multiple_media_tags(self):
         content = "MEDIA:/a.ogg\nMEDIA:/b.ogg"
@@ -1604,7 +1648,7 @@ class TestShouldSendMediaAsAudio:
 
     def test_non_telegram_platforms_route_all_audio(self):
         from gateway.platforms.base import should_send_media_as_audio
-        for ext in (".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus"):
+        for ext in (".mp3", ".m2a", ".m4a", ".wav", ".flac", ".ogg", ".opus"):
             assert should_send_media_as_audio("discord", ext) is True
             assert should_send_media_as_audio("slack", ext) is True
 
@@ -1617,6 +1661,11 @@ class TestShouldSendMediaAsAudio:
         from gateway.platforms.base import should_send_media_as_audio
         assert should_send_media_as_audio("telegram", ".wav") is False
         assert should_send_media_as_audio("telegram", ".flac") is False
+
+    def test_telegram_m2a_falls_through_to_document(self):
+        from gateway.platforms.base import should_send_media_as_audio
+
+        assert should_send_media_as_audio("telegram", ".m2a") is False
 
     def test_telegram_ogg_opus_only_when_voice_flagged(self):
         from gateway.platforms.base import should_send_media_as_audio

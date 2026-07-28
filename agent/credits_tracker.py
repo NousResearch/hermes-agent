@@ -288,20 +288,12 @@ def evaluate_credits_notices(
                 current_band = band
     # Top-up suppression: when the account holds purchased (top-up) credits,
     # the subscription-cap gauge is the wrong denominator — warning "90% used"
-    # at a user sitting on $50 of top-up is noise (and it previously stuck
-    # PERMANENTLY alongside grant_spent at >=100%). Suppress the usage band
-    # entirely; the cap-reached case is covered by the grant_spent info notice
-    # below, which already names the remaining top-up balance. A top-up landing
-    # mid-session flips current_band → None and the clear path below removes
-    # any showing band line.
+    # at a user sitting on $50 of top-up is noise. Suppress the usage band
+    # entirely; /usage still reports the full balance breakdown. A top-up
+    # landing mid-session flips current_band → None and the clear path below
+    # removes any showing band line.
     if state.purchased_micros > 0:
         current_band = None
-    grant_cond = (
-        state.denominator_kind == "subscription_cap"
-        and uf is not None
-        and uf >= 1.0
-        and state.purchased_micros > 0
-    )
     depleted_cond = not state.paid_access
 
     # ── usage gauge (escalating single notice: 50 → 75 → 90) ──────────────────
@@ -339,22 +331,6 @@ def evaluate_credits_notices(
             )
             active.add(CREDITS_USAGE_KEY)
         latch["usage_band"] = target_band
-
-    # ── grant_spent ──────────────────────────────────────────────────────────
-    if grant_cond and "credits.grant_spent" not in active:
-        to_show.append(
-            AgentNotice(
-                text=f"• Grant spent · ${state.purchased_usd} top-up left",
-                level="info",
-                kind=CREDITS_NOTICE_KIND,
-                key="credits.grant_spent",
-                id="credits.grant_spent",
-            )
-        )
-        active.add("credits.grant_spent")
-    elif "credits.grant_spent" in active and not grant_cond:
-        to_clear.append("credits.grant_spent")
-        active.discard("credits.grant_spent")
 
     # ── depleted ─────────────────────────────────────────────────────────────
     # Suppressed while the active model is free: inference still works there,
@@ -627,7 +603,7 @@ _DEV_FIXTURES: dict[str, dict] = {
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
         denominator_kind="subscription_cap", paid_access=True,
     ),
-    "grant_exhausted": dict(  # used_fraction == 1.0 + purchased>0 → credits.grant_spent
+    "grant_exhausted": dict(  # cap reached + purchased>0 → no notice (gauge suppressed by top-up)
         remaining_micros=12_340_000, remaining_usd="12.34",
         subscription_micros=0, subscription_usd="0.00",
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",

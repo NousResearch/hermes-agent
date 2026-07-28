@@ -896,16 +896,19 @@ def _xai_oauth_logged_in_for_setup() -> bool:
 def _run_xai_oauth_login_from_setup() -> bool:
     """Run the xAI Grok OAuth device-code login from inside the setup wizard.
 
+    Saves OAuth tokens only. Does **not** switch the active inference
+    provider or rewrite ``model.provider`` — callers (TTS setup, tools
+    config) only need credentials for side tools.
+
     Returns True on success, False on any failure (the caller falls back
     to whatever the user picked next, e.g. Edge TTS).
     """
     try:
         from hermes_cli.auth import (
-            DEFAULT_XAI_OAUTH_BASE_URL,
             _is_remote_session,
             _save_xai_oauth_tokens,
-            _update_config_for_provider,
             _xai_oauth_device_code_login,
+            unsuppress_credential_source,
         )
     except Exception as exc:
         print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
@@ -922,10 +925,11 @@ def _run_xai_oauth_login_from_setup() -> bool:
             redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
             auth_mode="oauth_device_code",
+            set_active=False,
         )
-        _update_config_for_provider(
-            "xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL)
-        )
+        # Mirror model/dashboard re-login: clear device_code suppression so
+        # the pool can seed from the singleton after a prior `auth remove`.
+        unsuppress_credential_source("xai-oauth", "device_code")
         return True
     except Exception as exc:
         print_warning(f"xAI Grok OAuth login failed: {exc}")
@@ -2222,6 +2226,37 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
+# Shared Metrics
+# =============================================================================
+
+
+def setup_telemetry(config: dict):
+    """Configure the local, privacy-safe shared-metrics subscriber."""
+    print_header("Shared Metrics")
+    print_info("Shared metrics contain only bounded counters and histograms.")
+    print_info("Packages stay under this Hermes profile and are not uploaded.")
+
+    telemetry = config.get("telemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+        config["telemetry"] = telemetry
+    shared_metrics = telemetry.get("shared_metrics")
+    if not isinstance(shared_metrics, dict):
+        shared_metrics = {}
+        telemetry["shared_metrics"] = shared_metrics
+
+    current = shared_metrics.get("enabled") is True
+    shared_metrics["enabled"] = prompt_yes_no(
+        "Enable local shared metrics?",
+        default=current,
+    )
+    if shared_metrics["enabled"]:
+        print_success("Local shared metrics enabled.")
+    else:
+        print_info("Local shared metrics disabled.")
+
+
+# =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
 
@@ -2629,6 +2664,7 @@ SETUP_SECTIONS = [
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
+    ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
@@ -2727,6 +2763,7 @@ def run_setup_wizard(args):
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
+      hermes setup telemetry — just local shared metrics
       hermes setup agent     — just agent settings
     """
     from hermes_cli.config import is_managed, managed_error

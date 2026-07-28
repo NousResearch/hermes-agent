@@ -21,6 +21,7 @@ Two usage modes are exposed:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -249,10 +250,13 @@ def _beeps_enabled() -> bool:
     """CLI parity: voice.beep_enabled in config.yaml (default True)."""
     try:
         from hermes_cli.config import load_config
+        from utils import is_truthy_value
 
         voice_cfg = load_config().get("voice", {})
         if isinstance(voice_cfg, dict):
-            return bool(voice_cfg.get("beep_enabled", True))
+            # is_truthy_value handles quoted YAML strings like "false"
+            # which bool() would misread as True (#49883).
+            return is_truthy_value(voice_cfg.get("beep_enabled", True), default=True)
     except Exception:
         pass
     return True
@@ -374,6 +378,7 @@ def start_continuous(
     silence_threshold: int = 200,
     silence_duration: float = 3.0,
     auto_restart: bool = True,
+    max_recording_seconds: float = 0.0,
 ) -> bool:
     """Start a VAD-driven continuous recording loop.
 
@@ -391,6 +396,10 @@ def start_continuous(
 
     ``on_status`` is called with ``"listening"`` / ``"transcribing"`` /
     ``"idle"`` so the UI can show a live indicator.
+
+    ``max_recording_seconds`` is the hard cap on a single recording's length
+    (``voice.max_recording_seconds``); any non-positive or non-numeric value
+    disables the cap, preserving the previous unbounded behaviour.
     """
     global _continuous_active, _continuous_recorder, _continuous_auto_restart
     global _continuous_on_transcript, _continuous_on_status, _continuous_on_silent_limit
@@ -416,6 +425,15 @@ def start_continuous(
 
         _continuous_recorder._silence_threshold = silence_threshold
         _continuous_recorder._silence_duration = silence_duration
+        # Same numeric-with-bool-excluded guard as the CLI wiring in
+        # cli.py:_voice_start_recording — <= 0 (or garbage) disables the cap.
+        _continuous_recorder._max_recording_seconds = (
+            max_recording_seconds
+            if isinstance(max_recording_seconds, (int, float))
+            and not isinstance(max_recording_seconds, bool)
+            and max_recording_seconds > 0
+            else 0.0
+        )
         rec = _continuous_recorder
 
     _debug(
@@ -801,18 +819,25 @@ def speak_text(text: str) -> None:
     try:
         from tools.tts_tool import text_to_speech_tool
 
-        tts_text = text[:4000] if len(text) > 4000 else text
-        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
-        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
-        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
-        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
-        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
-        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
-        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
-        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
-        tts_text = tts_text.strip()
+        # Shared cleaner (tools/tts_text_normalize): markdown, emoji,
+        # <think> blocks, verifier footer, units, newline flattening.
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            tts_text = prepare_spoken_text(text, max_chars=4000)
+        except Exception:
+            # Legacy fallback pipeline — keep speak_text best-effort.
+            tts_text = text[:4000] if len(text) > 4000 else text
+            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
+            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
+            tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
+            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
+            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
+            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
+            tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
+            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
+            tts_text = tts_text.strip()
         if not tts_text:
             return
 
@@ -827,20 +852,34 @@ def speak_text(text: str) -> None:
         )
 
         _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
-        text_to_speech_tool(text=tts_text, output_path=mp3_path)
+        raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)
+        try:
+            tts_result = json.loads(raw_result) if isinstance(raw_result, str) else {}
+        except Exception:
+            tts_result = {}
 
-        if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-            _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
-            play_audio_file(mp3_path)
+        # Prefer the requested MP3 when the provider produced it. This
+        # preserves reliable local playback while still supporting providers
+        # that write to and return a different path.
+        audio_path = mp3_path
+        if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) == 0:
+            audio_path = tts_result.get("file_path") or mp3_path
+
+        if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
+            _debug(f"speak_text: playing {audio_path} ({os.path.getsize(audio_path)} bytes)")
+            play_audio_file(audio_path)
             try:
-                os.unlink(mp3_path)
-                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                if os.path.isfile(ogg_path):
-                    os.unlink(ogg_path)
+                cleanup_paths = {audio_path, mp3_path}
+                for path in list(cleanup_paths):
+                    ogg_path = path.rsplit(".", 1)[0] + ".ogg"
+                    cleanup_paths.add(ogg_path)
+                for path in cleanup_paths:
+                    if os.path.isfile(path):
+                        os.unlink(path)
             except OSError:
                 pass
         else:
-            _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
+            _debug(f"speak_text: TTS tool produced no audio at {audio_path}")
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)
         _debug(f"speak_text raised {type(e).__name__}: {e}")

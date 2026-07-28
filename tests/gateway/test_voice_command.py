@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -717,6 +718,18 @@ class TestVoiceReceiver:
         completed = receiver.check_silence()
         assert len(completed) == 0
 
+    def test_flush_pending_returns_recent_utterance_before_silence(self):
+        """Disconnect drains a valid utterance even before silence is detected."""
+        receiver = self._make_receiver()
+        receiver.map_ssrc(100, 42)
+        pcm_data = bytearray(b"\x00" * 96000)
+        receiver._buffers[100] = pcm_data
+        receiver._last_packet_time[100] = time.monotonic()
+
+        assert receiver.flush_pending() == [(42, bytes(pcm_data))]
+        assert 100 not in receiver._buffers
+        assert 100 not in receiver._last_packet_time
+
     def test_check_silence_unknown_user_discarded(self):
         receiver = self._make_receiver()
         # No SSRC mapping — user_id will be 0
@@ -724,6 +737,59 @@ class TestVoiceReceiver:
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 0
+
+    def test_ffmpeg_resolver_finds_winget_install_when_not_on_path(self, monkeypatch, tmp_path):
+        """Windows winget installs ffmpeg outside PATH; Discord voice should still find it."""
+        from plugins.platforms.discord import ffmpeg_utils
+
+        ffmpeg = (
+            tmp_path
+            / "Microsoft"
+            / "WinGet"
+            / "Packages"
+            / "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
+            / "ffmpeg-7.1-full_build"
+            / "bin"
+            / "ffmpeg.exe"
+        )
+        ffmpeg.parent.mkdir(parents=True)
+        ffmpeg.write_text("", encoding="utf-8")
+
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        # Discovery delegates to tools.transcription_tools; simulate "not found".
+        monkeypatch.setattr(ffmpeg_utils, "_shared_find_ffmpeg", lambda: None)
+
+        assert ffmpeg_utils.resolve_ffmpeg_executable() == str(ffmpeg)
+
+    def test_ffmpeg_resolver_delegates_to_shared_helper(self, monkeypatch):
+        """PATH/local-prefix discovery is owned by tools.transcription_tools."""
+        from plugins.platforms.discord import ffmpeg_utils
+
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg"
+        )
+
+        assert ffmpeg_utils.resolve_ffmpeg_executable() == "/opt/homebrew/bin/ffmpeg"
+
+    def test_pcm_to_wav_uses_resolved_ffmpeg_executable(self, monkeypatch, tmp_path):
+        """Receiver conversion should use the same resolved executable as playback."""
+        from plugins.platforms.discord import adapter as discord_adapter
+        from plugins.platforms.discord.adapter import VoiceReceiver
+
+        calls = []
+        monkeypatch.setattr(discord_adapter, "resolve_ffmpeg_executable", lambda: r"C:\tools\ffmpeg.exe")
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+
+        monkeypatch.setattr(discord_adapter.subprocess, "run", fake_run)
+
+        VoiceReceiver.pcm_to_wav(b"\x00\x00" * 100, str(tmp_path / "out.wav"))
+
+        assert calls
+        assert calls[0][0][0] == r"C:\tools\ffmpeg.exe"
 
     def test_stale_buffer_discarded(self):
         receiver = self._make_receiver()
@@ -965,6 +1031,39 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
+    async def test_input_resolves_channel_prompt(self, runner):
+        """Voice input must carry the bound text channel's channel_prompt (#50149)."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value="Be terse in #dev.")
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        mock_adapter._resolve_channel_prompt.assert_called_once_with("123")
+        event = mock_adapter.handle_message.call_args[0][0]
+        assert event.channel_prompt == "Be terse in #dev."
+
+    @pytest.mark.asyncio
+    async def test_input_channel_prompt_resolver_failure_is_non_fatal(self, runner):
+        """A failing channel_prompt resolver must not block voice input."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(side_effect=RuntimeError("boom"))
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        event = mock_adapter.handle_message.call_args[0][0]
+        assert event.channel_prompt is None
+
+    @pytest.mark.asyncio
     async def test_input_reuses_bound_source_metadata(self, runner):
         """Voice input should share the linked text channel session metadata."""
         from gateway.config import Platform
@@ -1160,6 +1259,37 @@ class TestDiscordVoiceChannelMethods:
         assert 111 not in adapter._voice_receivers
 
     @pytest.mark.asyncio
+    async def test_leave_voice_channel_processes_pending_audio_before_disconnect(self):
+        """Recent speech is transcribed before the voice connection is torn down."""
+        adapter = self._make_adapter()
+        events = []
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+
+        async def disconnect():
+            events.append("disconnect")
+
+        mock_vc.disconnect = disconnect
+        adapter._voice_clients[111] = mock_vc
+
+        mock_receiver = MagicMock()
+        mock_receiver.flush_pending.side_effect = lambda: events.append("flush") or [(42, b"pcm")]
+        mock_receiver.stop.side_effect = lambda: events.append("stop")
+        adapter._voice_receivers[111] = mock_receiver
+        adapter._voice_listen_tasks[111] = MagicMock()
+        adapter._is_allowed_user = MagicMock(return_value=True)
+
+        async def process(guild_id, user_id, pcm_data):
+            events.append("process")
+
+        adapter._process_voice_input = process
+
+        await adapter.leave_voice_channel(111)
+
+        assert events == ["flush", "stop", "process", "disconnect"]
+        adapter._is_allowed_user.assert_called_once_with("42", guild=adapter._client.get_guild(111), is_dm=False)
+
+    @pytest.mark.asyncio
     async def test_leave_voice_channel_no_connection(self):
         """Leave when not connected — no crash."""
         adapter = self._make_adapter()
@@ -1208,6 +1338,93 @@ class TestDiscordVoiceChannelMethods:
         adapter = self._make_adapter()
         result = await adapter.play_in_voice_channel(111, "/tmp/test.ogg")
         assert result is False
+
+    def test_voice_timeout_zero_disables_auto_leave(self):
+        adapter = self._make_adapter()
+        adapter._voice_timeout_seconds = 0
+        existing_task = MagicMock()
+        adapter._voice_timeout_tasks[111] = existing_task
+
+        adapter._reset_voice_timeout(111)
+
+        existing_task.cancel.assert_called_once()
+        assert adapter._voice_timeout_tasks == {}
+
+    def test_discord_voice_timeout_config_loaded(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import PlatformConfig
+
+        with patch("hermes_cli.config.read_raw_config", return_value={
+            "discord": {
+                "voice_channel_inactivity_timeout_seconds": 0,
+                "voice_playback_timeout_seconds": 240,
+            }
+        }):
+            adapter = DiscordAdapter(PlatformConfig(enabled=True, token="x"))
+
+        assert adapter._voice_timeout_seconds == 0
+        assert adapter._playback_timeout_seconds == 240
+
+    @pytest.mark.asyncio
+    async def test_playback_timeout_scales_with_audio_duration(self):
+        adapter = self._make_adapter()
+        adapter._playback_timeout_seconds = 120
+        adapter._probe_audio_duration_seconds = MagicMock(return_value=180.5)
+
+        timeout = await adapter._playback_timeout_for_audio("/tmp/long.mp3")
+
+        assert timeout == pytest.approx(210.5)
+
+    @pytest.mark.asyncio
+    async def test_playback_timeout_uses_floor_when_duration_unknown(self):
+        adapter = self._make_adapter()
+        adapter._playback_timeout_seconds = 240
+        adapter._probe_audio_duration_seconds = MagicMock(return_value=None)
+
+        timeout = await adapter._playback_timeout_for_audio("/tmp/unknown.mp3")
+
+        assert timeout == pytest.approx(240.0)
+
+    @pytest.mark.asyncio
+    async def test_play_in_voice_channel_uses_duration_aware_timeout(self):
+        adapter = self._make_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        adapter._voice_clients[111] = mock_vc
+        adapter._playback_timeout_for_audio = AsyncMock(return_value=211.0)
+        adapter._cancel_voice_timeout = MagicMock()
+        adapter._reset_voice_timeout = MagicMock()
+
+        def _play(_source, after):
+            after(None)
+        mock_vc.play.side_effect = _play
+
+        with patch("plugins.platforms.discord.adapter.discord") as mock_discord:
+            mock_discord.FFmpegPCMAudio.return_value = MagicMock()
+            mock_discord.PCMVolumeTransformer.return_value = MagicMock()
+            result = await adapter.play_in_voice_channel(111, "/tmp/long.mp3")
+
+        assert result is True
+        adapter._playback_timeout_for_audio.assert_awaited_once_with("/tmp/long.mp3")
+        adapter._cancel_voice_timeout.assert_called_once_with(111)
+        adapter._reset_voice_timeout.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_play_in_voice_channel_rearms_timeout_when_probe_fails(self):
+        adapter = self._make_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        adapter._voice_clients[111] = mock_vc
+        adapter._playback_timeout_for_audio = AsyncMock(side_effect=RuntimeError("probe failed"))
+        adapter._cancel_voice_timeout = MagicMock()
+        adapter._reset_voice_timeout = MagicMock()
+
+        with pytest.raises(RuntimeError, match="probe failed"):
+            await adapter.play_in_voice_channel(111, "/tmp/bad.mp3")
+
+        adapter._cancel_voice_timeout.assert_called_once_with(111)
+        adapter._reset_voice_timeout.assert_called_once_with(111)
 
     def test_is_allowed_user_empty_list(self):
         adapter = self._make_adapter()
@@ -1872,14 +2089,23 @@ class TestSendVoiceReplyFilename:
     """_send_voice_reply uses uuid for unique filenames."""
 
     def test_filename_uses_uuid(self):
-        """The method uses uuid in the filename, not time-based."""
+        """The path builder uses uuid in the filename, not time-based.
+
+        Filename construction moved into build_auto_tts_output_path
+        (gateway/platforms/base.py) when the path became platform-aware;
+        the uniqueness contract lives there now.
+        """
         import inspect
+        from gateway.platforms.base import build_auto_tts_output_path
         from gateway.run import GatewayRunner
-        source = inspect.getsource(GatewayRunner._send_voice_reply)
+        source = inspect.getsource(build_auto_tts_output_path)
         assert "uuid" in source, \
-            "_send_voice_reply should use uuid for unique filenames"
+            "build_auto_tts_output_path should use uuid for unique filenames"
         assert "int(time.time())" not in source, \
-            "_send_voice_reply should not use int(time.time()) — collision risk"
+            "build_auto_tts_output_path should not use int(time.time()) — collision risk"
+        runner_source = inspect.getsource(GatewayRunner._send_voice_reply)
+        assert "build_auto_tts_output_path" in runner_source, \
+            "_send_voice_reply should build its path via build_auto_tts_output_path"
 
     def test_filenames_are_unique(self):
         """Two calls produce different filenames."""
@@ -2062,14 +2288,36 @@ class TestPlaybackTimeout:
         source = inspect.getsource(DiscordAdapter.play_in_voice_channel)
         assert "wait_for" in source, \
             "play_in_voice_channel must use asyncio.wait_for for timeout"
-        assert "PLAYBACK_TIMEOUT" in source, \
-            "play_in_voice_channel must reference PLAYBACK_TIMEOUT constant"
+        assert "_playback_timeout_for_audio" in source, \
+            "play_in_voice_channel must use duration-aware playback timeout helper"
 
     def test_playback_timeout_constant_exists(self):
         """PLAYBACK_TIMEOUT constant is defined on DiscordAdapter."""
         from plugins.platforms.discord.adapter import DiscordAdapter
         assert hasattr(DiscordAdapter, "PLAYBACK_TIMEOUT")
         assert DiscordAdapter.PLAYBACK_TIMEOUT > 0
+
+    def test_voice_playback_passes_resolved_ffmpeg_executable(self, monkeypatch):
+        """discord.py playback should receive the resolved ffmpeg path via executable=."""
+        from plugins.platforms.discord import adapter as discord_adapter
+
+        adapter = self._make_discord_adapter()
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        mock_vc.play.side_effect = lambda _source, after=None: after and after(None)
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_timeout_tasks[111] = MagicMock()
+
+        monkeypatch.setattr(discord_adapter, "resolve_ffmpeg_executable", lambda: r"C:\tools\ffmpeg.exe")
+
+        with patch("discord.FFmpegPCMAudio") as ffmpeg_audio, \
+             patch("discord.PCMVolumeTransformer", side_effect=lambda source, **_kw: source):
+            result = asyncio.run(adapter.play_in_voice_channel(111, "/tmp/test.mp3"))
+
+        assert result is True
+        ffmpeg_audio.assert_called_once_with("/tmp/test.mp3", executable=r"C:\tools\ffmpeg.exe")
 
     @pytest.mark.asyncio
     async def test_playback_timeout_fires(self):

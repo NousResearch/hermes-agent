@@ -25,7 +25,7 @@ interface NoticeStep {
 }
 
 // Walks the same lifecycle the Nous credits tracker drives: usage escalates in
-// place (50→75→90, one key), then grant-spent, then the depleted/restored pair.
+// place (50→75→90, one key), then the depleted/restored pair.
 // Wraps around. These are all separate SHOW steps; the stepper auto-clears the
 // previous notice when the key changes, so the demo shows one toast at a time
 // (real usage CAN stack these, but that's noise when you're eyeballing a single
@@ -34,7 +34,6 @@ const STEPS: readonly NoticeStep[] = [
   { key: 'credits.usage', kind: 'sticky', level: 'info', text: "• You've used $110.00 of your $220.00 cap" },
   { key: 'credits.usage', kind: 'sticky', level: 'warn', text: "⚠ You've used $165.00 of your $220.00 cap" },
   { key: 'credits.usage', kind: 'sticky', level: 'warn', text: "⚠ You've used $198.00 of your $220.00 cap" },
-  { key: 'credits.grant_spent', kind: 'sticky', level: 'info', text: '• Grant spent · $12.00 top-up left' },
   { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ Credit access paused · run /topup to top up' },
   { key: 'credits.restored', kind: 'ttl', level: 'success', text: '✓ Credit access restored', ttl_ms: 8000 }
 ]

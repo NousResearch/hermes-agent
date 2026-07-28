@@ -29,10 +29,13 @@ Usage::
 
 import logging
 import os
+import platform
+import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -62,6 +65,22 @@ def get_env_value(name, default=None):
     value = _get_env_value(name)
     return default if value is None else value
 
+
+def _resolve_provider_key(env_var: str, provider_id: str) -> str:
+    """Resolve an STT provider API key via the shared voice-key resolver.
+
+    Delegates to ``tools.tool_backend_helpers.resolve_provider_secret`` —
+    the single owner of STT/TTS key resolution (config > env/.env > the
+    credential pool populated by ``hermes auth add <provider_id>``).
+    Resolved at call time so tests that reload the helpers module see the
+    live function.
+    """
+    try:
+        from tools.tool_backend_helpers import resolve_provider_secret
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        return str(get_env_value(env_var) or "").strip()
+    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
 # ---------------------------------------------------------------------------
@@ -79,6 +98,7 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+_HAS_PILK = _safe_find_spec("pilk")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -101,7 +121,7 @@ XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -112,6 +132,10 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+# Guards the check-then-load of the module-global model cache above.
+# Without it, two concurrent voice messages can both see `_local_model is
+# None` and download/load the whisper model twice (#24767).
+_local_model_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -190,6 +214,38 @@ def _find_ffmpeg_binary() -> Optional[str]:
     return _find_binary("ffmpeg")
 
 
+def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
+    """Transcode ``file_path`` to a compact, broadly-accepted .m4a for STT upload.
+
+    Newer OpenAI transcription models (``gpt-4o-transcribe``,
+    ``gpt-4o-mini-transcribe``) reject some containers the legacy ``whisper-1``
+    endpoint accepted -- notably the Ogg/Opus voice notes messaging apps send --
+    and gateway downloads occasionally arrive with a misleading extension.
+    Normalizing to 16 kHz mono AAC/m4a produces a small file the endpoints
+    accept. Returns ``(converted_path, None)`` on success or ``(None, error)``.
+    """
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        return None, "audio needs transcoding for the STT API, but ffmpeg was not found"
+    converted_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-stt.m4a")
+    command = [
+        ffmpeg, "-y", "-i", file_path,
+        "-vn", "-ac", "1", "-ar", "16000",
+        "-c:a", "aac", "-b:a", "32k", "-movflags", "+faststart",
+        converted_path,
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+        return converted_path, None
+    except subprocess.CalledProcessError as exc:
+        details = exc.stderr.strip() or exc.stdout.strip() or str(exc)
+        logger.error("ffmpeg STT transcode failed for %s: %s", file_path, details)
+        return None, f"failed to transcode audio for the STT API: {details}"
+    except Exception as exc:  # noqa: BLE001 - transcode is best-effort
+        logger.error("unexpected STT transcode failure for %s: %s", file_path, exc, exc_info=True)
+        return None, f"failed to transcode audio for the STT API: {exc}"
+
+
 def _find_whisper_binary() -> Optional[str]:
     return _find_binary("whisper")
 
@@ -257,8 +313,20 @@ def _try_lazy_install_stt() -> bool:
         import importlib.util as _iu
         if _iu.find_spec("faster_whisper"):
             return True
+        logger.warning(
+            "faster-whisper was installed but importlib still cannot find it "
+            "(may require Python restart)"
+        )
     except Exception as exc:
-        logger.debug("Lazy install of faster-whisper failed: %s", exc)
+        logger.warning(
+            "Lazy install of faster-whisper failed: %s. "
+            "This is often a permission issue: the Hermes process user cannot "
+            "write to the virtual environment. Try running manually as the "
+            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
+            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
+            "uv pip install faster-whisper==1.2.1'`",
+            exc,
+        )
     return False
 
 
@@ -374,6 +442,14 @@ def _resolve_command_stt_provider_config(
     if _is_command_stt_provider_config(config):
         return config
     return None
+
+
+def _is_local_stt_provider(provider: str, stt_config: Dict[str, Any]) -> bool:
+    """Return whether *provider* is exempt from Hermes's remote upload cap."""
+    key = (provider or "").lower().strip()
+    if key in {"local", "local_command"}:
+        return True
+    return False
 
 
 def _iter_command_stt_providers(stt_config: Dict[str, Any]):
@@ -827,7 +903,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "groq":
-            if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
+            if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
                 return "groq"
             logger.warning(
                 "STT provider 'groq' configured but GROQ_API_KEY not set"
@@ -843,7 +919,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "mistral":
-            if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+            if _HAS_MISTRAL and _resolve_provider_key("MISTRAL_API_KEY", "mistral"):
                 return "mistral"
             logger.warning(
                 "STT provider 'mistral' configured but mistralai package "
@@ -862,7 +938,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "elevenlabs":
-            if get_env_value("ELEVENLABS_API_KEY"):
+            if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
                 return "elevenlabs"
             logger.warning(
                 "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
@@ -870,7 +946,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "deepinfra":
-            if _HAS_OPENAI and (get_env_value("DEEPINFRA_API_KEY") or "").strip():
+            if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
                 return "deepinfra"
             logger.warning(
                 "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set "
@@ -895,7 +971,7 @@ def _get_provider(stt_config: dict) -> str:
     # Try lazy-install before falling through to cloud providers
     if _try_lazy_install_stt():
         return "local"
-    if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
+    if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
     if _HAS_OPENAI and _has_openai_audio_backend():
@@ -904,7 +980,7 @@ def _get_provider(stt_config: dict) -> str:
     # Only auto-select Mistral if the SDK is already present — don't trigger a
     # lazy-install during passive auto-detection. Explicit `provider: mistral`
     # (above) does lazy-install on first transcription call.
-    if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+    if _HAS_MISTRAL and _resolve_provider_key("MISTRAL_API_KEY", "mistral"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
     try:
@@ -915,13 +991,29 @@ def _get_provider(stt_config: dict) -> str:
             return "xai"
     except Exception:
         pass
-    if get_env_value("ELEVENLABS_API_KEY"):
+    if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
-    if _HAS_OPENAI and (get_env_value("DEEPINFRA_API_KEY") or "").strip():
+    if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
         logger.info("No local STT available, using DeepInfra Whisper API")
         return "deepinfra"
     return "none"
+
+
+def _unregistered_stt_provider_error(provider: str) -> Dict[str, Any]:
+    key = str(provider or "").strip()
+    return {
+        "success": False,
+        "transcript": "",
+        "provider": key,
+        "error_type": "provider_not_registered",
+        "error": (
+            f"stt.provider='{key}' is set but no built-in, command, or plugin "
+            "provider registered that name. Run `hermes plugins list` to see "
+            "installed STT plugins, or configure a command provider under "
+            f"`stt.providers.{key}.command`."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -940,8 +1032,8 @@ def _dispatch_to_plugin_provider(
     """Route the call to a plugin-registered transcription provider, or
     return None.
 
-    Returns the transcribe-response dict on dispatch, or ``None`` to
-    fall through to the legacy "No STT provider available" error path.
+    Returns the transcribe-response dict on dispatch, or ``None`` when no
+    plugin claimed the provider name.
 
     Resolution invariants enforced here:
 
@@ -959,8 +1051,8 @@ def _dispatch_to_plugin_provider(
     3. Plugin dispatch fires only when ``provider`` matches a
        registered :class:`TranscriptionProvider` whose ``name`` equals
        the configured value. Unknown names with no plugin registered
-       return None (caller surfaces the legacy "No STT provider"
-       message).
+       return None (caller surfaces the configured-provider error when
+       the name came from ``stt.provider``).
     4. Availability gating: when the matched plugin reports
        ``is_available() == False`` (missing API key, missing optional
        SDK, etc.) this returns an error envelope identifying the
@@ -1077,8 +1169,27 @@ def _dispatch_to_plugin_provider(
 # ---------------------------------------------------------------------------
 
 
-def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
-    """Validate the audio file.  Returns an error dict or None if OK."""
+def _validate_audio_file_size(audio_path: Path) -> Optional[Dict[str, Any]]:
+    """Return an error when *audio_path* exceeds the remote upload cap."""
+    try:
+        file_size = audio_path.stat().st_size
+    except OSError as e:
+        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
+    if file_size > MAX_FILE_SIZE:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
+        }
+    return None
+
+
+def _validate_audio_source_file(
+    file_path: str,
+    *,
+    enforce_size_limit: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Validate source path safety (and optionally size) before any decoder runs."""
     audio_path = Path(file_path)
 
     if os.path.islink(audio_path):
@@ -1087,24 +1198,76 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
         return {"success": False, "transcript": "", "error": f"Audio file not found: {file_path}"}
     if not audio_path.is_file():
         return {"success": False, "transcript": "", "error": f"Path is not a file: {file_path}"}
+    if enforce_size_limit:
+        return _validate_audio_file_size(audio_path)
+    try:
+        audio_path.stat()
+    except OSError as e:
+        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
+    return None
+
+
+def _validate_audio_file(
+    file_path: str,
+    *,
+    enforce_size_limit: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Validate a supported, decoder-safe audio file."""
+    source_error = _validate_audio_source_file(
+        file_path, enforce_size_limit=enforce_size_limit
+    )
+    if source_error:
+        return source_error
+
+    audio_path = Path(file_path)
     if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
         return {
             "success": False,
             "transcript": "",
             "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
         }
-    try:
-        file_size = audio_path.stat().st_size
-        if file_size > MAX_FILE_SIZE:
-            return {
+    return None
+
+
+def _prepare_audio_for_transcription(
+    file_path: str,
+) -> tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Convert a decoder-safe .silk source to a temporary supported WAV file."""
+    audio_path = Path(file_path)
+    if audio_path.suffix.lower() != ".silk":
+        return file_path, None, None
+    if not _HAS_PILK:
+        # pilk is a tiny silk-v3 codec binding — lazy-install it on first
+        # .silk voice note instead of bloating the base install.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("stt.silk", prompt=False)
+        except Exception:
+            pass
+        if not _safe_find_spec("pilk"):
+            return None, None, {
                 "success": False,
                 "transcript": "",
-                "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
+                "error": "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription.",
             }
-    except OSError as e:
-        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
 
-    return None
+    temp_dir = tempfile.mkdtemp(prefix="hermes-silk-")
+    converted_path = os.path.join(temp_dir, f"{audio_path.stem}.wav")
+    try:
+        import pilk
+
+        pilk.silk_to_wav(file_path, converted_path)
+        if not Path(converted_path).is_file() or Path(converted_path).stat().st_size == 0:
+            raise RuntimeError("pilk did not produce a readable WAV file")
+        return converted_path, temp_dir, None
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error("Failed to convert .silk audio %s: %s", file_path, exc, exc_info=True)
+        return None, None, {
+            "success": False,
+            "transcript": "",
+            "error": f"Failed to convert .silk audio for transcription: {exc}",
+        }
 
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
@@ -1127,6 +1290,7 @@ _CUDA_LIB_ERROR_MARKERS = (
     "cannot be loaded",
     "cannot open shared object",
     "no kernel image is available",
+    "CUBLAS_STATUS_NOT_SUPPORTED",
     "no CUDA-capable device",
     "CUDA driver version is insufficient",
 )
@@ -1144,7 +1308,43 @@ def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
 
 
-def _load_local_whisper_model(model_name: str):
+def _sysctl_value(name: str) -> str:
+    """Return a sysctl value, or an empty string when unavailable."""
+    try:
+        return subprocess.check_output(
+            ["/usr/sbin/sysctl", "-n", name],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _should_force_faster_whisper_cpu() -> bool:
+    """Avoid faster-whisper device autodetection paths known to hard-abort.
+
+    On Apple Silicon, especially when Python is running as x86_64 under
+    Rosetta, ctranslate2's ``device=\"auto\"`` path can abort inside native
+    code before Python can catch an exception.  Force CPU so local STT remains
+    reliable for gateway voice messages.
+    """
+    if platform.system() != "Darwin":
+        return False
+
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return True
+
+    # Under Rosetta, platform.machine() reports x86_64.  sysctl.proc_translated
+    # tells us this process is translated, while hw.optional.arm64 distinguishes
+    # Apple Silicon hosts from Intel Macs.
+    if _sysctl_value("sysctl.proc_translated") == "1":
+        return True
+    return _sysctl_value("hw.optional.arm64") == "1"
+
+
+def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback.
 
     faster-whisper's ``device="auto"`` picks CUDA when the ctranslate2 wheel
@@ -1154,12 +1354,31 @@ def _load_local_whisper_model(model_name: str):
     On those hosts the load itself sometimes succeeds and the dlopen failure
     only surfaces at first ``transcribe()`` call.
 
-    We try ``auto`` first (fast CUDA path when it works), and on any CUDA
-    library load failure fall back to CPU + int8.
+    ``device`` / ``compute_type`` default to ``"auto"`` so the historical
+    behaviour is unchanged; pass explicit values from ``stt.local.device`` /
+    ``stt.local.compute_type`` to pin a configuration (#9088).
+
+    We try the requested config first (fast CUDA path when it works), and on
+    any CUDA library load failure fall back to CPU + int8.
     """
+    force_cpu = _should_force_faster_whisper_cpu()
+    if force_cpu:
+        # Importing ctranslate2/faster-whisper itself can abort on some
+        # Apple Silicon/Rosetta installs because multiple Intel OpenMP runtimes
+        # are already loaded.  Set this before importing faster_whisper so the
+        # gateway survives, then keep inference on CPU to avoid device probing.
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
     from faster_whisper import WhisperModel
+    if force_cpu:
+        logger.info(
+            "Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
+            "(int8) to avoid native device autodetection crashes"
+        )
+        return WhisperModel(model_name, device="cpu", compute_type="int8")
+
     try:
-        return WhisperModel(model_name, device="auto", compute_type="auto")
+        return WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
@@ -1180,11 +1399,25 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
+        local_cfg = _load_stt_config().get("local") or {}
+        # Lazy-load the model (downloads on first use, ~150 MB for 'base').
+        # Double-checked lock: concurrent voice messages must not both
+        # download/load the model (#24767).
         if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = _load_local_whisper_model(model_name)
-            _local_model_name = model_name
+            with _local_model_lock:
+                if _local_model is None or _local_model_name != model_name:
+                    logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+                    # Honour stt.local.device / stt.local.compute_type from config so
+                    # users on hosts where ``auto`` mis-detects (NVIDIA libs present but
+                    # not usable, etc.) can pin a working configuration (#9088).
+                    # _load_local_whisper_model retains the CUDA→CPU fallback for the
+                    # auto/CUDA paths.
+                    _local_model = _load_local_whisper_model(
+                        model_name,
+                        device=local_cfg.get("device", "auto"),
+                        compute_type=local_cfg.get("compute_type", "auto"),
+                    )
+                    _local_model_name = model_name
 
         # Language: stt.local.language > stt.language > env var > auto-detect.
         stt_config = _load_stt_config()
@@ -1338,7 +1571,7 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     ``HERMES_LOCAL_STT_LANGUAGE`` (env). When none is set, Groq
     Whisper auto-detects.
     """
-    api_key = get_env_value("GROQ_API_KEY")
+    api_key = _resolve_provider_key("GROQ_API_KEY", "groq")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
 
@@ -1433,10 +1666,17 @@ def _transcribe_openai(
         model_name = DEFAULT_STT_MODEL
 
     try:
-        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+        from openai import (
+            OpenAI,
+            APIError,
+            APIConnectionError,
+            APITimeoutError,
+            BadRequestError,
+        )
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
-        try:
-            with open(file_path, "rb") as audio_file:
+
+        def _create_transcription(path: str):
+            with open(path, "rb") as audio_file:
                 create_kwargs = {
                     "model": model_name,
                     "file": audio_file,
@@ -1445,8 +1685,27 @@ def _transcribe_openai(
                 if language:
                     create_kwargs["language"] = language
                     logger.debug("Using language hint '%s' for OpenAI STT", language)
+                return client.audio.transcriptions.create(**create_kwargs)
 
-                transcription = client.audio.transcriptions.create(**create_kwargs)
+        try:
+            with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
+                try:
+                    transcription = _create_transcription(file_path)
+                except BadRequestError as exc:
+                    message = str(exc).lower()
+                    if not any(k in message for k in ("unsupported", "corrupted", "invalid file")):
+                        raise
+                    # Newer models (e.g. gpt-4o-transcribe) reject some containers
+                    # whisper-1 accepted (notably Ogg/Opus voice notes). Transcode
+                    # to a compact .m4a and retry once.
+                    converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)
+                    if transcode_error:
+                        return {"success": False, "transcript": "", "error": transcode_error}
+                    logger.info(
+                        "Retrying %s STT after transcoding %s to m4a (API rejected the original container)",
+                        provider_label, Path(file_path).name,
+                    )
+                    transcription = _create_transcription(converted_path)
 
             transcript_text = _extract_transcript_text(transcription)
             logger.info(
@@ -1483,7 +1742,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
     Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
     Requires ``MISTRAL_API_KEY`` environment variable.
     """
-    api_key = get_env_value("MISTRAL_API_KEY")
+    api_key = _resolve_provider_key("MISTRAL_API_KEY", "mistral")
     if not api_key:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
 
@@ -1491,7 +1750,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
         try:
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("stt.mistral", prompt=False)
-        except ImportError:
+        except Exception:
             pass
         from mistralai.client import Mistral
 
@@ -1535,7 +1794,21 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     """
     from tools.xai_http import resolve_xai_http_credentials
 
-    creds = resolve_xai_http_credentials()
+    # STT is an API-billed endpoint. Prefer the explicit XAI_API_KEY over the
+    # general xAI OAuth/Grok-subscription credential; subscription OAuth may be
+    # valid for Grok while returning personal-team spending-limit errors for
+    # /v1/stt. Other xAI integrations keep their existing resolver precedence.
+    direct_api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+    if direct_api_key:
+        creds = {
+            "provider": "xai",
+            "api_key": direct_api_key,
+            "base_url": str(
+                get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1"
+            ).strip().rstrip("/"),
+        }
+    else:
+        creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         return {
@@ -1546,12 +1819,22 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai") or {}
-    base_url = str(
-        xai_config.get("base_url")
-        or get_env_value("XAI_STT_BASE_URL")
-        or creds.get("base_url")
-        or XAI_STT_BASE_URL
-    ).strip().rstrip("/")
+
+    def _resolve_base_url(resolved_creds: Dict[str, str]) -> str:
+        # OAuth bearers are pinned to the resolver-validated xAI origin;
+        # config/env base URL overrides only apply to API-key credentials.
+        if resolved_creds.get("provider") == "xai-oauth":
+            return str(
+                resolved_creds.get("base_url") or XAI_STT_BASE_URL
+            ).strip().rstrip("/")
+        return str(
+            xai_config.get("base_url")
+            or get_env_value("XAI_STT_BASE_URL")
+            or resolved_creds.get("base_url")
+            or XAI_STT_BASE_URL
+        ).strip().rstrip("/")
+
+    base_url = _resolve_base_url(creds)
     language = _resolve_stt_language("xai", stt_config) or ""
     # .get("format", True) already defaults to True when the key is absent;
     # is_truthy_value only normalizes truthy/falsy strings from config.
@@ -1570,19 +1853,48 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         if use_diarize:
             data["diarize"] = "true"
 
-        with open(file_path, "rb") as audio_file:
-            response = requests.post(
-                f"{base_url}/stt",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": hermes_xai_user_agent(),
-                },
-                files={
-                    "file": (Path(file_path).name, audio_file),
-                },
-                data=data,
-                timeout=120,
+        def _post_transcription(bearer: str, endpoint_base_url: str):
+            with open(file_path, "rb") as audio_file:
+                return requests.post(
+                    f"{endpoint_base_url}/stt",
+                    headers={
+                        "Authorization": f"Bearer {bearer}",
+                        "User-Agent": hermes_xai_user_agent(),
+                    },
+                    files={
+                        "file": (Path(file_path).name, audio_file),
+                    },
+                    data=data,
+                    timeout=120,
+                )
+
+        response = _post_transcription(api_key, base_url)
+
+        if (
+            response.status_code in {401, 403}
+            and creds.get("provider") == "xai-oauth"
+        ):
+            logger.info(
+                "xAI STT got HTTP %d; refreshing OAuth credentials and retrying once",
+                response.status_code,
             )
+            try:
+                refreshed_creds = resolve_xai_http_credentials(
+                    force_refresh=True,
+                    api_key_hint=api_key,
+                )
+                refreshed_key = str(refreshed_creds.get("api_key") or "").strip()
+                if refreshed_key and refreshed_key != api_key:
+                    response = _post_transcription(
+                        refreshed_key,
+                        _resolve_base_url(refreshed_creds),
+                    )
+            except Exception as retry_exc:
+                logger.warning(
+                    "xAI STT OAuth refresh-and-retry after HTTP %d failed: %s",
+                    response.status_code,
+                    retry_exc,
+                )
 
         if response.status_code != 200:
             detail = ""
@@ -1632,7 +1944,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using ElevenLabs Scribe STT API."""
-    api_key = get_env_value("ELEVENLABS_API_KEY")
+    api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
     if not api_key:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
 
@@ -1728,7 +2040,7 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
     ``hermes_cli.models`` helpers so every DeepInfra surface resolves the
     base URL and model ids identically.
     """
-    api_key = (get_env_value("DEEPINFRA_API_KEY") or "").strip()
+    api_key = _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
     if not api_key:
         return {"success": False, "transcript": "", "error": "DEEPINFRA_API_KEY not set"}
 
@@ -1772,7 +2084,7 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
 
@@ -1791,8 +2103,10 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
           - "error" (str, optional): Error message if success is False
           - "provider" (str, optional): Which provider was used
     """
-    # Validate input
-    error = _validate_audio_file(file_path)
+    # Apply common path validation before provider resolution so invalid files
+    # cannot trigger provider setup or lazy installation. The remote-upload
+    # size cap is enforced separately below, only for non-local providers.
+    error = _validate_audio_file(file_path, enforce_size_limit=False)
     if error:
         return error
 
@@ -1806,6 +2120,10 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         }
 
     provider = _get_provider(stt_config)
+    if not _is_local_stt_provider(provider, stt_config):
+        error = _validate_audio_file_size(Path(file_path))
+        if error:
+            return error
 
     if provider == "local":
         local_cfg = stt_config.get("local") or {}
@@ -1873,8 +2191,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     # nor ``"none"`` AND there is no same-name command provider. The
     # dispatcher enforces built-ins-always-win + command-wins-over-plugin
     # defensively. Returns None when no plugin is registered for the
-    # configured name, falling through to the legacy "No STT provider"
-    # error message below.
+    # configured name; explicit configured names get a provider-specific
+    # error before the generic auto-detect fallback below.
     #
     # Plugin-scoped config namespace mirrors the built-in pattern
     # (``stt.openai.model``, ``stt.mistral.model``): plugins read their
@@ -1894,6 +2212,15 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     if plugin_result is not None:
         return plugin_result
 
+    provider_key = str(provider or "").strip().lower()
+    if (
+        "provider" in stt_config
+        and provider_key
+        and provider_key not in BUILTIN_STT_PROVIDERS
+        and provider_key != "none"
+    ):
+        return _unregistered_stt_provider_error(provider_key)
+
     # No provider available
     return {
         "success": False,
@@ -1909,6 +2236,61 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     }
 
 
+def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Safely validate, preprocess supported inputs, and dispatch transcription."""
+    # Cap .silk sources before the decoder runs (decoder safety). For all
+    # other inputs the remote-upload size cap is provider-scoped and enforced
+    # in _transcribe_prepared_audio, so local whisper can handle big files.
+    is_silk = Path(file_path).suffix.lower() == ".silk"
+    source_error = _validate_audio_source_file(file_path, enforce_size_limit=is_silk)
+    if source_error:
+        return source_error
+
+    prepared_path, cleanup_dir, prep_error = _prepare_audio_for_transcription(file_path)
+    if prep_error:
+        return prep_error
+    if prepared_path is None:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "Audio preprocessing did not produce a file for transcription.",
+        }
+
+    try:
+        prepared_error = _validate_audio_file(prepared_path, enforce_size_limit=False)
+        if prepared_error:
+            return prepared_error
+        return _transcribe_prepared_audio(prepared_path, model)
+    finally:
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+def _is_local_or_private_url(url: str) -> bool:
+    """True when *url* points at a loopback/RFC-1918/LAN-internal host.
+
+    Used to decide whether an empty ``stt.openai.api_key`` is acceptable:
+    local OpenAI-compatible STT servers (faster-whisper-server, speaches,
+    vLLM whisper variants...) ignore the auth header, so users shouldn't
+    have to write a sham ``api_key: not-needed`` in config.yaml.
+    """
+    try:
+        from urllib.parse import urlparse
+        import ipaddress
+
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return False
+        if host == "localhost" or host.endswith((".local", ".lan", ".internal")):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+    except Exception:
+        return False
+
+
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback."""
     stt_config = _load_stt_config()
@@ -1917,6 +2299,11 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     cfg_base_url = openai_cfg.get("base_url", "")
     if cfg_api_key:
         return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+
+    # A local OpenAI-compatible server needs no key — send a placeholder so
+    # the SDK doesn't refuse to construct a client (#25193, credit @nnnet).
+    if cfg_base_url and _is_local_or_private_url(cfg_base_url):
+        return "not-needed", cfg_base_url
 
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key:
@@ -1941,17 +2328,30 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 
 def _extract_transcript_text(transcription: Any) -> str:
     """Normalize text and JSON transcription responses to a plain string."""
-    if isinstance(transcription, str):
-        return transcription.strip()
+    text: Optional[str] = None
 
-    if hasattr(transcription, "text"):
+    if isinstance(transcription, str):
+        text = transcription.strip()
+
+    if text is None and hasattr(transcription, "text"):
         value = getattr(transcription, "text")
         if isinstance(value, str):
-            return value.strip()
+            text = value.strip()
 
-    if isinstance(transcription, dict):
+    if text is None and isinstance(transcription, dict):
         value = transcription.get("text")
         if isinstance(value, str):
-            return value.strip()
+            text = value.strip()
 
-    return str(transcription).strip()
+    if text is None:
+        text = str(transcription).strip()
+
+    match = re.match(
+        r"\s*language\s+[\w.-]+(?:\s*<audio_language>[^<]*</audio_language>)?\s*<asr_text>\s*(?P<text>.*)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        text = match.group("text").strip()
+
+    return text

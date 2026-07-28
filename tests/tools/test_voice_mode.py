@@ -500,6 +500,118 @@ class TestCheckVoiceRequirements:
         assert result["stt_available"] is False
         assert "STT provider: MISSING" in result["details"]
 
+    def test_command_stt_provider_selected(self, monkeypatch):
+        """Catch-all branch fires for a selected command provider (not any provider)."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {
+                "enabled": True,
+                "provider": "my-custom-stt",
+                "providers": {
+                    "my-custom-stt": {
+                        "type": "command",
+                        "command": "whisper_cpp {input}",
+                    },
+                },
+            },
+        )
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (command: my-custom-stt)" in result["details"]
+
+    def test_unrelated_command_provider_not_confused(self, monkeypatch):
+        """Unrelated command provider does NOT make a different selected provider appear OK."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {
+                "enabled": True,
+                "provider": "unknown-selected",
+                "providers": {
+                    "unrelated-command": {
+                        "type": "command",
+                        "command": "whisper_cpp {input}",
+                    },
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "agent.transcription_registry.get_provider", lambda p: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            lambda force=False: None,
+        )
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is False
+        assert result["stt_available"] is False
+        assert "STT provider: MISSING" in result["details"]
+
+    def test_plugin_stt_provider(self, monkeypatch):
+        """Plugin STT provider is recognized."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"enabled": True, "provider": "my-plugin-stt"},
+        )
+        plugin_provider = MagicMock()
+        plugin_provider.is_available.return_value = True
+        monkeypatch.setattr(
+            "agent.transcription_registry.get_provider",
+            lambda p: plugin_provider if p == "my-plugin-stt" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            lambda force=False: None,
+        )
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (plugin: my-plugin-stt)" in result["details"]
+
+    def test_unavailable_plugin_stt_provider(self, monkeypatch):
+        """A registered but unavailable plugin does not satisfy requirements."""
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"enabled": True, "provider": "my-plugin-stt"},
+        )
+        plugin_provider = MagicMock()
+        plugin_provider.is_available.return_value = False
+        monkeypatch.setattr(
+            "agent.transcription_registry.get_provider",
+            lambda p: plugin_provider if p == "my-plugin-stt" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            lambda force=False: None,
+        )
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is False
+        assert result["stt_available"] is False
+        assert "STT provider: MISSING" in result["details"]
+
 
 # ============================================================================
 # AudioRecorder
@@ -592,6 +704,38 @@ class TestAudioRecorder:
 
         recorder = AudioRecorder()
         with pytest.raises(RuntimeError, match="sounddevice and numpy"):
+            recorder.start()
+
+    def test_start_oserror_points_at_portaudio_not_pip(self, monkeypatch):
+        """OSError from _import_audio means PortAudio's shared library is
+        missing — pip can't fix that. The error must point at the system
+        package, not 'pip install sounddevice numpy' (#18432)."""
+        def _fail_import():
+            raise OSError("PortAudio library not found")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+        monkeypatch.setattr("tools.voice_mode._is_termux_environment", lambda: False)
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError) as exc_info:
+            recorder.start()
+        msg = str(exc_info.value)
+        assert "PortAudio system library not found" in msg
+        assert "libportaudio2" in msg
+        assert "pip install" not in msg
+
+    def test_start_oserror_termux_hint(self, monkeypatch):
+        """Same OSError path on Termux points at pkg install portaudio."""
+        def _fail_import():
+            raise OSError("PortAudio library not found")
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+        monkeypatch.setattr("tools.voice_mode._is_termux_environment", lambda: True)
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError, match="pkg install portaudio"):
             recorder.start()
 
     def test_start_creates_and_starts_stream(self, mock_sd):
@@ -837,9 +981,20 @@ class TestTranscribeRecording:
         monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
         monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
 
+        call_count = 0
         seen_paths = []
 
         def fake_transcribe(path, model=None):
+            nonlocal call_count
+            call_count += 1
+            # First call is on the original file — simulate remote provider
+            # rejecting it as too large so chunking kicks in.
+            if call_count == 1:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": "File too large: 0.1MB (max 0.1MB)",
+                }
             seen_paths.append(path)
             assert model == "base"
             assert path != str(wav_path)
@@ -877,7 +1032,17 @@ class TestTranscribeRecording:
         monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
         monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
 
+        call_count = 0
+
         def fake_transcribe(path, model=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": "File too large: 0.1MB (max 0.1MB)",
+                }
             return {"success": False, "transcript": "", "error": "provider rejected audio"}
 
         with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
@@ -888,6 +1053,97 @@ class TestTranscribeRecording:
         assert result["error"].startswith("Chunk 1/")
         assert "provider rejected audio" in result["error"]
         assert list(temp_dir.iterdir()) == []
+
+    def test_trusts_transcribe_audio_skip_chunk_for_local(self, tmp_path, monkeypatch):
+        """Local providers never return 'File too large' — no chunking."""
+        wav_path = tmp_path / "record.wav"
+        n_frames = 50000
+        audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio)
+
+        mock_transcribe = MagicMock(return_value={
+            "success": True,
+            "transcript": "local whisper result",
+            "provider": "local",
+        })
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(str(wav_path), model="base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "local whisper result"
+        assert "chunks" not in result
+        mock_transcribe.assert_called_once_with(str(wav_path), model="base")
+
+    def test_chunks_when_transcribe_audio_returns_file_too_large(self, tmp_path, monkeypatch):
+        """Remote provider rejects large file → chunking fallback."""
+        wav_path = tmp_path / "record.wav"
+        n_frames = 50000
+        audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio)
+
+        temp_dir = tmp_path / "chunks"
+        temp_dir.mkdir()
+        monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
+        monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
+
+        call_count = 0
+
+        def fake_transcribe(path, model=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": "File too large: 30.0MB (max 25MB)",
+                }
+            return {
+                "success": True,
+                "transcript": f"chunk {call_count - 1}",
+                "provider": "openai",
+            }
+
+        with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(str(wav_path), model="whisper-1")
+
+        assert result["success"] is True
+        assert result.get("chunks", 0) > 1
+
+    def test_other_error_does_not_trigger_chunk(self, tmp_path, monkeypatch):
+        """Non-size errors from transcribe_audio are returned as-is."""
+        wav_path = tmp_path / "record.wav"
+        n_frames = 50000
+        audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio)
+
+        mock_transcribe = MagicMock(return_value={
+            "success": False,
+            "transcript": "",
+            "error": "STT is disabled in config.yaml",
+        })
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(str(wav_path), model="base")
+
+        assert result["success"] is False
+        assert "STT is disabled" in result["error"]
+        mock_transcribe.assert_called_once()
 
 
 class TestWhisperHallucinationFilter:
@@ -916,6 +1172,10 @@ class TestWhisperHallucinationFilter:
 class TestPlayAudioFile:
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
+        # Pin to a non-macOS platform: on macOS WAV output deliberately skips
+        # sounddevice (see TestMacOSAudioOutputPolicy), so this path is only
+        # exercised off Darwin.
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
 
         mock_sd_obj = MagicMock()
         # Simulate stream completing immediately (get_stream().active = False)
@@ -952,6 +1212,108 @@ class TestPlayAudioFile:
 
         result = play_audio_file("/nonexistent/file.wav")
         assert result is False
+
+
+# ============================================================================
+# macOS output policy (no sounddevice for OUTPUT -> avoids TCC prompt)
+# ============================================================================
+
+class TestMacOSAudioOutputPolicy:
+    def test_output_disallowed_on_macos(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+        from tools.voice_mode import _sounddevice_output_allowed
+
+        assert _sounddevice_output_allowed() is False
+
+    def test_output_allowed_off_macos(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
+        from tools.voice_mode import _sounddevice_output_allowed
+
+        assert _sounddevice_output_allowed() is True
+
+    def test_play_audio_file_skips_sounddevice_on_macos(self, monkeypatch, sample_wav):
+        """On macOS, WAV playback must not import sounddevice; it routes to afplay."""
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+
+        def _forbidden_import():
+            raise AssertionError("sounddevice must not be imported for output on macOS")
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", _forbidden_import)
+
+        popen_cmds = []
+
+        class _FakeProc:
+            returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        def _fake_popen(cmd, **kwargs):
+            popen_cmds.append(cmd)
+            return _FakeProc()
+
+        monkeypatch.setattr("shutil.which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr("subprocess.Popen", _fake_popen)
+
+        from tools.voice_mode import play_audio_file
+
+        result = play_audio_file(sample_wav)
+
+        assert result is True
+        assert popen_cmds, "expected a system player to be invoked"
+        assert popen_cmds[0][0] == "afplay"
+
+    def test_play_beep_routes_through_afplay_on_macos(self, monkeypatch):
+        """On macOS, beeps synthesize with numpy but play via the tempfile/afplay path."""
+        pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
+
+        def _forbidden_import():
+            raise AssertionError("sounddevice must not be imported for beeps on macOS")
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", _forbidden_import)
+
+        calls = []
+        monkeypatch.setattr(
+            "tools.voice_mode._play_int16_via_tempfile",
+            lambda audio, sample_rate: calls.append((len(audio), sample_rate)),
+        )
+
+        import tools.voice_mode as vm
+
+        vm.play_beep(frequency=880, count=1)
+
+        assert len(calls) == 1
+        n_samples, sample_rate = calls[0]
+        assert n_samples > 0
+        assert sample_rate == vm.SAMPLE_RATE
+
+    def test_play_beep_uses_sounddevice_off_macos(self, monkeypatch):
+        """Off macOS, beeps go straight through sounddevice."""
+        np = pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
+
+        mock_sd = MagicMock()
+        mock_stream = MagicMock()
+        mock_stream.active = False
+        mock_sd.get_stream.return_value = mock_stream
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (mock_sd, np))
+
+        tempfile_calls = []
+        monkeypatch.setattr(
+            "tools.voice_mode._play_int16_via_tempfile",
+            lambda audio, sample_rate: tempfile_calls.append(True),
+        )
+
+        import tools.voice_mode as vm
+
+        vm.play_beep(frequency=880, count=1)
+
+        mock_sd.play.assert_called_once()
+        assert not tempfile_calls, "off macOS should not use the tempfile/afplay path"
 
 
 # ============================================================================
@@ -1204,6 +1566,92 @@ class TestSilenceDetection:
 
         # No crash, no callback
         assert recorder._on_silence_stop is None
+        recorder.cancel()
+
+
+# ============================================================================
+# Max recording length cap (voice.max_recording_seconds)
+# ============================================================================
+
+class TestMaxRecordingCap:
+    """The hard cap must auto-stop through the real InputStream-callback
+    path — not just the predicate — and fire the one-shot callback exactly
+    once, independent of the silence-detection branches."""
+
+    def _get_stream_callback(self, mock_sd):
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+        return callback
+
+    def test_cap_fires_one_shot_callback_during_continuous_speech(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_sd.InputStream.return_value = MagicMock()
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._max_recording_seconds = 0.1
+        # Park the other auto-stop branches far away so only the cap can fire:
+        # loud frames keep the silence branch off, and max_wait covers the
+        # no-speech branch.
+        recorder._silence_duration = 60.0
+        recorder._max_wait = 60.0
+
+        fires = []
+        fired = threading.Event()
+
+        def on_stop():
+            fires.append(1)
+            fired.set()
+
+        recorder.start(on_silence_stop=on_stop)
+        callback = self._get_stream_callback(mock_sd)
+
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        assert not fired.is_set(), "cap must not fire before the limit elapses"
+
+        # Cross the cap while the user is STILL speaking — the silence branch
+        # can never fire here, so a hit proves the cap path.
+        time.sleep(0.12)
+        callback(loud_frame, 1600, None, None)
+        assert fired.wait(timeout=1.0) is True
+
+        # One-shot: the handler cleared _on_silence_stop, further frames past
+        # the cap must not fire again.
+        assert recorder._on_silence_stop is None
+        callback(loud_frame, 1600, None, None)
+        time.sleep(0.05)
+        assert len(fires) == 1
+
+        recorder.cancel()
+
+    def test_disabled_cap_never_fires_on_duration(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_sd.InputStream.return_value = MagicMock()
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._max_recording_seconds = 0.0  # disabled (previous behaviour)
+        recorder._silence_duration = 60.0
+        recorder._max_wait = 60.0
+
+        fired = threading.Event()
+        recorder.start(on_silence_stop=lambda: fired.set())
+        callback = self._get_stream_callback(mock_sd)
+
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        time.sleep(0.12)
+        callback(loud_frame, 1600, None, None)
+
+        assert fired.wait(timeout=0.2) is False
         recorder.cancel()
 
 
@@ -1632,3 +2080,424 @@ class TestListenForSpeechCapture:
         monkeypatch.setattr("tools.voice_mode._import_audio", MagicMock(side_effect=OSError("no audio")))
         from tools.voice_mode import listen_for_speech
         assert listen_for_speech(lambda: False, capture=True) is None
+
+
+class TestGetBeepVolume:
+    """Issue #55908: beep amplitude must come from config.yaml, with safe fallback."""
+
+    def _get(self):
+        from tools.voice_mode import _get_beep_volume
+        return _get_beep_volume()
+
+    def test_default_when_key_missing(self):
+        with patch("hermes_cli.config.load_config", return_value={"voice": {}}):
+            assert self._get() == 0.3
+
+    def test_default_when_voice_section_missing(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert self._get() == 0.3
+
+    def test_custom_value_honored(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 0.6}}):
+            assert self._get() == 0.6
+
+    def test_zero_is_accepted(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 0.0}}):
+            assert self._get() == 0.0
+
+    def test_one_is_accepted(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 1.0}}):
+            assert self._get() == 1.0
+
+    def test_out_of_range_high_clamps_to_default(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": 1.5}}):
+            assert self._get() == 0.3
+
+    def test_out_of_range_low_clamps_to_default(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": -0.5}}):
+            assert self._get() == 0.3
+
+    def test_string_numeric_is_coerced(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": "0.7"}}):
+            assert self._get() == 0.7
+
+    def test_non_numeric_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": "loud"}}):
+            assert self._get() == 0.3
+
+    def test_bool_value_falls_back(self):
+        """Booleans must not silently pass as 0.0/1.0 (same guard as silence_threshold)."""
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": True}}):
+            assert self._get() == 0.3
+
+    def test_nan_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": {"beep_volume": float("nan")}}):
+            assert self._get() == 0.3
+
+    def test_load_config_exception_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   side_effect=RuntimeError("broken config")):
+            assert self._get() == 0.3
+
+    def test_voice_section_wrong_type_falls_back(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"voice": "not-a-dict"}):
+            assert self._get() == 0.3
+
+
+class TestPlayBeepVolumeWiring:
+    """Issue #55908: play_beep multiplies by the volume returned by _get_beep_volume.
+
+    Static wiring check — the behaviour is covered by TestGetBeepVolume above; this
+    class guards against regressions that re-introduce a hardcoded ``0.3`` literal
+    at the amplitude line in play_beep (the original bug class).
+    """
+
+    def test_play_beep_does_not_use_hardcoded_0_3_literal(self):
+        import inspect
+
+        from tools import voice_mode as vm_mod
+
+        source = inspect.getsource(vm_mod.play_beep)
+        # The fix replaces ``tone * 0.3 * 32767`` with ``tone * beep_volume * 32767``
+        # where beep_volume is the result of _get_beep_volume().
+        hardcoded = " * 0.3 * 32767"
+        assert hardcoded not in source, (
+            "play_beep still contains a hardcoded 0.3 amplitude; use _get_beep_volume()"
+        )
+        assert "beep_volume * 32767" in source
+        assert "_get_beep_volume()" in source
+
+
+# ============================================================================
+# Device-native input sample rate — mics that reject 16 kHz capture
+# ============================================================================
+
+class TestDefaultInputSamplerate:
+    def test_uses_device_default_rate(self):
+        from tools.voice_mode import _default_input_samplerate
+
+        sd = MagicMock()
+        sd.query_devices.return_value = {"default_samplerate": 44100.0}
+        assert _default_input_samplerate(sd) == 44100
+
+    def test_falls_back_when_query_fails(self):
+        from tools.voice_mode import SAMPLE_RATE, _default_input_samplerate
+
+        sd = MagicMock()
+        sd.query_devices.side_effect = RuntimeError("no device")
+        assert _default_input_samplerate(sd) == SAMPLE_RATE
+
+    def test_falls_back_on_non_numeric_rate(self):
+        from tools.voice_mode import SAMPLE_RATE, _default_input_samplerate
+
+        sd = MagicMock()
+        sd.query_devices.return_value = {"default_samplerate": None}
+        assert _default_input_samplerate(sd) == SAMPLE_RATE
+
+    def test_recorder_opens_stream_at_device_rate(self, mock_sd):
+        mock_sd.query_devices.return_value = {"default_samplerate": 48000.0}
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start()
+
+        assert recorder.is_recording is True
+        assert mock_sd.InputStream.call_args.kwargs["samplerate"] == 48000
+
+    def test_wav_written_at_capture_rate(self, mock_sd, temp_voice_dir):
+        np = pytest.importorskip("numpy")
+
+        mock_sd.query_devices.return_value = {"default_samplerate": 48000.0}
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start()
+
+        # 1 second of loud audio at the device rate (above RMS threshold)
+        frame = np.full((48000, 1), 1000, dtype="int16")
+        recorder._frames = [frame]
+        recorder._peak_rms = 1000
+
+        wav_path = recorder.stop()
+
+        assert wav_path is not None
+        with wave.open(wav_path, "rb") as wf:
+            assert wf.getframerate() == 48000
+
+
+class TestWSL2PowerShellFallback:
+    """Regression tests for WSL2 PowerShell TTS fallback (issue #17608).
+
+    On WSL2 without a PulseAudio bridge, ffplay/aplay have no audio device.
+    play_audio_file() should insert a PowerShell-based player at the front
+    of the player list when powershell.exe and ffmpeg are available.
+    """
+
+    def _fake_check_output(self, responses):
+        """Build a subprocess.check_output side_effect from a list of responses."""
+        it = iter(responses)
+        def _side_effect(cmd, **kwargs):
+            return next(it)
+        return _side_effect
+
+    def test_wsl2_powershell_player_inserted_first(self, monkeypatch, sample_wav):
+        """When WSL2 is detected and powershell.exe + ffmpeg are available,
+        a sh -c pipeline must be inserted before ffplay/aplay in the player list."""
+        from unittest.mock import patch, MagicMock
+        from tools import voice_mode as vm
+
+        captured_players = []
+
+        def _capture_popen(cmd, **kw):
+            captured_players.append(list(cmd))
+            m = MagicMock()
+            m.returncode = 0
+            m.wait = MagicMock(return_value=0)
+            return m
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode._import_audio", side_effect=ImportError), \
+             patch("tools.voice_mode.shutil.which",
+                   side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
+             patch("tools.voice_mode.subprocess.check_output",
+                   side_effect=self._fake_check_output([
+                       b"C:/Temp\r\n",
+                       b"/mnt/c/Temp\n",
+                       b"C:/Temp/hermes.wav\n",
+                   ])), \
+             patch("tools.voice_mode.subprocess.Popen", side_effect=_capture_popen):
+            vm.play_audio_file(str(sample_wav))
+
+        assert captured_players, "No players were tried"
+        first_cmd = captured_players[0]
+        assert first_cmd[0] in ("/bin/sh", "sh") and first_cmd[1] == "-c", (
+            f"Expected sh -c as first player, got {first_cmd}"
+        )
+        assert "powershell.exe" in first_cmd[2]
+        assert "PlaySync" in first_cmd[2]
+
+    def test_powershell_pipeline_preserves_real_exit_status(self, sample_wav):
+        """Regression (review of #63768): the shell pipeline must preserve
+        the (ffmpeg && powershell) exit status past the unconditional
+        cleanup, so a real conversion/playback failure falls through to the
+        next player instead of being masked by rm -f's always-zero exit."""
+        from unittest.mock import patch, MagicMock
+        from tools import voice_mode as vm
+
+        captured_cmds = []
+
+        def _capture_popen(cmd, **kw):
+            captured_cmds.append(list(cmd))
+            m = MagicMock()
+            # Simulate the PowerShell pipeline failing (nonzero rc), and
+            # the fallback ffplay succeeding.
+            if cmd[0] in ("/bin/sh", "sh"):
+                m.returncode = 1
+            else:
+                m.returncode = 0
+            m.wait = MagicMock(return_value=m.returncode)
+            return m
+
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+             patch("tools.voice_mode._import_audio", side_effect=ImportError), \
+             patch("tools.voice_mode.shutil.which",
+                   side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
+             patch("tools.voice_mode.subprocess.check_output",
+                   side_effect=self._fake_check_output([
+                       b"C:/Temp\r\n",
+                       b"/mnt/c/Temp\n",
+                       b"C:/Temp/hermes.wav\n",
+                   ])), \
+             patch("tools.voice_mode.subprocess.Popen", side_effect=_capture_popen):
+            result = vm.play_audio_file(str(sample_wav))
+
+        assert result is True, "Must fall through to ffplay and succeed"
+        assert len(captured_cmds) == 2, (
+            f"Expected sh pipeline to be tried and fail, then ffplay to be "
+            f"tried: {captured_cmds}"
+        )
+        assert captured_cmds[0][0] in ("/bin/sh", "sh")
+        assert captured_cmds[1][0] == "ffplay"
+        # The subshell command must capture and re-exit with $rc, not rely
+        # on rm -f's exit status.
+        sh_script = captured_cmds[0][2]
+        assert "rc=$?" in sh_script and "exit $rc" in sh_script, (
+            "Shell pipeline must preserve the real exit status past cleanup: " + sh_script
+        )
+
+    def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
+        """Two concurrent calls must use different temp WAV filenames."""
+        from unittest.mock import patch, MagicMock
+        from tools import voice_mode as vm
+
+        filenames = []
+
+        def _capture_check_output(cmd, **kwargs):
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "TEMP" in cmd_str:
+                return b"C:\\Temp\r\n"
+            if "wslpath" in cmd_str and "-u" in cmd_str:
+                return b"/mnt/c/Temp\n"
+            if "wslpath" in cmd_str and "-w" in cmd_str:
+                wsl_path = cmd[-1] if isinstance(cmd[-1], str) else cmd[-1].decode()
+                filenames.append(wsl_path.split("/")[-1])
+                return f"C:\\Temp\\{wsl_path.split('/')[-1]}\n".encode()
+            return b""
+
+        def _fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/version":
+                import io
+                return io.StringIO("Linux Microsoft WSL2")
+            return open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=_fake_open), \
+             patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay") else None), \
+             patch("subprocess.check_output", side_effect=_capture_check_output), \
+             patch("subprocess.Popen", return_value=MagicMock(returncode=0, wait=lambda **k: 0)), \
+             patch("tools.voice_mode._playback_lock"), \
+             patch("tools.voice_mode._active_playback", None):
+            vm.play_audio_file(str(sample_wav))
+            vm.play_audio_file(str(sample_wav))
+
+        # Regression (review of #63768): the original test made this
+        # assertion conditional on len(filenames) >= 2, so a broken
+        # (zero-captured) run passed trivially. Require exactly two.
+        assert len(filenames) == 2, (
+            f"Expected exactly 2 captured temp filenames from 2 calls, got "
+            f"{len(filenames)}: {filenames}"
+        )
+        assert filenames[0] != filenames[1], (
+            "Concurrent TTS calls must use unique temp WAV filenames"
+        )
+
+    def test_non_wsl_skips_powershell_fallback(self, monkeypatch, sample_wav):
+        """On non-WSL Linux, the PowerShell player must not be inserted."""
+        from unittest.mock import patch, MagicMock
+        from tools import voice_mode as vm
+
+        captured_players = []
+
+        def _capture_popen(cmd, **kw):
+            captured_players.append(cmd)
+            m = MagicMock()
+            m.returncode = 0
+            m.wait.return_value = 0
+            return m
+
+        def _fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/version":
+                import io
+                return io.StringIO("Linux version 5.15.0-generic #72-Ubuntu")
+            return open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=_fake_open), \
+             patch("tools.voice_mode._import_audio", side_effect=ImportError), \
+             patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("ffplay", "aplay") else None), \
+             patch("subprocess.Popen", side_effect=_capture_popen), \
+             patch("tools.voice_mode._playback_lock"), \
+             patch("tools.voice_mode._active_playback", None):
+            vm.play_audio_file(str(sample_wav))
+
+        assert captured_players, "No players were tried"
+        for cmd in captured_players:
+            assert not (cmd[0] == "sh" and "powershell" in " ".join(str(c) for c in cmd)), (
+                "PowerShell player must not appear on non-WSL Linux"
+            )
+
+
+class TestWSLAudioEnvironmentGate:
+    """Regression tests (review of #63768) for detect_audio_environment()'s
+    WSL gate: when the PowerShell TTS fallback is viable, voice mode must
+    not be hard-blocked, but the recording/STT PulseAudio-bridge guidance
+    must still be surfaced (as a non-blocking notice)."""
+
+    def _fake_open_wsl(self, path, *args, **kwargs):
+        if str(path) == "/proc/version":
+            import io
+            return io.StringIO("Linux version 5.15 Microsoft Standard WSL2")
+        return open(path, *args, **kwargs)
+
+    def test_wsl_no_pulse_but_powershell_available_not_hard_blocked(self, monkeypatch):
+        from unittest.mock import patch
+        from tools import voice_mode as vm
+
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
+            monkeypatch.delenv(_ssh_var, raising=False)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+        with patch("builtins.open", side_effect=self._fake_open_wsl), \
+             patch("tools.voice_mode._wsl_powershell_tts_available", return_value=True), \
+             patch("tools.voice_mode._pulse_socket_reachable", return_value=False), \
+             patch("hermes_constants.is_container", return_value=False):
+            result = vm.detect_audio_environment()
+
+        assert result["available"] is True, (
+            "PowerShell TTS fallback must keep voice mode enabled even "
+            "without a PulseAudio bridge: " + str(result["warnings"])
+        )
+        assert any("PowerShell" in n or "Media.SoundPlayer" in n for n in result["notices"]), (
+            "The PowerShell fallback path must be mentioned in notices"
+        )
+        assert any("recording" in n.lower() or "PulseAudio" in n for n in result["notices"]), (
+            "The recording/STT PulseAudio caveat must still be surfaced"
+        )
+
+    def test_wsl_no_pulse_no_powershell_still_blocked(self, monkeypatch):
+        from unittest.mock import patch
+        from tools import voice_mode as vm
+
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
+            monkeypatch.delenv(_ssh_var, raising=False)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+        with patch("builtins.open", side_effect=self._fake_open_wsl), \
+             patch("tools.voice_mode._wsl_powershell_tts_available", return_value=False), \
+             patch("tools.voice_mode._pulse_socket_reachable", return_value=False), \
+             patch("hermes_constants.is_container", return_value=False):
+            result = vm.detect_audio_environment()
+
+        assert result["available"] is False, (
+            "Without PulseAudio AND without the PowerShell fallback, WSL "
+            "must still be hard-blocked as before"
+        )
+
+    def test_wsl_with_pulse_server_unaffected(self, monkeypatch):
+        """PULSE_SERVER already configured: existing behavior unchanged."""
+        from unittest.mock import patch
+        from tools import voice_mode as vm
+
+        monkeypatch.setenv("PULSE_SERVER", "unix:/mnt/wslg/PulseServer")
+        for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
+            monkeypatch.delenv(_ssh_var, raising=False)
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+        with patch("builtins.open", side_effect=self._fake_open_wsl), \
+             patch("hermes_constants.is_container", return_value=False):
+            result = vm.detect_audio_environment()
+
+        assert result["available"] is True
+        # Merged with #37346: any forwarded sound server (PULSE_SERVER or
+        # PIPEWIRE_REMOTE) yields the shared reachable-sound-server notice.
+        assert any(
+            "PulseAudio" in n and "WSL" in n for n in result["notices"]
+        )

@@ -164,6 +164,63 @@ class TestSignalHelpers:
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 100) == ".mp4"
 
+    def test_guess_extension_wav(self):
+        """RIFF/WAVE must be detected as ``.wav`` (regression for the WAV gap).
+
+        WAV shares the ``RIFF`` chunk header with WebP; only the form-type at
+        bytes 8-11 (``WAVE`` vs ``WEBP``) distinguishes them. Before the fix the
+        sniffer only handled ``WEBP`` and a WAV file fell through to ``.bin``.
+        """
+        from gateway.platforms.signal import _guess_extension
+        # Canonical WAV header: 'RIFF' <size> 'WAVE' 'fmt '...
+        wav = b"RIFF\x24\x08\x00\x00WAVEfmt " + b"\x00" * 100
+        assert _guess_extension(wav) == ".wav"
+
+    def test_guess_extension_wav_not_misread_as_webp(self):
+        """A RIFF container that is NOT WebP must not be returned as ``.webp``."""
+        from gateway.platforms.signal import _guess_extension
+        wav = b"RIFF\x24\x08\x00\x00WAVEfmt " + b"\x00" * 100
+        assert _guess_extension(wav) != ".webp"
+
+    def test_guess_extension_wav_routes_to_audio_cache(self):
+        """A detected WAV must route to the audio cache, not the document cache.
+
+        ``.wav`` is already in ``_is_audio_ext``; the bug was purely that
+        ``_guess_extension`` never produced ``.wav`` for raw bytes, so the
+        attachment was treated as a document and STT never received it.
+        """
+        from gateway.platforms.signal import _is_audio_ext, _guess_extension
+        wav = b"RIFF\x24\x08\x00\x00WAVEfmt " + b"\x00" * 100
+        ext = _guess_extension(wav)
+        assert ext == ".wav"
+        assert _is_audio_ext(ext) is True
+
+    def test_guess_extension_webp_still_detected(self):
+        """Guard that adding WAVE detection didn't break the WebP branch."""
+        from gateway.platforms.signal import _guess_extension
+        webp = b"RIFF\x24\x08\x00\x00WEBPVP8 " + b"\x00" * 100
+        assert _guess_extension(webp) == ".webp"
+
+    def test_guess_extension_m4a_audio_brand(self):
+        """iOS Signal voice notes are MP4-container AAC with an M4A ftyp brand.
+
+        Classifying them as ``.mp4`` sent them to the document cache and made
+        STT reject the upload ("Invalid file format") even though the bytes
+        were valid audio. Audio brands must resolve to ``.m4a``.
+        """
+        from gateway.platforms.signal import _guess_extension, _is_audio_ext
+        for brand in (b"M4A ", b"M4B ", b"m4a "):
+            data = b"\x00\x00\x00\x1cftyp" + brand + b"\x00" * 100
+            assert _guess_extension(data) == ".m4a", brand
+            assert _is_audio_ext(_guess_extension(data)) is True
+
+    def test_guess_extension_video_brands_stay_mp4(self):
+        """Real video ftyp brands must not be swept up by the M4A fix."""
+        from gateway.platforms.signal import _guess_extension
+        for brand in (b"isom", b"mp42", b"avc1", b"qt  "):
+            data = b"\x00\x00\x00\x1cftyp" + brand + b"\x00" * 100
+            assert _guess_extension(data) == ".mp4", brand
+
     def test_guess_extension_aac_adts_unprotected(self):
         """ADTS AAC, MPEG-4, no CRC (the canonical Android Signal voice note).
 

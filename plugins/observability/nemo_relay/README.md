@@ -1,18 +1,19 @@
 # NeMo Relay Observability
 
-Optional Hermes observability plugin that maps Hermes observer hooks to
-NeMo Relay scopes, LLM spans, tool spans, marks, ATOF, and ATIF.
+Optional Hermes observability plugin that configures exporters and maps
+Hermes-specific observer hooks to NeMo Relay marks and ATIF state. Hermes core
+owns Relay session, turn, LLM, and tool execution scopes.
 
 NeMo Relay is NVIDIA's runtime layer for agent execution boundaries. It does
 not replace Hermes Agent's planner, tools, memory, model provider routing, or
-CLI UX. Instead, this plugin lets Hermes emit NeMo Relay lifecycle events for
-the work Hermes already owns: sessions, turns, provider/API calls, tool calls,
-approval prompts, and delegated subagents.
+CLI UX. Hermes core emits NeMo Relay lifecycle events for provider and tool
+execution, while this plugin enables rich exporters and observer marks for
+sessions, turns, approval prompts, and delegated subagents.
 
 With this plugin enabled, Hermes Agent can:
 
-- Preserve Hermes execution as NeMo Relay scopes, LLM spans, tool spans, and
-  mark events.
+- Export the Relay scopes and LLM/tool lifecycles emitted by Hermes core.
+- Add Hermes session, turn, approval, and subagent mark events.
 - Export raw lifecycle events as Agent Trajectory Observability Format (ATOF)
   JSONL for debugging and offline inspection.
 - Export Agent Trajectory Interchange Format (ATIF) trajectories for replay,
@@ -73,27 +74,24 @@ checkout that contains this plugin. A globally installed older CLI will not see
 new bundled plugins from your working tree.
 
 ```bash
-uv sync --extra nemo-relay
+uv sync
 uv run hermes plugins enable observability/nemo_relay
 uv run hermes chat --query 'Reply exactly ok' --provider custom --model qwen3.6:35b
 ```
 
 To ship the updated CLI into another environment, build and install a fresh
-wheel from this checkout, then install the official NeMo Relay runtime extra:
+wheel from this checkout. On platforms for which Relay publishes a native
+wheel, Hermes installs its supported NeMo Relay runtime as a normal dependency:
 
 ```bash
 uv build --wheel
 python -m pip install --force-reinstall dist/hermes_agent-*.whl
-python -m pip install "nemo-relay>=0.5,<1.0"
 hermes plugins enable observability/nemo_relay
 ```
 
-The plugin fails open when `nemo-relay` is not installed. Install a supported
-NeMo Relay 0.x distribution beginning with 0.5:
-
-```bash
-pip install "nemo-relay>=0.5,<1.0"
-```
+The plugin remains opt-in even though the runtime dependency is installed by
+default. Enabling this plugin controls rich observability and adaptive
+behavior; it does not control Hermes shared client metrics.
 
 ## Export Configuration
 
@@ -170,8 +168,9 @@ Relay owns exporter lifecycle through that config. The direct
 double-export trajectories on teardown. If `plugins.toml` initialization fails,
 Hermes keeps the direct env-var fallbacks active for that run.
 
-To enable NeMo Relay managed execution intercepts for provider and tool calls,
-include an adaptive component in the same `plugins.toml`:
+Hermes core routes provider and tool execution through NeMo Relay managed APIs
+regardless of whether this plugin is enabled. To install adaptive interceptors
+on those boundaries, include an adaptive component in the same `plugins.toml`:
 
 ```toml
 [[components]]
@@ -182,18 +181,15 @@ enabled = true
 mode = "observe_only"
 ```
 
-When the adaptive component is enabled and the installed NeMo Relay runtime
-exposes `llm.execute(...)` / `tools.execute(...)`, Hermes routes LLM and tool
-execution through those middleware boundaries. The observer hooks still emit
-session, turn, approval, and subagent marks; the plugin skips its manual
-`llm.call` and `tools.call` spans for executions that are already managed by
-NeMo Relay. `tool_parallelism.mode = "observe_only"` keeps tool scheduling
-observational while still wrapping the real execution boundary.
+The observer hooks emit session, turn, approval, and subagent marks. They do not
+create a second LLM or tool lifecycle. `tool_parallelism.mode = "observe_only"`
+keeps tool scheduling observational while still intercepting the core-managed
+execution boundary.
 
 ### Dynamic Plugins
 
-Hermes feature-detects the dynamic-plugin activation API available in NeMo Relay
-0.6 and later. Configure native or worker plugins with Hermes-owned
+Hermes uses the dynamic-plugin activation API available in NeMo Relay 0.6 and
+later. Configure native or worker plugins with Hermes-owned
 `[[dynamic_plugins]]` entries that match the Python binding's activation-spec
 fields:
 
@@ -242,24 +238,15 @@ During shutdown it closes session exporters, flushes Relay subscribers, and
 then closes the activation so callbacks are removed before plugin code is
 unloaded.
 
-NeMo Relay 0.5 does not expose dynamic activation through its Python binding.
-When dynamic plugin configuration is present with a binding that lacks the
-activation API, Hermes logs an actionable warning and continues with the
-ordinary static component configuration, so ATOF and ATIF observability remain
-available. No dynamic plugin is loaded in that degraded mode.
-
 For the full generic Hermes middleware contract, see
 [`docs/middleware/README.md`](../../../docs/middleware/README.md).
 
 ## Canonical Local Examples
 
-The observe-only examples in this section use a supported NeMo Relay 0.x
-distribution beginning with 0.5 and a local Ollama model served through the
-OpenAI-compatible API.
+The observe-only examples in this section use the NeMo Relay runtime installed
+with Hermes and a local Ollama model served through the OpenAI-compatible API.
 
 ```bash
-pip install "nemo-relay>=0.5,<1.0"
-
 export HERMES_HOME=/tmp/hermes-nemo-relay-docs/hermes-home
 mkdir -p "$HERMES_HOME"
 
@@ -443,8 +430,8 @@ Sanitized ATIF excerpt:
 The plugin keeps NeMo Relay's native event model:
 
 - Hermes sessions map to `agent` scopes.
-- Hermes API request hooks map to `llm` scope start/end events.
-- Hermes tool hooks map to `tool` scope start/end events.
+- Hermes core managed provider calls map to `llm` scope start/end events.
+- Hermes core managed tool calls map to `tool` scope start/end events.
 - Turn, approval, subagent, and diagnostic fallback events map to `mark`
   events.
 
@@ -454,11 +441,13 @@ subagent IDs, role/status fields when present, and derived
 stream lossless for later ATIF conversion that can compact subagents into
 separate trajectories.
 
-## Adaptive Middleware Example
+## Adaptive Execution Example
 
-The `observability/nemo_relay` plugin uses Hermes execution middleware to hand
-LLM and tool calls to NeMo Relay managed execution when an adaptive component is
-enabled.
+Hermes core owns the LLM and tool boundaries and enters NeMo Relay managed
+execution while a Hermes-managed Relay consumer is active. With no shared
+metrics subscriber or explicitly configured Relay plugin, Hermes calls the
+provider or tool directly. The `observability/nemo_relay` plugin retains the
+managed path while its adaptive components are installed on those boundaries.
 
 Minimal `plugins.toml`:
 
@@ -479,33 +468,28 @@ Enable it for Hermes:
 export HERMES_NEMO_RELAY_PLUGINS_TOML=/tmp/hermes-middleware-test/plugins.toml
 ```
 
-When the adaptive component is enabled and the installed NeMo Relay runtime
-exposes `llm.execute(...)` and `tools.execute(...)`, Hermes routes execution
-through these boundaries:
+Execution follows these boundaries with or without an adaptive component:
 
 ```text
 Hermes provider call
-  -> llm_execution middleware
-    -> nemo_relay.llm.execute(...)
-      -> Hermes provider adapter next_call(...)
+  -> nemo_relay.llm.execute(...)
+    -> Hermes provider adapter callback(...)
 
 Hermes tool call
-  -> tool_execution middleware
-    -> nemo_relay.tools.execute(...)
-      -> Hermes tool dispatcher next_call(...)
+  -> nemo_relay.tools.execute(...)
+    -> Hermes authorization and dispatch callback(...)
 ```
 
-The plugin still emits observer marks for sessions, turns, approvals, and
-subagents. When adaptive managed execution is active, it skips manual
-`llm.call` and `tools.call` observer spans to avoid duplicate LLM/tool events
-for the same execution.
+The plugin emits observer marks for sessions, turns, approvals, and subagents.
+It does not register provider or tool lifecycle hooks, so each managed call
+produces one Relay lifecycle.
 
 ### Local Adaptive E2E
 
 This example enables both NeMo Relay observability export and adaptive execution
 middleware for a local Hermes run. This path requires a NeMo Relay runtime that
-supports `[components.config.tool_parallelism]`, as provided by the supported
-0.x release range beginning with 0.5.
+supports `[components.config.tool_parallelism]`, as provided by NeMo Relay 0.6
+and later.
 
 ```bash
 export HERMES_HOME=/tmp/hermes-middleware-test/hermes-home

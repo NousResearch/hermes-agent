@@ -143,6 +143,68 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
     assert transcripts == ["hello from a captionless voice note"]
 
 
+@pytest.mark.parametrize(
+    ("user_text", "expected_text"),
+    [
+        ("caption", "[voice message could not be transcribed]\n\ncaption"),
+        ("", "[voice message could not be transcribed]"),
+        (
+            "(The user sent a message with no text content)",
+            "[voice message could not be transcribed]",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_handles_missing_transcription_module_gracefully(
+    user_text,
+    expected_text,
+):
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools.transcription_tools":
+            raise ModuleNotFoundError("No module named 'tools.transcription_tools'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    with patch("builtins.__import__", side_effect=fake_import):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            user_text,
+            ["/tmp/voice.ogg"],
+        )
+
+    assert result == expected_text
+    assert transcripts == []
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_guards_empty_transcript():
+    """success=True with an empty/whitespace transcript must not emit empty
+    quotes — it gets a sentinel note and is excluded from transcripts (#41603)."""
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._has_setup_skill = lambda: False
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "   \n\t", "provider": "local_command"},
+    ):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            "caption",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "empty or inaudible" in result
+    assert '""' not in result
+    assert transcripts == []
+
+
 @pytest.mark.asyncio
 async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     from gateway.run import GatewayRunner

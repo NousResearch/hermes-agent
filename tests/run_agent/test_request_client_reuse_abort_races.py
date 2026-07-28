@@ -25,7 +25,12 @@ Invariants pinned here:
 4. ``run_codex_stream``'s finally must poison the reuse slot when
    ``event_stream.close()`` fails; otherwise a failed close caches the
    client with a connection still checked out of the pool.
+
+5. Relay's managed stream wrapper must preserve the same close failure and
+   request-client identity rather than masking the signal used to poison the
+   slot.
 """
+from contextlib import contextmanager
 import threading
 import time
 from types import SimpleNamespace
@@ -47,6 +52,33 @@ def _make_agent():
     )
     agent.api_mode = "chat_completions"
     return agent
+
+
+@contextmanager
+def _managed_relay_turn(agent, tmp_path, monkeypatch):
+    pytest.importorskip("nemo_relay")
+    from agent import relay_runtime
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    relay_runtime._reset_for_tests()
+    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+        profile_key=relay_runtime.current_profile_key(),
+        session_id=agent.session_id,
+        platform="cli",
+    )
+    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+        lease,
+        turn_id="request-client-reuse-turn",
+        task_id="request-client-reuse-task",
+    )
+    lease.host.retain_managed_execution("test.request_client_reuse")
+    try:
+        yield
+    finally:
+        lease.host.release_managed_execution("test.request_client_reuse")
+        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
+        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+        relay_runtime._reset_for_tests()
 
 
 def _chunk(content=None, finish_reason=None):
@@ -152,6 +184,40 @@ def test_worker_interrupt_break_poisons_slot_when_stream_close_fails():
 
     assert stream.close_calls == 1
     assert "interrupt_stream_close_failed" in abort_reasons
+
+
+def test_relay_managed_close_failure_poisons_request_client(tmp_path, monkeypatch):
+    """Relay must preserve close failures needed by the reuse-slot guard."""
+    agent = _make_agent()
+
+    def chunks():
+        yield _chunk(content="partial ")
+        agent._interrupt_requested = True
+        yield _chunk(content="never processed")
+
+    stream = _FakeStream(chunks, close_raises=True)
+    request_client = _mock_wire_client(stream)
+    abort_reasons = []
+
+    with _managed_relay_turn(agent, tmp_path, monkeypatch), patch.object(
+        agent, "_create_request_openai_client", return_value=request_client
+    ), patch.object(agent, "_close_request_openai_client"), patch.object(
+        agent,
+        "_abort_request_openai_client",
+        side_effect=lambda client, *, reason: abort_reasons.append(
+            (client, reason)
+        ),
+    ):
+        with pytest.raises(InterruptedError):
+            agent._interruptible_streaming_api_call(
+                {
+                    "model": "test/model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                }
+            )
+
+    assert stream.close_calls == 1
+    assert abort_reasons == [(request_client, "interrupt_stream_close_failed")]
 
 
 def test_stale_abort_is_atomic_with_holder_read(monkeypatch):

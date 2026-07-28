@@ -357,3 +357,135 @@ async def test_voice_tts_is_explicit_audio_reply_opt_in():
     assert runner._voice_mode["telegram:12345"] == "all"
     assert "12345" in adapter._auto_tts_enabled_chats
     assert result
+
+
+def _voice_event(source, urls):
+    return MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=list(urls),
+        media_types=["audio/ogg"] * len(urls),
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_stt_merge_does_not_re_echo_delivered_transcript():
+    """A follow-up message must not replay an already-echoed transcript.
+
+    ``merge_pending_message_event`` invalidates the transcription cache so the
+    merged text/media is picked up, which makes the drain path transcribe
+    again.  The echo ledger has to survive that invalidation, otherwise the
+    user sees the same 🎙️ line twice.
+    """
+    from gateway.platforms.base import merge_pending_message_event
+
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner = _runner(adapter)
+    source = _source()
+    event = _voice_event(source, ["/tmp/voice-1.ogg"])
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "hello", "provider": "mock"},
+    ):
+        _, transcripts = await runner._transcribe_pending_audio_event_once(event, event.text)
+        await runner._echo_pending_stt_transcripts_once(event, adapter, source, transcripts)
+
+        # A plain text follow-up merges into the still-pending voice event.
+        merge_pending_message_event(
+            {"telegram:dm:12345": event},
+            "telegram:dm:12345",
+            MessageEvent(text="and also this", message_type=MessageType.TEXT, source=source),
+        )
+
+        drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(
+            event, event.text
+        )
+        await runner._echo_pending_stt_transcripts_once(
+            event, adapter, source, drain_transcripts
+        )
+
+    assert event.text == "and also this"
+    assert "and also this" in drain_text
+    adapter.send.assert_awaited_once_with("12345", '🎙️ "hello"', metadata=None)
+
+
+@pytest.mark.asyncio
+async def test_pending_stt_merge_echoes_only_the_newly_merged_transcript():
+    """A second voice note still gets echoed, without repeating the first."""
+    from gateway.platforms.base import merge_pending_message_event
+
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner = _runner(adapter)
+    source = _source()
+    event = _voice_event(source, ["/tmp/voice-1.ogg"])
+
+    def _fake_transcribe(path):
+        name = "hello" if path.endswith("voice-1.ogg") else "world"
+        return {"success": True, "transcript": name, "provider": "mock"}
+
+    with patch("tools.transcription_tools.transcribe_audio", side_effect=_fake_transcribe):
+        _, transcripts = await runner._transcribe_pending_audio_event_once(event, event.text)
+        await runner._echo_pending_stt_transcripts_once(event, adapter, source, transcripts)
+
+        merge_pending_message_event(
+            {"telegram:dm:12345": event},
+            "telegram:dm:12345",
+            _voice_event(source, ["/tmp/voice-2.ogg"]),
+        )
+
+        _, drain_transcripts = await runner._transcribe_pending_audio_event_once(
+            event, event.text
+        )
+        await runner._echo_pending_stt_transcripts_once(
+            event, adapter, source, drain_transcripts
+        )
+
+    assert drain_transcripts == ["hello", "world"]
+    assert [c.args[1] for c in adapter.send.await_args_list] == [
+        '🎙️ "hello"',
+        '🎙️ "world"',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_stt_merge_echoes_two_identical_transcripts():
+    """Two separate notes that transcribe identically are two deliveries.
+
+    The ledger counts what was already echoed rather than remembering the
+    transcript strings: a value-based dedup would silently collapse a repeated
+    phrase into one echo, dropping a note the user actually sent.
+    """
+    from gateway.platforms.base import merge_pending_message_event
+
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner = _runner(adapter)
+    source = _source()
+    event = _voice_event(source, ["/tmp/voice-1.ogg"])
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "on my way", "provider": "mock"},
+    ):
+        _, transcripts = await runner._transcribe_pending_audio_event_once(event, event.text)
+        await runner._echo_pending_stt_transcripts_once(event, adapter, source, transcripts)
+
+        merge_pending_message_event(
+            {"telegram:dm:12345": event},
+            "telegram:dm:12345",
+            _voice_event(source, ["/tmp/voice-2.ogg"]),
+        )
+
+        _, drain_transcripts = await runner._transcribe_pending_audio_event_once(
+            event, event.text
+        )
+        await runner._echo_pending_stt_transcripts_once(
+            event, adapter, source, drain_transcripts
+        )
+
+    assert drain_transcripts == ["on my way", "on my way"]
+    assert [c.args[1] for c in adapter.send.await_args_list] == [
+        '🎙️ "on my way"',
+        '🎙️ "on my way"',
+    ], "the second note must still be echoed even though it transcribes the same"

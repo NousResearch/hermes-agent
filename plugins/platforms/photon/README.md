@@ -155,6 +155,14 @@ All env vars are documented in `plugin.yaml`. The most important:
   reachable across restarts via spectrum-ts' `space.get(id)`.
 - **Message effects, polls** — supported by `spectrum-ts` but not yet
   exposed; the sidecar is the natural place to add them.
+- **Cron/standalone sends require a running gateway.** Processes outside
+  the gateway (cron subprocesses, `hermes send`) cannot spawn the sidecar;
+  they authenticate to the gateway's live sidecar via the runtime record at
+  `<hermes-home>/runtime/photon-sidecar.json` (written after the sidecar's
+  `/healthz` readiness check, `0600`, removed on stop/failed start). Also
+  note that shared/free-tier Photon lines cannot INITIATE conversations
+  with numbers that never texted the line — that's Photon-side policy, not
+  a Hermes limitation.
 
 ## Upgrading spectrum-ts
 

@@ -205,6 +205,19 @@ Common issues:
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.
+- **Cron and standalone sends need the gateway running.** Out-of-process
+  senders (cron jobs, `hermes send`, the dashboard) reuse the sidecar the
+  gateway spawned — they read its port/token from
+  `<hermes-home>/runtime/photon-sidecar.json`, written once the sidecar
+  passes its health check and removed when it stops. If a standalone send
+  reports the gateway appears to be down, start (or restart) the gateway
+  first.
+- **Shared/free-tier lines can't initiate conversations with new
+  targets.** Photon-side policy: a shared line can only message a number
+  after that number has texted the line first. A cron/standalone send to a
+  brand-new recipient will be rejected by Photon even when Hermes is set
+  up correctly — either have the recipient message the line once, or move
+  to a dedicated line.
 
 ## Env vars
 

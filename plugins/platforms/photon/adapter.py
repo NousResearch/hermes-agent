@@ -78,6 +78,103 @@ _DEFAULT_SIDECAR_BIND = "127.0.0.1"
 # size to ~16 KB.  Keep a conservative cap that matches BlueBubbles.
 _MAX_MESSAGE_LENGTH = 8000
 
+# ---------------------------------------------------------------------------
+# Sidecar runtime record
+#
+# Out-of-process senders (cron subprocesses, `hermes send`, the dashboard)
+# go through ``_standalone_send`` and need the live sidecar's port + token —
+# but the token is generated at spawn time and otherwise exists only in the
+# gateway process memory and the sidecar child env (issue #69960). The
+# gateway persists this record once the sidecar passes its /healthz
+# readiness check, and removes it on every stop / failed-start path so a
+# stale record never outlives a dead sidecar.
+
+_RUNTIME_RECORD_NAME = "photon-sidecar.json"
+
+
+def _runtime_record_path() -> Path:
+    # get_hermes_home() honors profile overrides — never hardcode ~/.hermes.
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "runtime" / _RUNTIME_RECORD_NAME
+
+
+def _write_runtime_record(port: int, token: str, pid: int) -> None:
+    """Atomically persist ``{port, token, pid}`` with owner-only perms."""
+    import tempfile
+
+    try:
+        path = _runtime_record_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".photon-sidecar.", suffix=".tmp"
+        )
+        try:
+            # Restrict perms BEFORE the token hits disk (mkstemp is already
+            # 0600 on POSIX; the explicit chmod is a belt-and-braces guard,
+            # wrapped so Windows/exotic filesystems can't crash the write).
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:  # pragma: no cover - Windows / odd fs
+                pass
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"port": port, "token": token, "pid": pid}, fh)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception as e:  # best-effort: gateway sends still work without it
+        logger.warning("[photon] failed to write sidecar runtime record: %s", e)
+
+
+def _read_runtime_record() -> Optional[Dict[str, Any]]:
+    try:
+        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _delete_runtime_record() -> None:
+    try:
+        _runtime_record_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _sidecar_pid_alive(pid: Any) -> bool:
+    """Best-effort liveness check for the recorded sidecar pid."""
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False
+    try:
+        # Cross-platform (psutil-backed, Windows-safe — see its docstring).
+        from gateway.status import _pid_exists
+
+        return bool(_pid_exists(pid_int))
+    except Exception:
+        pass
+    if os.name == "posix":
+        try:
+            os.kill(pid_int, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+    # Windows without gateway.status/psutil: can't probe safely
+    # (os.kill(pid, 0) is destructive there) — assume alive and let the
+    # HTTP send itself be the arbiter.
+    return True
+
 # Dedup parameters — the gRPC stream is at-least-once, and a sidecar
 # reconnect can replay, so keep at least 1k ids for ~48h.
 _DEDUP_MAX_SIZE = 4000
@@ -499,6 +596,9 @@ class PhotonAdapter(BasePlatformAdapter):
                     f"failed to start Photon sidecar: {e}",
                     retryable=True,
                 )
+                # No live sidecar — make sure no stale runtime record
+                # survives to mislead standalone senders.
+                _delete_runtime_record()
                 await client.aclose()
                 self._http_client = None
                 return False
@@ -1110,6 +1210,7 @@ class PhotonAdapter(BasePlatformAdapter):
         async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
             while time.time() < deadline:
                 if self._sidecar_proc.poll() is not None:
+                    _delete_runtime_record()
                     raise RuntimeError(
                         f"Photon sidecar exited with code "
                         f"{self._sidecar_proc.returncode} before becoming ready"
@@ -1120,10 +1221,19 @@ class PhotonAdapter(BasePlatformAdapter):
                         headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
                     )
                     if resp.status_code == 200:
+                        # Persist port/token/pid so out-of-process senders
+                        # (cron, `hermes send`) can reach this sidecar
+                        # (see _standalone_send / issue #69960).
+                        _write_runtime_record(
+                            self._sidecar_port,
+                            self._sidecar_token,
+                            self._sidecar_proc.pid,
+                        )
                         return
                 except httpx.RequestError as e:
                     last_err = e
                 await asyncio.sleep(0.2)
+        _delete_runtime_record()
         raise RuntimeError(
             f"Photon sidecar did not become ready within 15s: {last_err}"
         )
@@ -1161,6 +1271,9 @@ class PhotonAdapter(BasePlatformAdapter):
     async def _stop_sidecar(self) -> None:
         proc = self._sidecar_proc
         if proc is None:
+            # Nothing to stop, but never leave a record behind on disconnect
+            # (e.g. autostart was disabled or startup failed earlier).
+            _delete_runtime_record()
             return
         try:
             # Closing our end of the stdin pipe is itself a shutdown signal
@@ -1197,6 +1310,9 @@ class PhotonAdapter(BasePlatformAdapter):
                     proc.kill()
         finally:
             self._sidecar_proc = None
+            # The sidecar is gone (or going) — remove the runtime record so
+            # standalone senders don't chase a dead port/token.
+            _delete_runtime_record()
             if self._sidecar_supervisor_task is not None:
                 self._sidecar_supervisor_task.cancel()
                 self._sidecar_supervisor_task = None
@@ -1799,13 +1915,32 @@ async def _standalone_send(
     )
     token = os.getenv("PHOTON_SIDECAR_TOKEN")
     if not token:
-        return {
-            "error": (
-                "Photon standalone send requires a running sidecar with "
-                "PHOTON_SIDECAR_TOKEN set in the environment. Cron processes "
-                "cannot spawn the sidecar themselves."
-            )
-        }
+        # Fall back to the runtime record the gateway persists once its
+        # sidecar passes /healthz (issue #69960) — the token only exists in
+        # the gateway process env otherwise, so cron/`hermes send` would be
+        # structurally unable to authenticate.
+        record = _read_runtime_record()
+        stale_hint = ""
+        if record and record.get("token"):
+            if _sidecar_pid_alive(record.get("pid")):
+                token = str(record["token"])
+                port = _coerce_port(record.get("port"), port)
+            else:
+                stale_hint = (
+                    " A stale sidecar runtime record was found (pid "
+                    f"{record.get('pid')} is not running) — the gateway "
+                    "appears to be down."
+                )
+        if not token:
+            return {
+                "error": (
+                    "Photon standalone send requires a running sidecar. "
+                    "Start the Hermes gateway (which spawns the sidecar and "
+                    "records its address under <hermes-home>/runtime/"
+                    f"{_RUNTIME_RECORD_NAME}), or set PHOTON_SIDECAR_TOKEN "
+                    "in this process's environment." + stale_hint
+                )
+            }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None

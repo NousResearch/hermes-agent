@@ -55,29 +55,16 @@ def _fsync_directory(path: Path) -> None:
 
 def _write_payload(flush_dir: Path, payload: Dict[str, Any]) -> None:
     """Atomically write one private, uniquely named recovery payload."""
+    from utils import atomic_json_write
+
     file_id = uuid.uuid4().hex
     final_path = flush_dir / f"pending-{file_id}.json"
-    temp_path = flush_dir / f".pending-{file_id}.tmp"
-    file_descriptor = -1
-
-    try:
-        file_descriptor = os.open(
-            temp_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-            file_descriptor = -1  # The file object now owns the descriptor.
-            json.dump(payload, handle, ensure_ascii=False, default=str)
-            handle.flush()
-            os.fsync(handle.fileno())
-
-        os.replace(temp_path, final_path)
-    except Exception:
-        if file_descriptor >= 0:
-            os.close(file_descriptor)
-        temp_path.unlink(missing_ok=True)
-        raise
+    atomic_json_write(
+        final_path,
+        payload,
+        mode=0o600,
+        default=str,
+    )
 
     try:
         _fsync_directory(flush_dir)

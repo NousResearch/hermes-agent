@@ -74,7 +74,7 @@ def test_flush_write_failure_leaves_no_recovery_file(tmp_path, monkeypatch):
     def fail_replace(source, destination):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("gateway.shutdown_flush.os.replace", fail_replace)
+    monkeypatch.setattr("utils.os.replace", fail_replace)
 
     assert flush_pending_to_file({"session": "message"}, reason="test") == 0
     assert list(flush_dir.iterdir()) == []

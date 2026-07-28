@@ -209,16 +209,70 @@ def smooth_whitespace_for_tts(text: str) -> str:
     return text.strip()
 
 
+# Reasoning blocks: models with ``/reasoning show`` enabled emit
+# ``<think>...</think>`` blocks in the final assistant message.  Users want to
+# SEE reasoning, not hear it read aloud (#34213).
+_THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL | re.IGNORECASE)
+# An unterminated block (streaming cut-off) should still not be spoken.
+_THINK_BLOCK_OPEN_RE = re.compile(r"<think[\s>].*\Z", flags=re.DOTALL | re.IGNORECASE)
+
+# Turn-end file-mutation verifier footer appended by run_agent.py
+# (``_format_file_mutation_failure_footer``).  It's a UI affordance — reading
+# "warning file mutation verifier, 2 files were NOT modified..." aloud is
+# noise (#40772).  The footer is a ``⚠️ File-mutation verifier:`` header line
+# followed by indented ``•`` bullet lines; strip the whole block.
+_VERIFIER_FOOTER_RE = re.compile(
+    r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[ \t]+•.*)*",
+    flags=re.MULTILINE,
+)
+
+
+def strip_nonspoken_blocks(text: str) -> str:
+    """Remove blocks that must never reach a speech provider.
+
+    Currently: ``<think>`` reasoning blocks and the end-of-turn
+    file-mutation verifier footer.
+    """
+    if not text:
+        return ""
+    text = _THINK_BLOCK_RE.sub(" ", text)
+    text = _THINK_BLOCK_OPEN_RE.sub(" ", text)
+    text = _VERIFIER_FOOTER_RE.sub(" ", text)
+    return text
+
+
+def flatten_newlines_for_payload(text: str) -> str:
+    """Collapse newlines into sentence breaks for single-line TTS payloads.
+
+    Some OpenAI-compatible backends (e.g. Kokoro) truncate synthesis at the
+    first newline (#9004).  The smoothing pass already terminates each line
+    with punctuation, so newlines can safely become plain spaces.
+    """
+    if not text:
+        return ""
+    text = re.sub(r"\n{2,}", ". ", text)
+    text = re.sub(r"(?<=[.!?;:,])\n", " ", text)
+    text = text.replace("\n", ". ")
+    text = re.sub(r"\.\s*\.", ".", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
 def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     """Return a TTS-friendly script from assistant text.
 
-    Deterministic cleanup, not a semantic rewrite: it removes Markdown, expands
-    common symbols such as a degree-Celsius sign to "degrees Celsius", and turns
-    visual line formatting into speakable sentence pauses.
+    Deterministic cleanup, not a semantic rewrite: it removes ``<think>``
+    reasoning blocks and the file-mutation verifier footer, removes Markdown,
+    expands common symbols such as a degree-Celsius sign to "degrees Celsius",
+    turns visual line formatting into speakable sentence pauses, and flattens
+    the result to a single line so newline-sensitive providers (Kokoro) speak
+    the whole script.
     """
-    spoken = strip_markdown_for_tts(text)
+    spoken = strip_nonspoken_blocks(text)
+    spoken = strip_markdown_for_tts(spoken)
     spoken = normalize_symbols_for_tts(spoken)
     spoken = smooth_whitespace_for_tts(spoken)
+    spoken = flatten_newlines_for_payload(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()
     return spoken

@@ -3115,7 +3115,20 @@ _THINK_BLOCK = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """Remove markdown, think blocks, and emoji that shouldn't be spoken."""
+    """Prepare text for speech via the shared cleaner in tts_text_normalize.
+
+    One cleaner for every TTS path (tool, gateway auto-TTS, voice-mode
+    streaming, web dashboard): strips <think> reasoning blocks, the
+    file-mutation verifier footer, markdown, and emoji; expands units and
+    symbols; and flattens newlines to sentence breaks so newline-sensitive
+    providers (Kokoro) speak the whole script.  Falls back to the legacy
+    regex pipeline if the normalizer ever fails.
+    """
+    try:
+        from tools.tts_text_normalize import prepare_spoken_text
+        return prepare_spoken_text(text, max_chars=None)
+    except Exception:
+        pass
     text = _THINK_BLOCK.sub(' ', text)
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_LINK.sub(r'\1', text)

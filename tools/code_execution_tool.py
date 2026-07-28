@@ -154,11 +154,16 @@ _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                       # variable names but were previously undetected:
                       # CREDS (CREDENTIALS abbreviated), BEARER
                       # (Authorization: Bearer tokens), APIKEY (written
-                      # without an underscore). "PASS" is intentionally NOT
-                      # added — it false-positives on legitimate non-secret
-                      # vars (BYPASS_CACHE, COMPASS_DIR, PASSENGER_HOST) while
-                      # PASSWORD/PASSWD already cover the credential cases.
-                      "CREDS", "BEARER", "APIKEY")
+                      # without an underscore).
+                      "CREDS", "BEARER", "APIKEY", "PASS")
+
+# Connection-string regex matching credential-bearing values like
+# ``postgresql://user:password@host/db`` or ``redis://:token@host``.
+# Reused from agent/redact.py (inlined here to avoid circular imports).
+_SCRUB_CONNSTR_RE = re.compile(
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
+    re.IGNORECASE,
+)
 
 # Operational HERMES_* vars the child legitimately needs by exact name — these
 # are non-secret runtime-location flags (the same set hermes_cli treats as the
@@ -229,6 +234,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         is_windows = _IS_WINDOWS
 
     scrubbed = {}
+    _dropped_value_secrets = []
     # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
     # broad "HERMES_" prefix used to pass these through; now only the
     # operational set does. The drop is intentional (those vars can carry
@@ -243,6 +249,12 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             continue
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
             continue
+        # Value-level check: block env vars whose values contain embedded
+        # credentials (e.g. ``DATABASE_URL=postgresql://user:pass@host/db``)
+        # even when the env var name doesn't contain a secret substring.
+        if v and _SCRUB_CONNSTR_RE.search(v):
+            _dropped_value_secrets.append(k)
+            continue
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             scrubbed[k] = v
             continue
@@ -256,6 +268,13 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             # Non-secret (secrets were already dropped above) and not in any
             # allowlist — a deliberately-dropped HERMES_* var.
             _dropped_hermes.append(k)
+    if _dropped_value_secrets:
+        logger.debug(
+            "execute_code: dropped %d env var(s) whose VALUES contain embedded "
+            "connection-string credentials (%s).",
+            len(_dropped_value_secrets),
+            ", ".join(sorted(_dropped_value_secrets)),
+        )
     if _dropped_hermes:
         logger.debug(
             "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "

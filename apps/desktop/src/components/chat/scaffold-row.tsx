@@ -13,7 +13,7 @@ import { DisclosureRow } from '@/components/chat/disclosure-row'
  * different kinds of line for what is one kind of thing.
  */
 export const SCAFFOLD_LABEL_CLASS =
-  'text-[length:var(--conversation-tool-font-size)] font-medium leading-(--conversation-line-height) text-(--conversation-scaffold-text)'
+  'text-[length:var(--conversation-tool-font-size)] leading-(--conversation-line-height) text-(--conversation-scaffold-text)'
 
 /** Durations, counts and diff stats trailing a scaffold label. */
 export const SCAFFOLD_META_CLASS = 'shrink-0 text-[0.625rem] tabular-nums text-(--conversation-scaffold-meta)'

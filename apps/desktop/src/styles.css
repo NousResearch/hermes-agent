@@ -1501,22 +1501,31 @@ text-* variant utilities. */ .btn-arc {
 /* Conversation block rhythm. assistant-ui renders each range as a direct child
    of the message content with no per-part wrapper, so adjacency rules cover
    every pairing — first block needs no reset, nested tool rows are untouched.
-   Two tiers: scaffolding (tool / thinking) gets a roomy block gap so it reads
-   as separate from the reply; consecutive prose collapses to a tight paragraph
-   rhythm so split-out text parts don't look like a big gap. */
-/* Scaffolding adjacent to anything → roomy block gap. */
+
+   One gap between top-level blocks, whatever they are. Spelling out which
+   *pairs* qualified meant the live status line (not tool, thinking or prose)
+   fell through every branch and carried its own half-size margin instead. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], .aui-md),
-[data-slot='aui_assistant-message-content']
-  > .aui-md
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md)
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md) {
   margin-top: var(--turn-block-gap);
 }
 
-/* Prose ↔ prose → tight paragraph rhythm, matching in-block paragraph spacing. */
+/* Except prose ↔ prose: one reading column that happens to arrive as several
+   parts, so it keeps the in-block paragraph rhythm. Same specificity as the
+   rule above and deliberately after it. */
 [data-slot='aui_assistant-message-content'] > .aui-md + .aui-md {
   margin-top: var(--paragraph-gap);
+}
+
+/* A streaming turn is sealed into several assistant bubbles as it goes
+   (`message.interim`) and rehydrates into fewer, so the same two blocks are
+   sometimes siblings inside one bubble and sometimes split across two. The
+   flex gap between bubbles is the turn gap — half the block gap — which made
+   the rhythm visibly tighten and then relax as a turn settled. Top it up so
+   the column ticks at one interval either way. */
+[data-slot='aui_turn-pair'] > [data-slot='aui_assistant-message-root'] + [data-slot='aui_assistant-message-root'] {
+  margin-top: calc(var(--turn-block-gap) - var(--conversation-turn-gap));
 }
 
 /* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */

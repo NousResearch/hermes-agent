@@ -1,4 +1,9 @@
-import { type AppendMessage, AssistantRuntimeProvider, ExportedMessageRepository, type ThreadMessage } from '@assistant-ui/react'
+import {
+  type AppendMessage,
+  AssistantRuntimeProvider,
+  ExportedMessageRepository,
+  type ThreadMessage
+} from '@assistant-ui/react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -105,6 +110,7 @@ function Harness({ onEdit }: { onEdit: (message: AppendMessage) => Promise<void>
 describe('edit send arrow — macOS click gesture (blur races cancel)', () => {
   it('sends without an uncaught "Composer is not available" when the arrow-click blurs the editor', async () => {
     const uncaught: unknown[] = []
+
     const onUncaught = (err: unknown) => {
       uncaught.push(err)
     }

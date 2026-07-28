@@ -594,6 +594,9 @@ class CLIAgentSetupMixin:
             if display_kind == "async_delegation_complete":
                 entries.append(("event", "background delegation completed"))
                 continue
+            if display_kind == "auto_continue":
+                entries.append(("event", "resumed interrupted turn"))
+                continue
 
             if role == "system":
                 continue

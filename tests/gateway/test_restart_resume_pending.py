@@ -1937,3 +1937,188 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     # No leaked sentinel and no orphaned queued event.
     assert session_key not in runner._running_agents
     assert session_key not in getattr(adapter, "_pending_messages", {})
+
+
+# ---------------------------------------------------------------------------
+# Startup-restore inbound gate must be BOUNDED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_gate_releases_when_resume_turn_outlives_timeout(
+    monkeypatch,
+):
+    """A single slow boot-resume turn must not hold the inbound gate shut.
+
+    While ``_startup_restore_in_progress`` is set, every inbound message is
+    QUEUED instead of answered.  The gate is opened by
+    ``_finish_startup_restore``, which waits on the synthetic boot
+    auto-resume turns.  Without a bound, one pathologically long resumed
+    turn holds the gate — and therefore every channel's inbound queue —
+    for the entire duration of that turn.
+    """
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._background_tasks = set()
+
+    seen: list[str] = []
+    never_finishes = asyncio.Event()
+
+    async def slow_resume_turn() -> None:
+        await never_finishes.wait()
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    slow_task = asyncio.create_task(slow_resume_turn())
+    runner._startup_restore_tasks = [slow_task]
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+    assert runner._startup_restore_queue == [inbound]
+
+    # The gate must release on the bound even though the resume turn is
+    # still running.
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+
+    assert seen == ["inbound:hello"], (
+        "startup-restore gate never released: queued inbound was not drained "
+        "while a slow boot-resume turn was still running"
+    )
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
+    # The slow turn is NOT cancelled — it finishes in the background.
+    assert not slow_task.done()
+
+    never_finishes.set()
+    await slow_task
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_gate_still_waits_for_a_prompt_resume_turn(
+    monkeypatch,
+):
+    """The bound must not truncate a normal-speed resume turn.
+
+    Feature preservation: with the default (generous) timeout, a resume turn
+    that completes promptly is still fully awaited before the gate opens, so
+    the queued inbound lands behind a finished turn.
+    """
+    monkeypatch.delenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", raising=False)
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._background_tasks = set()
+
+    seen: list[str] = []
+    resume_done = asyncio.Event()
+
+    async def resume_turn() -> None:
+        await resume_done.wait()
+        seen.append("resume-finished")
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    runner._startup_restore_tasks = [asyncio.create_task(resume_turn())]
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert seen == [], "gate opened before the resume turn finished"
+
+    resume_done.set()
+    await finish_task
+    assert seen == ["resume-finished", "inbound:hello"]
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_drain_timeout_zero_restores_unbounded_wait(
+    monkeypatch,
+):
+    """A non-positive bound opts back into the historical wait-forever gate."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0")
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._background_tasks = set()
+
+    seen: list[str] = []
+    resume_done = asyncio.Event()
+
+    async def resume_turn() -> None:
+        await resume_done.wait()
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+    runner._startup_restore_tasks = [asyncio.create_task(resume_turn())]
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    await asyncio.sleep(0.15)
+    assert seen == [], "unbounded gate released early"
+
+    resume_done.set()
+    await finish_task
+    assert seen == ["inbound:hello"]
+
+
+def test_startup_restore_drain_timeout_reads_config_bridged_env(monkeypatch):
+    """The bound is a config.yaml knob bridged to an internal env var."""
+    from gateway.run import (
+        _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT,
+        _startup_restore_drain_timeout_secs,
+    )
+
+    monkeypatch.delenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", raising=False)
+    assert (
+        _startup_restore_drain_timeout_secs()
+        == _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT
+    )
+
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "12.5")
+    assert _startup_restore_drain_timeout_secs() == 12.5
+
+    # A malformed value must fall back to the default, never raise.
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "not-a-number")
+    assert (
+        _startup_restore_drain_timeout_secs()
+        == _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT
+    )
+
+
+def test_startup_restore_drain_timeout_is_a_documented_config_key():
+    """agent.gateway_startup_restore_drain_timeout ships in DEFAULT_CONFIG."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert (
+        "gateway_startup_restore_drain_timeout" in DEFAULT_CONFIG["agent"]
+    ), "the bound must be a config.yaml knob, not an undocumented env var"

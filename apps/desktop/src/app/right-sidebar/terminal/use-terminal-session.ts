@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
-import { $filePreviewTarget, $previewTarget } from '@/store/preview'
+import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
@@ -62,7 +62,7 @@ type TerminalStatus = 'closed' | 'open' | 'starting'
 // file's name instead of the shell, so the composer ref reads as a file quote
 // rather than a bogus "zsh:N lines".
 function previewSelectionLabel(): string {
-  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const target = $previewTarget.get()
   const source = target?.path || target?.url || ''
 
   return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''

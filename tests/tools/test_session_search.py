@@ -381,18 +381,98 @@ class TestScrollShape:
         assert result["success"] is False
 
     def test_scroll_rejects_current_session_lineage(self, db):
-        _seed_modpack_sessions(db)
-        # Grab some valid id from s_oldest
-        disc = json.loads(session_search(query="modpack", limit=3, db=db))
-        match = [r for r in disc["results"] if r["session_id"] == "s_oldest"]
-        if match:
-            mid = match[0]["match_message_id"]
-            result = json.loads(session_search(
-                session_id="s_oldest", around_message_id=mid, db=db,
-                current_session_id="s_oldest",
-            ))
-            assert result["success"] is False
-            assert "current session" in result.get("error", "").lower()
+        db.create_session("s_current", source="cli")
+        mid = db.append_message("s_current", role="user", content="still live")
+
+        result = json.loads(session_search(
+            session_id="s_current", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is False
+        assert "current session" in result.get("error", "").lower()
+
+    def test_scroll_allows_compacted_anchor_in_current_session(self, db):
+        db.create_session("s_current", source="cli")
+        db.append_message(
+            "s_current", role="user", content="history removed from live context"
+        )
+        db.archive_and_compact("s_current", [
+            {"role": "assistant", "content": "Compacted history summary"},
+        ])
+
+        discovery = json.loads(session_search(
+            query="history removed", db=db, current_session_id="s_current",
+        ))
+        assert discovery["count"] == 1
+        anchor = discovery["results"][0]
+
+        result = json.loads(session_search(
+            session_id=anchor["session_id"],
+            around_message_id=anchor["match_message_id"],
+            db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is True
+        assert any(
+            message["id"] == anchor["match_message_id"]
+            for message in result["messages"]
+        )
+
+    def test_scroll_allows_compression_ended_parent_from_continuation(self, db):
+        db.create_session("s_parent", source="cli")
+        mid = db.append_message(
+            "s_parent", role="user", content="history summarized into child"
+        )
+        db.end_session("s_parent", "compression")
+        db.create_session("s_current", source="cli", parent_session_id="s_parent")
+
+        result = json.loads(session_search(
+            session_id="s_parent", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is True
+        assert any(message["id"] == mid for message in result["messages"])
+
+    def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):
+        db.create_session("s_current", source="cli")
+        db.create_session(
+            "s_delegate", source="delegate", parent_session_id="s_current"
+        )
+        mid = db.append_message(
+            "s_delegate", role="assistant", content="live delegated result"
+        )
+
+        result = json.loads(session_search(
+            session_id="s_delegate", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is False
+        assert "current session" in result.get("error", "").lower()
+
+    def test_scroll_rejects_rewound_anchor_in_compression_parent(self, db):
+        db.create_session("s_parent", source="cli")
+        mid = db.append_message(
+            "s_parent", role="user", content="message removed by rewind"
+        )
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
+            (mid,),
+        )
+        db._conn.commit()
+        db.end_session("s_parent", "compression")
+        db.create_session("s_current", source="cli", parent_session_id="s_parent")
+
+        result = json.loads(session_search(
+            session_id="s_parent", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is False
+        assert "current session" in result.get("error", "").lower()
 
     def test_scroll_invalid_around_message_id_errors(self, db):
         _seed_modpack_sessions(db)

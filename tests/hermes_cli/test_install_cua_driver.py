@@ -21,7 +21,10 @@ cleanly on missing-arch assets, and the upgrade path uses
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
+
+import pytest
 
 
 class TestInstallCuaDriverUpgrade:
@@ -126,6 +129,141 @@ class TestInstallCuaDriverUpgrade:
             runner.assert_called_once()
 
 
+class TestRequireConfirmedUpdate:
+    """`hermes update` passes require_confirmed_update=True: the full
+    upstream installer (multi-minute, output captured, plus install.ps1's
+    600s lock window on Windows) may only run when the driver's native
+    ``check-update`` verb positively confirms a newer release. An
+    indeterminate check (old driver, offline, GitHub rate-limited, probe
+    timeout) keeps the installed version and returns fast.
+
+    Explicit `hermes computer-use install --upgrade` keeps the old
+    fall-through (require_confirmed_update=False): a force-refresh should
+    still reinstall when the check can't answer.
+    """
+
+    def _install(self, system, check_state, require_confirmed):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        exe = "cua-driver" + (".exe" if system == "Windows" else "")
+        with patch("platform.system", return_value=system), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/x/" + n
+                          if n in {"cua-driver", "curl", "powershell"} else None), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd",
+                          return_value="/x/" + exe), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=True), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=check_state), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="cua-driver 0.5.0", returncode=0)), \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info") as info:
+            ok = tools_config.install_cua_driver(
+                upgrade=True, require_confirmed_update=require_confirmed
+            )
+        return ok, runner, info
+
+    def test_indeterminate_check_keeps_installed_version(self):
+        ok, runner, info = self._install("Windows", None, require_confirmed=True)
+        assert ok is True
+        runner.assert_not_called()
+        assert any(
+            "keeping the installed version" in call.args[0]
+            for call in info.call_args_list
+        )
+
+    def test_indeterminate_check_points_at_force_path(self):
+        ok, runner, info = self._install("Darwin", None, require_confirmed=True)
+        assert ok is True
+        runner.assert_not_called()
+        assert any(
+            "computer-use install --upgrade" in call.args[0]
+            for call in info.call_args_list
+        )
+
+    def test_confirmed_update_still_runs_installer(self):
+        state = {"current_version": "0.5.0", "latest_version": "0.6.0",
+                 "update_available": True}
+        ok, runner, _ = self._install("Windows", state, require_confirmed=True)
+        assert ok is True
+        runner.assert_called_once()
+
+    def test_up_to_date_short_circuits(self):
+        state = {"current_version": "0.6.0", "latest_version": "0.6.0",
+                 "update_available": False}
+        ok, runner, _ = self._install("Windows", state, require_confirmed=True)
+        assert ok is True
+        runner.assert_not_called()
+
+    def test_explicit_upgrade_still_falls_through_on_indeterminate(self):
+        # `hermes computer-use install --upgrade` (default flag): the old
+        # behaviour — indeterminate check re-runs the installer.
+        ok, runner, _ = self._install("Darwin", None, require_confirmed=False)
+        assert ok is True
+        runner.assert_called_once()
+
+
+class TestUpdateCheckTimeoutDefaults:
+    """cua_driver_update_check: platform-sensitive default timeout.
+
+    8s is fine on POSIX but too tight for Windows first-spawn (Defender /
+    SmartScreen scanning), and a false timeout is what used to trigger the
+    full reinstall fall-through during `hermes update`.
+    """
+
+    def _captured_timeout(self, platform_name):
+        from unittest.mock import MagicMock
+        from tools.computer_use import cua_backend
+
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["timeout"] = kw.get("timeout")
+            m = MagicMock()
+            m.stdout = '{"update_available": false, "current_version": "1.0"}'
+            return m
+
+        with patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                   return_value="/x/cua-driver"), \
+             patch("tools.computer_use.cua_backend.sys.platform", platform_name), \
+             patch("tools.computer_use.cua_backend.subprocess.run",
+                   side_effect=fake_run):
+            cua_backend.cua_driver_update_check()
+        return captured.get("timeout")
+
+    def test_windows_default_is_generous(self):
+        assert self._captured_timeout("win32") == 25.0
+
+    def test_posix_default_unchanged(self):
+        assert self._captured_timeout("linux") == 8.0
+
+    def test_explicit_timeout_wins(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use import cua_backend
+
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["timeout"] = kw.get("timeout")
+            m = MagicMock()
+            m.stdout = "{}"
+            return m
+
+        with patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                   return_value="/x/cua-driver"), \
+             patch("tools.computer_use.cua_backend.subprocess.run",
+                   side_effect=fake_run):
+            cua_backend.cua_driver_update_check(timeout=3.0)
+        assert captured.get("timeout") == 3.0
+
+
 class TestArchProbeRemoval:
     """Regression tests for the deletion of `_check_cua_driver_asset_for_arch`.
 
@@ -194,7 +332,11 @@ class TestArchProbeRemoval:
             urlopen.assert_not_called()
 
 
-class TestStaleInstallLockClear:
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX installer uses the .install.lock.d directory protocol",
+)
+class TestPosixStaleInstallLockClear:
     """_clear_stale_cua_install_lock: pre-clears the upstream installer's
     concurrent-install lock only when the holder is provably dead (or the
     lock is old and pid-less). Issue #58762."""
@@ -256,6 +398,87 @@ class TestStaleInstallLockClear:
         tools_config._clear_stale_cua_install_lock()  # must not raise
 
 
+class TestWindowsStaleInstallLockClearDispatch:
+    def test_windows_branch_uses_file_lock_probe(self):
+        from hermes_cli import tools_config
+
+        with patch.object(tools_config.sys, "platform", "win32"), \
+             patch.object(
+                 tools_config, "_clear_stale_windows_cua_install_lock"
+             ) as clear_windows:
+            tools_config._clear_stale_cua_install_lock()
+
+        clear_windows.assert_called_once_with()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="requires native Win32 FileShare semantics",
+)
+class TestWindowsStaleInstallLockClear:
+    def _make_lock(self, tmp_path):
+        import os
+
+        home = tmp_path / ".cua-driver"
+        home.mkdir()
+        lock = home / "install.lock"
+        lock.write_text("pid=stale\n", encoding="utf-8")
+        os.environ["CUA_DRIVER_RS_HOME"] = str(home)
+        return lock
+
+    def teardown_method(self):
+        import os
+
+        os.environ.pop("CUA_DRIVER_RS_HOME", None)
+
+    def test_unlocked_lock_file_is_cleared(self, tmp_path):
+        from hermes_cli import tools_config
+
+        lock = self._make_lock(tmp_path)
+        with patch.object(tools_config, "_print_info"):
+            tools_config._clear_stale_cua_install_lock()
+
+        assert not lock.exists()
+
+    def test_lock_held_with_file_share_none_is_kept(self, tmp_path):
+        import ctypes
+        from ctypes import wintypes
+        from hermes_cli import tools_config
+
+        lock = self._make_lock(tmp_path)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        handle = create_file(
+            str(lock),
+            0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
+            0,  # FileShare::None, matching install.ps1
+            None,
+            3,  # OPEN_EXISTING
+            0x00000080,  # FILE_ATTRIBUTE_NORMAL
+            None,
+        )
+        assert handle != wintypes.HANDLE(-1).value
+
+        try:
+            tools_config._clear_stale_cua_install_lock()
+            assert lock.exists()
+        finally:
+            assert close_handle(handle)
+
+
 class TestInstallerTimeoutKillsProcessGroup:
     """On timeout the whole installer process group must be killed, so the
     `curl | bash` grandchildren can't survive holding the install lock."""
@@ -264,11 +487,11 @@ class TestInstallerTimeoutKillsProcessGroup:
         import os
         import signal
         import subprocess
-        import sys as _sys
         from unittest.mock import MagicMock
         from hermes_cli import tools_config
 
         killed = {}
+        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
 
         fake_proc = MagicMock()
         fake_proc.pid = 12345
@@ -283,10 +506,15 @@ class TestInstallerTimeoutKillsProcessGroup:
             killed["sig"] = sig
 
         with patch("platform.system", return_value="Linux"), \
+             patch.object(signal, "SIGKILL", sigkill, create=True), \
              patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
              patch("subprocess.Popen", return_value=fake_proc), \
-             patch.object(tools_config.os, "getpgid", return_value=99999), \
-             patch.object(tools_config.os, "killpg", side_effect=fake_killpg), \
+             patch.object(
+                 tools_config.os, "getpgid", return_value=99999, create=True
+             ), \
+             patch.object(
+                 tools_config.os, "killpg", side_effect=fake_killpg, create=True
+             ), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"):
@@ -294,7 +522,7 @@ class TestInstallerTimeoutKillsProcessGroup:
 
         assert ok is False
         assert killed.get("pgid") == 99999
-        assert killed.get("sig") == signal.SIGKILL
+        assert killed.get("sig") == sigkill
         # Post-kill reap happened.
         assert fake_proc.communicate.call_count == 2
 
@@ -328,6 +556,69 @@ class TestInstallerTimeoutKillsProcessGroup:
             tools_config._run_cua_driver_installer(label="Refreshing", verbose=False)
 
         assert captured.get("start_new_session") is True
+
+    def test_windows_timeout_kills_descendants_and_parent(self):
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        child = MagicMock()
+        parent = MagicMock()
+        parent.children.return_value = [child]
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="powershell", timeout=1),
+            ("", None),
+        ]
+
+        with patch("platform.system", return_value="Windows"), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch("psutil.Process", return_value=parent), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False
+            )
+
+        assert ok is False
+        parent.children.assert_called_once_with(recursive=True)
+        child.kill.assert_called_once_with()
+        parent.kill.assert_called_once_with()
+        fake_proc.kill.assert_not_called()
+        assert fake_proc.communicate.call_count == 2
+
+    def test_windows_tree_enumeration_failure_falls_back_to_direct_kill(self):
+        import psutil
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        parent = MagicMock()
+        parent.children.side_effect = psutil.AccessDenied(pid=12345)
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="powershell", timeout=1),
+            ("", None),
+        ]
+
+        with patch("platform.system", return_value="Windows"), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch("psutil.Process", return_value=parent), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False
+            )
+
+        assert ok is False
+        fake_proc.kill.assert_called_once_with()
+        assert fake_proc.communicate.call_count == 2
 
 
 class TestInstallerNoShell:

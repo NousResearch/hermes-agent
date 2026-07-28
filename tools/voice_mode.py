@@ -873,6 +873,57 @@ def is_whisper_hallucination(transcript: str) -> bool:
 
 
 # ============================================================================
+# Voice-chat stop phrases
+# ============================================================================
+
+DEFAULT_VOICE_STOP_PHRASES = ("stop",)
+
+
+def _load_voice_stop_phrases() -> tuple:
+    """Return the configured ``voice.stop_phrases`` list (default: ("stop",)).
+
+    Malformed config (scalar, dict, list of non-strings) falls back to the
+    default rather than crashing the voice loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+        voice_cfg = load_config().get("voice", {})
+        if isinstance(voice_cfg, dict):
+            raw = voice_cfg.get("stop_phrases", DEFAULT_VOICE_STOP_PHRASES)
+            if isinstance(raw, str):
+                raw = [raw]
+            if isinstance(raw, (list, tuple)):
+                phrases = tuple(
+                    str(p).strip().lower() for p in raw
+                    if isinstance(p, (str, int, float)) and str(p).strip()
+                )
+                return phrases  # empty tuple = feature disabled
+    except Exception:
+        pass
+    return DEFAULT_VOICE_STOP_PHRASES
+
+
+def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) -> bool:
+    """Return True when *transcript* is EXACTLY a configured stop phrase.
+
+    Ends the voice conversation when the user says "stop" (or another
+    configured phrase) and nothing else. Deliberately strict: the whole
+    utterance — after lowercasing and stripping surrounding punctuation —
+    must equal a phrase, so "stop doing that and try again" still reaches
+    the agent. Configure via ``voice.stop_phrases`` in config.yaml
+    (set ``[]`` to disable).
+    """
+    if not transcript:
+        return False
+    cleaned = transcript.strip().lower().strip(".,!?;: \t\n\"'")
+    if not cleaned:
+        return False
+    if stop_phrases is None:
+        stop_phrases = _load_voice_stop_phrases()
+    return cleaned in stop_phrases
+
+
+# ============================================================================
 # STT dispatch
 # ============================================================================
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:

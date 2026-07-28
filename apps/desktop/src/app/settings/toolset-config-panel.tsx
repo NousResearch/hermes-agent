@@ -31,7 +31,7 @@ import type {
   ToolsetModelsResponse
 } from '@/types/hermes'
 
-import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
+import { EnvVarActionsMenu, EnvVarActionsTrigger, EnvVarContextMenu } from './env-var-actions-menu'
 import { Pill } from './primitives'
 import { VoiceProviderFields } from './voice-provider-fields'
 
@@ -150,64 +150,68 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     }
   }
 
+  const actionProps = {
+    clearDisabled: busy,
+    docsUrl: envVar.url,
+    isRevealed: revealed !== null,
+    isSet,
+    label: envVar.key,
+    onClear: () => void handleClear(),
+    onEdit: () => setEditing(true),
+    onManageKeys: openInKeys,
+    onReveal: () => void handleReveal()
+  }
+
   return (
-    <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs font-medium">{envVar.key}</span>
-            <Pill tone={isSet ? 'primary' : 'muted'}>
-              {isSet && <Check className="size-3" />}
-              {isSet ? copy.set : copy.notSet}
-            </Pill>
+    <EnvVarContextMenu {...actionProps}>
+      <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs font-medium">{envVar.key}</span>
+              <Pill tone={isSet ? 'primary' : 'muted'}>
+                {isSet && <Check className="size-3" />}
+                {isSet ? copy.set : copy.notSet}
+              </Pill>
+            </div>
+            {envVar.prompt && envVar.prompt !== envVar.key && (
+              <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
+            )}
           </div>
-          {envVar.prompt && envVar.prompt !== envVar.key && (
-            <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
+          {!editing && (
+            <EnvVarActionsMenu {...actionProps}>
+              <EnvVarActionsTrigger onClick={event => event.stopPropagation()} />
+            </EnvVarActionsMenu>
           )}
         </div>
-        {!editing && (
-          <EnvVarActionsMenu
-            clearDisabled={busy}
-            docsUrl={envVar.url}
-            isRevealed={revealed !== null}
-            isSet={isSet}
-            label={envVar.key}
-            onClear={() => void handleClear()}
-            onEdit={() => setEditing(true)}
-            onManageKeys={openInKeys}
-            onReveal={() => void handleReveal()}
-          >
-            <EnvVarActionsTrigger label={envVar.key} onClick={event => event.stopPropagation()} />
-          </EnvVarActionsMenu>
+
+        {isSet && revealed !== null && (
+          <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
+            {revealed || '---'}
+          </div>
+        )}
+
+        {editing && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              autoFocus
+              className="min-w-52 flex-1 font-mono"
+              onChange={e => setValue(e.target.value)}
+              placeholder={envVar.prompt || envVar.key}
+              type={envVar.default ? 'text' : 'password'}
+              value={value}
+            />
+            <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
+              {t.common.save}
+            </Button>
+            <Button onClick={() => setEditing(false)} size="sm" variant="text">
+              {t.common.cancel}
+            </Button>
+          </div>
         )}
       </div>
-
-      {isSet && revealed !== null && (
-        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
-          {revealed || '---'}
-        </div>
-      )}
-
-      {editing && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input
-            autoFocus
-            className="min-w-52 flex-1 font-mono"
-            onChange={e => setValue(e.target.value)}
-            placeholder={envVar.prompt || envVar.key}
-            type={envVar.default ? 'text' : 'password'}
-            value={value}
-          />
-          <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
-            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-            {t.common.save}
-          </Button>
-          <Button onClick={() => setEditing(false)} size="sm" variant="text">
-            {t.common.cancel}
-          </Button>
-        </div>
-      )}
-    </div>
+    </EnvVarContextMenu>
   )
 }
 

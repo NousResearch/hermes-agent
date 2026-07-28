@@ -34,7 +34,7 @@ export function latestChatActions(actions: ChatActions): ChatActions {
     onAddUrl: (...args) => actions.onAddUrl(...args),
     onAttachDroppedItems: (...args) => actions.onAttachDroppedItems(...args),
     onAttachImageBlob: (...args) => actions.onAttachImageBlob(...args),
-    onBranchInNewChat: (...args) => actions.onBranchInNewChat(...args),
+    onBranchInNewChat: latestOptional(() => actions.onBranchInNewChat),
     onCancel: (...args) => actions.onCancel(...args),
     onDeleteSelectedSession: (...args) => actions.onDeleteSelectedSession(...args),
     onDismissError: latestOptional(() => actions.onDismissError),

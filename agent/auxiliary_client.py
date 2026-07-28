@@ -1362,10 +1362,32 @@ class AsyncCodexAuxiliaryClient:
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
+    def __init__(
+        self,
+        real_client: Any,
+        model: str,
+        is_oauth: bool = False,
+        base_url: str | None = None,
+    ):
         self._client = real_client
         self._model = model
         self._is_oauth = is_oauth
+        # Prefer the caller-supplied URL (AnthropicAuxiliaryClient keeps the
+        # pre-strip Portal ``.../v1`` form). Only fall back to the SDK
+        # client's host for Nous Portal — a blanket fallback would flip
+        # MiniMax/Zhipu/etc. aux adapters from "unknown host = native
+        # Anthropic" to third-party (stripping thinking signatures).
+        self._base_url = base_url or None
+        if not self._base_url:
+            candidate = str(getattr(real_client, "base_url", "") or "") or None
+            if candidate:
+                try:
+                    from agent.anthropic_adapter import _is_nous_portal_endpoint
+
+                    if _is_nous_portal_endpoint(candidate):
+                        self._base_url = candidate
+                except Exception:
+                    pass
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
@@ -1417,6 +1439,11 @@ class _AnthropicCompletionsAdapter:
             reasoning_config=_reasoning_cfg,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
+            # Portal routes on ``anthropic/<slug>`` catalog ids and replays
+            # signed thinking like native Anthropic; both carve-outs key off
+            # base_url. Omitting it normalizes the id to a bare Anthropic
+            # slug and the Portal Messages route cannot resolve it.
+            base_url=self._base_url,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
@@ -1510,7 +1537,9 @@ class AnthropicAuxiliaryClient:
 
     def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
+        adapter = _AnthropicCompletionsAdapter(
+            real_client, model, is_oauth=is_oauth, base_url=base_url,
+        )
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
@@ -2765,7 +2794,13 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
         return None, None
     api_key, base_url = resolved
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    real_client = _create_openai_client(api_key=api_key, base_url=base_url)
+    from tools.xai_http import hermes_xai_default_headers
+
+    real_client = _create_openai_client(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers=hermes_xai_default_headers(),
+    )
     return CodexAuxiliaryClient(real_client, model), model
 
 
@@ -4188,6 +4223,7 @@ def _try_main_agent_model_fallback(
     failed_provider: str,
     task: str = None,
     reason: str = "error",
+    failed_model: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the user's main agent provider + model.
 
@@ -4196,8 +4232,23 @@ def _try_main_agent_model_fallback(
     layer: if nothing the user asked for can serve the request, try the
     main chat model before giving up.
 
-    Skips when the failed provider already IS the main provider (no point
-    retrying the same backend that just failed).
+    ``failed_model`` narrows the same-provider skip to the exact
+    (provider, model) pair that just failed, mirroring
+    :func:`_try_configured_fallback_chain`.  This matters for self-hosted /
+    custom endpoints serving several models behind one provider label: the
+    aux compression model timing out says nothing about the health of the
+    main agent model deployed on the same URL (real incident: aux
+    ``glm-5.2`` hung and timed out while main ``macaron-v1-venti`` on the
+    identical endpoint was serving 448K-token turns fine — the
+    provider-label skip discarded the one fallback that would have worked).
+
+    - Model-specific runtime failures (timeout, connection, rate limit,
+      model-incompatible, invalid response) pass ``failed_model``: skip the
+      main model only when it IS the exact model that failed.
+    - Provider-wide failures (auth 401, payment 402) and legacy callers
+      leave ``failed_model`` as None, keeping the whole-provider skip —
+      the shared credentials/account are broken, so the main model on the
+      same provider cannot help either.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -4214,9 +4265,23 @@ def _try_main_agent_model_fallback(
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
 
-    skip = (failed_provider or "").lower().strip()
-    if main_provider.lower() == skip:
-        # The thing that failed IS the main model — nothing to fall back to.
+    # Identity + scope semantics owned by agent.backend_identity (#72468):
+    # model-scoped failures skip only the exact deployment that failed;
+    # provider-wide failures (no failed_model) skip the credential surface.
+    from agent.backend_identity import (
+        BackendIdentity,
+        FailureScope,
+        should_skip_candidate,
+    )
+
+    skip_model = (failed_model or "").strip().lower() or None
+    if should_skip_candidate(
+        BackendIdentity.build(provider=main_provider, model=main_model),
+        BackendIdentity.build(provider=failed_provider, model=skip_model),
+        FailureScope.MODEL if skip_model else FailureScope.CREDENTIAL,
+    ):
+        # The thing that failed IS the main model (or the failure was
+        # provider-wide) — nothing to fall back to.
         return None, None, ""
     if _is_provider_unhealthy(main_provider):
         _log_skip_unhealthy(main_provider, task)
@@ -4326,12 +4391,32 @@ def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
     reason: str = "error",
+    failed_model: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try user-configured fallback_chain for a specific auxiliary task.
 
     Reads auxiliary.<task>.fallback_chain from config.yaml and tries each
     entry in order.  Each entry must have at least ``provider``; ``model``,
     ``base_url``, and ``api_key`` are optional.
+
+    ``failed_model`` narrows the skip check to the exact (provider, model)
+    pair that just failed, rather than the whole provider. Without it every
+    entry sharing the failed provider is skipped (the original behaviour).
+    Callers pass it only when a sibling model on the same provider could
+    plausibly recover:
+
+    - Model-specific runtime failures (timeout, connection, rate limit,
+      model-incompatible, invalid response) pass ``failed_model`` so a
+      chain that intentionally lists several models under the same provider
+      — e.g. two more NVIDIA NIM models after the primary NIM model times
+      out — is not skipped wholesale. Only the exact model that failed is
+      skipped; the siblings still run instead of jumping straight to the
+      main-agent-model safety net.
+    - Provider-wide failures (auth 401, payment 402) and "no client could
+      be built" callers leave ``failed_model`` as None, keeping the whole
+      provider skipped — the shared credentials/account behind every model
+      on that provider are broken, so a sibling can't help and the
+      main-agent-model safety net should be reached instead.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -4344,7 +4429,24 @@ def _try_configured_fallback_chain(
     if not chain or not isinstance(chain, list):
         return None, None, ""
 
-    skip = failed_provider.lower().strip()
+    skip_model = (failed_model or "").strip().lower() or None
+    # Identity + scope semantics owned by agent.backend_identity (#59561,
+    # #72468): a failed_model means the failure was model-scoped (timeout /
+    # connection / rate limit) — only the exact deployment is skipped; no
+    # failed_model means provider-wide (auth/payment) — the whole credential
+    # surface is skipped.
+    from agent.backend_identity import (
+        BackendIdentity,
+        FailureScope,
+        should_skip_candidate,
+    )
+
+    failed_ident = BackendIdentity.build(
+        provider=failed_provider, model=skip_model,
+    )
+    failure_scope = (
+        FailureScope.MODEL if skip_model else FailureScope.CREDENTIAL
+    )
     tried = []
     min_ctx = _task_minimum_context_length(task)
 
@@ -4352,9 +4454,20 @@ def _try_configured_fallback_chain(
         if not isinstance(entry, dict):
             continue
         fb_provider = str(entry.get("provider", "")).strip()
-        if not fb_provider or fb_provider.lower() == skip:
+        if not fb_provider:
             continue
-        fb_model = str(entry.get("model", "")).strip() or None
+        fb_model_raw = str(entry.get("model", "")).strip()
+        if should_skip_candidate(
+            BackendIdentity.build(
+                provider=fb_provider,
+                model=fb_model_raw,
+                base_url=str(entry.get("base_url") or ""),
+            ),
+            failed_ident,
+            failure_scope,
+        ):
+            continue
+        fb_model = fb_model_raw or None
 
         label = f"fallback_chain[{i}]({fb_provider})"
 
@@ -4785,6 +4898,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
         async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+    elif base_url_host_matches(sync_base_url, "x.ai"):
+        from tools.xai_http import hermes_xai_default_headers
+
+        async_kwargs["default_headers"] = hermes_xai_default_headers()
     else:
         # Fall back to profile.default_headers for providers that declare
         # client-level headers on their ProviderProfile (e.g. attribution
@@ -5021,10 +5138,11 @@ def resolve_provider_client(
 
     # ── Nous Portal (OAuth) ──────────────────────────────────────────
     if provider == "nous":
-        # Detect vision tasks: either explicit model override from
-        # _PROVIDER_VISION_MODELS, or caller passed a known vision model.
+        # Detect vision tasks: caller flag (strict vision backend), explicit
+        # model override from _PROVIDER_VISION_MODELS, or a known vision id.
         _is_vision = (
-            model in _PROVIDER_VISION_MODELS.values()
+            is_vision
+            or model in _PROVIDER_VISION_MODELS.values()
             or (model or "").strip().lower() == "mimo-v2-omni"
         )
         client, default = _try_nous(vision=_is_vision)
@@ -5033,6 +5151,17 @@ def resolve_provider_client(
                            "but Nous Portal not configured (run: hermes auth)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        # Dual-wire: anthropic/* → /v1/messages, everything else stays on
+        # /chat/completions. Derive from the catalog id (not a stale
+        # api_mode=chat_completions) so aux matches the main agent.
+        from hermes_cli.providers import nous_api_mode
+
+        portal_mode = nous_api_mode(final_model)
+        api_key_str = str(getattr(client, "api_key", "") or "")
+        base_url_str = str(getattr(client, "base_url", "") or "")
+        client = _maybe_wrap_anthropic(
+            client, final_model, api_key_str, base_url_str, portal_mode,
+        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -5396,6 +5525,10 @@ def resolve_provider_client(
             ))
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers.update(build_nvidia_nim_headers(base_url))
+        elif base_url_host_matches(base_url, "x.ai"):
+            from tools.xai_http import hermes_xai_default_headers
+
+            headers.update(hermes_xai_default_headers())
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI
@@ -5689,7 +5822,10 @@ def _resolve_strict_vision_backend(
     if provider == "openrouter":
         return _try_openrouter(model=model)
     if provider == "nous":
-        return _try_nous(vision=True)
+        # Must go through resolve_provider_client so anthropic/* vision
+        # recommendations wrap onto /v1/messages — _try_nous alone returns
+        # a bare OpenAI client and the call 404s.
+        return resolve_provider_client("nous", model, is_vision=True)
     if provider == "openai-codex":
         # Route through resolve_provider_client so the caller's explicit
         # model is used.  There is no safe default Codex model (shifting
@@ -6950,8 +7086,14 @@ def _build_call_kwargs(
                 _is_gemini_native = is_native_gemini_base_url(_effective_base)
             except Exception:
                 pass
+        _nous_on_messages = False
+        if _provider_norm in {"nous", "nous-portal", "nousresearch"}:
+            from hermes_cli.providers import nous_api_mode
+
+            _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
+            or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
             or _is_gemini_native
@@ -7046,21 +7188,43 @@ def _build_call_kwargs(
         else:
             effort = reasoning_config.get("effort") or "medium"
             merged_extra["reasoning"] = {"enabled": True, "effort": effort}
-    if provider == "nous" and "tags" not in merged_extra:
-        merged_extra["tags"] = _nous_portal_tags()
+    # Portal product tags + sticky session_id. The provider profile usually
+    # supplies both; this fallback covers profile-load failures and alias
+    # spellings the profile lookup might miss. session_id keeps aux
+    # compression/title/vision calls on the same upstream instance as the
+    # main turn (cache warmth) — tags alone are not enough on /v1/messages.
+    _provider_for_portal = str(provider or "").strip().lower()
+    if _provider_for_portal in {"nous", "nous-portal", "nousresearch"}:
+        if "tags" not in merged_extra:
+            merged_extra["tags"] = _nous_portal_tags()
+        if "session_id" not in merged_extra:
+            try:
+                from agent.portal_tags import get_conversation_context
+
+                sticky_key = get_conversation_context()
+            except Exception:
+                sticky_key = None
+            if sticky_key:
+                merged_extra["session_id"] = sticky_key
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
-    # Native Anthropic Messages adapters do not consume ``extra_body``. Carry
-    # the normalized Hermes reasoning config through a private kwarg so the
-    # adapter can pass it into build_anthropic_kwargs(), where provider-aware
-    # thinking/output_config projection lives. Do not expose this private kwarg
-    # to ordinary OpenAI-compatible SDK clients, which would reject it.
+    # Anthropic Messages adapters translate Hermes reasoning into native
+    # ``thinking`` via a private kwarg (and strip OpenAI-shaped
+    # ``extra_body.reasoning``). Do not expose this private kwarg to ordinary
+    # OpenAI-compatible SDK clients, which would reject it. Portal Claude is
+    # dual-wire — include it when the catalog id selects /v1/messages.
     if reasoning_config and isinstance(reasoning_config, dict):
         provider_norm = str(provider or "").strip().lower()
         effective_base = base_url or ""
+        _nous_on_messages = False
+        if provider_norm in {"nous", "nous-portal", "nousresearch"}:
+            from hermes_cli.providers import nous_api_mode
+
+            _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
         if (
             provider_norm == "anthropic"
+            or _nous_on_messages
             or _endpoint_speaks_anthropic_messages(effective_base)
             or _is_anthropic_compat_endpoint(provider_norm, effective_base)
         ):
@@ -8078,6 +8242,15 @@ def call_llm(
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
+            # Narrow the configured-chain skip to the exact model that
+            # failed ONLY for model-specific failures. Auth (401) and
+            # payment (402) errors are provider-wide — the credentials or
+            # account behind every model on that provider are the same — so
+            # a sibling model can't recover; keep skipping the whole
+            # provider so the main-agent-model safety net is still reached.
+            _chain_failed_model = (
+                None if reason in ("auth error", "payment error") else final_model
+            )
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. For auto: top-level main fallback_providers/fallback_model
@@ -8086,7 +8259,8 @@ def call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -8095,10 +8269,12 @@ def call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider, task, reason=reason,
+                        failed_model=_chain_failed_model)
 
             if fb_client is not None:
                 fb_resp = _call_fallback_candidate_sync(
@@ -8612,6 +8788,15 @@ async def async_call_llm(
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
+            # Narrow the configured-chain skip to the exact model that
+            # failed ONLY for model-specific failures. Auth (401) and
+            # payment (402) errors are provider-wide — the credentials or
+            # account behind every model on that provider are the same — so
+            # a sibling model can't recover; keep skipping the whole
+            # provider so the main-agent-model safety net is still reached.
+            _chain_failed_model = (
+                None if reason in ("auth error", "payment error") else final_model
+            )
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. For auto: top-level main fallback_providers/fallback_model
@@ -8620,7 +8805,8 @@ async def async_call_llm(
             fb_client, fb_model, fb_label = (None, None, "")
             if is_auto:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
                         task, resolved_provider or "auto", reason=reason)
@@ -8629,10 +8815,12 @@ async def async_call_llm(
                         resolved_provider, task, reason=reason)
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                    task, resolved_provider or "auto", reason=reason,
+                    failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider, task, reason=reason,
+                        failed_model=_chain_failed_model)
 
             if fb_client is not None:
                 # Convert sync fallback client to async

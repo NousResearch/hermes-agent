@@ -36,6 +36,7 @@ import {
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
@@ -187,6 +188,65 @@ test('saved SSH drafts are inactive and explicit overrides take precedence', () 
   assert.equal(profileHasRemoteConnection(config, 'coder'), true)
 })
 
+// --- resolveProfileBackendRoute ---
+
+const ROUTES = [
+  {
+    name: 'the primary profile owns the window backend',
+    profile: 'default',
+    opts: { primaryProfile: 'default' },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a renamed primary profile still owns the window backend',
+    profile: ' coder ',
+    opts: { primaryProfile: 'coder', globalRemote: true },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'an unset profile resolves to the primary',
+    profile: '',
+    opts: { primaryProfile: 'default', globalRemote: true },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a profile inheriting the app-global remote shares the primary backend, scoped per request',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: false },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    name: 'a profile with its own remote override gets a pooled descriptor for that host',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: true },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a local non-primary profile gets its own pooled backend',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: false, profileRemoteOverride: false },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+]
+
+for (const route of ROUTES) {
+  test(`resolveProfileBackendRoute: ${route.name}`, () => {
+    assert.deepEqual(resolveProfileBackendRoute(route.profile, route.opts), route.expected)
+  })
+}
+
+test('resolveProfileBackendRoute only tags a descriptor when the backend is shared', () => {
+  // A pooled backend is already scoped to its profile, so tagging it would
+  // imply a second scope the caller must reconcile. Only the shared
+  // global-remote route carries one.
+  for (const route of ROUTES) {
+    const resolved = resolveProfileBackendRoute(route.profile, route.opts)
+
+    assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
+    assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
+  }
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -196,6 +256,17 @@ test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => 
       profileRemoteOverride: false
     }),
     '/api/model/info?profile=iris'
+  )
+})
+
+test('pathWithGlobalRemoteProfile skips the primary profile, which the remote already serves', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/model/info', 'coder', {
+      globalRemote: true,
+      primaryProfile: 'coder',
+      profileRemoteOverride: false
+    }),
+    '/api/model/info'
   )
 })
 

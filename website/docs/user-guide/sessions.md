@@ -419,7 +419,7 @@ If the title is already in use by another session, an error is shown.
 ### Prune Old Sessions
 
 ```bash
-# Delete ended sessions older than 90 days (default)
+# Delete ended sessions inactive for 90 days (default)
 hermes sessions prune
 
 # Custom age threshold — bare numbers are days
@@ -461,8 +461,10 @@ hermes sessions prune --older-than 30 --yes
 Time values (`--older-than`, `--newer-than`, `--before`, `--after`) accept a
 duration (`5h`, `30m`, `2d`, `1w`), a bare number of days, or an ISO
 timestamp (`2026-07-05`, `2026-07-05 14:30`). `--older-than`/`--before` set
-the upper bound; `--newer-than`/`--after` set the lower bound. Combine both
-for a window.
+the upper bound; `--newer-than`/`--after` set the lower bound. The
+`--older-than`/`--newer-than` pair uses latest message activity (falling back
+to session start for empty sessions); `--before`/`--after` explicitly uses
+session start time. Combine either pair for a window.
 
 Attribute filters: `--source` (platform, exact), `--title` / `--model` /
 `--branch` (case-insensitive substring), `--provider` (billing provider,
@@ -688,7 +690,7 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
+- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
@@ -697,12 +699,14 @@ Default is **off** — session history is valuable for `session_search` recall, 
 ```yaml
 sessions:
   auto_prune: true          # opt in — default is false
-  retention_days: 90        # keep ended sessions this many days
+  retention_days: 90        # keep ended sessions active within this window
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
-Active sessions are never auto-pruned, regardless of age.
+Active sessions are never auto-pruned, regardless of age. Ended sessions are
+aged from their latest message, so a long-lived conversation used recently is
+not deleted merely because it began before the retention window.
 
 ### Manual Cleanup
 

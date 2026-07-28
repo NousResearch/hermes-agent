@@ -119,6 +119,59 @@ def _apply_system_cache_markers(
     return 1
 
 
+def strip_anthropic_cache_control(
+    api_messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove ``cache_control`` markers and undo decoration-produced list shapes.
+
+    Used before re-applying decoration after a mid-turn provider failover so
+    the mutated, undecorated shape (image shrink / ASCII cleanup / etc.) is
+    preserved while markers match the *new* provider's cache policy (#72626).
+
+    Flattening back to a plain string is restricted to the exact shapes
+    :func:`apply_anthropic_cache_control` produces from string content —
+    a single ``{"type": "text"}`` part, or the two-part ``[static, volatile]``
+    system split — so the ``""``-join is provably byte-exact. Organic
+    multi-part text (merged user turns, imported transcripts) and parts
+    carrying extra keys (``citations`` etc.) keep their structure; only
+    per-part markers are removed. Marker removal is copy-on-write on the
+    part dicts: content parts may alias the persistent conversation history
+    (the per-call copy is shallow), and stripping must never rewrite the
+    stored transcript.
+
+    Mutates the top-level message dicts of ``api_messages`` in place and
+    returns the same list.
+    """
+    for msg in api_messages:
+        if not isinstance(msg, dict):
+            continue
+        msg.pop("cache_control", None)
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if any(isinstance(part, dict) and "cache_control" in part for part in content):
+            content = [
+                {k: v for k, v in part.items() if k != "cache_control"}
+                if isinstance(part, dict) and "cache_control" in part
+                else part
+                for part in content
+            ]
+            msg["content"] = content
+        decoration_shape = content and all(
+            isinstance(part, dict)
+            and part.get("type", "text") == "text"
+            and isinstance(part.get("text"), str)
+            and set(part.keys()) <= {"type", "text"}
+            for part in content
+        ) and (
+            len(content) == 1
+            or (msg.get("role") == "system" and len(content) == 2)
+        )
+        if decoration_shape:
+            msg["content"] = "".join(part["text"] for part in content)
+    return api_messages
+
+
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",

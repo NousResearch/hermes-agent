@@ -19,7 +19,15 @@ import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
+import { resolveBrandIcon } from '@/lib/brand-icon'
+import {
+  ExternalLink,
+  ExternalLinkIcon,
+  hostPathLabel,
+  shortHostLabel,
+  urlSlugTitleLabel,
+  useLinkTitle
+} from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
@@ -29,8 +37,8 @@ import { notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { openSession } from '../open-session'
 import { PageSearchShell } from '../page-search-shell'
-import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import {
@@ -272,7 +280,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const cellCtx: CellCtx = {
     onOpen: openArtifact,
-    onOpenChat: sessionId => navigate(sessionRoute(sessionId))
+    onOpenChat: sessionId => openSession(sessionId, navigate)
   }
 
   return (
@@ -337,7 +345,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
                       onImageError={markImageFailed}
-                      onOpenChat={sessionId => navigate(sessionRoute(sessionId))}
+                      onOpenChat={sessionId => openSession(sessionId, navigate)}
                     />
                   ))}
                 </div>
@@ -543,7 +551,8 @@ function ArtifactCellAction({
 
 function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
-  const Icon = isLink ? Link2 : FileText
+  const brand = isLink ? resolveBrandIcon(shortHostLabel(artifact.href)) : null
+  const Icon = brand ?? (isLink ? Link2 : FileText)
   const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
   const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 

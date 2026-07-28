@@ -350,5 +350,77 @@ class TestStaticPrefixReconstructionOnRestore:
         assert agent._cached_system_prompt_static is None
 
 
+class TestReconstructStaticPrefixMemoization:
+    """A failed static rebuild must not re-run the parts builder every call.
+
+    ``reconstruct_static_prefix`` sits on the retry-loop hot path via the
+    failover redecoration chokepoint (#72626); ``build_system_prompt_parts``
+    does real file I/O (SOUL.md, context files, memory), so a persistent
+    stable-tier mismatch must be checked once per stored prompt, not on
+    every attempt of every API call.
+    """
+
+    def _agent(self, stored):
+        agent = _make_agent()
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt = stored
+        agent._cached_system_prompt_static = None
+        return agent
+
+    def test_failed_rebuild_is_memoized_per_stored_prompt(self):
+        from unittest.mock import patch as _patch
+
+        from agent.system_prompt import reconstruct_static_prefix
+
+        stored = "STORED PROMPT\n\ntail"
+        agent = self._agent(stored)
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": "MISMATCH", "context": "", "volatile": ""},
+        ) as build:
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+        assert build.call_count == 1
+        assert agent._cached_system_prompt_static is None
+
+    def test_changed_stored_prompt_retries_once(self):
+        from unittest.mock import patch as _patch
+
+        from agent.system_prompt import reconstruct_static_prefix
+
+        agent = self._agent("OLD STORED")
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": "MISMATCH", "context": "", "volatile": ""},
+        ) as build:
+            reconstruct_static_prefix(agent)
+            # A new stored prompt (e.g. after compression) invalidates the
+            # failure memo and gets exactly one fresh attempt.
+            agent._cached_system_prompt = "NEW STORED"
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+        assert build.call_count == 2
+
+    def test_success_clears_failure_memo_and_early_returns(self):
+        from unittest.mock import patch as _patch
+
+        from agent.system_prompt import reconstruct_static_prefix
+
+        stable = "STATIC HEAD"
+        stored = stable + "\n\nvolatile"
+        agent = self._agent(stored)
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={"stable": stable, "context": "", "volatile": ""},
+        ) as build:
+            reconstruct_static_prefix(agent)
+            reconstruct_static_prefix(agent)
+        # Second call early-returns on the already-valid static prefix.
+        assert build.call_count == 1
+        assert agent._cached_system_prompt_static == stable
+        assert getattr(agent, "_static_rebuild_failed_for", None) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

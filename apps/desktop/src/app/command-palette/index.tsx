@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
@@ -16,6 +16,7 @@ import {
   AppWindow,
   Archive,
   BarChart3,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -65,15 +66,16 @@ import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
+import { openSession, openSessionIntentFromModifiers } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
-  sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE,
   STARMAP_ROUTE
@@ -89,12 +91,20 @@ import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
   action?: string
+  /** Renders a trailing check: this row IS the current setting (theme, mode). */
+  active?: boolean
   icon: IconComponent
   id: string
   /** Keep the palette open after running (live-preview pickers like theme/mode). */
   keepOpen?: boolean
   keywords?: string[]
   label: string
+  /**
+   * When set, ⌘/⌃-select (or ⌘-Enter) opens a new tab and ⇧⌘-select pops a
+   * window — matching sidebar session rows. Plain select stays in-place.
+   * Receives the last selector event so the modifiers can be read.
+   */
+  runWithEvent?: (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void
   /** Action to run when selected. Mutually exclusive with `to`. */
   run?: () => void
   /** Open a nested palette page (VS Code-style "choose X → options"). */
@@ -300,9 +310,25 @@ export function CommandPalette() {
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
   const navigate = useNavigate()
-  const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
+  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
+
+  // cmdk's onSelect doesn't forward the triggering event — keep the last
+  // click/keydown modifiers so session rows can honour ⌘-Enter / ⌘-click.
+  const lastSelectMods = useRef<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }>({
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false
+  })
+
+  const noteSelectMods = (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+    lastSelectMods.current = {
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey
+    }
+  }
 
   // Server-backed sources for the type-to-search groups, fetched lazily while
   // the palette is open. react-query handles caching/dedup/staleness.
@@ -351,7 +377,16 @@ export function CommandPalette() {
     }
   }, [open, pendingPage])
 
-  const go = useCallback((path: string) => () => navigate(path), [navigate])
+  const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
+
+  // Sessions: plain select = open in-place (focus existing tile/main, else main);
+  // ⌘/⌃-select / ⌘-Enter = new tab; ⇧⌘ = own window. Same door as the sidebar.
+  const goSession = useCallback(
+    (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+      openSession(sessionId, navigate, openSessionIntentFromModifiers(event))
+    },
+    [navigate]
+  )
 
   // Step up one nested page (or back to the root list), clearing the filter so
   // the parent page doesn't reopen mid-search.
@@ -621,7 +656,7 @@ export function CommandPalette() {
             id: `goto-${directId}`,
             keywords: ['session', 'id', 'go to', directId],
             label: `${t.commandCenter.goToSession} ${directId}`,
-            run: go(sessionRoute(directId))
+            runWithEvent: goSession(directId)
           }
         ]
       })
@@ -665,6 +700,7 @@ export function CommandPalette() {
     result.push({
       heading: t.settings.appearance.themeTitle,
       items: availableThemes.map(theme => ({
+        active: themeName === theme.name,
         icon: Palette,
         id: `search-theme-${theme.name}`,
         keepOpen: true,
@@ -685,6 +721,7 @@ export function CommandPalette() {
     result.push({
       heading: t.settings.appearance.colorMode,
       items: THEME_MODES.map(entry => ({
+        active: mode === entry.mode,
         icon: entry.icon,
         id: `search-mode-${entry.mode}`,
         keepOpen: true,
@@ -707,7 +744,7 @@ export function CommandPalette() {
             ...(session.git_branch ? [session.git_branch] : [])
           ],
           label: session.title,
-          run: go(sessionRoute(session.id))
+          runWithEvent: goSession(session.id)
         }))
       })
     }
@@ -762,14 +799,17 @@ export function CommandPalette() {
     availableThemes,
     configFieldLabel,
     go,
+    goSession,
     mcpServers,
+    mode,
     resolvedMode,
     search,
     sessions,
     setMode,
     setTheme,
     settingsSectionLabel,
-    t
+    t,
+    themeName
   ])
 
   const groups = useMemo(() => [...baseGroups, ...searchGroups], [baseGroups, searchGroups])
@@ -823,6 +863,7 @@ export function CommandPalette() {
           {
             heading: t.settings.appearance.colorMode,
             items: THEME_MODES.map(entry => ({
+              active: mode === entry.mode,
               icon: entry.icon,
               id: `mode-${entry.mode}`,
               keepOpen: true,
@@ -847,7 +888,7 @@ export function CommandPalette() {
         groups: []
       }
     }),
-    [availableThemes, resolvedMode, setMode, setTheme, t, themeName]
+    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
@@ -863,7 +904,14 @@ export function CommandPalette() {
       return
     }
 
-    item.run?.()
+    if (item.runWithEvent) {
+      item.runWithEvent(lastSelectMods.current)
+    } else {
+      item.run?.()
+    }
+
+    // Clear stashed modifiers so a plain Enter after a ⌘-click isn't sticky.
+    lastSelectMods.current = { ctrlKey: false, metaKey: false, shiftKey: false }
 
     if (!item.keepOpen) {
       closeCommandPalette()
@@ -874,13 +922,13 @@ export function CommandPalette() {
     <DialogPrimitive.Root onOpenChange={setCommandPaletteOpen} open={open}>
       <DialogPrimitive.Portal>
         {/* Transparent overlay: keeps click-away + focus trap, but no dim/blur. */}
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[200]" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-(--z-over-modal)" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
           className={cn(
             HUD_POSITION,
             HUD_SURFACE,
-            'z-[210] w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
+            'z-(--z-over-modal-content) w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
           )}
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
@@ -900,6 +948,10 @@ export function CommandPalette() {
             <CommandInput
               className={HUD_TEXT}
               onKeyDown={event => {
+                // Capture modifiers before cmdk's Enter fires onSelect (which
+                // swipes the inviting MouseEvent and hands us nothing).
+                noteSelectMods(event)
+
                 if (!activePage) {
                   return
                 }
@@ -953,6 +1005,7 @@ export function CommandPalette() {
                             className={cn(HUD_ITEM, HUD_TEXT)}
                             key={item.id}
                             keywords={item.keywords}
+                            onMouseDown={noteSelectMods}
                             onSelect={() => handleSelect(item)}
                             value={paletteValue(item)}
                           >
@@ -962,6 +1015,11 @@ export function CommandPalette() {
                             {item.to && (
                               <ChevronRight
                                 className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
+                              />
+                            )}
+                            {item.active && (
+                              <Check
+                                className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')}
                               />
                             )}
                           </CommandItem>

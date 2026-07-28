@@ -149,6 +149,41 @@ class TestCmdUpdateNpmLockfileCache:
         )
         assert hm._npm_lockfile_changed(tmp_path) is True
 
+    def test_missing_web_build_toolchain_defeats_skip(self, tmp_path, monkeypatch):
+        """A hash recorded over a tree that never got tsc/vite must not skip.
+
+        Otherwise the half-installed tree is permanent: every later update
+        trusts the hash, the build keeps failing, and the stale dist is served
+        forever.
+        """
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "package.json").write_text('{"workspaces": ["web"]}')
+        (tmp_path / "web").mkdir()
+        (tmp_path / "web" / "package.json").write_text("{}")
+        bin_dir = tmp_path / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True)
+        hm._record_npm_lockfile_hash(tmp_path)
+
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+        (bin_dir / "tsc").touch()
+        (bin_dir / "vite").touch()
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
+    def test_toolchain_check_skipped_without_a_web_package(self, tmp_path, monkeypatch):
+        """Prebuilt bundles ship no web/ source — they must still skip."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "node_modules").mkdir()
+        hm._record_npm_lockfile_hash(tmp_path)
+
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
     def test_workspace_package_json_edit_defeats_skip(self, tmp_path, monkeypatch):
         """The manifest list comes from the root package.json `workspaces`
         globs (npm's source of truth), so ANY workspace (desktop included)

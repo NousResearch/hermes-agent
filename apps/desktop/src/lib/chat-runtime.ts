@@ -283,10 +283,14 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
       return typeof row.target === 'string' ? { type: 'alias', target: row.target } : null
 
     case 'skill':
-      return typeof row.name === 'string' ? { type: 'skill', name: row.name, message: str(row.message) } : null
+      return typeof row.name === 'string'
+        ? { type: 'skill', name: row.name, message: str(row.message), display: str(row.display) }
+        : null
 
     case 'send':
-      return typeof row.message === 'string' ? { type: 'send', message: row.message, notice: str(row.notice) } : null
+      return typeof row.message === 'string'
+        ? { type: 'send', message: row.message, notice: str(row.notice), display: str(row.display) }
+        : null
 
     case 'prefill':
       return typeof row.message === 'string' ? { type: 'prefill', message: row.message, notice: str(row.notice) } : null

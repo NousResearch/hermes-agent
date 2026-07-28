@@ -89,10 +89,9 @@ import {
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
-  $sessionProfileTotals,
+  $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
-  $sessionsTotal,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -108,13 +107,13 @@ import {
 } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
-import { countLabel } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import {
+  excludeProjectSessions,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -300,8 +299,7 @@ export function ChatSidebar({
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
-  const sessionsTotal = useStore($sessionsTotal)
-  const sessionProfileTotals = useStore($sessionProfileTotals)
+  const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const workingSessionIds = useStore($workingSessionIds)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
@@ -432,6 +430,16 @@ export function ChatSidebar({
   }, [pinnedSessionIds, sessionByAnyId])
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
+  const pinnedIdSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
+
+  // A pinned session belongs to the Pinned section and nowhere else, so every
+  // other list filters it out (the flat recents already did). Match on the live
+  // id AND the durable pin id — a backend snapshot can surface either side of a
+  // compression tip rotation.
+  const isPinnedSession = useCallback(
+    (session: SessionInfo) => pinnedRealIdSet.has(session.id) || pinnedIdSet.has(sessionPinId(session)),
+    [pinnedRealIdSet, pinnedIdSet]
+  )
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
@@ -495,8 +503,8 @@ export function ChatSidebar({
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
   const unpinnedAgentSessions = useMemo(
-    () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
-    [sortedSessions, pinnedRealIdSet]
+    () => sortedSessions.filter(s => !isPinnedSession(s)),
+    [sortedSessions, isPinnedSession]
   )
 
   useEffect(() => {
@@ -618,7 +626,18 @@ export function ChatSidebar({
     const sorted = sortProjectsForOverview(
       projectTree
         .filter(node => !(node.isAuto && dismissed.has(node.id)))
-        .map(project => ({ ...project, repos: orderRepos(project.repos) })),
+        .map(project =>
+          excludeProjectSessions(
+            {
+              ...project,
+              // Home is synthetic, so its name is ours to translate — every other
+              // label is a repo basename or a name the user typed.
+              label: project.isNoProject ? s.projects.home : project.label,
+              repos: orderRepos(project.repos)
+            },
+            isPinnedSession
+          )
+        ),
       activeProjectId
     )
 
@@ -626,7 +645,16 @@ export function ChatSidebar({
     // (default) returns `sorted` untouched; projects the user hasn't ordered yet
     // keep their sorted position rather than jumping the hand-picked list.
     return orderProjectsByIds(sorted, projectOrderIds)
-  }, [showAllProfiles, projectTree, dismissedAutoProjects, orderRepos, activeProjectId, projectOrderIds])
+  }, [
+    showAllProfiles,
+    projectTree,
+    dismissedAutoProjects,
+    orderRepos,
+    activeProjectId,
+    projectOrderIds,
+    isPinnedSession,
+    s
+  ])
 
   // The overview only renders in grouped mode; the model stays live regardless
   // so scoping is consistent across views.
@@ -687,9 +715,16 @@ export function ChatSidebar({
 
     // The live-session overlay (creates/evictions) is applied per-repo in
     // RepoFlatSection, AFTER the visual git-worktree lanes are merged in (so
-    // out-of-tree worktrees can be placed). Here we just order the snapshot.
-    return { ...hydrated, repos: orderRepos(hydrated.repos) }
-  }, [overviewEnteredProject, enteredProjectTree, orderRepos])
+    // out-of-tree worktrees can be placed). Here we just order the snapshot and
+    // drop pinned rows — the hydrated lanes come straight from the backend, so
+    // they haven't been through projectModel's filter.
+    // The label comes from the overview node either way — that's the model's
+    // presentation copy (Home is translated there), not the raw payload's.
+    return excludeProjectSessions(
+      { ...hydrated, label: overviewEnteredProject.label, repos: orderRepos(hydrated.repos) },
+      isPinnedSession
+    )
+  }, [overviewEnteredProject, enteredProjectTree, orderRepos, isPinnedSession])
 
   // Overlay live `$sessions` onto the entered project so a just-created session
   // (which the backend snapshot hasn't folded in yet) counts as content and
@@ -788,7 +823,7 @@ export function ChatSidebar({
   // Preview rows come from the backend tree (each project carries its
   // most-recent sessions), overlaid with live $sessions so a just-created
   // session shows under its project instantly (and with its working arc),
-  // matching the flat Recents list. Keyed by project path for the rows.
+  // matching the flat Recents list. Keyed by project id for the rows.
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
     () => overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, removedSessionIds),
     [projectOverview, agentSessions, projects, removedSessionIds]
@@ -872,11 +907,21 @@ export function ChatSidebar({
     }
 
     const bySource = new Map<string, SessionInfo[]>()
+    // Rows this platform owns that the Pinned section is showing instead. The
+    // backend's per-platform total counts them, so discount it or "load more"
+    // promises rows that will never appear.
+    const pinnedBySource = new Map<string, number>()
 
     for (const session of messagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
+        continue
+      }
+
+      if (isPinnedSession(session)) {
+        pinnedBySource.set(sourceId, (pinnedBySource.get(sourceId) ?? 0) + 1)
+
         continue
       }
 
@@ -889,13 +934,14 @@ export function ChatSidebar({
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
         const known = messagingPlatformTotals[sourceId]
-        const total = Math.max(ordered.length, known ?? 0)
+        const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
+        const total = Math.max(ordered.length, unpinnedKnown ?? 0)
 
         return {
           // Known exact total → more exist iff total exceeds loaded; otherwise
           // the seed fetch was capped, so assume more until a per-platform load
           // resolves the count.
-          hasMore: known != null ? known > ordered.length : messagingTruncated,
+          hasMore: unpinnedKnown != null ? unpinnedKnown > ordered.length : messagingTruncated,
           label: sessionSourceLabel(sourceId) ?? sourceId,
           sessions: ordered,
           sourceId,
@@ -903,7 +949,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -937,7 +983,7 @@ export function ChatSidebar({
           ...group,
           loadingMore: Boolean(profileLoadMorePending[group.id]),
           onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
-          totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
+          hasMore: Boolean(sessionProfilesTruncated[group.id])
         }))
         // default (root) first, then the rest alphabetically.
         .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
@@ -948,7 +994,7 @@ export function ChatSidebar({
     loadMoreForProfileGroup,
     onLoadMoreProfileSessions,
     profileLoadMorePending,
-    sessionProfileTotals
+    sessionProfilesTruncated
   ])
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
@@ -956,22 +1002,16 @@ export function ChatSidebar({
   const displayAgentSessions = agentSessions
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
-  // unified set. When scoped to one profile it must compare that profile's own
-  // loaded rows against that profile's total — otherwise a huge default profile
-  // keeps "Load more" stuck on while you browse a small one (the aggregator's
-  // total sums every profile). Per-profile totals come from the aggregator
-  // (children excluded); fall back to the global total / loaded count.
+  // unified set; scoped to one profile it tracks that profile's own truncation
+  // flag — otherwise a huge default profile keeps "Load more" stuck on while
+  // you browse a small one. The backend reports whether its page was capped
+  // rather than an exact count, so no COUNT(*) runs per refresh.
   const loadedSessionCount = showAllProfiles ? sessions.length : visibleSessions.length
-  const scopedProfileTotal = showAllProfiles ? undefined : sessionProfileTotals[profileScope]
 
-  const knownSessionTotal = Math.max(
-    showAllProfiles ? sessionsTotal : (scopedProfileTotal ?? loadedSessionCount),
-    loadedSessionCount
-  )
+  const hasMoreSessions = showAllProfiles
+    ? Object.values(sessionProfilesTruncated).some(Boolean)
+    : Boolean(sessionProfilesTruncated[profileScope])
 
-  const hasMoreSessions = knownSessionTotal > loadedSessionCount
-
-  const recentsMeta = countLabel(displayAgentSessions.length, knownSessionTotal)
   const displayRecentsCountRef = useRef(0)
   const loadedRecentsCountRef = useRef(0)
   displayRecentsCountRef.current = displayAgentSessions.length
@@ -1224,7 +1264,6 @@ export function ChatSidebar({
                   )
                 }
                 label={s.results}
-                labelMeta={String(searchResults.length)}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
@@ -1313,12 +1352,15 @@ export function ChatSidebar({
                       {enteredProject.path && (
                         <StartWorkButton onStarted={onNewSessionInWorkspace} repoPath={enteredProject.path} />
                       )}
-                      <ProjectMenu
-                        isActive={enteredProject.id === activeProjectId}
-                        onExitScope={exitProjectScope}
-                        project={enteredProject}
-                        scoped
-                      />
+                      {/* Home has no folder and no record to rename, theme, or delete. */}
+                      {!enteredProject.isNoProject && (
+                        <ProjectMenu
+                          isActive={enteredProject.id === activeProjectId}
+                          onExitScope={exitProjectScope}
+                          project={enteredProject}
+                          scoped
+                        />
+                      )}
                       <div className="grid size-6 place-items-center">
                         <Tip label={s.showProjects}>
                           <Button
@@ -1390,9 +1432,7 @@ export function ChatSidebar({
                     reposScanning && !projectsSkeletonVisible ? (
                       <GlyphSpinner ariaLabel={s.loading} className="text-[0.6875rem] text-(--ui-text-quaternary)" />
                     ) : undefined
-                  ) : (
-                    recentsMeta
-                  )
+                  ) : undefined
                 }
                 liveSessions={inProject ? agentSessions : undefined}
                 onArchiveSession={onArchiveSession}
@@ -1458,7 +1498,6 @@ export function ChatSidebar({
                         platformName={group.label}
                       />
                     }
-                    labelMeta={countLabel(group.sessions.length, group.total)}
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}

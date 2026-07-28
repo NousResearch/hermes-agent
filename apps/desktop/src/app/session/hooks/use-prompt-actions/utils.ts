@@ -393,6 +393,11 @@ export interface SubmitTextOptions {
    *  (queue drain, steer, external submit requests): the check is a no-op
    *  without it. */
   composerScope?: string | null
+  /** What the transcript shows for this send, when it differs from the text
+   *  the agent receives. A `/skill` invocation expands into the whole skill
+   *  body — model-facing scaffolding the UI must never render — so the slash
+   *  dispatcher passes the invocation (`/work fix the leak`) here. */
+  displayText?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

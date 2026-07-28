@@ -152,6 +152,11 @@ docs/superpowers/*
 .update-incomplete
 .update-incomplete.lock
 
+# Checkout fingerprint the __pycache__ tree was last validated against
+# (launch-time stale-bytecode sweep). Runtime state, never a code change.
+.bytecode-fingerprint
+.bytecode-fingerprint.tmp
+
 # Installer-written method stamp in the managed checkout root (scripts/install.sh).
 # Runtime metadata only — never a code change. Ignore so `git status` stays clean
 # and `hermes update`'s untracked autostash does not treat it as a local edit (#66189 / #54855).
@@ -175,5 +180,13 @@ apps/desktop/demo/
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+#
+# Spelling variants are listed because a single `infographic/` pattern was
+# sidestepped by an `infograficos/` directory (#70552). .gitignore is only
+# the first line of defence and cannot stop `git add -f` at all — the
+# infographic-check CI job is what actually enforces this.
 infographic/
+infographics/
+infograficos/
+infografico/
 native/fts5_cjk/*.so

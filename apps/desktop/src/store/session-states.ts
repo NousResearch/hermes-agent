@@ -23,6 +23,7 @@ import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-s
 import {
   $activeTreeGroup,
   $layoutTree,
+  focusedSessionTabAnchor,
   moveTreePane,
   noteActiveTreeGroup,
   revealTreePane
@@ -184,10 +185,25 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 /** Publish one session's state. Automatically fires transition side-effects
  *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
  *  by diffing previous vs next — callers never need to manually call a
- *  transition handler. */
+ *  transition handler.
+ *
+ *  Skips the publish when the new state is identical to the existing one
+ *  (same reference) to avoid churning `$sessionStates` on periodic
+ *  `session.info` heartbeats that carry no change — otherwise every ~1/s
+ *  heartbeat creates a new Record spread, triggering computed atoms
+ *  ($workingSessionIds, $attentionSessionIds) and their subscribers
+ *  unnecessarily. The runtime-id→state cache (sessionStateByRuntimeIdRef)
+ *  is updated independently by the caller, so the visual path stays live
+ *  without the store churn. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
-  const prev = $sessionStates.get()[runtimeId] ?? null
-  $sessionStates.set({ ...$sessionStates.get(), [runtimeId]: state })
+  const current = $sessionStates.get()
+  const prev = current[runtimeId] ?? null
+
+  if (prev === state) {
+    return
+  }
+
+  $sessionStates.set({ ...current, [runtimeId]: state })
   handleTransition(prev, state, runtimeId)
 }
 
@@ -507,7 +523,11 @@ function syncTileStripOrder() {
  *  move path is what lets a tile's own TAB be dragged like a sidebar row — drop
  *  it on a zone/edge/strip and the tile goes there (drop-on-a-composer links
  *  instead, handled by the drag resolver). The session LOADED IN MAIN never
- *  opens as a tile (same transcript twice, fighting one runtime — silly). */
+ *  opens as a tile (same transcript twice, fighting one runtime — silly).
+ *
+ *  An unanchored open (⌘T, ⌘⇧T on a tile that predates anchors) docks into the
+ *  FOCUSED chat zone — the same zone ⌘1…⌘9 and ⌘W act on — so a new tab lands
+ *  in the strip the user is looking at, not always main's. */
 export function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
@@ -520,8 +540,10 @@ export function openSessionTile(
     return
   }
 
+  const dock = anchor ?? focusedSessionTabAnchor() ?? undefined
+
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
-    saveTiles([...tiles, { anchor, before, dir, storedSessionId }])
+    saveTiles([...tiles, { anchor: dock, before, dir, storedSessionId }])
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
 
@@ -531,11 +553,11 @@ export function openSessionTile(
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
   const tree = $layoutTree.get()
-  const target = tree ? findGroupOfPane(tree, anchor ?? 'workspace')?.id : null
+  const target = tree ? findGroupOfPane(tree, dock ?? 'workspace')?.id : null
 
   if (target) {
     moveTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`, { before: before ?? null, groupId: target, pos: dir })
-    patchSessionTile(storedSessionId, { anchor, before: before ?? undefined, dir })
+    patchSessionTile(storedSessionId, { anchor: dock, before: before ?? undefined, dir })
     syncTileStripOrder()
   }
 }

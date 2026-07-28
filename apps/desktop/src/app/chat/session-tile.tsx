@@ -17,7 +17,7 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { atom, computed } from 'nanostores'
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
@@ -126,9 +126,8 @@ function TileChat({
   const scope = useMemo<ComposerScope>(
     () => ({
       $awaitingInput: sessionAwaitingInput(runtimeId),
+      $messages: view.$messages,
       attachments,
-      popoutAllowed: false,
-      readMessages: () => view.$messages.get(),
       target: `tile:${storedSessionId}`
     }),
     [attachments, runtimeId, storedSessionId, view.$messages]
@@ -170,7 +169,6 @@ function TileChat({
           onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
-          onBranchInNewChat={() => undefined}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={() => undefined}
           onDismissError={actions.dismissError}
@@ -424,6 +422,40 @@ export function stackSessionTilesIntoMain(): void {
   }
 }
 
+/** The three scalars the tab menu actually renders, derived from the stored
+ *  row. Subscribing to `$sessions` + `$projectTree` wholesale re-rendered
+ *  every tab's menu wrapper on ANY session-list or tree churn (polls, title
+ *  updates in other sessions) — for a context menu that's almost never open.
+ *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
+ *  the derived values change. */
+function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; title: string } {
+  const cache = useRef<{ key: string; value: { pinId: string; profile?: string; title: string } } | null>(null)
+
+  const subscribe = useCallback((onChange: () => void) => {
+    const offSessions = $sessions.listen(onChange)
+    const offTree = $projectTree.listen(onChange)
+
+    return () => {
+      offSessions()
+      offTree()
+    }
+  }, [])
+
+  return useSyncExternalStore(subscribe, () => {
+    const stored = tileStoredRow(storedSessionId)
+    const pinId = stored ? sessionPinId(stored) : storedSessionId
+    const title = tileTitle(storedSessionId)
+    const profile = stored?.profile
+    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}`
+
+    if (cache.current?.key !== key) {
+      cache.current = { key, value: { pinId, profile, title } }
+    }
+
+    return cache.current.value
+  })
+}
+
 /** A session TAB's context menu: the full session verb set (pin, copy id, new
  *  window, branch, rename, archive, delete) — the SAME menu a sidebar row
  *  gets, targeted through the tile delegate (whose verbs are generic over
@@ -445,13 +477,8 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  // Subscribe for reactivity; the row is read imperatively via tileStoredRow
-  // (which spans both sources), so the values themselves are unused here.
-  useStore($sessions)
-  useStore($projectTree)
+  const { pinId, profile, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
-  const stored = tileStoredRow(storedSessionId)
-  const pinId = stored ? sessionPinId(stored) : storedSessionId
   const pinned = pinnedSessionIds.includes(pinId)
 
   return (
@@ -464,11 +491,11 @@ export function SessionTabMenu({
         onHideTabBar={onHideTabBar}
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         pinned={pinned}
-        profile={stored?.profile}
+        profile={profile}
         sessionId={storedSessionId}
         surface="tab"
         tabPaneId={tabPaneId}
-        title={tileTitle(storedSessionId)}
+        title={title}
       >
         {children}
       </SessionContextMenu>

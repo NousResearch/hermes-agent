@@ -100,6 +100,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
+  // ⌘⇧S — "s" for status bar. VS Code ships
+  // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
+  // gap in their View family) and Hermes has no chord dispatcher, so this
+  // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
+  { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
@@ -122,6 +127,21 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
   { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
   { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
+  // ⌘F — open the find-in-page bar. `comboAllowedInInput` lets the combo
+  // fire from inside a textarea / contenteditable (matches browser behavior
+  // so typing in the composer and pressing ⌘F focuses find, not 'f').
+  { id: 'view.findInPage', category: 'view', defaults: ['mod+f'] },
+  // ⌘G / ⌘⇧G step matches — the platform-standard find-next/find-previous
+  // pair (Chrome, Safari, VS Code, and Claude Desktop all ship it). No
+  // `defaults` here on purpose: ⌘G already belongs to `view.toggleReview`,
+  // and shipping a duplicate default would flag a permanent conflict in the
+  // keybinds panel. While the find bar is OPEN, its capture-phase listener
+  // claims ⌘G/⌘⇧G and stops propagation (see components/find-bar.tsx), so
+  // stepping works out of the box and the review toggle keeps the key the
+  // rest of the time. These entries exist so the panel documents the pair
+  // and a user who prefers a dedicated chord can bind one.
+  { id: 'view.findNext', category: 'view', defaults: [] },
+  { id: 'view.findPrevious', category: 'view', defaults: [] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
 ]

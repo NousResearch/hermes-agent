@@ -187,7 +187,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
         "final_response": base._redact_secrets(final_response)[:500],
     }
     out_path = out_dir / f"{scenario['id']}__{'enabled' if enabled else 'disabled'}__rep{rep}.json"
-    out_path.write_text(json.dumps(rec, indent=1))
+    out_path.write_text(json.dumps(rec, indent=1), encoding="utf-8")
     shutil.rmtree(Path(os.environ["HERMES_HOME"]).parent, ignore_errors=True)
     return rec
 
@@ -210,7 +210,7 @@ def main():
     summary_name = os.environ.get("TS_BENCH_SUMMARY", "_bench_summary.json")
     (out_dir / summary_name).write_text(json.dumps(
         [{k: v for k, v in r.items() if k not in ("per_call_usage", "bridge_calls", "final_response")} for r in rows],
-        indent=1))
+        indent=1), encoding="utf-8")
     print("done ->", out_dir / summary_name)
 
 

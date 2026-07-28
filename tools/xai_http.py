@@ -97,6 +97,16 @@ def hermes_xai_user_agent() -> str:
     return f"Hermes-Agent/{__version__}"
 
 
+def hermes_xai_default_headers() -> Dict[str, str]:
+    """Default headers for OpenAI-SDK and raw HTTP clients talking to xAI.
+
+    Replaces the OpenAI Python SDK's identifying ``User-Agent: OpenAI/Python …``
+    so chat/completions and Responses traffic is attributed as Hermes Agent,
+    matching the direct HTTP integrations (search, TTS, STT, image, video).
+    """
+    return {"User-Agent": hermes_xai_user_agent()}
+
+
 def _load_config_section(section_name: str) -> Dict[str, Any]:
     """Return a top-level Hermes config section as a dict, or empty."""
     try:

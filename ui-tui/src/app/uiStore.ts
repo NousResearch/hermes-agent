@@ -16,6 +16,7 @@ const buildUiState = (): UiState => ({
   compact: false,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
+  focusView: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
   liveSessionCount: 0,

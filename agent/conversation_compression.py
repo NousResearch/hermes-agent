@@ -110,8 +110,13 @@ def _emit_compaction_done(agent: Any) -> None:
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
         return
+    text = t("gateway.compaction_done")
+    # Category suppression (suppress: progress) blanks this to "". Skip the
+    # callback entirely rather than emitting an empty status line.
+    if not text.strip():
+        return
     try:
-        status_callback("compacted", t("gateway.compaction_done"))
+        status_callback("compacted", text)
     except Exception:
         logger.debug("status_callback error in compaction completion", exc_info=True)
 

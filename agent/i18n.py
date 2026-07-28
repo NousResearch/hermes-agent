@@ -103,6 +103,11 @@ GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
     "gateway.queued_next_turn": "progress",
     "gateway.interrupting_task": "progress",
     "gateway.steered_into_run": "progress",
+    # The compaction START status is already swallowed by the gateway noise
+    # regex; this completion edge is deliberately delivered to chat instead
+    # (test_compaction_completion_notice_reaches_chat), so muting it needs
+    # this category entry — the noise filter will never do it.
+    "gateway.compaction_done": "progress",
     # lifecycle — gateway daemon lifecycle notifications
     "gateway.restart_success": "lifecycle",
     "gateway.gateway_online": "lifecycle",

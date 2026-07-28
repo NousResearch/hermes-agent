@@ -121,6 +121,11 @@ export function useComposerVoice({
     consumePendingResponse,
     enabled: voiceConversationActive,
     onFatalError: () => setVoiceConversationActive(false),
+    // A spoken stop command ("stop", "never mind", "goodbye", …) ends the
+    // hands-free conversation. Flipping the flag is the authoritative off
+    // switch — the enabled=false prop + effect below drive conversation.end()
+    // teardown (mic close, wake re-arm).
+    onStopWord: () => setVoiceConversationActive(false),
     onSubmit: submitVoiceTurn,
     onTranscribeAudio,
     pendingResponse: pendingTurnResponse

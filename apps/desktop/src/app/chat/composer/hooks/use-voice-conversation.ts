@@ -9,6 +9,7 @@ import {
   startSpeechStream,
   stopVoicePlayback
 } from '@/lib/voice-playback'
+import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useMicRecorder } from './use-mic-recorder'
@@ -25,6 +26,7 @@ interface VoiceConversationOptions {
   busy: boolean
   enabled: boolean
   onFatalError?: () => void
+  onStopWord?: () => void
   onSubmit: (text: string) => Promise<void> | void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
@@ -35,6 +37,7 @@ export function useVoiceConversation({
   busy,
   enabled,
   onFatalError,
+  onStopWord,
   onSubmit,
   onTranscribeAudio,
   pendingResponse,
@@ -59,6 +62,12 @@ export function useVoiceConversation({
   const busyRef = useRef(busy)
   const statusRef = useRef<ConversationStatus>('idle')
   const wasEnabledRef = useRef(enabled)
+  const onStopWordRef = useRef(onStopWord)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    onStopWordRef.current = onStopWord
+  }, [onStopWord])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -128,6 +137,18 @@ export function useVoiceConversation({
             }
 
             setStatus('idle')
+
+            return
+          }
+
+          // A spoken "stop" (or "never mind", "goodbye", …) ends the
+          // conversation instead of being submitted as a turn. Only whole-
+          // utterance stop commands match, so "stop the container" still goes
+          // through as a real request.
+          if (isVoiceStopCommand(transcript)) {
+            dropSpeechSession()
+            setStatus('idle')
+            onStopWordRef.current?.()
 
             return
           }

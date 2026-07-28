@@ -7,6 +7,7 @@ import {
   applyWakeStopResult,
   armWakeWord,
   resetWakeWordState,
+  resumeWakeAfterVoice,
   toggleWakeWord,
   type WakeRequester
 } from './wake-word'
@@ -236,5 +237,123 @@ describe('applyWakeStartResult', () => {
     applyWakeStartResult({ phrase: 'computer', provider: 'porcupine', started: true })
 
     expect($wakeWord.get()).toMatchObject({ available: true, listening: true, phrase: 'computer' })
+  })
+})
+
+describe('resumeWakeAfterVoice (post-voice reconcile)', () => {
+  it('re-arms when config says enabled but the listener is down', async () => {
+    const calls: string[] = []
+
+    const request = requester(method => {
+      calls.push(method)
+
+      if (method === 'wake.resume') {
+        return { reason: 'not_owner', resumed: false }
+      }
+
+      if (method === 'wake.status') {
+        return { available: true, enabled: true, listening: false, phrase: 'hey hermes' }
+      }
+
+      return { phrase: 'hey hermes', started: true }
+    })
+
+    await resumeWakeAfterVoice(request)
+
+    expect(calls).toEqual(['wake.resume', 'wake.status', 'wake.start'])
+    expect($wakeWord.get()).toMatchObject({ listening: true })
+  })
+
+  it('re-arm start never passes persist (passive path must not write config)', async () => {
+    const startParams: Array<Record<string, unknown> | undefined> = []
+
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'wake.resume') {
+        return { resumed: false }
+      }
+
+      if (method === 'wake.status') {
+        return { available: true, enabled: true, listening: false }
+      }
+
+      startParams.push(params)
+
+      return { started: true }
+    }) as unknown as WakeRequester
+
+    await resumeWakeAfterVoice(request)
+
+    expect(startParams).toEqual([{ surface: 'gui' }])
+  })
+
+  it('stops after the resume alone brings the listener back', async () => {
+    const calls: string[] = []
+
+    const request = requester(method => {
+      calls.push(method)
+
+      if (method === 'wake.resume') {
+        return { resumed: true }
+      }
+
+      return { available: true, enabled: true, listening: true, owned_by_caller: true }
+    })
+
+    await resumeWakeAfterVoice(request)
+
+    expect(calls).toEqual(['wake.resume', 'wake.status'])
+    expect($wakeWord.get()).toMatchObject({ listening: true })
+  })
+
+  it('leaves the listener off when config says disabled', async () => {
+    const calls: string[] = []
+
+    const request = requester(method => {
+      calls.push(method)
+
+      if (method === 'wake.resume') {
+        return { resumed: false }
+      }
+
+      return { available: true, enabled: false, listening: false }
+    })
+
+    await resumeWakeAfterVoice(request)
+
+    expect(calls).toEqual(['wake.resume', 'wake.status'])
+    expect($wakeWord.get().listening).toBe(false)
+  })
+
+  it('yields when another surface owns the mic lease', async () => {
+    const calls: string[] = []
+
+    const request = requester(method => {
+      calls.push(method)
+
+      if (method === 'wake.resume') {
+        return { resumed: false }
+      }
+
+      if (method === 'wake.status') {
+        return { available: true, enabled: true, listening: false, owner_surface: 'tui' }
+      }
+
+      return { owner_surface: 'tui', reason: 'owned', started: false }
+    })
+
+    await resumeWakeAfterVoice(request)
+
+    expect(calls).toEqual(['wake.resume', 'wake.status', 'wake.start'])
+    expect($wakeWord.get().listening).toBe(false)
+  })
+
+  it('is a no-op against older backends without wake.* methods', async () => {
+    const request = requester(() => {
+      throw new Error('Unknown method: wake.resume')
+    })
+
+    await resumeWakeAfterVoice(request)
+
+    expect($wakeWord.get()).toMatchObject({ available: false, listening: false })
   })
 })

@@ -32,6 +32,8 @@ export const $wakeWord = atom<WakeWordState>(INITIAL_WAKE_WORD_STATE)
 
 export interface WakeStatusResponse {
   available?: boolean
+  /** Config truth (wake_word.enabled) — drives post-voice re-arm. */
+  enabled?: boolean
   hint?: string
   listening?: boolean
   owned_by_caller?: boolean
@@ -199,6 +201,60 @@ export async function toggleWakeWord(request: WakeRequester = gatewayRequester):
       notice: error instanceof Error ? error.message : String(error),
       pending: false
     })
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+/**
+ * Post-voice-turn reconcile: the wake word is a persistent setting, so ending a
+ * voice conversation must land the listener back where config says it belongs.
+ * `wake.resume` alone isn't enough — the mic can still be held by the just-torn
+ * -down WebRTC capture, and a fire-and-forget resume that loses that race left
+ * the ear silently off until the user re-toggled. Resume, then verify against
+ * `wake.status` (config `enabled` is the authority) and re-arm, with a couple
+ * of spaced retries to ride out mic-release latency. Never passes `persist` —
+ * this is a passive path and must not flip config.
+ */
+export async function resumeWakeAfterVoice(request: WakeRequester = gatewayRequester): Promise<void> {
+  try {
+    await request('wake.resume', {})
+  } catch {
+    // Older backend without wake.* — nothing to reconcile.
+    return
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const status = await request<WakeStatusResponse>('wake.status', {})
+      applyWakeStatus(status)
+
+      // Config says off (or the feature can't run) — off is the correct rest
+      // state. A user /wake off during the voice turn stays respected.
+      if (!status?.enabled || !status.available) {
+        return
+      }
+
+      if (status.listening) {
+        return
+      }
+
+      const started = await request<WakeStartResponse>('wake.start', { surface: 'gui' })
+      applyWakeStartResult(started)
+
+      if (started?.started) {
+        return
+      }
+
+      // Another surface holds the mic lease — theirs to keep.
+      if (started?.reason === 'owned') {
+        return
+      }
+    } catch {
+      // Transient (mic still releasing) — fall through to the next attempt.
+    }
+
+    await sleep(1500)
   }
 }
 

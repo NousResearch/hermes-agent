@@ -26,7 +26,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
@@ -407,17 +407,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
-  useEffect(() => {
-    // When hidden (non-chat tab) we must not register the header button —
-    // another page owns the header's end slot at that point.
-    if (!isActive) {
-      setEnd(null);
-      return;
-    }
-    if (!narrow) {
-      setEnd(null);
-      return;
-    }
+  useLayoutEffect(() => {
+    // When hidden (non-chat tab) another page owns the header's end slot.
+    // Don't touch it AT ALL — the persistent chat host mounts (plugin
+    // manifests resolving) and updates AFTER the routed page's layout
+    // effect has already filled the slot, so even a "defensive"
+    // setEnd(null) here wipes that page's header buttons (Cron "Create",
+    // Profiles "Build", …). Ownership rule: only write to the slot while
+    // /chat is the active route AND the narrow layout needs the button;
+    // the effect cleanup handles removal on every transition out.
+    if (!isActive || !narrow) return;
     setEnd(
       <Button
         ghost

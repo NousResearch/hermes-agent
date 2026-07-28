@@ -740,6 +740,8 @@ class TestSessionManagementEndpoints:
         body = r.json()
         assert body["matched"] >= 1
         assert "oldest_started_at" in body and "newest_started_at" in body
+        assert "oldest_last_active" in body and "newest_last_active" in body
+        assert all("last_active" in session for session in body["sessions"])
 
     def test_prune_explicit_older_than_kept_with_attr_filter(self):
         # Explicit older_than_days is honored even alongside attribute filters.

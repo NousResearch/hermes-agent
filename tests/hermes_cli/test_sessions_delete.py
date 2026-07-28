@@ -145,6 +145,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None):
             "source": "cron",
             "title": "oldest run",
             "started_at": 1_600_000_000.0,
+            "last_active": 1_600_000_050.0,
             "ended_at": 1_600_000_100.0,
             "message_count": 2,
             "archived": 0,
@@ -154,6 +155,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None):
             "source": "cron",
             "title": "newest run",
             "started_at": 1_700_000_000.0,
+            "last_active": 1_700_000_050.0,
             "ended_at": 1_700_000_100.0,
             "message_count": 4,
             "archived": 0,
@@ -185,8 +187,8 @@ def test_sessions_prune_bare_keeps_90_day_default(monkeypatch, capsys):
     import time as _time
 
     filters, _out = _run_prune(monkeypatch, capsys, [])
-    assert filters["started_before"] is not None
-    assert filters["started_before"] == pytest.approx(
+    assert filters["last_active_before"] is not None
+    assert filters["last_active_before"] == pytest.approx(
         _time.time() - 90 * 86400, abs=60
     )
 
@@ -194,6 +196,8 @@ def test_sessions_prune_bare_keeps_90_day_default(monkeypatch, capsys):
 def test_sessions_prune_source_matches_all_ages(monkeypatch, capsys):
     """--source alone suppresses the implicit 90-day cutoff (all ages)."""
     filters, _out = _run_prune(monkeypatch, capsys, ["--source", "cron"])
+    assert filters["last_active_before"] is None
+    assert filters["last_active_after"] is None
     assert filters["started_before"] is None
     assert filters["started_after"] is None
     assert filters["source"] == "cron"
@@ -206,7 +210,7 @@ def test_sessions_prune_source_with_explicit_time_respected(monkeypatch, capsys)
     filters, _out = _run_prune(
         monkeypatch, capsys, ["--source", "cron", "--older-than", "30"]
     )
-    assert filters["started_before"] == pytest.approx(
+    assert filters["last_active_before"] == pytest.approx(
         _time.time() - 30 * 86400, abs=60
     )
     assert filters["source"] == "cron"
@@ -218,5 +222,5 @@ def test_sessions_prune_preview_shows_oldest_newest(monkeypatch, capsys):
 
     _filters, out = _run_prune(monkeypatch, capsys, ["--source", "cron"])
     assert "2 session(s) match" in out
-    assert f"oldest {format_epoch(1_600_000_000.0)}" in out
-    assert f"newest {format_epoch(1_700_000_000.0)}" in out
+    assert f"oldest activity {format_epoch(1_600_000_050.0)}" in out
+    assert f"newest activity {format_epoch(1_700_000_050.0)}" in out

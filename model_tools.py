@@ -569,10 +569,15 @@ def _compute_tool_definitions(
                 config=ts_cfg,
             )
             if assembly.activated and not quiet_mode:
+                _forms = {"full": "catalog listing embedded",
+                          "names": "names-only listing embedded",
+                          "mixed": "listing embedded (oversized servers summarized)",
+                          "groups": "server summary embedded (search-only discovery)",
+                          "none": "no listing (search-only)"}
                 print(
-                    f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
-                    f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
-                    f"Threshold ~{assembly.threshold_tokens} tokens."
+                    f"🔎 Tool Search (tier {assembly.tier}): {assembly.deferred_count} "
+                    f"MCP/plugin tools deferred (~{assembly.deferred_tokens} tokens) behind "
+                    f"tool_search/describe/call — {_forms.get(assembly.listing_form, assembly.listing_form)}."
                 )
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
@@ -725,6 +730,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     properties = (schema.get("parameters") or {}).get("properties")
     if not properties:
         return args
+
+    # The model saw the SANITIZED schema — property keys violating provider
+    # patterns (e.g. Cloudflare's ``issue_class~neq``) were renamed before
+    # the request. Map any sanitized keys back to the registry's original
+    # wire names before schema lookup / dispatch.
+    try:
+        from tools.schema_sanitizer import unrename_tool_args
+        args = unrename_tool_args(schema.get("parameters"), args)
+    except Exception:  # pragma: no cover — never break dispatch
+        pass
 
     for key, value in list(args.items()):
         prop_schema = properties.get(key)
@@ -1170,6 +1185,12 @@ def handle_function_call(
                         "Use tool_search to find tools you can call."
                     ),
                 }, ensure_ascii=False)
+            # Probe-validate against the deferred tool's schema (ironclaw#5149):
+            # a blind call missing required arguments returns the parameter
+            # schema instead of dispatching into an opaque downstream failure.
+            _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
+            if _probe_err is not None:
+                return _probe_err
             # Recurse with the underlying tool. All hooks fire against the
             # real tool name. The bridge is invisible to hooks by design.
             return handle_function_call(

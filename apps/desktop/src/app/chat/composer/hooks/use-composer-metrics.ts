@@ -1,10 +1,14 @@
 import { useAuiState } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
+import {
+  clearSurfaceVar,
+  COMPOSER_HEIGHT_VAR,
+  COMPOSER_SURFACE_HEIGHT_VAR,
+  setSurfaceVar
+} from '@/app/chat/surface-vars'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { $composerPoppedOut } from '@/store/composer-popout'
-import { isSecondaryWindow } from '@/store/windows'
 
 import { COMPOSER_COMPACT_PILL_PX, COMPOSER_SINGLE_LINE_MAX_PX, COMPOSER_STACK_BREAKPOINT_PX } from '../composer-utils'
 
@@ -76,6 +80,11 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
   const lastBucketedSurfaceHeightRef = useRef(0)
   const lastTightRef = useRef<boolean | null>(null)
   const lastCompactPillRef = useRef<boolean | null>(null)
+  // Mirrored into a ref so `syncComposerMetrics` stays referentially stable —
+  // it's the shared ResizeObserver's handler, and a new identity every render
+  // would re-register the observation.
+  const poppedOutRef = useRef(poppedOut)
+  poppedOutRef.current = poppedOut
 
   const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
@@ -86,21 +95,20 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
     // Floating composer is out of the thread's flow — it must not reserve any
     // bottom clearance. Zero the measured vars so the thread reclaims the space.
-    // (Read globals here so the callback stays stable; mirror the popoutAllowed
-    // gate since secondary windows are forced docked.)
-    if ($composerPoppedOut.get() && !isSecondaryWindow()) {
-      const root = document.documentElement
+    // Read through a ref so the callback stays stable, and read THIS surface's
+    // own state: pop-out is per layout zone, so a float in the left split must
+    // not zero the right split's clearance.
+    if (poppedOutRef.current) {
       lastBucketedHeightRef.current = 0
       lastBucketedSurfaceHeightRef.current = 0
-      root.style.setProperty('--composer-measured-height', '0px')
-      root.style.setProperty('--composer-surface-measured-height', '0px')
+      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
+      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
 
       return
     }
 
     const { height, width } = composer.getBoundingClientRect()
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
-    const root = document.documentElement
 
     if (width > 0) {
       const nextTight = width < COMPOSER_STACK_BREAKPOINT_PX
@@ -135,7 +143,7 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
       if (bucket !== lastBucketedHeightRef.current) {
         lastBucketedHeightRef.current = bucket
-        root.style.setProperty('--composer-measured-height', `${bucket}px`)
+        setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, `${bucket}px`)
       }
     }
 
@@ -144,7 +152,7 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
       if (bucket !== lastBucketedSurfaceHeightRef.current) {
         lastBucketedSurfaceHeightRef.current = bucket
-        root.style.setProperty('--composer-surface-measured-height', `${bucket}px`)
+        setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, `${bucket}px`)
       }
     }
   }, [composerRef, composerSurfaceRef, editorRef])
@@ -160,12 +168,13 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
   }, [poppedOut, syncComposerMetrics])
 
   useEffect(() => {
+    const composer = composerRef.current
+
     return () => {
-      const root = document.documentElement
-      root.style.removeProperty('--composer-measured-height')
-      root.style.removeProperty('--composer-surface-measured-height')
+      clearSurfaceVar(composer, COMPOSER_HEIGHT_VAR)
+      clearSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR)
     }
-  }, [])
+  }, [composerRef])
 
   // Pill compacts on real width (tile/pane), OR when stacked for any reason
   // (viewport-narrow / wrapped) so the controls row never over-runs.

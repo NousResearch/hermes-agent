@@ -185,7 +185,11 @@ class InProcessCronScheduler(CronScheduler):
     ):
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.jobs import record_ticker_heartbeat
+        from cron.jobs import (
+            clear_ticker_error,
+            record_ticker_error,
+            record_ticker_heartbeat,
+        )
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
@@ -241,10 +245,19 @@ class InProcessCronScheduler(CronScheduler):
                 # an exception in this daemon thread, so swallowing it and
                 # re-checking stop_event keeps shutdown clean.
                 logger.error("Cron tick error: %s", e, exc_info=True)
+                # Persist the failure reason next to the heartbeat markers so
+                # `hermes cron status`/`list` (separate processes) can show
+                # WHY ticks fail, not just that the success marker is stale —
+                # e.g. a root-rewritten jobs.json locking out the ticker's
+                # uid went unnoticed for ~14h with the reason buried in the
+                # gateway log (#68483).
+                record_ticker_error(f"{type(e).__name__}: {e}")
             # Record liveness every iteration; bump the success marker only on a
             # clean tick, so status can tell "alive but failing every tick" from
             # "actually firing jobs" (#32612, #32895).
             record_ticker_heartbeat(success=ok)
+            if ok:
+                clear_ticker_error()
             stop_event.wait(interval)
 
     def _start_multiplex(
@@ -267,7 +280,12 @@ class InProcessCronScheduler(CronScheduler):
         """
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.jobs import record_ticker_heartbeat, use_cron_store
+        from cron.jobs import (
+            clear_ticker_error,
+            record_ticker_error,
+            record_ticker_heartbeat,
+            use_cron_store,
+        )
         from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
         logger = logging.getLogger("cron.scheduler_provider")
@@ -317,6 +335,9 @@ class InProcessCronScheduler(CronScheduler):
                 ok = True
             except BaseException as e:
                 logger.error("Cron tick error: %s", e, exc_info=True)
+                _tick_error = f"{type(e).__name__}: {e}"
+            else:
+                _tick_error = None
             # Record per-profile heartbeat after each tick cycle.
             for entry in profile_homes:
                 home = entry[1] if isinstance(entry, tuple) else entry
@@ -324,6 +345,13 @@ class InProcessCronScheduler(CronScheduler):
                 try:
                     with use_cron_store(home):
                         record_ticker_heartbeat(success=ok)
+                        # Surface the failure reason (or clear it) per profile
+                        # so `hermes cron status` can show WHY ticks fail
+                        # (#68483).
+                        if ok:
+                            clear_ticker_error()
+                        elif _tick_error:
+                            record_ticker_error(_tick_error)
                 finally:
                     reset_hermes_home_override(home_token)
             stop_event.wait(interval)

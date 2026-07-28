@@ -91,7 +91,7 @@ class TestNavigationSessionKey:
     def test_cdp_override_stays_on_bare_task_id(self, monkeypatch):
         """A user-supplied CDP endpoint owns the whole session — no hybrid."""
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: Mock())
-        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "ws://localhost:9222")
+        monkeypatch.setattr(browser_tool, "_get_cdp_override_raw", lambda: "ws://localhost:9222")
         key = browser_tool._navigation_session_key("default", "http://localhost:3000/")
         assert key == "default"
 

@@ -51,13 +51,20 @@ class TestSafeText:
 
 
 class TestSanitizeReplayBlockWhitespace:
-    def test_whitespace_text_block_coerced_to_placeholder(self):
-        out = _sanitize_replay_block({"type": "text", "text": "   \n"})
-        assert out == {"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}
+    def test_whitespace_text_block_dropped(self):
+        # Blank text blocks are DROPPED at the block level (not coerced in
+        # place) — the caller relocates any cache_control the block carried
+        # and appends the non-whitespace placeholder only when nothing
+        # cacheable survives, so real thinking/tool_use blocks aren't
+        # cluttered with "(empty)" noise. See _convert_assistant_message.
+        assert _sanitize_replay_block({"type": "text", "text": "   \n"}) is None
 
-    def test_empty_text_block_coerced_to_placeholder(self):
-        out = _sanitize_replay_block({"type": "text", "text": ""})
-        assert out == {"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}
+    def test_empty_text_block_dropped(self):
+        assert _sanitize_replay_block({"type": "text", "text": ""}) is None
+
+    def test_none_text_block_dropped_without_crash(self):
+        # text=None (invalid upstream payload) must not reach .strip().
+        assert _sanitize_replay_block({"type": "text", "text": None}) is None
 
     def test_real_text_block_unchanged(self):
         out = _sanitize_replay_block({"type": "text", "text": "hi"})

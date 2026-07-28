@@ -1,6 +1,7 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import type { BillingBlock } from '@hermes/shared'
+import { type BillingBlock, skillInvocationText } from '@hermes/shared'
 
+import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
@@ -101,6 +102,12 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete with status "error" — `text` is streamed partial output
+  // (keep it visible), not the error string.
+  partial?: boolean
+  // message.complete with status "error" — the failed turn was retained
+  // backend-side and will replay through session.resume's inflight payload.
+  recoverable?: boolean
   // Structured billing wall forwarded on message.complete when a turn fails
   // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).
   billing?: BillingBlock
@@ -294,6 +301,15 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
     return textContent
   }
 
+  // A `/skill` turn is stored expanded (the whole skill body). Current
+  // gateways project it to the invocation before it ever reaches us; this is
+  // the fallback for an older backend that still ships the raw payload.
+  const invocation = skillInvocationText(textContent)
+
+  if (invocation) {
+    return invocation
+  }
+
   const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)
 
   if (!marker || marker.index === undefined) {
@@ -304,11 +320,38 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   const attachedContext = textContent.slice(marker.index + marker[0].length)
   const refs = [...new Set(Array.from(attachedContext.matchAll(CONTEXT_REF_RE)).map(match => match[0]))]
 
-  return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
+  // The prose keeps the `@file:` token the user typed, so it already chips in
+  // place. Only hoist a ref the prose is missing — a turn persisted by an older
+  // backend that stripped the tokens. Re-listing an inline ref would chip twice.
+  const missing = refs.filter(ref => !visibleText.includes(ref))
+
+  return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
 function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
   return displayKind === 'hidden' ? null : content
+}
+
+// A remote backend older than this app serves display_metadata as raw JSON text,
+// and `in` throws on a primitive — which used to fail the whole session resume.
+function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
+  let parsed: unknown = metadata
+
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return undefined
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return undefined
+  }
+
+  const count = (parsed as { task_count?: unknown }).task_count
+
+  return typeof count === 'number' ? count : undefined
 }
 
 function timelineDisplayContent(message: SessionMessage, content: string): string {
@@ -316,11 +359,12 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
     return 'model changed'
   }
 
+  if (message.display_kind === 'auto_continue') {
+    return 'resumed interrupted turn'
+  }
+
   if (message.display_kind === 'async_delegation_complete') {
-    const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
-        : undefined
+    const count = timelineTaskCount(message.display_metadata)
 
     return count === undefined
       ? 'background agent work finished'
@@ -912,15 +956,28 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const content = message.content || message.text || message.context || message.name
 
-    const displayContent = transcriptContent(
+    const rawDisplayContent = transcriptContent(
       message.display_kind,
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
 
     const displayRole =
-      message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
+      message.display_kind === 'model_switch' ||
+      message.display_kind === 'async_delegation_complete' ||
+      message.display_kind === 'auto_continue'
         ? 'system'
         : message.role
+
+    // Persisted user turns carry `@image:<path>` directive lines inline in
+    // the text (see tui_gateway/server.py's persist-time rewrite). The
+    // read-only bubble clamps its body to ~2 lines, and a large inline image
+    // thumbnail pushes any caption text below the clamp's visible area — so
+    // pull image refs out into `attachmentRefs` (same shape the local
+    // optimistic composer already uses) and render them via the dedicated
+    // attachments row below the bubble instead.
+    const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
+    const displayContent = imageRefExtraction ? imageRefExtraction.cleanedText : rawDisplayContent
+    const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
 
     const parts: ChatMessagePart[] = []
 
@@ -941,7 +998,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       parts.push(...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex)))
     }
 
-    if (!parts.length) {
+    if (!parts.length && !extractedAttachmentRefs?.length) {
       if (message.role !== 'assistant') {
         flushPendingTools(index)
         activeAssistantIndex = null
@@ -991,7 +1048,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
-      timestamp: message.timestamp
+      timestamp: message.timestamp,
+      ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
@@ -1003,7 +1061,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   )
 
   return withUniqueToolCallIds(
-    withoutGeneratedImageEchoes.filter(m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text'))
+    withoutGeneratedImageEchoes.filter(
+      m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length
+    )
   )
 }
 

@@ -317,6 +317,52 @@ describe('reconcileResumeMessages', () => {
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
   })
+
+  it('preserves attachment refs for a matching user turn', () => {
+    const next = [msg('stored-user', 'user', 'describe this image')]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/photo.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@image:/tmp/photo.png'])
+  })
+
+  it('does not overwrite attachment refs already present on the resumed message', () => {
+    const next = [
+      msg('stored-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/authoritative.png']
+      })
+    ]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/cached.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@image:/tmp/authoritative.png'])
+  })
+
+  it('does not preserve attachment refs when the user text differs', () => {
+    const next = [msg('stored-user', 'user', 'a different prompt')]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/photo.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toBeUndefined()
+  })
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
@@ -389,6 +435,39 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
   })
 
+  // A mid-turn redirect inserts its correction as a SECOND optimistic user row
+  // for the same turn. Keeping only the newest dropped the prompt that started
+  // it, so a resume repainted the thread with the user's message missing.
+  it('keeps every optimistic user row in the live run after a mid-turn redirect', () => {
+    const previous = [
+      msg('user-1000', 'user', 'remove the session counts'),
+      msg('user-2000', 'user', 'hurry up'),
+      msg('assistant-stream-1', 'assistant', 'Moving.', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'user-2000',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('still drops optimistic rows separated from the live run by an assistant reply', () => {
+    const previous = [
+      msg('user-stale', 'user', 'compressed-away prompt'),
+      msg('assistant-stale', 'assistant', 'compressed-away reply'),
+      msg('user-1000', 'user', 'the live prompt'),
+      msg('user-2000', 'user', 'the correction'),
+      msg('assistant-stream-1', 'assistant', 'Moving.', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'user-2000',
+      'assistant-stream-1'
+    ])
+  })
+
   // #67603: the gateway persists model-switch / personality notices as role=user
   // ([System: …], tui_gateway/server.py). A single trailing marker is already
   // handled by the latestAuthoritativeUser guard above, but TWO switches around
@@ -440,9 +519,131 @@ describe('preserveLocalPendingTurnMessages', () => {
       'user-optimistic'
     ])
   })
+
+  // #70720: the gateway persists an attached image as a leading `@image:<path>`
+  // directive line, while the local optimistic composer keeps it as separate
+  // `attachmentRefs`. A naive text compare (chatMessageText a === b) therefore
+  // always mismatched whenever an image was attached and re-appended the
+  // optimistic row as a distinct, duplicate user bubble. Both sides must now
+  // reduce to the same visible text via textWithoutImageRefs.
+  it('does not duplicate the optimistic image turn when the persisted turn carries @image refs', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'what is in this photo?', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@image:/tmp/cat.png\nwhat is in this photo?')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic image turn when the persisted text differs', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'a different caption', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      })
+    ]
+
+    // Persisted turn has a different caption — the optimistic row is still
+    // uncommitted and must survive (image-aware compare must not over-correct).
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@image:/tmp/cat.png\nwhat is in this photo?')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored',
+      'user-optimistic'
+    ])
+  })
 })
 
 describe('appendLiveSessionProjection', () => {
+  // Corrections typed while a turn ran are their own user bubbles on the same
+  // turn. Resume must rebuild the prompt AND every correction, in order.
+  it('projects mid-turn redirect corrections after the prompt that started the turn', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up', 'and the worktree ones'],
+        assistant: 'Moving.',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'remove the session counts',
+      'hurry up',
+      'and the worktree ones',
+      'Moving.'
+    ])
+  })
+
+  it('does not re-project a correction the transcript already persisted', () => {
+    const stored = [msg('stored-user', 'user', 'remove the session counts'), msg('stored-fix', 'user', 'hurry up')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up'],
+        assistant: 'Moving.',
+        streaming: true
+      }
+    })
+
+    expect(restored.filter(message => message.role === 'user').map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-fix'
+    ])
+  })
+
+  it('does not duplicate the inflight user when the persisted turn carries @image refs', () => {
+    // By the time a stored transcript reaches appendLiveSessionProjection it
+    // has already been run through toChatMessages, so the @image directive has
+    // been lifted into attachmentRefs and the visible text is the bare caption.
+    const stored = [
+      msg('stored-user', 'user', 'current running prompt', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      }),
+      msg('stored-assistant', 'assistant', 'earlier answer')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    // The persisted user already carries the same visible text (the attachment
+    // lives in attachmentRefs on both sides), so the inflight *user* projection
+    // must be suppressed — exactly one user row, no duplicated bubble stacked
+    // on top of the persisted one. The live assistant tail is still projected.
+    const userRows = restored.filter(message => message.role === 'user')
+    expect(userRows).toHaveLength(1)
+    expect(userRows[0].id).toBe('stored-user')
+
+    const userText = userRows[0].parts.map(part => ('text' in part ? part.text : '')).join('')
+
+    expect(userText).toBe('current running prompt')
+  })
+
   it('restores the running turn and accepted queued prompt after a renderer restart', () => {
     const stored = [msg('stored-user', 'user', 'earlier'), msg('stored-assistant', 'assistant', 'earlier answer')]
 

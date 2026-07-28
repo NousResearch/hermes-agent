@@ -36,6 +36,7 @@ from agent.conversation_compression import (
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
+    recover_rotated_compression_session,
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
@@ -335,6 +336,8 @@ def build_turn_context(
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
     *,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     restore_or_build_system_prompt,
     install_safe_stdio,
     sanitize_surrogates,
@@ -352,6 +355,13 @@ def build_turn_context(
     """
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
+
+    # Recover a session rotated by another path before binding log/turn ids or
+    # copying client-supplied history. Everything in this turn must consistently
+    # belong to the canonical child, including observability metadata.
+    recovered_history = recover_rotated_compression_session(agent)
+    if recovered_history is not None:
+        conversation_history = recovered_history
 
     # NOTE: the DB session row is created later, AFTER the system prompt is
     # restored/built (see _ensure_db_session() below the system-prompt block).
@@ -529,6 +539,19 @@ def build_turn_context(
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
     # stamped by an earlier close flush.
+    #
+    # A synthesized turn (auto-continue recovery note, delegation completion)
+    # declares how it should READ in a transcript. Stamp that on the live
+    # message so the crash persist below writes the row already typed. Typing
+    # it after the turn instead leaves the row untyped for the whole run — and
+    # forever if the turn crashes — so the raw system note paints as a user
+    # bubble. The model still receives role/content unchanged; the api_messages
+    # build strips both fields from every outgoing copy.
+    if persist_user_display_kind:
+        user_msg["display_kind"] = persist_user_display_kind
+        if persist_user_display_metadata:
+            user_msg["display_metadata"] = persist_user_display_metadata
+
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

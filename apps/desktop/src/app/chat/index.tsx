@@ -1,14 +1,16 @@
 import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
+import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { Suspense, useCallback, useEffect, useMemo } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
@@ -42,7 +44,7 @@ import {
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
-import { routeSessionId } from '../routes'
+import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -69,7 +71,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onCancel: () => Promise<void> | void
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
-  onBranchInNewChat: (messageId: string) => void
+  onBranchInNewChat?: (messageId: string) => void
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
@@ -175,6 +177,30 @@ interface ChatRuntimeBoundaryProps {
 const NO_MESSAGES: ChatMessage[] = []
 
 /**
+ * The view's $messages, live only while this surface is the VISIBLE tab.
+ *
+ * Keep-alive keeps every ever-active tab MOUNTED (tree-group.tsx), so without
+ * this gate a hidden tab re-renders its entire thread on every streaming
+ * delta flush (~30×/s) — five busy tabs quintuple the per-token render cost
+ * and the app crawls. Hidden tabs freeze their transcript instead (status
+ * dots stay live through the separate status atoms) and catch up in one
+ * commit on reveal — the subscribe fires immediately with the current value.
+ */
+function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+  const visible = usePaneVisible()
+  const [messages, setMessages] = useState(() => $messages.get())
+
+  // nanostores types the listener value ReadonlyIfObject; the store publishes
+  // a fresh array per flush, so the cast is safe and avoids a per-token clone.
+  useEffect(
+    () => (visible ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
+    [$messages, visible]
+  )
+
+  return messages
+}
+
+/**
  * Owns the $messages subscription and the assistant-ui external-store runtime.
  *
  * Isolated from ChatView so the per-token delta flush (which replaces the
@@ -193,7 +219,7 @@ function ChatRuntimeBoundary({
   onThreadMessagesChange,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
-  const storeMessages = useStore(useSessionView().$messages)
+  const storeMessages = useMessagesWhileVisible(useSessionView().$messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
   const runtimeMessageRepository = useRuntimeMessageRepository(messages)
 
@@ -285,11 +311,18 @@ export function ChatView({
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
-  // does not wipe an in-progress draft or orphan /queue entries.
-  const queueSessionKey = useMemo(
-    () => resolveComposerSessionKey(selectedSessionId, sessions),
-    [selectedSessionId, sessions]
-  )
+  // does not wipe an in-progress draft or orphan /queue entries. For the
+  // primary view, the route is authoritative over the store selection — the
+  // latter can be momentarily null/stale mid-switch, which used to leak into
+  // the composer's scope key (#59305). A tile has no route, so it always uses
+  // its own selection directly.
+  const queueSessionKey = useMemo(() => {
+    const effectiveSelectedSessionId = isPrimary
+      ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
+      : selectedSessionId
+
+    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
+  }, [isPrimary, location.pathname, selectedSessionId, sessions])
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
@@ -437,6 +470,7 @@ export function ChatView({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-chat-surface=""
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
     >

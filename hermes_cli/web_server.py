@@ -72,6 +72,7 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
     remove_env_value,
+    custom_endpoint_key_env,
     check_config_version,
     detect_install_method,
     format_docker_update_message,
@@ -95,6 +96,7 @@ from gateway.status import (
     normalize_updated_at,
     parse_active_agents,
     read_runtime_status,
+    resolve_gateway_liveness,
 )
 from utils import env_var_enabled
 
@@ -920,7 +922,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "options": ["stash", "discard"],
     },
     "updates.refresh_cua_driver": {
-        "type": "bool",
+        "type": "boolean",
         "description": (
             "Refresh an already-installed cua-driver during hermes update. "
             "Disable this on non-admin macOS accounts where /Applications is "
@@ -1271,6 +1273,7 @@ class CustomEndpointUpdate(BaseModel):
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
+    models: Optional[List[str]] = None
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -1469,6 +1472,14 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
        known but ``poolside`` isn't) but the model is a vendor-prefixed
        aggregator slug, keep the user's CURRENT aggregator if they're on
        one, else fall back to openrouter.
+
+       Named custom providers (``custom:litellm``, etc.) are excluded from
+       this fallback: ``_KNOWN_PROVIDER_NAMES`` only lists the bare
+       ``"custom"`` bucket, never a specific ``custom:<name>`` slug, so
+       without this exclusion every named custom provider paired with a
+       slash-bearing model (e.g. ``ollama/glm-5.2`` behind a LiteLLM proxy)
+       looked exactly like the stray-vendor-prefix case above and got
+       silently reassigned to ``openrouter``.
     2. Model-format normalization for the resolved provider via
        ``normalize_model_for_provider`` (e.g. ``anthropic/claude-opus-4.6``
        on native anthropic → ``claude-opus-4-6``).
@@ -1503,7 +1514,21 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     if custom_provider is not None:
         return custom_provider.id, model_in
 
-    if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
+    # A named custom provider that didn't resolve above (typo, config
+    # mismatch, entry missing from custom_providers/providers) must still
+    # not be treated as a stray vendor prefix -- it isn't a known Hermes
+    # provider/alias, but it also isn't the analytics-vendor case this
+    # fallback exists for. Match only the durable named-custom syntax
+    # (bare "custom" bucket, or "custom:<name>" per
+    # ``providers.custom_provider_slug``) -- a bare ``startswith("custom")``
+    # would also swallow unrelated unconfigured vendor names that merely
+    # happen to start with "custom" (e.g. "customproxy").
+    is_custom_provider_slug = canonical == "custom" or canonical.startswith("custom:")
+    if (
+        canonical not in _KNOWN_PROVIDER_NAMES
+        and not is_custom_provider_slug
+        and "/" in model_in
+    ):
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.
@@ -3036,6 +3061,16 @@ async def get_ssh_ownership(request: Request):
     return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
 
 
+@app.get("/api/health")
+async def get_health():
+    """Lightweight process liveness for desktop/backend readiness probes."""
+    return {
+        "ok": True,
+        "version": __version__,
+        "auth_required": bool(getattr(app.state, "auth_required", False)),
+    }
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -3049,38 +3084,69 @@ async def get_status(profile: Optional[str] = None):
     # skills-module attributes that a concurrent request would cross-restore
     # across that await. Status only resolves get_hermes_home() at call time
     # (config/env/gateway state), which the task-local contextvar covers.
+    profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
+        profile_dir = _resolve_profile_dir(requested_profile)
         status_scope = _config_profile_scope(requested_profile)
         status_scope.__enter__()
 
     try:
         current_ver, latest_ver = check_config_version()
         # --- Gateway liveness detection ---
-        # Try local PID check first (same-host).  If that fails and a remote
-        # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
-        # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid_cached()
-        gateway_running = gateway_pid is not None
-        remote_health_body: dict | None = None
+        # Delegated to the single shared ladder in gateway.status so this
+        # endpoint and /api/messaging/platforms can never disagree about
+        # whether the gateway is up (they used to: sidebar "running" while
+        # the Channels page rendered "The gateway is not running").
+        #
+        # When ?profile=<name> was given, scope PID and state reads to that
+        # profile's directory — gateway identity files (PID, lock, runtime
+        # status) are written to the per-profile home, not the process-level
+        # HERMES_HOME (see issue #69143). Plain /api/status keeps the exact
+        # zero-arg call so its behavior (and cache signature) is unchanged.
+        #
+        # The module-level probe references are handed to the resolver so the
+        # long-standing `monkeypatch.setattr(web_server, "get_running_pid_cached", ...)`
+        # seam used across the test-suite still intercepts them.
+        def _bounded_health_probe():
+            """Health probe with the route's blocking-call budget preserved.
 
-        if not gateway_running and _GATEWAY_HEALTH_URL:
-            loop = asyncio.get_running_loop()
-            try:
-                alive, remote_health_body = await asyncio.wait_for(
-                    loop.run_in_executor(None, _probe_gateway_health),
-                    timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT,
-                )
-            except TimeoutError:
-                _log.warning(
-                    "/api/status gateway health probe exceeded %.2fs; using local status",
-                    _GATEWAY_HEALTH_ROUTE_TIMEOUT,
-                )
-                alive, remote_health_body = False, None
-            if alive:
-                gateway_running = True
-                # PID from the remote container (display only — not locally valid)
-                if remote_health_body:
-                    gateway_pid = remote_health_body.get("pid")
+            The resolver only reaches this rung when the local PID probe came
+            up empty, so the timeout is paid at most once per request and only
+            in the cross-container case that needs it.
+            """
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_probe_gateway_health)
+                try:
+                    return future.result(timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    _log.warning(
+                        "/api/status gateway health probe exceeded %.2fs; "
+                        "using local status",
+                        _GATEWAY_HEALTH_ROUTE_TIMEOUT,
+                    )
+                    return False, None
+                except Exception:
+                    return False, None
+
+        local_runtime = (
+            read_runtime_status(path=profile_dir / "gateway_state.json")
+            if profile_dir
+            else read_runtime_status()
+        )
+
+        liveness = await run_in_threadpool(
+            lambda: resolve_gateway_liveness(
+                profile_dir=profile_dir,
+                runtime=local_runtime,
+                health_probe=_bounded_health_probe if _GATEWAY_HEALTH_URL else None,
+                pid_probe=get_running_pid_cached,
+                runtime_reader=read_runtime_status,
+                runtime_pid_probe=get_runtime_status_running_pid,
+            )
+        )
+        gateway_running = liveness.running
+        gateway_pid = liveness.pid
+        remote_health_body: dict | None = liveness.health_body
 
         gateway_state = None
         gateway_platforms: dict = {}
@@ -3099,20 +3165,9 @@ async def get_status(profile: Optional[str] = None):
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
-        local_runtime = read_runtime_status()
         runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body
-        # The runtime-status PID fallback validates liveness with a local
-        # os.kill() probe, so it must only run against the LOCAL status file —
-        # never the remote health body, whose PID belongs to another host and
-        # is display-only. (Running os.kill on a remote PID is both wrong and
-        # trips the test live-system guard.)
-        if not gateway_running and local_runtime is not None:
-            runtime_pid = get_runtime_status_running_pid(local_runtime)
-            if runtime_pid is not None:
-                gateway_running = True
-                gateway_pid = runtime_pid
 
         if runtime:
             gateway_state = runtime.get("gateway_state")
@@ -5043,8 +5098,7 @@ def get_profiles_sessions_sidebar(
     recents_rows: List[Dict[str, Any]] = []
     cron_rows: List[Dict[str, Any]] = []
     messaging_rows: List[Dict[str, Any]] = []
-    recents_total = 0
-    recents_profile_totals: Dict[str, int] = {}
+    recents_truncated: Dict[str, bool] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
 
@@ -5083,18 +5137,13 @@ def get_profiles_sessions_sidebar(
             continue
         try:
             if recents_scope == "all" or name == recents_scope:
-                recents_rows.extend(
-                    _tag(_slice(db, exclude=recents_exclude_list, cap=recents_cap), name)
-                )
-                rtotal = db.session_count(
-                    exclude_sources=recents_exclude_list or None,
-                    min_message_count=1,
-                    include_archived=False,
-                    archived_only=False,
-                    exclude_children=True,
-                )
-                recents_total += rtotal
-                recents_profile_totals[name] = rtotal
+                profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
+                # A full window means more rows remain on disk. That is all the
+                # sidebar's "load more" needs, and unlike an exact COUNT(*) per
+                # profile per refresh it costs nothing beyond the rows already
+                # read.
+                recents_truncated[name] = len(profile_rows) >= recents_cap
+                recents_rows.extend(_tag(profile_rows, name))
             cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
             messaging_rows.extend(
                 _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
@@ -5113,8 +5162,7 @@ def get_profiles_sessions_sidebar(
     return {
         "recents": {
             "sessions": _window(recents_rows, recents_cap),
-            "total": recents_total,
-            "profile_totals": recents_profile_totals,
+            "profiles_truncated": recents_truncated,
         },
         "cron": {"sessions": _window(cron_rows, cron_cap)},
         "messaging": {
@@ -7552,6 +7600,38 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
+def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """Return ``(has_api_key, preview)`` for a provider or model config block.
+
+    Keys live in ``.env`` behind ``key_env``; only entries written before
+    #69449 still carry a plaintext ``api_key``. Checking both keeps the panel
+    honest either way — reading only ``api_key`` reported "no API key" for
+    every endpoint whose key had been moved to ``.env``.
+    """
+    plaintext = str(entry.get("api_key") or "").strip()
+    if plaintext:
+        return True, redact_key(plaintext)
+    key_env = str(entry.get("key_env") or "").strip()
+    if key_env:
+        return True, f"${{{key_env}}}"
+    return False, None
+
+
+def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
+    """True when this endpoint's on-disk ``api_key`` is a ``${VAR}`` template.
+
+    ``load_config()`` expands env refs, so a hand-written
+    ``api_key: ${MY_KEY}`` is indistinguishable from a literal secret by the
+    time it reaches us. Such an entry is already keeping its secret out of
+    config.yaml, so migrating it would only copy that secret into a second
+    env var the user didn't ask for.
+    """
+    providers = read_raw_config().get("providers")
+    entry = providers.get(endpoint_id) if isinstance(providers, dict) else None
+    raw_key = entry.get("api_key") if isinstance(entry, dict) else None
+    return bool(isinstance(raw_key, str) and re.search(r"\$\{[^}]+\}", raw_key))
+
+
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
@@ -7570,6 +7650,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             endpoint_id = str(provider_id)
             models = _models_from_custom_endpoint_entry(raw_entry)
             endpoint_model = str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else ""))
+            has_api_key, api_key_preview = _api_key_display(raw_entry)
             endpoints.append({
                 "id": endpoint_id,
                 "name": str(raw_entry.get("name") or endpoint_id),
@@ -7578,13 +7659,14 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "models": models,
                 "context_length": raw_entry.get("context_length"),
                 "discover_models": bool(raw_entry.get("discover_models", True)),
-                "has_api_key": bool(str(raw_entry.get("api_key", "") or "").strip()),
-                "api_key_preview": redact_key(str(raw_entry.get("api_key", "") or "")) if raw_entry.get("api_key") else None,
+                "has_api_key": has_api_key,
+                "api_key_preview": api_key_preview,
                 "is_current": endpoint_id == current_provider,
                 "source": "providers",
             })
 
     if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
+        has_api_key, api_key_preview = _api_key_display(model_cfg)
         endpoints.insert(0, {
             "id": "custom",
             "name": "Custom",
@@ -7593,8 +7675,8 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "models": [current_model] if current_model else [],
             "context_length": model_cfg.get("context_length"),
             "discover_models": True,
-            "has_api_key": bool(str(model_cfg.get("api_key", "") or "").strip()),
-            "api_key_preview": redact_key(str(model_cfg.get("api_key", "") or "")) if model_cfg.get("api_key") else None,
+            "has_api_key": has_api_key,
+            "api_key_preview": api_key_preview,
             "is_current": True,
             "source": "direct-config",
         })
@@ -7627,7 +7709,7 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> 
         return
     if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
         return
-    for field in ("provider", "base_url", "api_key"):
+    for field in ("provider", "base_url", "api_key", "key_env"):
         model_cfg.pop(field, None)
     cfg["model"] = model_cfg
 
@@ -7669,19 +7751,47 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         "model": model,
         "discover_models": bool(body.discover_models),
     })
-    # Same for the model map: the panel names one default model, it does not
-    # enumerate the provider's catalogue. Keep the other models (and their
-    # context lengths) and just ensure this one is present.
+    # Same for the model map: merge rather than replace, so existing models
+    # keep their context lengths. ``body.models`` is the catalogue the panel's
+    # Test button already discovered — without it only the one hand-typed
+    # model survived Save, and every picker showed a single-entry list for a
+    # provider serving dozens (#69988). A payload with no ``models`` (older
+    # UI) still just ensures the named default is present.
     existing_models = entry.get("models")
     models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
-    current_model_entry = models_map.get(model)
-    models_map[model] = dict(current_model_entry) if isinstance(current_model_entry, dict) else {}
+    for candidate in (*(body.models or ()), model):
+        model_id = str(candidate).strip()
+        if not model_id:
+            continue
+        current = models_map.get(model_id)
+        models_map[model_id] = dict(current) if isinstance(current, dict) else {}
     entry["models"] = models_map
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
-    if body.api_key is not None and body.api_key.strip():
-        entry["api_key"] = body.api_key.strip()
+
+    # API keys never belong in config.yaml (#69449). Write to .env and
+    # reference it via ``key_env`` — the same indirection built-in providers
+    # use and that runtime_provider.py already resolves at load time.
+    env_var = custom_endpoint_key_env(endpoint_id)
+    submitted_key = body.api_key.strip() if body.api_key is not None else None
+    if submitted_key:
+        save_env_value(env_var, submitted_key)
+        entry["key_env"] = env_var
+        entry.pop("api_key", None)
+    elif submitted_key is not None:
+        # Blank field means "clear the key", not "leave it alone".
+        remove_env_value(env_var)
+        entry.pop("key_env", None)
+        entry.pop("api_key", None)
+    elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
+        # No new key submitted, but this entry still carries one an earlier
+        # release wrote in plaintext. Migrate it on the next save so endpoints
+        # configured before the fix get cleaned up too, without the user
+        # having to re-enter the key.
+        save_env_value(env_var, entry["api_key"].strip())
+        entry["key_env"] = env_var
+        entry.pop("api_key", None)
 
     providers[endpoint_id] = entry
     cfg["providers"] = providers
@@ -7690,8 +7800,9 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         cfg["model"] = _apply_main_model_assignment(
             cfg.get("model", {}), endpoint_id, model, base_url
         )
-        if entry.get("api_key") and isinstance(cfg["model"], dict):
-            cfg["model"]["api_key"] = entry["api_key"]
+        if entry.get("key_env") and isinstance(cfg["model"], dict):
+            cfg["model"]["key_env"] = entry["key_env"]
+            cfg["model"].pop("api_key", None)
 
     return endpoint_id, entry
 
@@ -7742,7 +7853,10 @@ def activate_custom_endpoint(endpoint_id: str):
             raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
         model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
-        if entry.get("api_key"):
+        if entry.get("key_env"):
+            model_cfg["key_env"] = entry["key_env"]
+            model_cfg.pop("api_key", None)
+        elif entry.get("api_key"):
             model_cfg["api_key"] = entry["api_key"]
         cfg["model"] = model_cfg
         save_config(cfg)
@@ -7766,6 +7880,7 @@ def delete_custom_endpoint(endpoint_id: str):
         providers.pop(provider_key, None)
         cfg["providers"] = providers
         _detach_main_model_from_provider(cfg, provider_key)
+        remove_env_value(custom_endpoint_key_env(provider_key))
         save_config(cfg)
         response = _custom_endpoint_response(cfg)
         response["ok"] = True
@@ -7946,7 +8061,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "env_vars": (
             "DISCORD_BOT_TOKEN",
             "DISCORD_ALLOWED_USERS",
-            "DISCORD_REPLY_TO_MODE",
         ),
         "required_env": ("DISCORD_BOT_TOKEN",),
     },
@@ -8103,7 +8217,35 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     # plugin registry. Only the docs link needs an override here so the
     # Channels page can point at the Microsoft Teams setup guide.
     "teams": {
+        "description": "Connect Hermes to Microsoft Teams chats via the Bot Framework.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+    },
+    # Bundled platform plugins: name comes from the plugin registry label;
+    # give each a human description (the registry's install_hint is a
+    # dependency note, not a description) and a docs link.
+    "irc": {
+        "description": "Relay messages between an IRC channel (or DMs) and Hermes.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
+    },
+    "line": {
+        "description": "Use Hermes from LINE via the LINE Messaging API webhook.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
+    },
+    "ntfy": {
+        "description": "Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
+    },
+    "photon": {
+        "description": "Use Hermes through iMessage via Photon's managed Spectrum platform.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
+    },
+    "raft": {
+        "description": "Join a Raft workspace as an external agent.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",
+    },
+    "simplex": {
+        "description": "Talk to Hermes over SimpleX Chat via a local simplex-chat daemon.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/simplex",
     },
     "yuanbao": {
         "name": "Yuanbao (元宝)",
@@ -8129,6 +8271,23 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "description": "Receive events from GitHub, GitLab, and other webhook sources.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/",
         "env_vars": ("WEBHOOK_ENABLED", "WEBHOOK_PORT", "WEBHOOK_SECRET"),
+        "required_env": (),
+    },
+    "msgraph_webhook": {
+        "name": "Microsoft Graph Webhook",
+        "description": "Receive Microsoft Graph change notifications (Teams meetings, Outlook, …).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/msgraph-webhook",
+        "required_env": (),
+    },
+    "whatsapp_cloud": {
+        "name": "WhatsApp Cloud API",
+        "description": "Use Hermes via Meta's hosted WhatsApp Cloud API (no local bridge).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp-cloud",
+    },
+    "relay": {
+        "name": "Relay (experimental)",
+        "description": "Generic relay adapter fronted by the Hermes Relay connector.",
+        "docs_url": "",
         "required_env": (),
     },
 }
@@ -8312,6 +8471,28 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """
     from gateway.config import Platform
 
+    # Resolve plugin entries FIRST. Plugin platforms (irc, ntfy, photon, …)
+    # leak into ``Platform.__members__`` as pseudo-members the moment any
+    # earlier code path calls ``Platform("<plugin id>")`` — and iterating the
+    # enum first would then claim them with no plugin metadata, rendering
+    # nameless "Irc"/"Ntfy" cards with empty descriptions on the Channels
+    # page while the real label/install-hint sat unused in the registry.
+    plugin_map: dict[str, Any] = {}
+    try:
+        # Plugin discovery only runs as a side effect of importing
+        # model_tools; this server process doesn't do that, so trigger it
+        # explicitly (idempotent) or plugin_entries() is empty here and
+        # every plugin platform renders nameless.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        from gateway.platform_registry import platform_registry
+
+        for plugin_entry in platform_registry.plugin_entries():
+            plugin_map[plugin_entry.name] = plugin_entry
+    except Exception:
+        _log.debug("plugin platform registry unavailable", exc_info=True)
+
     seen: set[str] = set()
     entries: list[dict[str, Any]] = []
 
@@ -8321,18 +8502,15 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         if member.value in seen:
             continue
         seen.add(member.value)
-        entries.append(_build_catalog_entry(member.value))
+        entries.append(
+            _build_catalog_entry(member.value, plugin_map.get(member.value))
+        )
 
-    try:
-        from gateway.platform_registry import platform_registry
-
-        for plugin_entry in platform_registry.plugin_entries():
-            if plugin_entry.name in seen:
-                continue
-            seen.add(plugin_entry.name)
-            entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
-    except Exception:
-        _log.debug("plugin platform registry unavailable", exc_info=True)
+    for name, plugin_entry in plugin_map.items():
+        if name in seen:
+            continue
+        seen.add(name)
+        entries.append(_build_catalog_entry(name, plugin_entry))
 
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(
@@ -8385,6 +8563,14 @@ def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
     return (platform_id.upper().replace("-", "_") + "_",)
 
 
+# Which per-platform knobs the setup UI hides, and why: see
+# hermes_cli/setup_hidden_env.py. Shared with the `hermes setup gateway`
+# wizard so the surfaces ask for the same things.
+from hermes_cli.setup_hidden_env import (  # noqa: E402
+    is_setup_hidden_env as _is_setup_hidden_env,
+)
+
+
 def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
     """All messaging-category env vars for a platform (override + plugin + prefix)."""
     prefixes = _platform_env_prefixes(platform_id)
@@ -8393,6 +8579,8 @@ def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
         if info.get("category") != "messaging":
             continue
         if name in _MESSAGING_KEYS_PAGE_KEYS:
+            continue
+        if _is_setup_hidden_env(name):
             continue
         if not any(name.startswith(prefix) for prefix in prefixes):
             continue
@@ -8405,10 +8593,18 @@ def _merge_platform_env_vars(
     override: dict[str, Any],
     plugin_entry: Any | None,
 ) -> tuple[str, ...]:
-    """Canonical env-var list for a messaging platform card."""
+    """Canonical env-var list for a messaging platform card.
+
+    Required credentials always survive: a platform that genuinely needs one of
+    the hidden-suffix vars to connect keeps it, since hiding a required field
+    would make the platform unconfigurable.
+    """
     discovered = _discover_platform_env_vars(platform_id)
     if "env_vars" in override:
-        return tuple(dict.fromkeys((*override["env_vars"], *discovered)))
+        explicit = tuple(
+            key for key in override["env_vars"] if not _is_setup_hidden_env(key)
+        )
+        return tuple(dict.fromkeys((*explicit, *discovered)))
     if plugin_entry is not None and plugin_entry.required_env:
         return tuple(dict.fromkeys((*tuple(plugin_entry.required_env), *discovered)))
     return discovered
@@ -8482,6 +8678,7 @@ def _messaging_platform_payload(
     env_on_disk: dict[str, str],
     runtime: dict | None,
     scoped: bool = False,
+    profile_home: Optional[Path] = None,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     runtime_platforms = runtime.get("platforms") if runtime else {}
@@ -8490,10 +8687,29 @@ def _messaging_platform_payload(
         if isinstance(runtime_platforms, dict)
         else {}
     )
-    gateway_running = (
-        get_running_pid() is not None
-        or get_runtime_status_running_pid(runtime) is not None
+    # Same shared ladder /api/status uses. Before this was unified, the two
+    # endpoints disagreed on the same page load — the sidebar strip read
+    # "running" (it probed GATEWAY_HEALTH_URL and scoped to the requested
+    # profile) while the Channels page rendered "The gateway is not running"
+    # (it did neither). Cross-container, profile-scoped, and
+    # launch-service-managed deployments each hit that split.
+    #
+    # profile_home is passed when the request was scoped to a named profile:
+    # gateway/status readers resolve process-level paths and do NOT follow the
+    # HERMES_HOME contextvar override (#56986 / #69143), so the profile's
+    # directory has to be handed over explicitly or messaging silently reports
+    # another profile's gateway (#71211).
+    liveness = resolve_gateway_liveness(
+        profile_dir=profile_home,
+        runtime=runtime,
+        health_probe=(
+            _probe_gateway_health if _GATEWAY_HEALTH_URL else None
+        ),
+        pid_probe=get_running_pid_cached,
+        runtime_reader=read_runtime_status,
+        runtime_pid_probe=get_runtime_status_running_pid,
     )
+    gateway_running = liveness.running
     env_vars = []
 
     for key in entry["env_vars"]:
@@ -9495,17 +9711,26 @@ async def cancel_telegram_onboarding(pairing_id: str):
 async def get_messaging_platforms(profile: Optional[str] = None):
     # Profile-scoped so the dashboard's global profile switcher shows the
     # TARGET profile's channel credentials/state, not the root install's.
-    # Inside _profile_scope, load_env()/read_runtime_status()/get_running_pid()
-    # all resolve against the requested profile's HERMES_HOME.
+    # load_env() honors the HERMES_HOME contextvar override; the gateway
+    # status readers do NOT (they resolve process-level paths), so the
+    # profile directory is passed explicitly for those (#71211).
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
-        runtime = read_runtime_status()
+        runtime = (
+            read_runtime_status(path=scoped_dir / "gateway_state.json")
+            if scoped_dir is not None
+            else read_runtime_status()
+        )
         return {
             "env_path": str(get_env_path()),
             "gateway_start_command": _gateway_display_command(profile, "start"),
             "platforms": [
                 _messaging_platform_payload(
-                    entry, env_on_disk, runtime, scoped=scoped_dir is not None
+                    entry,
+                    env_on_disk,
+                    runtime,
+                    scoped=scoped_dir is not None,
+                    profile_home=scoped_dir,
                 )
                 for entry in _messaging_platform_catalog()
             ]
@@ -9640,8 +9865,17 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
 
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
+        runtime = (
+            read_runtime_status(path=scoped_dir / "gateway_state.json")
+            if scoped_dir is not None
+            else read_runtime_status()
+        )
         payload = _messaging_platform_payload(
-            entry, env_on_disk, read_runtime_status(), scoped=scoped_dir is not None
+            entry,
+            env_on_disk,
+            runtime,
+            scoped=scoped_dir is not None,
+            profile_home=scoped_dir,
         )
     if not payload["enabled"]:
         message = f"{entry['name']} is disabled. Enable it, then restart the gateway."
@@ -11810,9 +12044,15 @@ def _prune_sessions(body: SessionPrune):
                 "ok": True,
                 "removed": 0,
                 "matched": len(rows),
-                # Rows are ordered oldest-first.
-                "oldest_started_at": rows[0]["started_at"] if rows else None,
-                "newest_started_at": rows[-1]["started_at"] if rows else None,
+                # Rows are ordered by last activity, not creation time.
+                "oldest_last_active": rows[0]["last_active"] if rows else None,
+                "newest_last_active": rows[-1]["last_active"] if rows else None,
+                "oldest_started_at": (
+                    min(r["started_at"] for r in rows) if rows else None
+                ),
+                "newest_started_at": (
+                    max(r["started_at"] for r in rows) if rows else None
+                ),
                 "sessions": [
                     {
                         "id": r["id"],
@@ -11820,6 +12060,7 @@ def _prune_sessions(body: SessionPrune):
                         "title": r.get("title"),
                         "model": r.get("model"),
                         "started_at": r["started_at"],
+                        "last_active": r["last_active"],
                         "message_count": r["message_count"],
                     }
                     for r in rows
@@ -12949,15 +13190,18 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
         # (Figma's MCP catalog, etc.) 403 the register call before any
         # authorization URL exists — surface what's actually happening
         # instead of a bare "403 Forbidden".
-        lowered = msg.lower()
-        if "403" in msg and ("regist" in lowered or "forbidden" in lowered):
-            msg = (
-                f"'{flow.server_name}' only allows pre-approved OAuth clients — it rejected "
-                "client registration (403), so no browser flow can start. "
-                "Options: add a pre-registered client to this server's entry "
-                "(oauth: {client_id: ..., client_secret: ...}), or use the "
-                "provider's stdio / API-key server instead."
+        try:
+            from tools.mcp_oauth import humanize_oauth_registration_error
+
+            humanized = humanize_oauth_registration_error(
+                flow.server_name,
+                exc,
+                server_url=cfg.get("url") if isinstance(cfg, dict) else None,
             )
+            if humanized:
+                msg = humanized
+        except Exception:
+            pass
         flow.mark_error(msg)
     finally:
         flow.mark_worker_done()

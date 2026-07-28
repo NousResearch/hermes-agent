@@ -439,3 +439,120 @@ class TestUnlimitedWait:
         t.join(timeout=5.0)
         assert not t.is_alive()
         assert result_box["r"] == "B"
+
+
+class TestMultiSelectTextFallback:
+    """Multi-select clarifies via the gateway text fallback.
+
+    The adapter's numbered-list fallback asks the user to reply with
+    comma/space-separated numbers; _coerce_text_response must map those to a
+    JSON array of choice labels (which _parse_multi_select_response on the
+    tool side decodes into a list).
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def _register_multi(self, cid="m1", choices=("A", "B", "C")):
+        from tools import clarify_gateway as cm
+        entry = cm.register(cid, "sk", "Pick some", list(choices), multi_select=True)
+        # Text fallback path always flips awaiting_text on.
+        cm.mark_awaiting_text(cid)
+        return entry
+
+    def test_register_stores_multi_select_flag(self):
+        entry = self._register_multi()
+        assert entry.multi_select is True
+        assert entry.signature()["multi_select"] is True
+
+    def test_register_default_multi_select_false(self):
+        from tools import clarify_gateway as cm
+        entry = cm.register("s1", "sk", "Q?", ["A"])
+        assert entry.multi_select is False
+        assert entry.signature()["multi_select"] is False
+
+    def test_multi_select_without_choices_is_ignored(self):
+        """multi_select on an open-ended clarify is meaningless — dropped."""
+        from tools import clarify_gateway as cm
+        entry = cm.register("s2", "sk", "Q?", None, multi_select=True)
+        assert entry.multi_select is False
+
+    def test_comma_separated_numbers(self):
+        import json
+        from tools import clarify_gateway as cm
+        entry = self._register_multi()
+        coerced = cm._coerce_text_response(entry, "1, 3")
+        assert json.loads(coerced) == ["A", "C"]
+
+    def test_space_separated_numbers(self):
+        import json
+        from tools import clarify_gateway as cm
+        entry = self._register_multi()
+        coerced = cm._coerce_text_response(entry, "1 3")
+        assert json.loads(coerced) == ["A", "C"]
+
+    def test_single_number(self):
+        import json
+        from tools import clarify_gateway as cm
+        entry = self._register_multi()
+        coerced = cm._coerce_text_response(entry, "2")
+        assert json.loads(coerced) == ["B"]
+
+    def test_choice_labels_comma_separated(self):
+        import json
+        from tools import clarify_gateway as cm
+        entry = self._register_multi()
+        coerced = cm._coerce_text_response(entry, "a, C")
+        assert json.loads(coerced) == ["A", "C"]
+
+    def test_out_of_range_number_rejected_but_custom_text_kept(self):
+        """Out-of-range numbers don't parse as a selection; awaiting_text
+        mode falls back to accepting the raw text as a custom answer."""
+        from tools import clarify_gateway as cm
+        entry = self._register_multi()
+        assert cm._coerce_multi_select_text(entry, "1, 9") is None
+        # awaiting_text (text fallback) keeps the raw reply as custom text
+        assert cm._coerce_text_response(entry, "1, 9") == "1, 9"
+
+    def test_out_of_range_rejected_for_native_button_ui(self):
+        """Without awaiting_text (button UI), a bad selection rejects the
+        reply entirely so it flows through as a normal message."""
+        from tools import clarify_gateway as cm
+        entry = cm.register("m2", "sk", "Pick some", ["A", "B"], multi_select=True)
+        assert cm._coerce_text_response(entry, "5") is None
+        assert cm._coerce_text_response(entry, "random prose") is None
+
+    def test_duplicate_selections_deduped(self):
+        import json
+        from tools import clarify_gateway as cm
+        entry = self._register_multi()
+        coerced = cm._coerce_text_response(entry, "1, 1, 2")
+        assert json.loads(coerced) == ["A", "B"]
+
+    def test_resolve_text_response_end_to_end(self):
+        """resolve_text_response_for_session delivers the JSON array to the waiter."""
+        import json
+        from tools import clarify_gateway as cm
+        self._register_multi(cid="m3")
+        result_box = {}
+
+        def waiter():
+            result_box["r"] = cm.wait_for_response("m3", timeout=5)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        time.sleep(0.05)
+        assert cm.resolve_text_response_for_session("sk", "1,2") is True
+        t.join(timeout=5)
+        assert json.loads(result_box["r"]) == ["A", "B"]
+
+    def test_single_select_regression_numeric(self):
+        """Single-select coercion unchanged: '2' maps to the choice label string."""
+        from tools import clarify_gateway as cm
+        entry = cm.register("s3", "sk", "Q?", ["A", "B", "C"])
+        assert cm._coerce_text_response(entry, "2") == "B"
+
+    def test_single_select_regression_label(self):
+        from tools import clarify_gateway as cm
+        entry = cm.register("s4", "sk", "Q?", ["A", "B"])
+        assert cm._coerce_text_response(entry, "b") == "B"

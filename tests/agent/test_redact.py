@@ -1097,3 +1097,96 @@ class TestRedactCdpUrl:
 
     def test_none_returns_empty(self):
         assert redact_cdp_url(None) == ""
+
+
+class TestKeywordWordBoundary:
+    """Ported from nearai/ironclaw#6129 — a secret keyword embedded inside a
+    larger prose word (``Secretary`` ⊃ ``secret``, ``tokenizer`` ⊃ ``token``,
+    ``authored`` ⊃ ``auth``) must NOT trigger the lowercase/dotted/YAML config
+    passes. Real key shapes (separators, camelCase, acronyms, plurals, common
+    concatenated compounds, all-caps env style) must keep redacting.
+    """
+
+    # ── prose words embedding a keyword are preserved ──────────────────
+
+    def test_secretary_yaml_value_preserved(self):
+        text = "Secretary: JanetYellen1234567890"
+        assert redact_sensitive_text(text) == text
+
+    def test_undersecretary_preserved(self):
+        text = "Undersecretary: RobertSmith123456789"
+        assert redact_sensitive_text(text) == text
+
+    def test_tokenizer_yaml_value_preserved(self):
+        # HuggingFace model-card style metadata.
+        text = "tokenizer: cl100k_base_long_name_x"
+        assert redact_sensitive_text(text) == text
+
+    def test_secretariat_preserved(self):
+        text = "secretariat: GenevaOffice123456789"
+        assert redact_sensitive_text(text) == text
+
+    def test_secretary_equals_assignment_preserved(self):
+        text = "secretary=JohnSmith12345678901234"
+        assert redact_sensitive_text(text) == text
+
+    def test_dotted_secretary_preserved(self):
+        text = "press.secretary=KarineJeanPierre123"
+        assert redact_sensitive_text(text) == text
+
+    def test_bibtex_author_assignment_preserved(self):
+        # ``author`` embeds the ``auth`` keyword — citation keys are prose.
+        text = "author=Smith2020LongCitationKey1"
+        assert redact_sensitive_text(text) == text
+
+    def test_credentialing_preserved(self):
+        text = "credentialing=enabled_long_value_12345"
+        assert redact_sensitive_text(text) == text
+
+    # ── real key shapes still redact ────────────────────────────────────
+
+    def test_separator_keys_still_redacted(self):
+        for text in (
+            "client_secret: abc123def456ghi789jkl",
+            "auth_token: xyz789xyz789xyz789xyz",
+            "my_secret: topvalue123456789012345",
+            "db.password=hunter2verylongpassword",
+        ):
+            result = redact_sensitive_text(text)
+            assert result != text, text
+
+    def test_camelcase_keys_still_redacted(self):
+        for text in (
+            "clientSecret: abc123def456ghi789jkl",
+            "secretKey: abc123def456ghi789jklmno",
+            "APIToken: abc123def456ghi789jklmn",
+        ):
+            result = redact_sensitive_text(text)
+            assert result != text, text
+
+    def test_concatenated_compounds_still_redacted(self):
+        # ngrok authtoken, tailscale authkey, minio secretkey, accesstoken.
+        for text in (
+            "authtoken: 2abcdefghij0123456789_ngrok",
+            "authkey=tskey-auth-abcdef123456789",
+            "secretkey: abc123def456ghi789jklmno",
+            "accesstoken: abcdefghij0123456789xyz",
+        ):
+            result = redact_sensitive_text(text)
+            assert result != text, text
+
+    def test_plural_keys_still_redacted(self):
+        text = "secrets: hunter2hunter2hunter2hh"
+        result = redact_sensitive_text(text)
+        assert "hunter2hunter2hunter2hh" not in result
+
+    def test_digit_boundary_still_redacted(self):
+        text = "oauth2_token: abcdefghij0123456789"
+        result = redact_sensitive_text(text)
+        assert "abcdefghij0123456789" not in result
+
+    def test_all_caps_embedded_keyword_still_redacted(self):
+        # All-caps keys keep legacy embedded matching (MYTOKEN=…).
+        text = "MYTOKEN=abcdefgh1234567890123456"
+        result = redact_sensitive_text(text)
+        assert "abcdefgh1234567890123456" not in result

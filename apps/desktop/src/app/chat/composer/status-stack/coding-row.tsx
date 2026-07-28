@@ -3,17 +3,16 @@ import { memo, useEffect, useRef, useState } from 'react'
 
 import { WorktreeDialog } from '@/app/chat/sidebar/projects/worktree-dialog'
 import { StatusRow } from '@/components/chat/status-row'
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  ActionsMenu,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
 import { $repoStatus, $repoWorktrees } from '@/store/coding-status'
@@ -91,6 +90,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const worktreeReq = useStore($newWorktreeRequest)
   const lastWorktreeReqRef = useRef(worktreeReq)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (worktreeReq === lastWorktreeReqRef.current) {
       return
@@ -152,34 +152,87 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   // they're the only change (otherwise +/- tells the story).
   const untrackedOnly = !hasLineDelta && status.untracked > 0
 
+  // The branch actions, rendered identically by the kebab dropdown and the
+  // row's right-click menu so the two never drift. `onBranchOff` gates the
+  // whole menu (omitted = remote backend), matching the kebab.
+  const renderBranchItems = (kit: MenuKit) => {
+    const branchItems: ActionItemSpec[] = branchTargets.map(target => ({
+      key: target.base ?? '__head__',
+      label: <span className="truncate">{target.label}</span>,
+      onSelect: () => startBranch(target.base)
+    }))
+
+    const worktreeItems: ActionItemSpec[] = otherWorktrees.map(worktree => ({
+      key: worktree.path,
+      label: <span className="truncate">{worktree.branch}</span>,
+      onSelect: () => onOpenWorktree?.(worktree.path)
+    }))
+
+    return (
+      <>
+        <kit.Label className={MENU_SECTION}>{s.newBranch}</kit.Label>
+        {branchItems.map(item => renderActionItem(kit, item))}
+        {switchTarget &&
+          renderActionItem(kit, {
+            key: '__switch__',
+            label: <span className="truncate">{s.switchTo(switchTarget)}</span>,
+            onSelect: () => void switchToBranch(switchTarget)
+          })}
+        <kit.Separator />
+        <kit.Label className={MENU_SECTION}>{s.worktrees}</kit.Label>
+        {worktreeItems.map(item => renderActionItem(kit, item))}
+        {/* Create a fresh worktree off the current HEAD (the generic "spin up a
+            worktree here", mirroring the sidebar's + button). */}
+        {renderActionItem(kit, {
+          key: '__start__',
+          label: <span className="truncate">{p.startWork}</span>,
+          onSelect: () => startBranch(undefined)
+        })}
+        {onConvertBranch &&
+          renderActionItem(kit, {
+            key: '__convert__',
+            label: <span className="truncate">{p.convertBranch}</span>,
+            onSelect: () => startBranch(undefined)
+          })}
+      </>
+    )
+  }
+
   return (
     <>
-      <StatusRow
-        // The base "where am I working" strip is part of the composer surface
-        // itself, so it inherits the composer's width and clipped top radius.
-        className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
-        // Static branch glyph — never the loading spinner. This row only renders
-        // once `status` exists, so a spinner here only ever fired on *refreshes*
-        // of an already-loaded repo (window focus, turn settle), reading as an
-        // annoying icon "blip" with no first-load value. Refreshes are silent.
-        leading={<Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />}
-        onActivate={onOpen}
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-          <span
-            className="min-w-0 truncate text-xs font-normal text-muted-foreground/92 transition-colors group-hover/status-row:text-foreground/90"
-            title={branchLabel}
-          >
-            {branchLabel}
-          </span>
+      <ActionsContextMenu contentClassName="w-60" disabled={!onBranchOff} items={renderBranchItems}>
+        <StatusRow
+          // The base "where am I working" strip is part of the composer surface
+          // itself, so it inherits the composer's width and clipped top radius.
+          className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
+          // Static branch glyph — never the loading spinner. This row only renders
+          // once `status` exists, so a spinner here only ever fired on *refreshes*
+          // of an already-loaded repo (window focus, turn settle), reading as an
+          // annoying icon "blip" with no first-load value. Refreshes are silent.
+          leading={<Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />}
+          onActivate={onOpen}
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            <span
+              className="min-w-0 truncate text-xs font-normal text-muted-foreground/92 transition-colors group-hover/status-row:text-foreground/90"
+              title={branchLabel}
+            >
+              {branchLabel}
+            </span>
 
-          {/* Branch actions kebab — same pattern as the session/worktree rows.
-              ALWAYS laid out; only its opacity flips on hover/focus/open, so
-              revealing it never reflows the row (no layout shift). pointer-events
-              follow opacity so the invisible trigger isn't clickable at rest. */}
-          {onBranchOff && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            {/* Branch actions kebab — same pattern as the session/worktree rows.
+                ALWAYS laid out; only its opacity flips on hover/focus/open, so
+                revealing it never reflows the row (no layout shift). pointer-events
+                follow opacity so the invisible trigger isn't clickable at rest. */}
+            {onBranchOff && (
+              <ActionsMenu
+                align="end"
+                contentClassName="w-60"
+                // The row sits at the bottom of the screen (above the composer),
+                // so the menu opens upward.
+                items={renderBranchItems}
+                side="top"
+              >
                 <Button
                   aria-label={s.newBranch}
                   className="pointer-events-none size-4 shrink-0 text-muted-foreground/60 opacity-0 transition hover:text-foreground group-hover/status-row:pointer-events-auto group-hover/status-row:opacity-100 group-focus-within/status-row:pointer-events-auto group-focus-within/status-row:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:opacity-100"
@@ -196,78 +249,42 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 >
                   <Codicon name="kebab-vertical" size="0.8rem" />
                 </Button>
-              </DropdownMenuTrigger>
-              {/* The row sits at the bottom of the screen (above the composer),
-                  so the menu opens upward. */}
-              <DropdownMenuContent align="end" className="w-60" side="top" sideOffset={6}>
-                <DropdownMenuLabel className={MENU_SECTION}>{s.newBranch}</DropdownMenuLabel>
-                {branchTargets.map(target => (
-                  <DropdownMenuItem key={target.base ?? '__head__'} onSelect={() => startBranch(target.base)}>
-                    <span className="truncate">{target.label}</span>
-                  </DropdownMenuItem>
-                ))}
+              </ActionsMenu>
+            )}
+          </div>
 
-                {switchTarget && (
-                  <DropdownMenuItem onSelect={() => void switchToBranch(switchTarget)}>
-                    <span className="truncate">{s.switchTo(switchTarget)}</span>
-                  </DropdownMenuItem>
-                )}
-
-                <DropdownMenuSeparator />
-                <DropdownMenuLabel className={MENU_SECTION}>{s.worktrees}</DropdownMenuLabel>
-                {otherWorktrees.map(worktree => (
-                  <DropdownMenuItem key={worktree.path} onSelect={() => onOpenWorktree?.(worktree.path)}>
-                    <span className="truncate">{worktree.branch}</span>
-                  </DropdownMenuItem>
-                ))}
-                {/* Create a fresh worktree off the current HEAD (the generic
-                    "spin up a worktree here", mirroring the sidebar's + button). */}
-                <DropdownMenuItem onSelect={() => startBranch(undefined)}>
-                  <span className="truncate">{p.startWork}</span>
-                </DropdownMenuItem>
-                {/* Create a fresh worktree off the current HEAD (the generic
-                    "spin up a worktree here", mirroring the sidebar's + button). */}
-                {onConvertBranch && (
-                  <DropdownMenuItem onSelect={() => startBranch(undefined)}>
-                    <span className="truncate">{p.convertBranch}</span>
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+          {(status.ahead > 0 || status.behind > 0) && (
+            <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
+              {status.ahead > 0 && (
+                <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
+                  <span aria-hidden>↑</span>
+                  {status.ahead}
+                </span>
+              )}
+              {status.behind > 0 && (
+                <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
+                  <span aria-hidden>↓</span>
+                  {status.behind}
+                </span>
+              )}
+            </span>
           )}
-        </div>
 
-        {(status.ahead > 0 || status.behind > 0) && (
-          <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
-            {status.ahead > 0 && (
-              <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
-                <span aria-hidden>↑</span>
-                {status.ahead}
-              </span>
-            )}
-            {status.behind > 0 && (
-              <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
-                <span aria-hidden>↓</span>
-                {status.behind}
-              </span>
-            )}
-          </span>
-        )}
-
-        {hasLineDelta ? (
-          <DiffCount
-            added={status.added}
-            className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-            removed={status.removed}
-          />
-        ) : untrackedOnly ? (
-          <span
-            className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-          >
-            {s.changed(status.untracked)}
-          </span>
-        ) : null}
-      </StatusRow>
+          {hasLineDelta ? (
+            <DiffCount
+              added={status.added}
+              className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+              removed={status.removed}
+            />
+          ) : untrackedOnly ? (
+            <span
+              className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+            >
+              {s.changed(status.untracked)}
+            </span>
+          ) : null}
+        </StatusRow>
+      </ActionsContextMenu>
 
       {resolvedRepoPath && onOpenWorktree && (
         <WorktreeDialog

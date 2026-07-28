@@ -13,10 +13,11 @@ import shlex
 import sqlite3
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -65,11 +66,36 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    apply_wal_with_fallback(conn, db_label="verification_evidence.db")
-    conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
-    _ensure_schema(conn)
+    try:
+        apply_wal_with_fallback(conn, db_label="verification_evidence.db")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _ensure_schema(conn)
+    except Exception:
+        # A PRAGMA/DDL failure after a successful connect() must not leak the
+        # just-opened connection back to the caller.
+        conn.close()
+        raise
     return conn
+
+
+@contextmanager
+def _transaction() -> Iterator[sqlite3.Connection]:
+    """Open a connection, commit/rollback on exit, and ALWAYS close it.
+
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back the
+    transaction; they do not close the connection. Using ``with _connect()``
+    alone therefore leaks a connection — and its WAL/SHM file descriptors — on
+    every call, deferring the close to the garbage collector, which over a
+    long-running process can exhaust ``RLIMIT_NOFILE`` (the cron-ledger sibling
+    of this bug was #69567 / PR #69594).
+    """
+    conn = _connect()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -454,7 +480,7 @@ def record_terminal_result(
 
     created_at = _utc_now()
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO verification_events(
@@ -520,7 +546,7 @@ def mark_workspace_edited(
     edited_at = _utc_now()
 
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             row = conn.execute(
                 """
                 SELECT changed_paths_json FROM verification_state
@@ -570,7 +596,7 @@ def verification_status(
     sid = str(session_id or "default")
     root = str(facts.get("root") or Path(cwd or ".").resolve())
     with _DB_LOCK:
-        with _connect() as conn:
+        with _transaction() as conn:
             state = conn.execute(
                 """
                 SELECT last_event_id, last_edit_at, changed_paths_json

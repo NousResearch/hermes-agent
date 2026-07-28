@@ -10,6 +10,8 @@
  * steal focus from the composer effect.
  */
 
+import { queryVisible } from '@/components/pane-shell/pane-visibility'
+
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
@@ -175,9 +177,11 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   window.setTimeout(focus, 0)
 }
 
-/** Drop focus from the main composer input (status-stack chrome, sidebar, etc.). */
+/** Drop focus from the main composer input (status-stack chrome, sidebar, etc.).
+ *  Skips inactive tabs — they stay mounted, so an unscoped lookup can land on a
+ *  background composer and leave the visible one focused. */
 export const blurComposerInput = () => {
-  const el = document.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement | null
+  const el = queryVisible(`[data-slot="${RICH_INPUT_SLOT}"]`)
 
   if (el && document.activeElement === el) {
     el.blur()

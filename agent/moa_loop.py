@@ -388,10 +388,10 @@ def _maybe_apply_moa_cache_control(
 
     Reuses the SAME policy function as the main agent loop
     (``anthropic_prompt_cache_policy``) resolved against the slot's own
-    provider/base_url/api_mode/model, and the SAME breakpoint layout
-    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor and
-    aggregator calls decorated exactly like an acting agent on that provider
-    would be — no MoA-specific caching logic to drift.
+    provider/base_url/api_mode/model and shared marker helper
+    (``apply_anthropic_cache_control``). MoA has no per-session static prefix,
+    so it uses the helper's legacy system-and-3 fallback without carrying a
+    separate caching strategy.
 
     Returns the messages unchanged on any resolution error or when the
     policy says the route doesn't honor markers.
@@ -480,10 +480,11 @@ def _run_reference(
             reserve_output_tokens=max_tokens,
             context_length_cache=context_length_cache,
         )
-        # Apply the same Anthropic-style prompt-caching decoration the main
-        # agent loop applies (system_and_3 breakpoints). The advisory view is
-        # append-only across iterations (new turns append before the trailing
-        # synthetic marker), so on cache-honoring routes (Claude via
+        # Apply the Anthropic-style prompt-caching decoration used by the main
+        # agent loop. This fixed reference prompt has no session-specific
+        # prefix split, so the helper uses its legacy system-and-3 fallback.
+        # The advisory view is append-only across iterations (new turns append
+        # before the trailing synthetic marker), so on cache-honoring routes (Claude via
         # OpenRouter/native, MiniMax, Qwen/DashScope) iteration N+1's prefix
         # replays iteration N's cached prefix. Without this, Claude advisors
         # served ZERO cache reads across an entire benchmark run (measured:
@@ -1334,6 +1335,63 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
             last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
             return
     agg_messages.append({"role": "user", "content": guidance})
+
+
+def peel_reference_guidance(
+    messages: list[dict[str, Any]],
+    guidance: Any,
+) -> list[dict[str, Any]]:
+    """Remove reference guidance previously attached by ``_attach_reference_guidance``.
+
+    Exact inverse of the three attach shapes above (string merge, trailing
+    text part, appended user message) — kept adjacent so the two evolve
+    together; a drifting separator or shape would make the peel silently
+    no-op and let a cache breakpoint land on the turn-varying guidance
+    block (the bug class #72626 fixes).
+
+    Used by the failover redecoration chokepoint: redecoration must run on
+    the base transcript so the last cache breakpoint does not land on the
+    guidance; callers then rebase via ``rebase_prepared_request``.
+
+    Returns a new list (input list and its messages are not mutated).
+    """
+    if not guidance or not messages:
+        return messages
+    guidance_text = str(guidance)
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "user":
+        return messages
+    content = last.get("content")
+    if content == guidance_text:
+        # Attach shape (c): guidance was appended as its own user message.
+        return list(messages[:-1])
+    suffix = "\n\n" + guidance_text
+    if isinstance(content, str) and content.endswith(suffix):
+        # Attach shape (a): merged into a trailing string user turn.
+        peeled = dict(last)
+        peeled["content"] = content[: -len(suffix)]
+        return [*messages[:-1], peeled]
+    if isinstance(content, list) and content:
+        last_part = content[-1]
+        if isinstance(last_part, dict) and last_part.get("type", "text") == "text":
+            text = last_part.get("text") or ""
+            if text == suffix or text == guidance_text:
+                # Attach shape (b): guidance rode as its own trailing part.
+                peeled = dict(last)
+                peeled["content"] = list(content[:-1])
+                if not peeled["content"]:
+                    # The guidance part was the only content — mirror the
+                    # string shape (c) and drop the whole message rather
+                    # than leaving an empty-content user turn behind.
+                    return list(messages[:-1])
+                return [*messages[:-1], peeled]
+            if text.endswith(suffix):
+                new_part = dict(last_part)
+                new_part["text"] = text[: -len(suffix)]
+                peeled = dict(last)
+                peeled["content"] = [*content[:-1], new_part]
+                return [*messages[:-1], peeled]
+    return messages
 
 
 class MoAChatCompletions:

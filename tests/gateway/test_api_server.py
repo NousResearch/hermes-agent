@@ -891,6 +891,87 @@ class TestAgentExecution:
         assert captured["service_tier"] == "priority"
 
 
+class TestRunEventCallback:
+    @pytest.mark.asyncio
+    async def test_forwards_subagent_lifecycle_events(self, adapter):
+        run_id = "run_subagent_events"
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        adapter._run_statuses.pop(run_id, None)
+
+        callback = adapter._make_run_event_callback(run_id, loop)
+
+        callback(
+            "subagent.start",
+            preview="research candidate issue",
+            goal="research candidate issue",
+            task_index=0,
+            task_count=1,
+            subagent_id="deleg_123",
+        )
+        callback(
+            "subagent.complete",
+            preview="Timed out after 300s",
+            goal="research candidate issue",
+            task_index=0,
+            task_count=1,
+            subagent_id="deleg_123",
+            status="timeout",
+            duration_seconds=300.0,
+            summary="Subagent timed out after 300s with 2 API call(s) completed.",
+            api_calls=2,
+        )
+
+        start_event = await asyncio.wait_for(queue.get(), timeout=1.0)
+        complete_event = await asyncio.wait_for(queue.get(), timeout=1.0)
+
+        assert start_event["event"] == "subagent.start"
+        assert start_event["preview"] == "research candidate issue"
+        assert start_event["task_index"] == 0
+        assert start_event["task_count"] == 1
+        assert start_event["subagent_id"] == "deleg_123"
+
+        assert complete_event["event"] == "subagent.complete"
+        assert complete_event["preview"] == "Timed out after 300s"
+        assert complete_event["status"] == "timeout"
+        assert complete_event["duration_seconds"] == 300.0
+        assert complete_event["api_calls"] == 2
+        assert "timed out after 300s" in complete_event["summary"]
+
+        assert adapter._run_statuses[run_id]["last_event"] == "subagent.complete"
+
+    @pytest.mark.asyncio
+    async def test_subagent_events_redact_secrets_and_carry_child_session(self, adapter):
+        """Free-text fields (goal/summary/output_tail/preview) must pass the
+        forced secret redaction before hitting the public /v1/runs stream,
+        and child_session_id must survive the allowlist so clients can
+        correlate the child's session."""
+        run_id = "run_subagent_redact"
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        adapter._run_statuses.pop(run_id, None)
+
+        callback = adapter._make_run_event_callback(run_id, loop)
+        secret = "sk-proj-abcdef1234567890abcdef1234567890abcdef12"
+        callback(
+            "subagent.complete",
+            preview=f"leaked {secret}",
+            goal=f"use key {secret} to fetch data",
+            subagent_id="deleg_999",
+            child_session_id="child-sess-42",
+            status="completed",
+            summary=f"exported OPENAI_API_KEY={secret} then ran",
+            output_tail=f"env shows {secret}",
+        )
+
+        event = await asyncio.wait_for(queue.get(), timeout=1.0)
+        assert event["child_session_id"] == "child-sess-42"
+        for field in ("preview", "goal", "summary", "output_tail"):
+            assert secret not in event[field], field
+
+
 # ---------------------------------------------------------------------------
 # /health endpoint
 # ---------------------------------------------------------------------------

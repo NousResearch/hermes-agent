@@ -247,6 +247,7 @@ export function FloatingPet() {
   // Restore a popped-out pet on boot, once the pet has loaded (so we never spawn
   // an empty overlay window). Primary window only; runs at most once.
   const restoredRef = useRef(false)
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (isSecondaryWindow() || restoredRef.current || !active) {
       return

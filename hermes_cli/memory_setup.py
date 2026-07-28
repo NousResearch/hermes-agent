@@ -8,6 +8,7 @@ the provider's config schema. Writes config to config.yaml + .env.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import shlex
 from pathlib import Path
@@ -16,6 +17,32 @@ from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
+
+
+def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
+    """Return the pip deps a provider actually needs on THIS install.
+
+    ``plugin.yaml`` declares the provider's baseline bridge packages, but
+    some providers install mode-dependent extras at setup time that the
+    manifest can't express. Hindsight's ``local_embedded`` mode installs
+    ``hindsight-all`` (daemon + embedder + client) during
+    ``hermes memory setup`` — if the update-time refresh only reinstalled
+    the declared ``hindsight-client``, the embedded daemon would stay
+    broken after a venv rebuild stripped ``hindsight-embed`` (#70636).
+    """
+    deps = list(declared or [])
+    if provider_name == "hindsight":
+        try:
+            import json
+            cfg_path = get_hermes_home() / "hindsight" / "config.json"
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+            mode = cfg.get("mode", "")
+            # "local" is a legacy alias for "local_embedded"
+            if mode in {"local", "local_embedded"}:
+                deps.append("hindsight-all")
+        except Exception:
+            pass
+    return deps
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +104,16 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
-def _install_dependencies(provider_name: str) -> None:
-    """Install pip dependencies declared in plugin.yaml."""
+def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
+    """Install pip dependencies declared in ``plugin.yaml``.
+
+    When ``force`` is true, every declared dependency is handed to the
+    installer even if its import currently succeeds — the resolver then
+    reinstalls anything missing or version-drifted and no-ops on satisfied
+    ranges. This is how ``hermes update`` heals the active memory provider
+    after a venv rebuild/sync removed or downgraded its bridge packages
+    (#53272, #70636).
+    """
     import subprocess
     from plugins.memory import find_provider_dir
 
@@ -96,7 +131,7 @@ def _install_dependencies(provider_name: str) -> None:
     except Exception:
         return
 
-    pip_deps = meta.get("pip_dependencies", [])
+    pip_deps = _provider_pip_dependencies(provider_name, meta.get("pip_dependencies", []))
     if not pip_deps:
         return
 
@@ -108,10 +143,15 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
+    # Check which packages need installation.
     missing = []
     for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        if force:
+            missing.append(dep)
+            continue
+        dep_name = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*", dep)
+        base = dep_name.group(0) if dep_name else dep
+        import_name = _IMPORT_NAMES.get(base, base.replace("-", "_").split("[")[0])
         try:
             __import__(import_name)
         except ImportError:

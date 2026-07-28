@@ -230,3 +230,76 @@ def test_write_env_vars_plain_value_roundtrips(tmp_path):
     env_path = tmp_path / ".env"
     memory_setup._write_env_vars(env_path, {"PROVIDER_API_KEY": "sk-plain-1234"})
     assert env_path.read_text(encoding="utf-8") == "PROVIDER_API_KEY=sk-plain-1234\n"
+
+
+# ---------------------------------------------------------------------------
+# _provider_pip_dependencies — mode-aware dep expansion (#70636)
+# ---------------------------------------------------------------------------
+
+def test_provider_pip_dependencies_passthrough_for_non_hindsight():
+    deps = memory_setup._provider_pip_dependencies("mem0", ["mem0ai>=2.0.10,<3"])
+    assert deps == ["mem0ai>=2.0.10,<3"]
+
+
+def test_provider_pip_dependencies_adds_hindsight_all_for_local_embedded(tmp_path, monkeypatch):
+    """local_embedded Hindsight needs hindsight-all (daemon + embedder), not
+    just the declared hindsight-client — a venv rebuild that stripped
+    hindsight-embed must be healed by the update-time refresh (#70636)."""
+    import json
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "hindsight").mkdir()
+    (tmp_path / "hindsight" / "config.json").write_text(
+        json.dumps({"mode": "local_embedded"}), encoding="utf-8"
+    )
+    deps = memory_setup._provider_pip_dependencies("hindsight", ["hindsight-client>=0.6.1"])
+    assert deps == ["hindsight-client>=0.6.1", "hindsight-all"]
+
+
+def test_provider_pip_dependencies_legacy_local_alias(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "hindsight").mkdir()
+    (tmp_path / "hindsight" / "config.json").write_text(
+        json.dumps({"mode": "local"}), encoding="utf-8"
+    )
+    deps = memory_setup._provider_pip_dependencies("hindsight", ["hindsight-client>=0.6.1"])
+    assert "hindsight-all" in deps
+
+
+def test_provider_pip_dependencies_cloud_hindsight_unchanged(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "hindsight").mkdir()
+    (tmp_path / "hindsight" / "config.json").write_text(
+        json.dumps({"mode": "cloud"}), encoding="utf-8"
+    )
+    deps = memory_setup._provider_pip_dependencies("hindsight", ["hindsight-client>=0.6.1"])
+    assert deps == ["hindsight-client>=0.6.1"]
+
+
+def test_install_dependencies_force_reinstalls_versioned_specs(tmp_path, monkeypatch):
+    """force=True hands every declared spec (version ranges intact) to pip,
+    so a downgraded/stripped bridge package is restored on hermes update."""
+    import yaml as _yaml
+
+    plugin_dir = tmp_path / "mem0"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.yaml").write_text(
+        _yaml.safe_dump({"pip_dependencies": ["mem0ai>=2.0.10,<3"]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "plugins.memory.find_provider_dir", lambda name: plugin_dir
+    )
+
+    installed = []
+
+    def fake_pip_install(args, timeout=120):
+        installed.append(args)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("hermes_cli.tools_config._pip_install", fake_pip_install)
+
+    memory_setup._install_dependencies("mem0", force=True)
+
+    assert installed, "force=True must reach the pip install step"
+    assert any("mem0ai>=2.0.10,<3" in args for args in installed)

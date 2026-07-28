@@ -186,5 +186,6 @@ def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     assert "SQLite" in out
     assert "3.50.4" in out
     assert "WAL-reset" in out
+    assert "hermes update" in out
     # No longer appended to the blocking issues summary.
     assert "Linked SQLite is vulnerable" not in out

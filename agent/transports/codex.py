@@ -7,6 +7,7 @@ streaming, or the _run_codex_stream() call path.
 
 import hashlib
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
@@ -25,6 +26,49 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     # Match _content_cache_key's compact, collision-resistant routing-key shape.
     digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
     return f"pck_{digest}"
+
+
+_EXTENDED_PROMPT_CACHE_MODELS = (
+    "gpt-5.5-pro",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1-chat-latest",
+    "gpt-5.1-codex",
+    "gpt-5.1",
+    "gpt-5-codex",
+    "gpt-5",
+    "gpt-4.1",
+)
+_EXTENDED_PROMPT_CACHE_MODEL_RE = re.compile(
+    rf"(?:^|[./:])(?:{'|'.join(re.escape(name) for name in _EXTENDED_PROMPT_CACHE_MODELS)})"
+    r"(?:-\d{4}-\d{2}-\d{2})?$"
+)
+
+
+def _default_prompt_cache_retention_for_request(
+    model: str,
+    base_url: Any,
+) -> Optional[str]:
+    """Return ``24h`` for supported models on Amazon Bedrock Mantle."""
+    from utils import base_url_hostname
+
+    hostname_parts = base_url_hostname(str(base_url or "")).split(".")
+    is_bedrock_mantle = (
+        len(hostname_parts) == 4
+        and hostname_parts[0] == "bedrock-mantle"
+        and bool(hostname_parts[1])
+        and hostname_parts[2:] == ["api", "aws"]
+    )
+    if not is_bedrock_mantle:
+        return None
+
+    normalized = str(model or "").strip().lower().replace("_", "-")
+    if _EXTENDED_PROMPT_CACHE_MODEL_RE.search(normalized):
+        return "24h"
+    return None
 
 
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
@@ -283,6 +327,13 @@ class ResponsesApiTransport(ProviderTransport):
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
             kwargs["prompt_cache_key"] = cache_key
+
+        cache_retention = _default_prompt_cache_retention_for_request(
+            model,
+            params.get("base_url"),
+        )
+        if cache_retention:
+            kwargs.setdefault("prompt_cache_retention", cache_retention)
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort

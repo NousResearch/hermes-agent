@@ -8,11 +8,13 @@ import {
   $currentCwd,
   $currentFastMode,
   $currentReasoningEffort,
+  $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModelSource,
-  setCurrentReasoningEffort
+  setCurrentReasoningEffort,
+  setDefaultReasoningEffort
 } from '@/store/session'
 
 import { useHermesConfig } from './use-hermes-config'
@@ -44,7 +46,29 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setCurrentFastMode(false)
     setCurrentModelSource('')
     setCurrentReasoningEffort('')
+    setDefaultReasoningEffort('')
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  // Regression: the composer keeps a manual model pick sticky, which skips the
+  // composer reseed. The profile default must still be published, because the
+  // model picker resolves "the default effort" from it when applying a model's
+  // preset — otherwise selecting a model silently downgrades a configured
+  // `agent.reasoning_effort: high` to Hermes' built-in medium.
+  it('publishes the profile default effort even when a manual pick blocks the composer reseed', async () => {
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('low')
+
+    mockConfig({ agent: { reasoning_effort: 'high' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('high')
+    // The manual pick itself is still respected.
+    expect($currentReasoningEffort.get()).toBe('low')
   })
 
   it('does not let terminal.cwd replace an inactive selected workspace', async () => {

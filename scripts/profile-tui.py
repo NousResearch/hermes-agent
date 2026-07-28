@@ -516,7 +516,7 @@ def main() -> int:
         if not path.exists():
             print(f"\n⚠ no baseline at {path} — run with --save {args.compare} first")
         else:
-            before = json.loads(path.read_text())
+            before = json.loads(path.read_text(encoding="utf-8"))
             print(f"\n═══ A/B diff vs /tmp/perf-{args.compare}.json ═══")
             print(format_diff(before, metrics))
 

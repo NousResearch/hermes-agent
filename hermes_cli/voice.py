@@ -215,6 +215,7 @@ def format_voice_record_key_for_status(raw: Any) -> str:
 
 from tools.voice_mode import (
     create_audio_recorder,
+    is_voice_stop_phrase,
     is_whisper_hallucination,
     play_audio_file,
     transcribe_recording,
@@ -509,6 +510,12 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                 except Exception as e:
                     logger.warning("failed to stop/transcribe recorder: %s", e)
                 finally:
+                    stop_phrase = bool(transcript and is_voice_stop_phrase(transcript))
+                    if stop_phrase:
+                        # Bare stop phrase — the loop is already stopping;
+                        # swallow it instead of sending "stop" to the agent.
+                        _debug("stop_continuous: stop phrase — transcript discarded")
+                        transcript = None
                     if transcript:
                         try:
                             on_transcript(transcript)
@@ -517,7 +524,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
 
                     if track_no_speech:
                         with _continuous_lock:
-                            if transcript:
+                            if transcript or stop_phrase:
                                 _continuous_no_speech_count = 0
                             else:
                                 _continuous_no_speech_count += 1
@@ -643,6 +650,14 @@ def _continuous_on_silence() -> None:
             except Exception:
                 pass
 
+    stop_phrase = bool(transcript and is_voice_stop_phrase(transcript))
+    if stop_phrase:
+        # User said a bare stop phrase ("stop") — end the voice chat.
+        # Not delivered to the agent; the loop halts exactly like the
+        # silent-cycle limit so every UI (TUI, desktop) turns voice off.
+        _debug(f"_continuous_on_silence: stop phrase {transcript!r} — ending loop")
+        transcript = None
+
     with _continuous_lock:
         if not _continuous_active:
             # User stopped us while we were transcribing — discard.
@@ -650,9 +665,11 @@ def _continuous_on_silence() -> None:
             return
         if transcript:
             _continuous_no_speech_count = 0
-        else:
+        elif not stop_phrase:
             _continuous_no_speech_count += 1
-        should_halt = _continuous_no_speech_count >= _CONTINUOUS_NO_SPEECH_LIMIT
+        should_halt = stop_phrase or (
+            _continuous_no_speech_count >= _CONTINUOUS_NO_SPEECH_LIMIT
+        )
         no_speech = _continuous_no_speech_count
 
     if transcript and on_transcript:
@@ -662,7 +679,10 @@ def _continuous_on_silence() -> None:
             logger.warning("on_transcript callback raised: %s", e)
 
     if should_halt:
-        _debug(f"_continuous_on_silence: {no_speech} silent cycles — halting")
+        _debug(
+            "_continuous_on_silence: halting "
+            f"({'stop phrase' if stop_phrase else f'{no_speech} silent cycles'})"
+        )
         with _continuous_lock:
             _continuous_active = False
             _continuous_no_speech_count = 0

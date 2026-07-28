@@ -11,6 +11,7 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setDefaultReasoningEffort,
   setIntroPersonality
 } from '@/store/session'
 import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
@@ -82,6 +83,12 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         const reasoning = normalizeConfigEffort(config.agent?.reasoning_effort)
         const tier = (config.agent?.service_tier ?? '').trim()
+
+        // Publish the profile default regardless of whether the composer is
+        // reseeded below: picker rows and preset application resolve "the
+        // default" from here, so a manual model pick must not leave them
+        // rendering/applying Hermes' built-in medium over the user's config.
+        setDefaultReasoningEffort(reasoning)
 
         const shouldSeedComposer =
           !activeSessionIdRef.current &&

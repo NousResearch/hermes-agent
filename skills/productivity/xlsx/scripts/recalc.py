@@ -71,7 +71,7 @@ def setup_libreoffice_macro(profile_dir: Path, timeout=30):
         return None, "LibreOffice did not create a usable profile; formulas were NOT recalculated"
 
     try:
-        (macro_dir / MACRO_FILENAME).write_text(RECALCULATE_MACRO)
+        (macro_dir / MACRO_FILENAME).write_text(RECALCULATE_MACRO, encoding="utf-8")
     except OSError as e:
         return None, f"Could not install the recalculation macro: {e}"
 

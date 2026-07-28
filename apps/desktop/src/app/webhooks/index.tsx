@@ -15,8 +15,10 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createWebhook,
@@ -47,10 +49,9 @@ import {
   PanelListRow,
   PanelMeta,
   PanelPill,
-  PanelRowMenu,
   PanelSectionLabel
 } from '../overlays/panel'
-import { ListRow, ToggleRow } from '../settings/primitives'
+import { ListRow } from '../settings/primitives'
 
 const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack', 'email', 'github_comment']
 
@@ -385,18 +386,14 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                   active={selectedSub?.name === sub.name}
                   dotClassName={sub.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50'}
                   key={sub.name}
-                  menu={
-                    <PanelRowMenu
-                      items={[
-                        {
-                          icon: sub.enabled ? 'circle-slash' : 'check',
-                          label: sub.enabled ? w.disableRow : w.enableRow,
-                          onSelect: () => void handleToggle(sub.name, !sub.enabled)
-                        },
-                        { icon: 'trash', label: w.delete, onSelect: () => setPendingDelete(sub.name), tone: 'danger' }
-                      ]}
-                    />
-                  }
+                  menuItems={[
+                    {
+                      icon: sub.enabled ? 'circle-slash' : 'check',
+                      label: sub.enabled ? w.disableRow : w.enableRow,
+                      onSelect: () => void handleToggle(sub.name, !sub.enabled)
+                    },
+                    { icon: 'trash', label: w.delete, onSelect: () => setPendingDelete(sub.name), tone: 'danger' }
+                  ]}
                   onSelect={() => setSelectedName(sub.name)}
                   title={sub.name}
                 />
@@ -435,100 +432,90 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
               </DialogFooter>
             </div>
           ) : (
-            <div className="grid gap-1">
-              <div className="grid grid-cols-2 gap-4">
-                <ListRow
-                  action={
-                    <Input
-                      autoFocus
-                      id="webhook-name"
-                      onChange={e => setName(e.target.value)}
-                      placeholder={w.fieldNamePlaceholder}
-                      value={name}
-                    />
-                  }
-                  title={<label htmlFor="webhook-name">{w.fieldName}</label>}
-                  wide
-                />
-                <ListRow
-                  action={
-                    <Input
-                      id="webhook-description"
-                      onChange={e => setDescription(e.target.value)}
-                      placeholder={w.fieldDescriptionPlaceholder}
-                      value={description}
-                    />
-                  }
-                  title={<label htmlFor="webhook-description">{w.fieldDescription}</label>}
-                  wide
-                />
-              </div>
-              <ListRow
-                action={
-                  <Textarea
-                    className="min-h-[80px]"
-                    id="webhook-prompt"
-                    onChange={e => setPrompt(e.target.value)}
-                    placeholder={w.fieldPromptPlaceholder}
-                    value={prompt}
+            <form
+              className="grid gap-4"
+              onSubmit={e => {
+                e.preventDefault()
+                void handleCreate()
+              }}
+            >
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field htmlFor="webhook-name" label={w.fieldName}>
+                  <Input
+                    autoFocus
+                    id="webhook-name"
+                    onChange={e => setName(e.target.value)}
+                    placeholder={w.fieldNamePlaceholder}
+                    value={name}
                   />
-                }
-                title={<label htmlFor="webhook-prompt">{w.fieldPrompt}</label>}
-                wide
-              />
-              <div className="grid grid-cols-2 gap-4">
-                <ListRow
-                  action={
-                    <Input
-                      id="webhook-events"
-                      onChange={e => setEvents(e.target.value)}
-                      placeholder={w.fieldEventsPlaceholder}
-                      value={events}
-                    />
-                  }
-                  title={<label htmlFor="webhook-events">{w.fieldEvents}</label>}
-                  wide
-                />
-                <ListRow
-                  action={
-                    <Input
-                      id="webhook-skills"
-                      onChange={e => setSkills(e.target.value)}
-                      placeholder={w.fieldSkillsPlaceholder}
-                      value={skills}
-                    />
-                  }
-                  title={<label htmlFor="webhook-skills">{w.fieldSkills}</label>}
-                  wide
-                />
+                </Field>
+                <Field htmlFor="webhook-description" label={w.fieldDescription}>
+                  <Input
+                    id="webhook-description"
+                    onChange={e => setDescription(e.target.value)}
+                    placeholder={w.fieldDescriptionPlaceholder}
+                    value={description}
+                  />
+                </Field>
               </div>
-              <div className="grid grid-cols-2 items-start gap-4">
-                <ListRow
-                  action={
-                    <Select onValueChange={setDeliver} value={deliver}>
-                      <SelectTrigger className="h-9 rounded-md" id="webhook-deliver">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DELIVER_OPTIONS.map(opt => (
-                          <SelectItem key={opt} value={opt}>
-                            {w.deliverOptions[opt] ?? opt}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  }
-                  title={<label htmlFor="webhook-deliver">{w.fieldDeliver}</label>}
-                  wide
+
+              <Field htmlFor="webhook-prompt" label={w.fieldPrompt}>
+                <Textarea
+                  className="min-h-24"
+                  id="webhook-prompt"
+                  onChange={e => setPrompt(e.target.value)}
+                  placeholder={w.fieldPromptPlaceholder}
+                  value={prompt}
                 />
-                <ToggleRow checked={deliverOnly} label={w.fieldDeliverOnly} onChange={setDeliverOnly} />
+              </Field>
+
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field htmlFor="webhook-events" label={w.fieldEvents}>
+                  <Input
+                    id="webhook-events"
+                    onChange={e => setEvents(e.target.value)}
+                    placeholder={w.fieldEventsPlaceholder}
+                    value={events}
+                  />
+                </Field>
+                <Field htmlFor="webhook-skills" label={w.fieldSkills}>
+                  <Input
+                    id="webhook-skills"
+                    onChange={e => setSkills(e.target.value)}
+                    placeholder={w.fieldSkillsPlaceholder}
+                    value={skills}
+                  />
+                </Field>
               </div>
+
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field htmlFor="webhook-deliver" label={w.fieldDeliver}>
+                  <Select onValueChange={setDeliver} value={deliver}>
+                    <SelectTrigger className="h-9 rounded-md" id="webhook-deliver">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DELIVER_OPTIONS.map(opt => (
+                        <SelectItem key={opt} value={opt}>
+                          {w.deliverOptions[opt] ?? opt}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field htmlFor="webhook-deliver-only" label={w.fieldDeliverOnly}>
+                  <div className="flex h-9 items-center">
+                    <Switch checked={deliverOnly} id="webhook-deliver-only" onCheckedChange={setDeliverOnly} />
+                  </div>
+                </Field>
+              </div>
+
               <DialogFooter>
-                <Button disabled={creating} onClick={() => void handleCreate()} size="sm">
+                <Button disabled={creating} size="sm" type="submit">
                   {creating ? w.creating : w.create}
                 </Button>
               </DialogFooter>
-            </div>
+            </form>
           )}
         </DialogContent>
       </Dialog>
@@ -565,9 +552,6 @@ function WebhookDetail({ sub }: { sub: WebhookRoute }) {
       <header className="space-y-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{sub.name}</h3>
-          <PanelPill tone={sub.enabled ? 'good' : 'muted'}>
-            {sub.enabled ? t.messaging.states.enabled : t.messaging.states.disabled}
-          </PanelPill>
           {sub.deliver_only && <PanelPill tone="warn">{w.deliverOnly}</PanelPill>}
         </div>
 

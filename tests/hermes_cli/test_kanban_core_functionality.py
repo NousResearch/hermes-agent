@@ -522,16 +522,31 @@ def test_notify_sub_crud(kanban_home):
         kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="123", user_id="u1",
             notifier_profile="default",
+            delivery_metadata={
+                "chat_type": "dm",
+                "telegram_reply_to_message_id": "42",
+            },
         )
         subs = kb.list_notify_subs(conn, tid)
         assert len(subs) == 1
         assert subs[0]["platform"] == "telegram"
         assert subs[0]["notifier_profile"] == "default"
+        assert subs[0]["delivery_metadata"] == {
+            "chat_type": "dm",
+            "telegram_reply_to_message_id": "42",
+        }
         # Duplicate add is a no-op.
         kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="123",
+            delivery_metadata={
+                "chat_type": "dm",
+                "telegram_reply_to_message_id": "43",
+            },
         )
         assert len(kb.list_notify_subs(conn, tid)) == 1
+        assert kb.list_notify_subs(conn, tid)[0]["delivery_metadata"][
+            "telegram_reply_to_message_id"
+        ] == "43"
         # Distinct thread is a new row.
         kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="123",
@@ -587,6 +602,9 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
     try:
         tid = kb.create_task(conn1, title="x", assignee="w")
         kb.add_notify_sub(conn1, task_id=tid, platform="telegram", chat_id="123")
+        # New subs start caught up at the task's current MAX(task_events.id)
+        # (the `created` event) — issue #29905.
+        initial_cursor = int(kb.list_notify_subs(conn1, tid)[0]["last_event_id"])
         kb.complete_task(conn1, tid, result="ok")
 
         old_cursor, claimed_cursor, events = kb.claim_unseen_events_for_sub(
@@ -596,7 +614,7 @@ def test_notify_claim_is_single_owner_and_rewindable(kanban_home):
             chat_id="123",
             kinds=["completed", "blocked"],
         )
-        assert old_cursor == 0
+        assert old_cursor == initial_cursor
         assert claimed_cursor > old_cursor
         assert [ev.kind for ev in events] == ["completed"]
 
@@ -4786,3 +4804,49 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
+    """A new subscription must NOT replay historical terminal events.
+
+    Regression for issue #29905: `kanban_notify_subs.last_event_id` defaulted
+    to 0, so subscribing to a task that already had terminal events in
+    `task_events` replayed the entire backlog on the next notifier tick — 27
+    stale subs produced a 100+ message burst at gateway boot. The cursor now
+    snaps to the task's MAX(task_events.id) at creation: only events that
+    occur AFTER subscribing are delivered.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="old task", assignee="w")
+        # Historical terminal activity BEFORE anyone subscribes.
+        kb.complete_task(conn, tid, result="done long ago")
+
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="123")
+        sub = kb.list_notify_subs(conn, tid)[0]
+        assert int(sub["last_event_id"]) > 0, (
+            "cursor must snap to MAX(task_events.id) at subscription time"
+        )
+        _, events = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="123",
+            kinds=["completed", "blocked", "gave_up", "crashed", "timed_out"],
+        )
+        assert events == [], "historical events must not replay to a new sub"
+    finally:
+        conn.close()
+
+
+def test_notify_sub_on_fresh_task_still_gets_future_events(kanban_home):
+    """The caught-up snap must not lose events that happen AFTER subscribing."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="fresh", assignee="w")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="123")
+        kb.complete_task(conn, tid, result="ok")
+        _, events = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="123",
+            kinds=["completed"],
+        )
+        assert [ev.kind for ev in events] == ["completed"]
+    finally:
+        conn.close()

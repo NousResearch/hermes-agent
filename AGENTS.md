@@ -325,7 +325,7 @@ class AIAgent:
         provider: str = None,
         api_mode: str = None,              # "chat_completions" | "codex_responses" | ...
         model: str = "",                   # empty → resolved from config/provider later
-        max_iterations: int = 90,          # tool-calling iterations (shared with subagents)
+        max_iterations: int = 500,         # tool-calling iterations (shared with subagents)
         enabled_toolsets: list = None,
         disabled_toolsets: list = None,
         quiet_mode: bool = False,

@@ -11,7 +11,7 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import { $currentModelSource, setModelPickerOpen } from '@/store/session'
+import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
 
 import type { ChatBarState } from './types'
 
@@ -48,6 +48,7 @@ export function ModelPill({
   const fastMode = useStore(view.$fast)
   const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
+  const defaultEffort = useStore($defaultReasoningEffort)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
 
@@ -68,7 +69,9 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+        <span className="truncate">
+          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
+        </span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}

@@ -293,8 +293,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     # Deprecated tool-progress env vars — replaced by display.tool_progress in
-    # config.yaml. Kept known here so .env sanitization/reload still handle
-    # them for existing users (gateway reads them as a back-compat fallback),
+    # config.yaml. Kept known here so reload and compatibility paths still
+    # handle them for existing users (gateway reads them as a back-compat fallback),
     # without surfacing them in user-facing OPTIONAL_ENV_VARS listings.
     "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
@@ -945,7 +945,7 @@ DEFAULT_CONFIG = {
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
     "agent": {
-        "max_turns": 90,
+        "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -966,6 +966,14 @@ DEFAULT_CONFIG = {
         # Set a positive value in config.yaml only if you explicitly want a
         # grace window on /restart (and keep it well under TimeoutStopSec).
         "restart_drain_timeout": 0,
+        # Upper bound (seconds) a submitted prompt waits for the deferred
+        # agent build (MCP discovery, model metadata, skills scan) before
+        # failing with a visible error (#63078). The gateway's wait is
+        # patient — the prompt is delivered the moment the build completes
+        # and a progress notice is emitted past 30s — so this cap only fires
+        # on a genuinely hung build. Raise it for deployments with many slow
+        # or unreachable MCP servers.
+        "build_wait_timeout": 600,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries
@@ -1100,6 +1108,18 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Max seconds the gateway waits for boot auto-resume turns to finish
+        # before it releases the startup-restore inbound gate.  While startup
+        # restore is in progress the gateway QUEUES every inbound message
+        # instead of replying, so no channel gets an answer until this gate
+        # opens.  Without a bound, one pathologically long resumed turn holds
+        # the gate shut and every channel's inbound piles up unanswered for as
+        # long as that turn runs.  On timeout the gate releases and the slow
+        # resume turn keeps running in the background; duplicate-agent
+        # protection is unaffected because the resume slot is claimed
+        # synchronously before the gate runs.  Set to 0 to disable the bound
+        # (historical "wait forever" behaviour).
+        "gateway_startup_restore_drain_timeout": 30,
         # Stale-stream ceiling for local providers (Ollama, oMLX, llama-cpp) in
         # seconds. When the base stale timeout is at its default (180s) and a
         # local endpoint is detected, this finite ceiling replaces the former
@@ -1304,15 +1324,22 @@ DEFAULT_CONFIG = {
         "max_file_size_mb": 10,
         # Auto-maintenance: hermes sweeps the checkpoint base at startup
         # (at most once per ``min_interval_hours``) and:
-        #   * deletes project entries whose workdir no longer exists (orphan)
         #   * deletes project entries whose last_touch is older than
         #     ``retention_days``
         #   * GCs the single shared store to reclaim unreachable objects
         #   * enforces ``max_total_size_mb`` across remaining projects
         #   * deletes ``legacy-*`` archives older than ``retention_days``
+        #
+        # NOTE: this automatic sweep never deletes "orphan" entries (workdir
+        # no longer found on disk). A missing workdir at startup is
+        # ambiguous — it can mean the project was deleted, or that an
+        # external volume / network share / VPN is simply not mounted yet —
+        # and this sweep runs unattended, so it must never guess. Orphan
+        # cleanup is only available via the explicit
+        # ``hermes checkpoints prune`` command (add ``--keep-orphans`` to
+        # skip it), where a human is looking at the output.
         "auto_prune": True,
         "retention_days": 7,
-        "delete_orphans": True,
         "min_interval_hours": 24,
     },
 
@@ -1394,6 +1421,18 @@ DEFAULT_CONFIG = {
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
         },
+        # Per-turn runaway-loop caps (inspired by Claude Code v2.1.212,
+        # Week 29, July 2026). Hard ceilings on how many times a runaway-prone
+        # tool may be called within a SINGLE agent loop (turn); the counters
+        # reset at the start of every turn, so a legitimate multi-turn session
+        # is never starved. They are always-on and fire regardless of the
+        # warn/hard-stop thresholds above. A single turn issuing dozens of web
+        # searches or spawning dozens of subagents is already pathological, so
+        # the defaults are low. Set either to 0 to disable that cap (unlimited).
+        "loop_caps": {
+            "max_web_searches": 50,   # max web_search calls per turn (0 = unlimited)
+            "max_subagents": 50,      # max subagents spawned per turn (0 = unlimited)
+        },
     },
 
     "compression": {
@@ -1454,6 +1493,13 @@ DEFAULT_CONFIG = {
                                       # tool iteration. 0 = commit any non-zero prune.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
+                                      # WITHOUT forward progress. The summary call streams, so
+                                      # this is an inactivity budget: a slow model still
+                                      # producing tokens keeps extending the wait; only a
+                                      # silent/hung call is cut off.
+        "hygiene_total_ceiling_seconds": 600,  # absolute cap on the hygiene compression wait even
+                                      # while tokens are still moving — bounds a degenerate
+                                      # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
@@ -1510,8 +1556,8 @@ DEFAULT_CONFIG = {
                                       # turns are soft-archived under the same id
                                       # (active=0, compacted=1) — still searchable via
                                       # session_search and recoverable, not deleted.
-                                      # Default False during rollout; will flip on
-                                      # after live validation.
+                                      # Default True since 2107b86024; set False to
+                                      # restore the legacy rotating-compaction path.
         "model_thresholds": {},       # Per-model threshold overrides. Keys are
                                       # substring-matched against the model name
                                       # (longest match wins); values replace the
@@ -1538,21 +1584,6 @@ DEFAULT_CONFIG = {
                                       # failure-cooldown / anti-thrash / per-session
                                       # lock guards as every automatic compaction.
                                       # Example: 1800 = compact after 30 min idle.
-    },
-
-    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
-    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
-    # implementations. Per-platform notification opt-out is handled by the
-    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
-    "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to task
-        # completion + block events when ``kanban_create`` is called from
-        # inside a session that has a persistent delivery channel. The
-        # agent that dispatched the task will get notified automatically
-        # instead of having to poll. Disable to mirror pre-feature
-        # behaviour — e.g. for a profile that prefers explicit
-        # ``kanban_notify-subscribe`` calls per task.
-        "auto_subscribe_on_create": True,
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -1636,6 +1667,13 @@ DEFAULT_CONFIG = {
         # not a meaningful recovery, so an unretried blip silently loses the
         # call.
         "transient_retries": 2,
+        # Endpoints that reject NON-streaming chat requests outright (e.g.
+        # Tencent Copilot returns HTTP 400 "Non-stream chat request is
+        # currently not supported"). Auxiliary calls to a matching endpoint
+        # are sent with stream=True and aggregated client-side. Entries are
+        # case-insensitive substrings matched against the endpoint URL;
+        # copilot.tencent.com is always treated as stream-only.
+        "stream_only_base_urls": [],
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
@@ -1940,6 +1978,14 @@ DEFAULT_CONFIG = {
         # Show a color-coded battery read-out as the first status-bar element in
         # the CLI/TUI (off by default). No-op on machines without a battery.
         "battery": False,
+        # Focus view (/focus): display-only reduced-output mode. When true the
+        # CLI/TUI pins tool_progress to "off" (reusing the existing suppression
+        # path), reports a per-turn hidden-line count with a recovery hint, and
+        # pins a "focus" segment in the status bar. focus_saved_tool_progress
+        # holds the mode /focus off restores. Never affects what is sent to the
+        # model — see hermes_cli/focus_view.py.
+        "focus_view": False,
+        "focus_saved_tool_progress": "all",
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
@@ -1976,6 +2022,16 @@ DEFAULT_CONFIG = {
         # tool name. Applies to CLI spinner + gateway/desktop tool-progress.
         # Custom/plugin/MCP tools always fall back to the raw preview.
         "friendly_tool_labels": True,
+        # CLI-only post-turn accounting line printed after each interactive turn:
+        # "⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands".
+        # Observed from the tool-progress feed the CLI already receives; never
+        # printed in quiet/non-interactive paths or in gateway/messaging
+        # surfaces (those have their own runtime footer).
+        "turn_summary": True,
+        # CLI-only: append cumulative turn output tokens to the live spinner
+        # timer ("⚡ Reading file  ( 2.3s · ↓ 1.2k tok)"). Updates as each API
+        # call in the turn reports usage.
+        "spinner_token_flow": True,
         # How gateway tool-progress is grouped on platforms that support message
         # editing: "accumulate" (default) edits one bubble in place; "separate"
         # sends one message per tool (the pre-v0.9 behavior, noisier). Only
@@ -2266,15 +2322,31 @@ DEFAULT_CONFIG = {
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        # Global language hint applied to EVERY provider unless a per-provider
+        # language overrides it. Defaults to "en" — Whisper auto-detection
+        # frequently misidentifies short/accented clips, which reads as
+        # "STT transcribed the wrong language". Set to "" to restore
+        # auto-detect, or to your language code ("es", "zh", "uk", ...).
+        "language": "en",
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "initial_prompt": "",
+        },
+        "groq": {
+            "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+        },
+        "xai": {
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "elevenlabs": {
             "model_id": "scribe_v2",  # scribe_v2, scribe_v1
@@ -2296,6 +2368,10 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
         "barge_in": True,             # Stop TTS playback when the user starts talking
+        # Saying EXACTLY one of these phrases (and nothing else) ends the
+        # voice chat instead of being sent to the agent. Case-insensitive,
+        # surrounding punctuation ignored. Set [] to disable.
+        "stop_phrases": ["stop"],
     },
     
     "human_delay": {
@@ -2716,6 +2792,20 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        # Operator-customizable policy text for smart approvals. When
+        # non-empty, this is appended to the smart-approval guardian's
+        # SYSTEM prompt (trusted channel) as additional rules — e.g.
+        # "Always ESCALATE commands touching /etc" or "APPROVE docker
+        # compose restarts under ~/deploys". Inspired by ChatGPT Work's
+        # customizable auto-review guardian policy.
+        "smart_policy": "",
+        # Consecutive-denial circuit breaker for smart approvals: after this
+        # many guardian DENY verdicts in a row within one session, the deny
+        # message returned to the model escalates to a hard-stop instruction
+        # (report to the user / ask for manual run or /approve) instead of a
+        # plain "Do NOT retry". Any approval resets the count. 0 disables.
+        # Inspired by ChatGPT Work's auto-review circuit breaker.
+        "denial_breaker_threshold": 3,
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable
@@ -2816,6 +2906,11 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Fail closed when an unpinned job's current global model/provider
+        # differs from its creation-time snapshot. This prevents unattended
+        # jobs from silently inheriting a paid default. Set to false only when
+        # jobs should deliberately track changing global inference defaults.
+        "model_drift_guard": True,
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
@@ -2891,6 +2986,14 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false
@@ -2972,22 +3075,40 @@ DEFAULT_CONFIG = {
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
         "tool_search": {
-            # "auto" (default) — activate only when deferrable tool schemas
-            #   exceed ``threshold_pct`` of the active model's context length,
-            #   so small toolsets pay no overhead.
-            # "on"  — always activate when there is at least one deferrable
-            #   tool. Use when you have many MCP servers and want maximum
-            #   token reduction unconditionally.
+            # Tiered disclosure: any deferrable (MCP/plugin) tool activates
+            # the bridge; the listing then scales with catalog size.
+            #   Tier 0 — no MCP/plugin tools: everything stays eager.
+            #   Tier 1 — catalog listing fits the budget: bridge + skills-style
+            #     name+description manifest (degrades to names-only).
+            #   Tier 2 — per-tool listing over budget even names-only (e.g.
+            #     Cloudflare's ~3,300-tool flat API surface): bare bridge +
+            #     a one-line-per-server summary (name + tool count) so the
+            #     model knows which domains are reachable; individual tools
+            #     discoverable through tool_search only.
+            # "auto"/"on" — activate when at least one deferrable tool exists.
             # "off" — disable entirely. Tools-array assembly is a pass-through.
             "enabled": "auto",
-            # Percentage of context length at which "auto" mode kicks in.
-            # 10 matches the Claude Code default. Range 0..100.
-            "threshold_pct": 10,
+            # Listing budget as a percentage of the active model's context
+            # length. Effective budget = min(this % of context,
+            # listing_max_tokens). Range 0..100.
+            "threshold_pct": 5,
             # When the model calls tool_search without a ``limit`` argument,
             # how many hits to return. Range 1..max_search_limit.
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # Skills-style catalog listing embedded in the tool_search bridge
+            # description: every deferred tool's name + first sentence of its
+            # description (≤60 chars), grouped by MCP server / toolset. Keeps
+            # capabilities discoverable while schemas stay deferred.
+            # "auto" (default) — include when the listing fits the budget
+            #   (falls back to names-only, then to the bare tier-2 bridge).
+            # "on"  — same rendering, but explicit intent to always list.
+            # "off" — always the bare bridge (tier 2 for every catalog).
+            "listing": "auto",
+            # Absolute cap on the embedded listing in tokens (chars/4
+            # estimate), regardless of context size. Range 200..60000.
+            "listing_max_tokens": 20000,
         },
     },
 
@@ -3088,6 +3209,13 @@ DEFAULT_CONFIG = {
         # internal HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT env var, which still
         # works as a manual override and wins if set explicitly.
         "platform_connect_timeout": 30,
+
+        # In-process event-loop liveness watchdog (#69089). A daemon OS thread
+        # probes the gateway asyncio loop; after consecutive missed probes it
+        # dumps all-thread stacks and hard-exits with the service-restart exit
+        # code so the supervisor (systemd/launchd) revives the process instead
+        # of leaving a wedged-but-alive zombie. Set to false to disable.
+        "loop_watchdog": True,
 
         # Whether the gateway keeps writing the legacy sessions.json mirror of
         # its routing index. The primary copy lives in state.db (the
@@ -3255,14 +3383,15 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # When true, prune ended sessions older than retention_days once
+        # When true, prune ended sessions inactive for retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
-        # Only touches ended sessions — active sessions are always preserved.
+        # Activity is the latest message timestamp, falling back to creation
+        # time for empty sessions. Active sessions are always preserved.
         # Default false: session history is valuable for search recall, and
         # silently deleting it could surprise users.  Opt in explicitly.
         "auto_prune": False,
-        # How many days of ended-session history to keep.  Matches the
-        # default of ``hermes sessions prune``.
+        # How many inactive days of ended-session history to keep. Matches
+        # the default of ``hermes sessions prune``.
         "retention_days": 90,
         # When true, auto-archive (soft-hide, never delete) sessions that
         # haven't been touched in ``auto_archive_days`` days, once per
@@ -3670,6 +3799,17 @@ DEFAULT_CONFIG = {
         #   false   - always keep GPU acceleration on, even over a remote display.
         # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
         "disable_gpu": "auto",
+        # Auto-continue a turn that was killed mid-run by an app/backend/machine
+        # crash: resuming that session re-submits the interrupted prompt (shown
+        # as a "resumed interrupted turn" event) if the interruption is fresh.
+        # A stale interruption just shows the recovered partial transcript.
+        "auto_continue": {
+            "enabled": True,
+            # How recent the interruption must be to auto-continue (minutes).
+            "freshness_minutes": 15,
+            # Crash-loop breaker: max automatic re-runs of one interrupted turn.
+            "max_attempts": 2,
+        },
     },
 
 
@@ -4857,7 +4997,7 @@ OPTIONAL_ENV_VARS = {
     # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
     # now configured via display.tool_progress in config.yaml (off|new|all|verbose|log).
     # The gateway still falls back to these env vars for backward compatibility,
-    # so they live in _EXTRA_ENV_KEYS (known to .env sanitization/reload) but
+    # so they live in _EXTRA_ENV_KEYS (known to reload and compatibility paths) but
     # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing
     # surfaces (dashboard keys page, setup checklists) and deprecated knobs
     # shouldn't be offered there.
@@ -6038,11 +6178,11 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # ── Always: sanitize .env (split concatenated keys) ──
+    # ── Always: normalize safe .env line formatting ──
     try:
         fixes = sanitize_env_file()
         if fixes and not quiet:
-            print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
+            print(f"  ✓ Normalized .env line formatting ({fixes} line(s) changed)")
     except Exception:
         pass  # best-effort; don't block migration on sanitize failure
 
@@ -7921,15 +8061,13 @@ def _parse_env_value(raw_value: str) -> str:
 def load_env() -> Dict[str, str]:
     """Load environment variables from ~/.hermes/.env.
 
-    Sanitizes lines before parsing so that corrupted files (e.g.
-    concatenated KEY=VALUE pairs on a single line) are handled
-    gracefully instead of producing mangled values such as duplicated
-    bot tokens.  See #8908.
+    Normalizes line endings before parsing while treating each assignment's
+    value as opaque data for boundary discovery.
 
     The parsed dict is memoised keyed on the .env file mtime, because
     ``get_env_value()`` is called dozens-to-hundreds of times per
     interactive menu render (`hermes tools`, `hermes setup`, status
-    panels). Sanitisation is O(lines × known-keys), so re-parsing the
+    panels). Sanitisation is O(lines), so re-parsing the
     same file on every call was burning ~300ms of CPU per `hermes tools`
     menu paint on top of the OAuth-refresh slowness. The mtime check
     invalidates the cache when the user edits .env mid-process.
@@ -7960,8 +8098,7 @@ def load_env() -> Dict[str, str]:
         open_kw = {"encoding": "utf-8-sig", "errors": "replace"}
         with open(env_path, **open_kw) as f:
             raw_lines = f.readlines()
-        # Sanitize before parsing: split concatenated lines & drop stale
-        # placeholders so corrupted .env files don't produce invalid tokens.
+        # Normalize line endings without interpreting value contents as syntax.
         lines = _sanitize_env_lines(raw_lines)
         for line in lines:
             line = line.strip()
@@ -8000,39 +8137,13 @@ def invalidate_env_cache() -> None:
     _env_cache = None
 
 
-_STRUCTURED_VALUE_MARKERS = ("://", "?", "&")
-
-
-def _looks_like_structured_value(value: str) -> bool:
-    """True when ``value`` looks like a URL/query string or holds whitespace.
-
-    Such a value is treated as one opaque secret. An embedded
-    ``KNOWN_KEY=`` substring inside it (e.g. a webhook URL carrying a query
-    parameter, or a proxy base URL with an embedded key) is part of the value,
-    not the start of a second .env entry, so the concatenation splitter must
-    not break on it. Plain token secrets (API keys) never contain these.
-    """
-    if any(marker in value for marker in _STRUCTURED_VALUE_MARKERS):
-        return True
-    return any(ch.isspace() for ch in value)
-
-
 def _sanitize_env_lines(lines: list) -> list:
-    """Fix corrupted .env lines before reading or writing.
+    """Normalize .env line endings without changing assignment semantics.
 
-    Handles two known corruption patterns:
-    1. Concatenated KEY=VALUE pairs on a single line (missing newline between
-       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
-    2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
-
-    Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
-    split on real Hermes env var names, avoiding false positives from values
-    that happen to contain uppercase text with ``=``.
+    Content after the first ``=`` is opaque value data. A known variable name
+    embedded in that value must never be reinterpreted as another assignment;
+    concatenated assignments are ambiguous and therefore remain on one line.
     """
-    # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
-    # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
-    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
-
     sanitized: list[str] = []
     for line in lines:
         raw = line.rstrip("\r\n")
@@ -8043,58 +8154,7 @@ def _sanitize_env_lines(lines: list) -> list:
             sanitized.append(raw + "\n")
             continue
 
-        # Detect concatenated KEY=VALUE pairs on one line.
-        # Search for known KEY= patterns at any position in the line.
-        # We collect full needle ranges so we can drop matches that are
-        # fully contained within a longer overlapping needle. Without this,
-        # suffix collisions corrupt the file: e.g. LM_API_KEY= inside
-        # GLM_API_KEY= would otherwise split the line into "G\nLM_API_KEY=...".
-        match_ranges: list[tuple[int, int]] = []
-        for key_name in known_keys:
-            needle = key_name + "="
-            idx = stripped.find(needle)
-            while idx >= 0:
-                match_ranges.append((idx, idx + len(needle)))
-                idx = stripped.find(needle, idx + len(needle))
-
-        split_positions = sorted({
-            s for s, e in match_ranges
-            if not any(
-                s2 <= s and e2 >= e and (s2, e2) != (s, e)
-                for s2, e2 in match_ranges
-            )
-        })
-
-        # Only treat the line as a concatenation when it actually begins with a
-        # known KEY= (split_positions[0] == 0). A first match at a non-zero
-        # offset means the matches sit inside a value, so splitting there would
-        # silently drop the leading text — keep the line intact instead.
-        split_into_entries = False
-        segments: list[str] = []
-        if len(split_positions) > 1 and split_positions[0] == 0:
-            segments = [
-                stripped[pos:(
-                    split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                )]
-                for i, pos in enumerate(split_positions)
-            ]
-            # A genuine concatenation has a simple token value in every segment
-            # that precedes a boundary. If a preceding value looks structured
-            # (a URL/query string or whitespace), the embedded KNOWN_KEY= is
-            # part of that value rather than a new entry, so we must not split —
-            # otherwise we truncate the real secret and fabricate a bogus one.
-            split_into_entries = all(
-                not _looks_like_structured_value(seg.split("=", 1)[1])
-                for seg in segments[:-1]
-            )
-
-        if split_into_entries:
-            for seg in segments:
-                part = seg.strip()
-                if part:
-                    sanitized.append(part + "\n")
-        else:
-            sanitized.append(stripped + "\n")
+        sanitized.append(stripped + "\n")
 
     return sanitized
 
@@ -8102,8 +8162,8 @@ def _sanitize_env_lines(lines: list) -> list:
 def sanitize_env_file() -> int:
     """Read, sanitize, and rewrite ~/.hermes/.env in place.
 
-    Returns the number of lines that were fixed (concatenation splits +
-    placeholder removals).  Returns 0 when no changes are needed.
+    Returns the number of lines whose safe formatting was normalized. Returns
+    0 when no changes are needed.
     """
     env_path = get_env_path()
     if not env_path.exists():
@@ -8120,10 +8180,9 @@ def sanitize_env_file() -> int:
     if sanitized == original_lines:
         return 0
 
-    # Count fixes: difference in line count (from splits) + removed lines
+    # Count lines whose normalized representation differs.
     fixes = abs(len(sanitized) - len(original_lines))
     if fixes == 0:
-        # Lines changed content (e.g. *** removal) even if count is same
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
@@ -8256,7 +8315,7 @@ def save_env_value(key: str, value: str):
     if env_path.exists():
         with open(env_path, **read_kw) as f:
             lines = f.readlines()
-        # Sanitize on every read: split concatenated keys, drop stale placeholders
+        # Normalize safe line formatting without interpreting values as syntax.
         lines = _sanitize_env_lines(lines)
 
     serialized_value = _quote_env_value(value)
@@ -8312,6 +8371,25 @@ def save_env_value(key: str, value: str):
 
     os.environ[key] = value
     invalidate_env_cache()
+
+
+def custom_endpoint_key_env(identity: str) -> str:
+    """Env var name holding a custom endpoint's API key.
+
+    ``identity`` is whatever names the endpoint on the calling path — the
+    Desktop panel's endpoint id, or ``host:port`` for the CLI setup flow.
+    Two properties matter:
+
+    - It keys off the endpoint's own identity, not just its hostname, so two
+      endpoints on one host (``127.0.0.1:8000`` and ``:8001``) get separate
+      slots instead of the second save clobbering the first's credential.
+    - The fixed ``HERMES_CUSTOM_`` prefix keeps the result a valid POSIX name
+      even when the slug starts with a digit, which every IP-based local
+      endpoint does (``127.0.0.1`` → ``127_0_0_1``). ``save_env_value``
+      rejects digit-leading names outright.
+    """
+    slug = re.sub(r"[^A-Z0-9]+", "_", str(identity or "").upper()).strip("_")
+    return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
 def remove_env_value(key: str) -> bool:
@@ -8813,6 +8891,104 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
+def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:
+    """Return the cron drift guard axis affected by a config key, if any."""
+    normalized = str(key or "").strip().lower()
+    if normalized in {"model", "model.default", "model.model", "model.name"}:
+        return "model"
+    if normalized in {"model.provider", "provider"}:
+        return "provider"
+    return None
+
+
+def cron_model_drift_guard_enabled(
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether cron must fail closed on unpinned inference drift.
+
+    Only the literal YAML boolean ``false`` disables this spend-safety guard.
+    Missing, malformed, or non-boolean values stay fail-closed. When *config*
+    is omitted, load the active merged configuration so CLI warnings honor the
+    same user/managed setting as the scheduler.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return True
+    if not isinstance(config, dict):
+        return True
+    cron_config = config.get("cron")
+    if not isinstance(cron_config, dict):
+        return True
+    return cron_config.get("model_drift_guard", True) is not False
+
+
+def _load_cron_jobs_for_config_warning() -> List[Dict[str, Any]]:
+    """Best-effort read of the active profile's cron jobs database.
+
+    Delegates to ``cron.jobs.load_jobs`` to reuse its BOM handling, corruption
+    repair, and context-local store resolution (tests, embedders). Falls back
+    to an empty list on any failure so config writes never break.
+    """
+    try:
+        from cron.jobs import load_jobs
+        return load_jobs()
+    except Exception:
+        return []
+
+
+def warn_unpinned_cron_jobs_after_model_config_change(
+    key: str,
+    value: Any,
+    config: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Warn when a global model/provider change will trip cron's drift guard.
+
+    Cron intentionally fails closed when an unpinned agent job's current global
+    model/provider differs from its creation-time snapshot. Surface that outcome
+    when the operator changes the global axis instead of letting the next tick
+    be the first visible signal.
+    """
+    axis = _cron_model_drift_axis_for_config_key(key)
+    if axis is None:
+        return
+    if not cron_model_drift_guard_enabled(config):
+        return
+
+    new_value = str(value or "").strip().lower()
+    if not new_value:
+        return
+
+    pinned_field = axis
+    snapshot_field = f"{axis}_snapshot"
+    affected = 0
+    for job in _load_cron_jobs_for_config_warning():
+        if not job.get("enabled", True):
+            continue
+        if job.get("no_agent"):
+            continue
+        if str(job.get(pinned_field) or "").strip():
+            continue
+        snapshot = str(job.get(snapshot_field) or "").strip().lower()
+        if snapshot and snapshot != new_value:
+            affected += 1
+
+    if affected <= 0:
+        return
+
+    noun = "job" if affected == 1 else "jobs"
+    verb = "has" if affected == 1 else "have"
+    print(
+        f"⚠️  {affected} enabled unpinned cron {noun} {verb} stored "
+        f"{snapshot_field} values that differ from the new global {axis}. "
+        "They will fail closed on their next run instead of silently using the "
+        "changed model/provider. Inspect with `hermes cron list`, then pin the "
+        "intended values with `cronjob action=update job_id=<job_id> "
+        "provider=<provider> model=<model>`."
+    )
+
+
 def _default_value_for_key(dotted_key: str):
     """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG``.
 
@@ -9127,6 +9303,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     else:
         _display_value = value
     print(f"✓ Set {key} = {_display_value} in {config_path}")
+    warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the
     # user the runtime may never read it and suggest the likely-intended path.

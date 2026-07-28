@@ -2180,7 +2180,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _write_update_prompt_response(answer: str) -> None:
         response_path = get_hermes_home() / ".update_response"
         tmp_path = response_path.with_suffix(".tmp")
-        tmp_path.write_text(answer)
+        tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)
 
     async def send_voice(
@@ -5447,7 +5447,7 @@ def _qr_register_inner(
 # ──────────────────────────────────────────────────────────────────────────
 
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-_MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
+_MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _MIGRATION_VOICE_EXTS = {".ogg", ".opus"}
 

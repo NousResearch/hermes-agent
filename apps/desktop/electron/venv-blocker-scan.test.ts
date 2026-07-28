@@ -3,15 +3,15 @@
 /**
  * Tests for apps/desktop/electron/venv-blocker-scan.ts
  *
- * Run with: npx tsx --test electron/venv-blocker-scan.test.ts
- * (from apps/desktop)
+ * Run with: npx vitest run electron/venv-blocker-scan.test.ts
+ * (from apps/desktop; wired into npm test:desktop:platforms)
  */
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, it } from 'node:test'
+import { describe, it } from 'vitest'
 
 import {
   formatBlockerMessage,

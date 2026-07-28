@@ -23935,6 +23935,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _process_baseline = None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             request_hard_interrupt(running_agent, interrupt_reason)
+
+            # Notify plugins so they can drop in-flight per-turn resources
+            # (e.g. external services blocked on a tool result that the
+            # agent loop will never consume). Fires for /stop and the /new
+            # fast-path taken from the running-agent guard in
+            # _dispatch_message; on the slow /new path on_session_finalize
+            # fires later in _handle_reset_command. Gated on a real running
+            # agent: the pending-sentinel /stop path has no in-flight work
+            # to cancel, so emitting the hook there would just be noise.
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                _invoke_hook(
+                    "agent_loop_stopped",
+                    session_key=session_key,
+                    platform=source.platform.value if source.platform else "",
+                    reason=interrupt_reason,
+                    invalidation_reason=invalidation_reason,
+                )
+            except Exception:
+                logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+
             _process_task_id = getattr(
                 running_agent, "_gateway_turn_process_task_id", ""
             )

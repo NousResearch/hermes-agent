@@ -2,7 +2,13 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
 
-import { type ActionItemSpec, ActionsContextMenu, DROPDOWN_KIT, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  DROPDOWN_KIT,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
@@ -98,7 +104,13 @@ function useProjectActions({
       label: p.reveal,
       onSelect: () => void revealPath(project.path)
     },
-    { disabled: !project.path, icon: 'copy', key: 'copy', label: p.copyPath, onSelect: () => void copyPath(project.path) }
+    {
+      disabled: !project.path,
+      icon: 'copy',
+      key: 'copy',
+      label: p.copyPath,
+      onSelect: () => void copyPath(project.path)
+    }
   ]
 
   const dangerItem: ActionItemSpec = project.isAuto
@@ -286,7 +298,13 @@ interface ProjectContextMenuProps {
 // Wrap a project row so right-clicking it opens the same actions as its kebab.
 // The kebab's row-anchored Appearance popover can't nest in a context menu, so
 // here Appearance is a submenu with the same swatch + icon picker.
-export function ProjectContextMenu({ project, isActive, scoped = false, onExitScope, children }: ProjectContextMenuProps) {
+export function ProjectContextMenu({
+  project,
+  isActive,
+  scoped = false,
+  onExitScope,
+  children
+}: ProjectContextMenuProps) {
   const { t } = useI18n()
   const p = t.sidebar.projects
 

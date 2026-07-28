@@ -3,7 +3,13 @@ import { memo, useEffect, useRef, useState } from 'react'
 
 import { WorktreeDialog } from '@/app/chat/sidebar/projects/worktree-dialog'
 import { StatusRow } from '@/components/chat/status-row'
-import { type ActionItemSpec, ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  ActionsMenu,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'

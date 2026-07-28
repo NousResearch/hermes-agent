@@ -80,7 +80,10 @@ export interface ActionItemSpec {
 }
 
 /** Render one `ActionItemSpec` with the given kit's Item component. */
-export function renderActionItem(kit: MenuKit, { className, disabled, icon, iconNode, key, label, onSelect, variant }: ActionItemSpec) {
+export function renderActionItem(
+  kit: MenuKit,
+  { className, disabled, icon, iconNode, key, label, onSelect, variant }: ActionItemSpec
+) {
   return (
     <kit.Item
       className={className}
@@ -95,8 +98,10 @@ export function renderActionItem(kit: MenuKit, { className, disabled, icon, icon
   )
 }
 
-interface ActionsMenuProps
-  extends Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'side' | 'sideOffset'> {
+interface ActionsMenuProps extends Pick<
+  React.ComponentProps<typeof DropdownMenuContent>,
+  'align' | 'side' | 'sideOffset'
+> {
   /** The trigger (a kebab button). Wrapped in `DropdownMenuTrigger asChild`. */
   children: React.ReactNode
   /** The action rows, rendered with `DROPDOWN_KIT`. Share this with `ActionsContextMenu`. */
@@ -161,7 +166,13 @@ interface ActionsContextMenuProps {
  * Wrap a row so right-clicking it opens the same menu as its kebab. Pass the
  * kebab's `items` render function so both surfaces mirror each other.
  */
-export function ActionsContextMenu({ ariaLabel, children, contentClassName, disabled, items }: ActionsContextMenuProps) {
+export function ActionsContextMenu({
+  ariaLabel,
+  children,
+  contentClassName,
+  disabled,
+  items
+}: ActionsContextMenuProps) {
   if (disabled) {
     return <>{children}</>
   }

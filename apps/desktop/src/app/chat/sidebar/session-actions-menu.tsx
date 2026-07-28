@@ -8,7 +8,13 @@ import {
   closeTreeTabsToRight,
   treeTabCloseTargets
 } from '@/components/pane-shell/tree/store'
-import { type ActionItemSpec, ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  ActionsMenu,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'

@@ -1,6 +1,12 @@
 import type * as React from 'react'
 
-import { type ActionItemSpec, ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  ActionsMenu,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'

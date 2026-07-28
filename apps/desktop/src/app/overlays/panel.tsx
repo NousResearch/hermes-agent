@@ -214,7 +214,12 @@ export function PanelListRow({
   // Right-click parity: same items as the kebab. `disabled` (no actionable
   // items) renders the row bare.
   return menuItems ? (
-    <ActionsContextMenu ariaLabel={menuLabel} contentClassName="w-40" disabled={menuItems.length === 0} items={renderPanelMenuItems(menuItems)}>
+    <ActionsContextMenu
+      ariaLabel={menuLabel}
+      contentClassName="w-40"
+      disabled={menuItems.length === 0}
+      items={renderPanelMenuItems(menuItems)}
+    >
       {row}
     </ActionsContextMenu>
   ) : (

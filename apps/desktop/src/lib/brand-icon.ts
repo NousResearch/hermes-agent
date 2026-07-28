@@ -406,7 +406,10 @@ const BRAND_ICONS: Record<string, BrandIcon> = {
 // a subdomain entry like `docs.google.com` beats the `google.com` fallback. The
 // bare TLD is never tested.
 export function resolveBrandIcon(hostname: string): BrandIcon | null {
-  const host = hostname.trim().toLowerCase().replace(/^www\./, '')
+  const host = hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^www\./, '')
 
   if (!host.includes('.')) {
     return null

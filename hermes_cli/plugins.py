@@ -167,8 +167,11 @@ VALID_HOOKS: Set[str] = {
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:
     #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
+    #   {"action": "reply",   "text": "...", "reply_to": bool} -> direct reply, drop
     #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
     #   {"action": "allow"}  /  None             -> normal dispatch
+    # The reply action delivers via the message's own profile adapter and
+    # short-circuits before auth; it is rate-limited per platform+chat.
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous

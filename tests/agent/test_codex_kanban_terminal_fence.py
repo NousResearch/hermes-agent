@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -13,8 +14,12 @@ from agent.codex_runtime import (
     make_codex_app_server_event_bridge,
     run_codex_app_server_turn,
 )
-from agent.transports.codex_app_server_session import TurnResult
+from agent.transports.codex_app_server_session import (
+    CodexAppServerSession,
+    TurnResult,
+)
 from hermes_cli import kanban_db as kb
+from tools import kanban_tools
 
 
 def _terminal_item(tool: str) -> dict:
@@ -84,6 +89,108 @@ def _set_worker_identity(
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+
+
+class _TerminalCallbackClient:
+    """Drive a real session loop around the real Kanban terminal handler."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict]] = []
+        self.responses: list[tuple[object, dict]] = []
+        self.error_responses: list[tuple[object, int, str]] = []
+        self.callback_result: str | None = None
+        self.closed = False
+        self._server_request = {
+            "id": "approval-after-terminal",
+            "method": "item/commandExecution/requestApproval",
+            "params": {},
+        }
+        self._notifications = [
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-kanban-e2e",
+                    "turnId": "turn-kanban-e2e",
+                    "item": {
+                        "type": "agentMessage",
+                        "id": "late-message",
+                        "text": "must not cross the terminal boundary",
+                    },
+                },
+            },
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-kanban-e2e",
+                    "turn": {
+                        "id": "turn-kanban-e2e",
+                        "status": "completed",
+                        "error": None,
+                    },
+                },
+            },
+        ]
+
+    def initialize(self, **_kwargs):
+        return {
+            "userAgent": "fake/0.0.0",
+            "codexHome": "/tmp",
+            "platformOs": "linux",
+            "platformFamily": "unix",
+        }
+
+    def request(self, method: str, params=None, timeout: float = 30.0):
+        del timeout
+        self.requests.append((method, params or {}))
+        if method == "thread/start":
+            return {"thread": {"id": "thread-kanban-e2e"}}
+        if method == "turn/start":
+            return {"turn": {"id": "turn-kanban-e2e"}}
+        return {}
+
+    def take_server_request(self, timeout: float = 0.0):
+        del timeout
+        request, self._server_request = self._server_request, None
+        return request
+
+    def take_notification(self, timeout: float = 0.0):
+        del timeout
+        if self.callback_result is None:
+            self.callback_result = kanban_tools._handle_complete(
+                {"summary": "completed through the real Kanban handler"}
+            )
+            item = _terminal_item("kanban_complete")
+            item["result"] = {
+                "content": [{"type": "text", "text": self.callback_result}]
+            }
+            return {
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-kanban-e2e",
+                    "turnId": "turn-kanban-e2e",
+                    "item": item,
+                },
+            }
+        if self._notifications:
+            return self._notifications.pop(0)
+        return None
+
+    def respond(self, request_id, result):
+        self.responses.append((request_id, result))
+
+    def respond_error(self, request_id, code, message, data=None):
+        del data
+        self.error_responses.append((request_id, code, message))
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_alive(self) -> bool:
+        return not self.closed
+
+    def stderr_tail(self, n: int = 20):
+        del n
+        return []
 
 
 @pytest.mark.parametrize("terminal_tool", ["kanban_complete", "kanban_block"])
@@ -239,6 +346,85 @@ def test_terminal_fence_closes_session_and_suppresses_post_turn_work(
 
     assert session.interrupt_requested is True
     assert session.closed is True
+    assert agent._codex_session is None
+    agent._sync_external_memory_for_turn.assert_not_called()
+    agent._spawn_background_review.assert_not_called()
+    assert result["completed"] is True
+    assert result["partial"] is False
+    assert result["error"] is None
+
+
+def test_real_terminal_callback_commits_and_fences_entire_turn(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "kanban.db"
+    conn = kb.connect(db_path)
+    try:
+        task_id, run_id = _create_claimed_task(conn, "integrated terminal fence")
+        assert kb.get_task(conn, task_id).status == "running"
+    finally:
+        conn.close()
+    _set_worker_identity(monkeypatch, db_path, task_id, run_id)
+
+    client = _TerminalCallbackClient()
+    agent = SimpleNamespace(
+        _codex_session=None,
+        _codex_kanban_terminal_fenced=False,
+        _session_db=None,
+        _iters_since_skill=0,
+        _skill_nudge_interval=1,
+        valid_tool_names={"skill_manage"},
+        session_api_calls=0,
+        context_compressor=SimpleNamespace(
+            awaiting_real_usage_after_compression=False
+        ),
+        _sync_external_memory_for_turn=MagicMock(),
+        _spawn_background_review=MagicMock(),
+    )
+    session = CodexAppServerSession(
+        cwd=str(tmp_path),
+        client_factory=lambda **_kwargs: client,
+        on_event=make_codex_app_server_event_bridge(agent),
+    )
+    agent._codex_session = session
+
+    result = run_codex_app_server_turn(
+        agent,
+        user_message="finish the task",
+        original_user_message="finish the task",
+        messages=[],
+        effective_task_id=task_id,
+        should_review_memory=True,
+    )
+
+    assert json.loads(client.callback_result)["ok"] is True
+    conn = kb.connect(db_path)
+    try:
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+        terminal_event = conn.execute(
+            """
+            SELECT 1
+              FROM task_events
+             WHERE task_id = ?
+               AND run_id = ?
+               AND kind = 'completed'
+            """,
+            (task_id, run_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert task.status == "done"
+    assert run.id == run_id
+    assert run.status == "done"
+    assert run.outcome == "completed"
+    assert terminal_event is not None
+    assert client.closed is True
+    assert len(client._notifications) == 2
+    assert client.responses == []
+    assert any(method == "turn/interrupt" for method, _ in client.requests)
     assert agent._codex_session is None
     agent._sync_external_memory_for_turn.assert_not_called()
     agent._spawn_background_review.assert_not_called()

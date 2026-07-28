@@ -1318,6 +1318,60 @@ def test_bulk_partial_failure_doesnt_abort_siblings(client):
         assert t["priority"] == 7
 
 
+def test_bulk_refused_status_does_not_apply_other_fields(client):
+    """A refused status transition in a bulk patch must not silently apply
+    the same request's priority/assignee mutations.
+
+    Parity with the single-task PATCH, which raises 409 on a refused
+    transition and commits nothing further. Regression guard: previously
+    the bulk loop recorded ``ok=False`` for the refused status but fell
+    through and still wrote priority/assignee onto the same row.
+    """
+    # Parent stays un-done, so the child sits in 'todo' and cannot be
+    # blocked (block_task only transitions from running/ready).
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "parent"}
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "assignee": "orig", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo"
+    assert child["priority"] == 0
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={
+            "ids": [child["id"]],
+            "status": "blocked",     # refused: child is in 'todo'
+            "assignee": "hijacked",  # must NOT be applied
+            "priority": 9,           # must NOT be applied
+        },
+    )
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert len(results) == 1
+    assert results[0]["id"] == child["id"]
+    assert results[0]["ok"] is False
+    assert "blocked" in results[0]["error"]
+
+    # The refused row must be untouched.
+    after = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]
+    assert after["status"] == "todo"
+    assert after["priority"] == 0
+    assert after["assignee"] == "orig"
+
+    # No phantom reprioritized event leaked into the timeline.
+    conn = kb.connect()
+    try:
+        kinds = [e.kind for e in kb.list_events(conn, child["id"])]
+    finally:
+        conn.close()
+    assert "reprioritized" not in kinds
+
+
 def test_bulk_empty_ids_400(client):
     r = client.post("/api/plugins/kanban/tasks/bulk", json={"ids": []})
     assert r.status_code == 400

@@ -33,14 +33,12 @@
 //              "reactionId": "..." | null (restart-recovery fallback)}
 //   - POST /send-poll   -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "title": "...", "options": ["...", "..."]}
+//       Sends a native poll (orange iMessage poll bubble). A tap streams
+//       back inbound as a `poll_option` event ({title, selected}).
 //   - POST /send-effect -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...", "effect": "confetti" | ...}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
-//   - POST /send-poll   -> {"ok": true, "messageId": "..."}
-//       body: {"spaceId": "...", "title": "...", "options": ["A", "B", ...]}
-//       Sends a native poll (orange iMessage poll bubble). A tap streams
-//       back inbound as a `poll_option` event ({title, selected}).
 //   - POST /shutdown    -> {"ok": true}; then process exits
 //
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
@@ -257,7 +255,6 @@ try {
     text: spectrumText,
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
-    poll: spectrumPoll,
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
@@ -856,27 +853,6 @@ const server = http.createServer(async (req, res) => {
           );
         }
       }
-      return ok(res, { messageId: result?.id || null });
-    }
-    if (req.url === "/send-poll") {
-      const { spaceId, title, options } = body || {};
-      if (!spaceId || typeof title !== "string" || !title) {
-        return badRequest(res, "spaceId and title are required");
-      }
-      if (!Array.isArray(options) || options.length < 1) {
-        return badRequest(res, "options must be a non-empty array");
-      }
-      // spectrum-ts' poll() builder accepts string options; it degrades to a
-      // numbered text list on platforms without native polls (so the gateway
-      // text-intercept still resolves the clarify there).
-      const opts = options
-        .map((o) => (typeof o === "string" ? o : o?.title))
-        .filter((o) => typeof o === "string" && o);
-      if (!opts.length) {
-        return badRequest(res, "options must contain at least one string");
-      }
-      const space = await resolveSpace(spaceId);
-      const result = await space.send(spectrumPoll(title, ...opts));
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/react") {

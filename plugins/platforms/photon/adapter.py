@@ -1631,21 +1631,13 @@ class PhotonAdapter(BasePlatformAdapter):
         options: list[str],
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a native iMessage poll through Photon Spectrum."""
-        choices = [str(option).strip() for option in options if str(option).strip()]
-        if len(choices) < 2:
-            return SendResult(
-                success=False,
-                error="Photon polls require at least two non-empty options",
-            )
-        try:
-            data = await self._sidecar_call(
-                "/send-poll",
-                {"spaceId": chat_id, "title": title.strip(), "options": choices},
-            )
-        except Exception as e:
-            return SendResult(success=False, error=str(e))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        """Send a native iMessage poll through Photon Spectrum.
+
+        Thin public wrapper over :meth:`_sidecar_send_poll`, the single
+        implementation of the sidecar's ``/send-poll`` primitive (also used
+        by the poll-backed clarify path).
+        """
+        return await self._sidecar_send_poll(chat_id, title, list(options or []))
 
     async def send_effect(
         self,
@@ -2022,8 +2014,8 @@ class PhotonAdapter(BasePlatformAdapter):
         opts = [str(o).strip() for o in (options or []) if str(o).strip()]
         if not title or not title.strip():
             return SendResult(success=False, error="poll title is required")
-        if not opts:
-            return SendResult(success=False, error="poll needs at least one option")
+        if len(opts) < 2:
+            return SendResult(success=False, error="poll needs at least two options")
         body: Dict[str, Any] = {
             "spaceId": space_id,
             "title": title.strip()[: self.MAX_MESSAGE_LENGTH],

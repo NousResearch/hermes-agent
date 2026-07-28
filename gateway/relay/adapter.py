@@ -83,7 +83,7 @@ class RelayAdapter(BasePlatformAdapter):
         # disambiguation, and it needs the chat_type to know a chat is a DM.
         self._chat_type_by_chat: Dict[str, str] = {}
         # chat_id -> last triggering message ts (Slack). The typing/status
-        # lane's synthetic thread anchor in thread-per-message mode (QA-1);
+        # lane's synthetic thread anchor in thread-per-message mode;
         # see _capture_scope and send_typing.
         self._last_inbound_ts_by_chat: Dict[str, str] = {}
         # chat_id -> the UNDERLYING platform (e.g. "discord", "telegram") this
@@ -141,7 +141,7 @@ class RelayAdapter(BasePlatformAdapter):
     def supports_status_text(self) -> bool:  # type: ignore[override]
         """Whether the fronted platform renders a TEXT status line.
 
-        Native parity (QA-1 rich status): Slack's typing surface is the
+        Native parity (rich status text): Slack's typing surface is the
         assistant status line ("Finding answers…" next to the bot name), a
         text-rendering indicator. When the relay fronts Slack, advertise it so
         run.py's live-status lane feeds per-tool phrases via
@@ -312,7 +312,7 @@ class RelayAdapter(BasePlatformAdapter):
             return True
 
     def _stamp_slack_session_thread(self, event) -> None:
-        """Native session-keying parity for fronted Slack (QA-3).
+        """Native session-keying parity for fronted Slack DMs.
 
         Native SlackAdapter's inbound handler stamps ``thread_ts =
         event.thread_ts or ts`` — every TOP-LEVEL message carries its own ts
@@ -448,7 +448,7 @@ class RelayAdapter(BasePlatformAdapter):
             chat_type = getattr(src, "chat_type", None)
             if chat_type:
                 self._chat_type_by_chat[str(chat)] = str(chat_type)
-            # Triggering message ts (QA-1): the typing/status lane's metadata
+            # Triggering message ts: the typing/status lane's metadata
             # (base.py _thread_metadata_for_source) carries NO thread anchor
             # for a top-level DM, but in thread-per-message mode the status
             # must target the per-message thread (its root = this ts). Cache
@@ -850,7 +850,7 @@ class RelayAdapter(BasePlatformAdapter):
         )
         if effective_reply_to is None and reply_to is not None:
             send_metadata.pop("reply_to_message_id", None)
-        # QA-7: the connector's Slack sender THREADS ON METADATA ONLY —
+        # The connector's Slack sender THREADS ON METADATA ONLY —
         # threadTs() reads metadata.thread_id/thread_ts and never looks at
         # the frame's reply_to. A send whose only threading signal is
         # reply_to (base.py's final-reply and fallback lanes build metadata
@@ -939,7 +939,7 @@ class RelayAdapter(BasePlatformAdapter):
         # threading signal (run.py's synthetic root feeds just the
         # progress/status lane). Dropping it unconditionally exiled the final
         # message to the DM root while progress stayed threaded (2026-07-27
-        # report, sibling of the QA-5 prompt bug). Native SlackAdapter only
+        # report, same class as the prompt-placement bug). Native SlackAdapter only
         # suppresses the anchor when reply_in_thread=false; mirror that.
         reply_in_thread = self._effective_reply_in_thread()
         if reply_in_thread:
@@ -1005,7 +1005,7 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None:
             return
-        # Thread anchor for the status surface (QA-1). Slack's status line
+        # Thread anchor for the status surface. Slack's status line
         # ("is thinking…" in the thread's replies footer — works with plain
         # chat:write, confirmed on native no-assistant bots) is THREAD-only:
         # the connector's typing case no-ops without a thread_ts. But the
@@ -1023,17 +1023,17 @@ class RelayAdapter(BasePlatformAdapter):
             and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
-            # Thread mode: status targets the per-message thread (QA-1).
+            # Thread mode: status targets the per-message thread.
             # Flat mode: the status STILL anchors to the triggering ts —
             # setStatus renders in the footer space and clears without a
-            # message artifact, and flat sends strip their anchors (QA-6/7)
+            # message artifact, and flat sends strip their anchors
             # so reply placement cannot inherit it. Unconditional: liveliness
             # is not a preference, it ships in whatever form the mode
             # supports (no speculative opt-out knob).
             anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
             if anchor:
                 md["thread_id"] = anchor
-        # Rich status parity (QA-1): run.py's live-status lane stashes the
+        # Rich status parity: run.py's live-status lane stashes the
         # current per-tool phrase via set_status_text() (base class store).
         # Carry it as the typing frame's content so the connector's Slack
         # sender renders it on assistant.threads.setStatus — the same phrase
@@ -1081,7 +1081,7 @@ class RelayAdapter(BasePlatformAdapter):
         platform = self._platform_by_chat.get(str(chat_id))
         if platform != Platform.SLACK.value:
             return
-        # Clear must target the SAME thread the heartbeat set (QA-1): apply
+        # Clear must target the SAME thread the heartbeat set: apply
         # the identical synthetic-anchor rule as send_typing, or the clear
         # frame no-ops threadless and the status line sticks until Slack's
         # own timeout.

@@ -1592,6 +1592,8 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
         "type": "send",
         "message": fake_msg,
         "notice": "⚡ Loading bundle: analysis-pack (2 skills)",
+        # UIs render this invocation; `message` stays model-facing scaffolding.
+        "display": "/analysis-pack",
     }
     assert worker.calls == []
 
@@ -2018,6 +2020,8 @@ def test_command_dispatch_returns_custom_bundle_payload(server):
         "type": "send",
         "message": fake_msg,
         "notice": "⚡ Loading bundle: review-suite (3 skills)",
+        # UIs render this invocation; `message` stays model-facing scaffolding.
+        "display": "/review-suite",
     }
     build_bundle.assert_called_once_with(
         "/review-suite",

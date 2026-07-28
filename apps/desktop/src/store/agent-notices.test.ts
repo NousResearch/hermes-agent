@@ -89,6 +89,7 @@ test('the trailing "· detail" is split off as a secondary meta line, not inline
     level: 'error',
     text: '✕ Credit access paused · run /topup to top up'
   })
+
   expect(paused?.message).toBe('Credit access paused')
   expect(paused?.meta).toBe('run /topup to top up')
 

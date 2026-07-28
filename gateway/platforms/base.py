@@ -854,21 +854,15 @@ def get_audio_cache_dir() -> Path:
 
 
 def _sniff_audio_ext(data: bytes, fallback_ext: str) -> str:
-    """Prefer a container-matching extension when audio magic bytes are obvious."""
-    fallback = fallback_ext if fallback_ext.startswith(".") else f".{fallback_ext}"
-    if len(data) >= 8 and data[4:8] == b"ftyp":
-        return ".m4a"
-    if data.startswith(b"OggS"):
-        return ".ogg"
-    if data.startswith(b"fLaC"):
-        return ".flac"
-    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WAVE":
-        return ".wav"
-    if data.startswith(b"ID3") or data[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
-        return ".mp3"
-    if data.startswith(b"\x1a\x45\xdf\xa3"):
-        return ".webm"
-    return fallback
+    """Prefer a container-matching extension when audio magic bytes are obvious.
+
+    Thin wrapper around the shared sniffer in ``tools.audio_container`` —
+    ONE module owns container detection for both the outbound TTS repair
+    (``tools/tts_tool.py``) and this inbound cache path.
+    """
+    from tools.audio_container import sniff_audio_ext
+
+    return sniff_audio_ext(data, fallback_ext)
 
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:

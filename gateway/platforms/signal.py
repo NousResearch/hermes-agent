@@ -43,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
@@ -97,34 +98,17 @@ def _guess_extension(data: bytes) -> str:
         return ".gif"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
-    # RIFF/WAVE shares the ``RIFF`` chunk header with WebP; the form-type at
-    # bytes 8-11 disambiguates. Without this, an inbound WAV voice note fell
-    # through to ``.bin`` (octet-stream) and was cached as a document, so STT
-    # never saw it — even though ``.wav`` is in the audio allowlist + MIME map.
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
-        return ".wav"
     if data[:4] == b"%PDF":
         return ".pdf"
-    if len(data) >= 8 and data[4:8] == b"ftyp":
-        # iOS Signal delivers voice notes as MP4-container AAC carrying an
-        # audio ftyp brand ("M4A ", "M4B "). Returning ".mp4" for those made
-        # them cache as documents and STT reject them ("Invalid file
-        # format") even though the bytes are valid audio. Read the brand so
-        # audio-branded files land as ".m4a" and route to the audio cache.
-        brand = data[8:12].lower() if len(data) >= 12 else b""
-        if brand in (b"m4a ", b"m4b "):
-            return ".m4a"
-        return ".mp4"
-    if data[:4] == b"OggS":
-        return ".ogg"
-    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
-        # ``0xFF 0xFx`` is shared by MP3 and ADTS AAC. The discriminator
-        # is bits 3-1 of byte 1: ADTS has ``ID=0`` and ``layer=00`` (mask
-        # 0xF6, target 0xF0); MP3 has ``ID=1`` and ``layer`` in {01,10,11}
-        # (mask 0xF6, target in {0xF2, 0xF4, 0xF6}).
-        if (data[1] & 0xF6) == 0xF0:
-            return ".aac"
-        return ".mp3"
+    # Audio/AV containers: delegate to the shared central sniffer
+    # (tools/audio_container.py) — ONE module owns magic-byte container
+    # detection. It handles the brand/form-type disambiguations this
+    # function used to carry locally: RIFF/WAVE vs WEBP (WEBP is claimed
+    # above, before delegation), ftyp audio brands ("M4A ", "M4B ") vs
+    # video brands (isom/mp42/avc1/qt), and MP3 vs ADTS AAC sync words.
+    container = sniff_container(data)
+    if container is not None:
+        return CONTAINER_TO_EXT[container]
     if data[:2] == b"PK":
         return ".zip"
     return ".bin"

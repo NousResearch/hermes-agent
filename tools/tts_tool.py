@@ -995,21 +995,20 @@ def _ffmpeg_transcode_to_opus(input_path: str, ogg_path: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _sniff_audio_container(path: str) -> str:
-    """Return 'ogg' | 'wav' | 'mp3' | 'flac' | 'unknown' from magic bytes."""
+    """Return a container id ('ogg', 'wav', 'mp3', 'flac', ...) or 'unknown'.
+
+    Delegates to the shared magic-byte sniffer in ``tools.audio_container``
+    (one module owns container detection for both this outbound repair and
+    the inbound gateway audio cache).
+    """
+    from tools.audio_container import sniff_container
+
     try:
         with open(path, "rb") as fh:
             head = fh.read(12)
     except OSError:
         return "unknown"
-    if head[:4] == b"OggS":
-        return "ogg"
-    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
-        return "wav"
-    if head[:4] == b"fLaC":
-        return "flac"
-    if head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
-        return "mp3"
-    return "unknown"
+    return sniff_container(head) or "unknown"
 
 
 def _repair_ogg_container(file_str: str) -> str:

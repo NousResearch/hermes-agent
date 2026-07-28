@@ -207,18 +207,16 @@ export function FindBar() {
         </button>
       </Tip>
 
-      <Tip label={t.common.close}>
-        <button
-          aria-label={t.common.close}
-          className="flex h-5 w-5 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
-          onClick={closeFindBar}
-          type="button"
-        >
-          <svg height="10" viewBox="0 0 12 12" width="10">
-            <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" />
-          </svg>
-        </button>
-      </Tip>
+      <button
+        aria-label={t.common.close}
+        className="flex h-5 w-5 items-center justify-center rounded text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background)"
+        onClick={closeFindBar}
+        type="button"
+      >
+        <svg height="10" viewBox="0 0 12 12" width="10">
+          <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" strokeWidth="1.5" />
+        </svg>
+      </button>
     </div>
   )
 }

@@ -67,6 +67,64 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('normalizes Unix-second timestamps before rendering artifacts', () => {
+    const seconds = 1_785_144_916.737_952
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Reference: https://example.com/from-seconds',
+        role: 'assistant',
+        timestamp: seconds
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(seconds * 1000)
+    expect(new Date(artifacts[0]?.timestamp ?? 0).getUTCFullYear()).toBe(2026)
+  })
+
+  it('preserves timestamps that are already milliseconds', () => {
+    const milliseconds = 1_785_144_916_737
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Reference: https://example.com/from-milliseconds',
+        role: 'assistant',
+        timestamp: milliseconds
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(milliseconds)
+  })
+
+  it('interprets ambiguous values below the millisecond threshold as Unix seconds', () => {
+    const ambiguousTimestamp = 42_000_000_000
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Reference: https://example.com/from-ambiguous-timestamp',
+        role: 'assistant',
+        timestamp: ambiguousTimestamp
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(ambiguousTimestamp * 1000)
+  })
+
+  it('does not multiply the Date.now fallback', () => {
+    const now = 1_785_144_916_737
+
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+
+    const artifacts = collectArtifactsForSession(makeSession({ last_active: 0, started_at: 0 }), [
+      {
+        content: 'Reference: https://example.com/from-now',
+        role: 'assistant'
+      }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(now)
+  })
+
   it('resolves remote image artifact thumbnails through the desktop fs bridge', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path.startsWith('/api/fs/read-data-url?')) {

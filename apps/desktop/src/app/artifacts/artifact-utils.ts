@@ -17,6 +17,15 @@ export interface ArtifactRecord {
   timestamp: number
 }
 
+// Hermes wire timestamps use Unix seconds. Preserve already-normalized modern
+// millisecond values above this boundary; ambiguous smaller values (including
+// pre-1973 milliseconds) are interpreted as seconds by contract.
+const UNIX_MILLISECONDS_THRESHOLD = 100_000_000_000
+
+function normalizeArtifactTimestamp(timestamp: number): number {
+  return timestamp < UNIX_MILLISECONDS_THRESHOLD ? timestamp * 1000 : timestamp
+}
+
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
@@ -273,7 +282,9 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp: normalizeArtifactTimestamp(
+          message.timestamp || session.last_active || session.started_at || Date.now()
+        )
       })
     })
   }

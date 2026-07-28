@@ -16,6 +16,31 @@ import sys
 from unittest.mock import patch
 
 
+class FakeKeyBindings:
+    def __init__(self):
+        self.bound = []
+
+    def add(self, *keys, **_kwargs):
+        def _decorator(handler):
+            self.bound.append(keys)
+            return handler
+
+        return _decorator
+
+
+def _bind_submit_keys_for_local_linux(cli_mod, *, multiline_shortcuts_enabled):
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("builtins.open", side_effect=OSError("no /proc")):
+                kb = FakeKeyBindings()
+                cli_mod._bind_prompt_submit_keys(
+                    kb,
+                    lambda _event: None,
+                    multiline_shortcuts_enabled=multiline_shortcuts_enabled,
+                )
+                return kb
+
+
 def test_native_windows_preserves_newline():
     import cli as cli_mod
     with patch.object(sys, "platform", "win32"):
@@ -72,6 +97,76 @@ def test_pure_local_linux_does_not_preserve():
         with patch.dict(os.environ, {}, clear=True):
             with patch("builtins.open", side_effect=OSError("no /proc")):
                 assert cli_mod._preserve_ctrl_enter_newline() is False
+
+
+def test_cli_multiline_shortcuts_default_on():
+    """Hermes should default to the common harness behavior: Ctrl+J newline.
+
+    Claude Code documents Ctrl+J as a no-setup newline shortcut, OpenCode's
+    default input_newline includes ctrl+j, and Codex exposes Ctrl+J/keymap
+    newline behavior. Keep Hermes aligned unless the user opts out.
+    """
+    import cli as cli_mod
+
+    assert cli_mod._cli_multiline_shortcuts_enabled({"display": {}}) is True
+
+
+def test_cli_multiline_shortcuts_can_be_disabled():
+    import cli as cli_mod
+
+    assert cli_mod._cli_multiline_shortcuts_enabled(
+        {"display": {"cli_multiline_shortcuts": False}}
+    ) is False
+
+
+def test_ctrl_j_is_not_submit_when_multiline_shortcuts_enabled():
+    """With the default setting, c-j is reserved for the newline handler.
+
+    This fixes local terminals like iTerm2 where Ctrl+J reaches prompt_toolkit
+    as c-j but the legacy POSIX fallback bound it to submit.
+    """
+    import cli as cli_mod
+
+    kb = _bind_submit_keys_for_local_linux(
+        cli_mod,
+        multiline_shortcuts_enabled=True,
+    )
+
+    assert ("enter",) in kb.bound
+    assert ("c-j",) not in kb.bound
+
+
+def test_ctrl_j_legacy_submit_when_multiline_shortcuts_disabled():
+    """Users can opt out to preserve Enter-as-LF submit fallback on odd PTYs."""
+    import cli as cli_mod
+
+    kb = _bind_submit_keys_for_local_linux(
+        cli_mod,
+        multiline_shortcuts_enabled=False,
+    )
+
+    assert ("enter",) in kb.bound
+    assert ("c-j",) in kb.bound
+
+
+def test_backslash_enter_continuation_replaces_marker_with_newline():
+    import cli as cli_mod
+
+    assert cli_mod._apply_backslash_line_continuation("first line\\") == "first line\n"
+    assert cli_mod._apply_backslash_line_continuation("first line\\   ") == "first line\n"
+
+
+def test_iterm_is_allowlisted_for_extended_enter_keys():
+    """iTerm2 needs the app to request extended keys before Shift+Enter is distinct."""
+    import cli as cli_mod
+
+    assert cli_mod._terminal_supports_extended_enter_keys({"TERM_PROGRAM": "iTerm.app"}) is True
+
+
+def test_unknown_terminal_does_not_enable_extended_enter_keys():
+    import cli as cli_mod
+
+    assert cli_mod._terminal_supports_extended_enter_keys({"TERM_PROGRAM": "unknown"}) is False
 
 
 def test_proc_version_microsoft_marker_preserves_newline():

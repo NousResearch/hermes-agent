@@ -302,19 +302,19 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessage
     extracted: list[ChatCompletionMessageToolCall] = []
     consumed_spans: list[tuple[int, int]] = []
 
-    def _try_add_tool_call(raw_json: str) -> None:
+    def _try_add_tool_call(raw_json: str) -> bool:
         try:
             obj = json.loads(raw_json)
         except Exception:
-            return
+            return False
         if not isinstance(obj, dict):
-            return
+            return False
         fn = obj.get("function")
         if not isinstance(fn, dict):
-            return
+            return False
         fn_name = fn.get("name")
         if not isinstance(fn_name, str) or not fn_name.strip():
-            return
+            return False
         fn_args = fn.get("arguments", "{}")
         if not isinstance(fn_args, str):
             fn_args = json.dumps(fn_args, ensure_ascii=False)
@@ -329,18 +329,19 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessage
                 arguments=fn_args,
             )
         )
+        return True
 
     for m in _TOOL_CALL_BLOCK_RE.finditer(text):
         raw = m.group(1)
-        _try_add_tool_call(raw)
-        consumed_spans.append((m.start(), m.end()))
+        if _try_add_tool_call(raw):
+            consumed_spans.append((m.start(), m.end()))
 
     # Only try bare-JSON fallback when no XML blocks were found.
     if not extracted:
         for m in _TOOL_CALL_JSON_RE.finditer(text):
             raw = m.group(0)
-            _try_add_tool_call(raw)
-            consumed_spans.append((m.start(), m.end()))
+            if _try_add_tool_call(raw):
+                consumed_spans.append((m.start(), m.end()))
 
     if not consumed_spans:
         return extracted, text.strip()

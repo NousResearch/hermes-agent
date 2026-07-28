@@ -166,6 +166,480 @@ class TestRunBackgroundTask:
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_successful_task_forces_terminal_secret_redaction(self, monkeypatch):
+        """Background-agent final text uses the same forced egress boundary."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        runner = _make_runner()
+        secret = "opaqueBackgroundCredentialValue123"
+        raw_response = 'Data: {"token": "' + secret
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(return_value=([], raw_response))
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        content = mock_adapter.send.call_args.kwargs["content"]
+        assert secret not in content
+        assert '"token": "***"' in content
+
+    @pytest.mark.asyncio
+    async def test_background_image_caption_forces_terminal_secret_redaction(
+        self, monkeypatch
+    ):
+        """Markdown-image captions cannot bypass the final egress boundary."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        runner = _make_runner()
+        secret = "opaqueBackgroundCaptionCredential123"
+        alt_text = f'HTTP 404: Data: {{"token": "{secret}'
+        raw_response = f"![{alt_text}](https://example.test/image.png)"
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(
+            return_value=(
+                [("https://example.test/image.png", alt_text)],
+                "",
+            )
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("make image", source, "bg_test")
+
+        caption = mock_adapter.send_image.call_args.kwargs["caption"]
+        assert secret not in caption
+        assert caption.startswith("HTTP 404:")
+        assert '"token": "***"' in caption
+
+    @pytest.mark.asyncio
+    async def test_background_image_url_default_fallback_never_exposes_secret(
+        self, monkeypatch
+    ):
+        """Every image fallback receives a credential-free URL."""
+        from gateway.platforms.base import BasePlatformAdapter
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        runner = _make_runner()
+        secret = "opaqueBackgroundImageUrlCredential123"
+        image_url = f"https://example.test/image.png?token={secret}"
+        raw_response = f"![chart]({image_url})"
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock(
+            return_value=MagicMock(success=True, message_id="msg-1")
+        )
+
+        async def default_image_fallback(**kwargs):
+            return await BasePlatformAdapter.send_image(mock_adapter, **kwargs)
+
+        mock_adapter.send_image = AsyncMock(side_effect=default_image_fallback)
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(
+            return_value=([(image_url, "chart")], "")
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("make image", source, "bg_test")
+
+        delivered_url = mock_adapter.send_image.call_args.kwargs["image_url"]
+        fallback_text = mock_adapter.send.call_args.kwargs["content"]
+        assert secret not in delivered_url
+        assert secret not in fallback_text
+        assert "token=***" in fallback_text
+
+    @pytest.mark.asyncio
+    async def test_background_clean_image_url_is_preserved(self):
+        """Credential-free image URLs keep native delivery behavior."""
+        runner = _make_runner()
+        image_url = "https://example.test/image.png?size=large"
+        raw_response = f"![chart]({image_url})"
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(
+            return_value=([(image_url, "chart")], "")
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("make image", source, "bg_test")
+
+        assert mock_adapter.send_image.call_args.kwargs["image_url"] == image_url
+
+    @pytest.mark.asyncio
+    async def test_background_native_image_fetch_preserves_signed_url(self):
+        """Native fetch needs the raw signature; plaintext fallback does not."""
+        runner = _make_runner()
+        secret = "opaqueNativeImageSignature123"
+        image_url = f"https://example.test/image.png?token={secret}"
+        raw_response = f"![chart]({image_url})"
+        mock_adapter = AsyncMock()
+        mock_adapter.supports_native_remote_images = True
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_response))
+        mock_adapter.extract_images = MagicMock(
+            return_value=([(image_url, "chart")], "")
+        )
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_response,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("make image", source, "bg_test")
+
+        assert mock_adapter.send_image.call_args.kwargs["image_url"] == image_url
+
+    @pytest.mark.asyncio
+    async def test_background_header_does_not_defeat_provider_error_normalization(
+        self, monkeypatch
+    ):
+        """Telegram normalizes provider envelopes before adding task framing."""
+        runner = _make_runner()
+        raw_error = (
+            "API call failed after 3 retries: HTTP 400: blocked under the "
+            "provider cybersecurity risk policy. request_id=req_background"
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], raw_error))
+        mock_adapter.extract_images = MagicMock(return_value=([], raw_error))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": raw_error,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("test provider", source, "bg_test")
+
+        content = mock_adapter.send.call_args.kwargs["content"]
+        assert "provider rejected" in content.lower()
+        assert "HTTP 400" not in content
+        assert "cybersecurity risk" not in content.lower()
+        assert "req_background" not in content
+
+    @pytest.mark.asyncio
+    async def test_media_files_routed_by_type(self, monkeypatch):
+        """Result media is routed to the type-specific sender, not send_document.
+
+        A TTS clip should arrive as a voice bubble, a video as a video, an
+        image as a native image, and everything else as a document.
+        """
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "see attached", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        # Four real files so the media-delivery path validator accepts them
+        # (default mode requires the file to exist as a regular file).
+        import os as _os
+        import tempfile as _tempfile
+        _tmpdir = _tempfile.mkdtemp(prefix="bg_media_")
+        _ogg = _os.path.join(_tmpdir, "clip.ogg")
+        _mp4 = _os.path.join(_tmpdir, "render.mp4")
+        _png = _os.path.join(_tmpdir, "chart.png")
+        _pdf = _os.path.join(_tmpdir, "report.pdf")
+        for _p in (_ogg, _mp4, _png, _pdf):
+            with open(_p, "wb") as _fh:
+                _fh.write(b"x")
+        # ogg flagged as voice, mp4 video, png image, pdf doc.
+        media = [
+            (_ogg, True),
+            (_mp4, False),
+            (_png, False),
+            (_pdf, False),
+        ]
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_video = AsyncMock()
+        mock_adapter.send_image_file = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        # No text, no markdown images — just the four media attachments.
+        mock_adapter.extract_media = MagicMock(return_value=(media, ""))
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        # Non-telegram platform so every audio ext routes through send_voice.
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        try:
+            await runner._run_background_task("make stuff", source, "bg_test")
+
+            mock_adapter.send_voice.assert_called_once()
+            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            mock_adapter.send_video.assert_called_once()
+            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            mock_adapter.send_image_file.assert_called_once()
+            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            mock_adapter.send_document.assert_called_once()
+            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(_tmpdir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
+        """Background completion metadata must let Telegram send thread id plus reply id."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "done", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+
+        await runner._run_background_task(
+            "say hello",
+            source,
+            "bg_test",
+            event_message_id="463",
+        )
+
+        mock_adapter.send.assert_called_once()
+        assert mock_adapter.send.call_args.kwargs["metadata"] == {
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "463",
+        }
+
+    @pytest.mark.asyncio
+    async def test_agent_cleanup_runs_when_background_agent_raises(self):
+        """Temporary background agents must be cleaned up on error paths too."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.side_effect = RuntimeError("boom")
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exception_sends_error_message(self):
+        """When the agent raises an exception, an error message is sent."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("boom")):
+            await runner._run_background_task("test prompt", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        call_args = mock_adapter.send.call_args
+        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
+        assert "failed" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_exception_forces_terminal_secret_redaction(self, monkeypatch):
+        """Exception strings are sanitized before background-task delivery."""
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        runner = _make_runner()
+        secret = "opaqueBackgroundExceptionCredential123"
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            side_effect=RuntimeError(f"OPENAI_API_KEY={secret}"),
+        ):
+            await runner._run_background_task("test prompt", source, "bg_test")
+
+        content = mock_adapter.send.call_args.kwargs["content"]
+        assert secret not in content
+        assert "OPENAI_API_KEY=" in content
+        assert "***" in content
+
 
 # ---------------------------------------------------------------------------
 # /background in help and known_commands

@@ -4860,6 +4860,7 @@ class OutboundManager:
 class YuanbaoAdapter(BasePlatformAdapter):
     """Yuanbao AI Bot adapter backed by a persistent WebSocket connection."""
 
+    supports_native_remote_images = True
     PLATFORM = Platform.YUANBAO
     MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
     splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)

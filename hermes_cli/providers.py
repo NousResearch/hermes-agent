@@ -431,7 +431,7 @@ def normalize_provider(name: str) -> str:
     return ALIASES.get(key, key)
 
 
-def get_provider(name: str) -> Optional[ProviderDef]:
+def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderDef]:
     """Look up a built-in provider by id or alias.
 
     Resolution order:
@@ -450,7 +450,11 @@ def get_provider(name: str) -> Optional[ProviderDef]:
     # Try to get models.dev data
     try:
         from agent.models_dev import get_provider_info as _mdev_provider
-        mdev_info = _mdev_provider(canonical)
+        mdev_info = (
+            _mdev_provider(canonical)
+            if allow_network
+            else _mdev_provider(canonical, allow_network=False)
+        )
     except Exception:
         mdev_info = None
 

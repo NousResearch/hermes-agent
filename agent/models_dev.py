@@ -20,6 +20,7 @@ rather than parsing the raw JSON themselves.
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,10 +34,13 @@ logger = logging.getLogger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
+_MODELS_DEV_RETRY_DELAY = 300  # 5 minutes after a failed refresh
 
 # In-memory cache
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
+_models_dev_retry_after: float = 0
+_models_dev_fetch_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +241,9 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 
 
-def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
+def fetch_models_dev(
+    force_refresh: bool = False, *, allow_network: bool = True
+) -> Dict[str, Any]:
     """Fetch models.dev registry. Cache hierarchy: in-mem → disk → network.
 
     Returns the full registry dict keyed by provider ID, or empty dict on failure.
@@ -249,15 +255,28 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
          ``models.dev`` only changes when providers add new models, so a
          1 hour staleness window is acceptable (same TTL as in-mem cache).
       3. Network fetch → on success, save to disk + in-mem and return.
-      4. Network fails → fall back to ANY available disk cache (even stale)
-         with a short 5 min in-mem grace period before retrying network.
+      4. Network fails → fall back to ANY available cache (even stale) and
+         suppress additional automatic refreshes for 5 minutes.
 
     When ``force_refresh=True`` (used by ``hermes config refresh``, the
     \"refresh model catalog\" code path), stages 1 and 2 are skipped. The
-    function always hits the network and only falls back to disk if the
-    network call fails.
+    function bypasses caches and failure backoff, then only falls back to
+    cached data if the network call fails. When ``allow_network=False``, any
+    memory or disk cache is returned regardless of age and no request is made.
     """
-    global _models_dev_cache, _models_dev_cache_time
+    global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
+
+    if not allow_network:
+        if _models_dev_cache:
+            return _models_dev_cache
+        disk_data = _load_disk_cache()
+        if disk_data:
+            _models_dev_cache = disk_data
+            disk_age = _disk_cache_age_seconds()
+            _models_dev_cache_time = (
+                time.time() - disk_age if disk_age is not None else 0
+            )
+        return _models_dev_cache
 
     # Stage 1: fresh in-memory cache wins. This is the hot path on
     # long-lived processes — no I/O, no system calls.
@@ -288,34 +307,72 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
                 )
                 return _models_dev_cache
 
-    # Stage 3: network fetch.
-    try:
-        response = requests.get(MODELS_DEV_URL, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        if isinstance(data, dict) and data:
+    # Failed automatic refreshes are process-wide. Avoid making every caller
+    # retry the same unreachable endpoint while stale data remains usable.
+    if not force_refresh and time.time() < _models_dev_retry_after:
+        if not _models_dev_cache:
+            _models_dev_cache = _load_disk_cache()
+            _models_dev_cache_time = 0
+        return _models_dev_cache
+
+    # Stage 3: singleflight network fetch. Recheck state after acquiring the
+    # lock because another caller may have refreshed or established backoff.
+    with _models_dev_fetch_lock:
+        now = time.time()
+        if not force_refresh:
+            if (
+                _models_dev_cache
+                and (now - _models_dev_cache_time) < _MODELS_DEV_CACHE_TTL
+            ):
+                return _models_dev_cache
+            if now < _models_dev_retry_after:
+                if not _models_dev_cache:
+                    _models_dev_cache = _load_disk_cache()
+                    _models_dev_cache_time = 0
+                return _models_dev_cache
+
+        try:
+            response = requests.get(MODELS_DEV_URL, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict) or not data:
+                raise ValueError("models.dev returned an empty or invalid registry")
+
+            _save_disk_cache(data)
             _models_dev_cache = data
             _models_dev_cache_time = time.time()
-            _save_disk_cache(data)
+            _models_dev_retry_after = 0
             logger.debug(
                 "Fetched models.dev registry: %d providers, %d total models",
                 len(data),
-                sum(len(p.get("models", {})) for p in data.values() if isinstance(p, dict)),
+                sum(
+                    len(p.get("models", {}))
+                    for p in data.values()
+                    if isinstance(p, dict)
+                ),
             )
             return data
-    except Exception as e:
-        logger.debug("Failed to fetch models.dev: %s", e)
+        except Exception as e:
+            _models_dev_retry_after = time.time() + _MODELS_DEV_RETRY_DELAY
+            logger.debug(
+                "Failed to fetch models.dev; retry suppressed for %ds: %s",
+                _MODELS_DEV_RETRY_DELAY,
+                e,
+            )
 
-    # Stage 4: network failed — fall back to whatever disk cache exists,
-    # even if it's stale. Give it a short 5 min in-mem TTL so we retry
-    # the network soon instead of serving stale data for a full hour.
-    if not _models_dev_cache:
-        _models_dev_cache = _load_disk_cache()
-        if _models_dev_cache:
-            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
-            logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
+        # Stage 4: network failed — return any stale memory/disk cache. Cache
+        # freshness remains expired; the retry-after timestamp controls when
+        # the next automatic request is allowed.
+        if not _models_dev_cache:
+            _models_dev_cache = _load_disk_cache()
+            _models_dev_cache_time = 0
+            if _models_dev_cache:
+                logger.debug(
+                    "Loaded stale models.dev disk cache (%d providers)",
+                    len(_models_dev_cache),
+                )
 
-    return _models_dev_cache
+        return _models_dev_cache
 
 
 def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
@@ -671,7 +728,9 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
 # Provider-level queries
 # ---------------------------------------------------------------------------
 
-def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
+def get_provider_info(
+    provider_id: str, *, allow_network: bool = True
+) -> Optional[ProviderInfo]:
     """Get full provider metadata from models.dev.
 
     Accepts either a Hermes provider ID (e.g. "kilocode") or a models.dev
@@ -680,7 +739,11 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
     # Resolve Hermes ID → models.dev ID
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
-    data = fetch_models_dev()
+    data = (
+        fetch_models_dev()
+        if allow_network
+        else fetch_models_dev(allow_network=False)
+    )
     raw = data.get(mdev_id)
     if not isinstance(raw, dict):
         return None

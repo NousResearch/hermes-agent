@@ -226,6 +226,15 @@ def split_history_for_partial_compress(
     user↔assistant alternation stays valid (the compressed head's
     trailing content is followed by a fresh user turn).
 
+    Timeline bookkeeping rows (``display_kind`` set — e.g. model_switch,
+    async_delegation_complete, auto_continue, hidden) are durable
+    ``role="user"`` rows but are not real user turns; no client counts
+    them as one. Match ``list_recent_user_messages``, CLI ``/retry``,
+    ``session.undo``, and the ``prompt.submit`` ordinal path — otherwise
+    a marker landing among the last ``keep_last`` rows consumes a kept
+    slot, silently preserving one fewer real exchange than the user asked
+    for.
+
     Returns ``(head, tail)``. If the split would leave the head empty
     (not enough history to compress meaningfully), returns
     ``(history, [])`` — signaling the caller to fall back to full
@@ -239,10 +248,12 @@ def split_history_for_partial_compress(
         return [], []
 
     # Walk backwards collecting the indices of the most recent `keep_last`
-    # user-message starts. The tail begins at the earliest such index.
+    # *real* user-message starts (exclude display_kind timeline rows). The
+    # tail begins at the earliest such index.
     user_starts: List[int] = []
     for idx in range(n - 1, -1, -1):
-        if history[idx].get("role") == "user":
+        msg = history[idx]
+        if msg.get("role") == "user" and not msg.get("display_kind"):
             user_starts.append(idx)
             if len(user_starts) >= keep_last:
                 break

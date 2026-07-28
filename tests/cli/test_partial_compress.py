@@ -140,6 +140,36 @@ def test_split_rejoin_preserves_all_messages():
     assert head + tail == h
 
 
+def test_split_skips_display_kind_timeline_rows():
+    """A display_kind marker must not count as a kept "exchange".
+
+    Timeline bookkeeping rows (model_switch, async_delegation_complete,
+    auto_continue, hidden) are durable role="user" rows but are not real
+    user turns — same predicate as list_recent_user_messages, CLI /retry,
+    and session.undo. Without it, a marker landing among the last
+    keep_last rows consumes a kept slot, silently preserving one fewer
+    real exchange than the user asked for.
+    """
+    h = [
+        {"role": "user", "content": "u0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {
+            "role": "user",
+            "content": "background agent work finished",
+            "display_kind": "async_delegation_complete",
+        },
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    head, tail = split_history_for_partial_compress(h, keep_last=2)
+    # keep_last=2 real exchanges → u1 and u2, not the marker in between.
+    assert tail[0]["role"] == "user"
+    assert tail[0]["content"] == "u1"
+    assert head + tail == h
+
+
 # ── rejoin_compressed_head_and_tail (seam-alternation guard) ─────────
 
 

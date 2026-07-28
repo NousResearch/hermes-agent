@@ -9175,6 +9175,51 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def session_count_by_source(
+        self,
+        *,
+        include_archived: bool = False,
+        archived_only: bool = False,
+        exclude_children: bool = False,
+    ) -> Dict[str, int]:
+        """Return a ``{source: count}`` dict via a single ``GROUP BY`` query.
+
+        Replaces the O(N) ``list_sessions_rich`` histogram loop with an
+        aggregate query. When ``exclude_children`` is False the query uses
+        ``idx_sessions_source``; when True, the child-exclusion predicates
+        require a full table scan (same as ``session_count`` and
+        ``list_sessions_rich``).
+
+        ``exclude_children=True`` mirrors ``list_sessions_rich`` visibility
+        (roots + branch sessions, excluding sub-agent runs, delegates, and
+        compression continuations) so the source counts match what the
+        Sessions page actually lists.
+        """
+        where_clauses = []
+        params: list = []
+
+        if exclude_children:
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("SessionDB connection is closed")
+            rows = self._conn.execute(
+                "SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count "
+                f"FROM sessions s{where_sql} "
+                "GROUP BY COALESCE(NULLIF(s.source, ''), 'cli') "
+                "ORDER BY count DESC",
+                params,
+            ).fetchall()
+        return {str(row["source"]): int(row["count"] or 0) for row in rows}
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:

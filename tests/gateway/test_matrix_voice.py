@@ -350,3 +350,82 @@ class TestMatrixSendVoiceMSC3245:
 
         finally:
             os.unlink(temp_path)
+
+    @pytest.mark.asyncio
+    async def test_send_voice_transcodes_non_ogg_to_opus(self):
+        """Non-Ogg audio reaching send_voice (e.g. direct text_to_speech MP3)
+        is transcoded to Ogg/Opus at the adapter boundary (issue #14841)."""
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake mp3 data")
+            temp_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(b"fake ogg opus data")
+            converted_path = f.name
+
+        try:
+            sent_content = None
+
+            async def mock_send_message_event(room_id, event_type, content):
+                nonlocal sent_content
+                sent_content = content
+                return "$sent_event"
+
+            self.adapter._client.send_message_event = mock_send_message_event
+
+            with patch(
+                "plugins.platforms.matrix.adapter._matrix_transcode_voice_to_ogg",
+                return_value=converted_path,
+            ) as mock_transcode, patch(
+                "plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
+                return_value={"duration": 1234, "waveform": [0, 512, 1024]},
+            ):
+                await self.adapter.send_voice(
+                    chat_id="!room:example.org",
+                    audio_path=temp_path,
+                    caption="Test voice",
+                )
+
+            mock_transcode.assert_called_once_with(temp_path)
+            assert sent_content is not None, "No message was sent"
+            assert "org.matrix.msc3245.voice" in sent_content
+            assert sent_content["info"]["mimetype"] == "audio/ogg"
+            assert self.upload_call is not None
+            assert self.upload_call["data"] == b"fake ogg opus data"
+            assert self.upload_call["mime_type"] == "audio/ogg"
+            assert self.upload_call["filename"].endswith(".ogg")
+            # converted temp file is cleaned up by send_voice
+            assert not os.path.exists(converted_path)
+
+        finally:
+            os.unlink(temp_path)
+            if os.path.exists(converted_path):
+                os.unlink(converted_path)
+
+    @pytest.mark.asyncio
+    async def test_send_voice_ogg_input_skips_transcode(self):
+        """Already-Ogg input must not be re-transcoded."""
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(b"fake ogg data")
+            temp_path = f.name
+
+        try:
+            async def mock_send_message_event(room_id, event_type, content):
+                return "$sent_event"
+
+            self.adapter._client.send_message_event = mock_send_message_event
+
+            with patch(
+                "plugins.platforms.matrix.adapter._matrix_transcode_voice_to_ogg",
+            ) as mock_transcode, patch(
+                "plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
+                return_value={},
+            ):
+                await self.adapter.send_voice(
+                    chat_id="!room:example.org",
+                    audio_path=temp_path,
+                )
+
+            mock_transcode.assert_not_called()
+
+        finally:
+            os.unlink(temp_path)

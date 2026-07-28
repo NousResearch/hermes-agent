@@ -28,6 +28,12 @@ to the agent.
 
 It is **off by default** — nothing listens until you turn it on.
 
+On the desktop app, a hands-free voice conversation can be ended by simply
+**saying "stop"** (or "never mind", "goodbye", "cancel", "that's all") — the
+spoken command ends the conversation instead of being sent to the agent. Only a
+whole-utterance stop command matches, so a real request like "stop the docker
+container" still goes through normally.
+
 ## Engines
 
 | Engine | Cost | API key | Notes |

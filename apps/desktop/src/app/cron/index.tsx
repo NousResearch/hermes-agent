@@ -63,10 +63,10 @@ import {
   PanelHeader,
   PanelList,
   PanelListRow,
+  type PanelMenuItem,
   PanelMeta,
   PanelPill,
   type PanelPillTone,
-  PanelRowMenu,
   PanelSectionLabel
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -501,14 +501,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
                 active={selectedJob?.id === job.id}
                 job={job}
                 key={job.id}
-                menu={
-                  <PanelRowMenu
-                    items={[
-                      { icon: 'edit', label: c.edit, onSelect: () => setEditor({ mode: 'edit', job }) },
-                      { icon: 'trash', label: t.common.delete, onSelect: () => setPendingDelete(job), tone: 'danger' }
-                    ]}
-                  />
-                }
+                menuItems={[
+                  { icon: 'edit', label: c.edit, onSelect: () => setEditor({ mode: 'edit', job }) },
+                  { icon: 'trash', label: t.common.delete, onSelect: () => setPendingDelete(job), tone: 'danger' }
+                ]}
+                menuLabel={c.manage}
                 onSelect={() => setSelectedJobId(job.id)}
               />
             ))}
@@ -571,12 +568,14 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 function CronJobListRow({
   active,
   job,
-  menu,
+  menuItems,
+  menuLabel,
   onSelect
 }: {
   active: boolean
   job: CronJob
-  menu?: React.ReactNode
+  menuItems?: PanelMenuItem[]
+  menuLabel?: string
   onSelect: () => void
 }) {
   const state = jobState(job)
@@ -585,7 +584,8 @@ function CronJobListRow({
     <PanelListRow
       active={active}
       dotClassName={STATE_DOT[state] ?? 'bg-muted-foreground'}
-      menu={menu}
+      menuItems={menuItems}
+      menuLabel={menuLabel}
       onSelect={onSelect}
       rowKey={job.id}
       title={jobTitle(job)}

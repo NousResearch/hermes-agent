@@ -17639,6 +17639,49 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _is_serve_orphaned(original_ppid: int, getppid=os.getppid) -> bool:
+    """True when this process lost its original spawning parent (ppid changed)."""
+    return getppid() != original_ppid
+
+
+def _start_parent_death_watchdog() -> None:
+    """Exit when the desktop parent that spawned this backend dies.
+
+    The desktop passes its own PID via HERMES_PARENT_PID. When that process
+    vanishes (crash, SIGKILL, update handoff exiting before it reaps us) this
+    orphaned backend would otherwise keep serving forever and leak its MCP
+    child subtree. os._exit propagates to the MCP watchdogs parented here.
+
+    No-op for standalone `hermes serve` (env unset). Poll interval tunable via
+    HERMES_SERVE_WATCHDOG_POLL_S.
+    """
+    raw = os.environ.get("HERMES_PARENT_PID")
+    if not raw:
+        return
+    try:
+        original_ppid = int(raw)
+    except (TypeError, ValueError):
+        return
+    try:
+        poll = max(0.5, float(os.environ.get("HERMES_SERVE_WATCHDOG_POLL_S", "2.0")))
+    except (TypeError, ValueError):
+        poll = 2.0
+
+    def _loop() -> None:
+        while not _is_serve_orphaned(original_ppid):
+            time.sleep(poll)
+        os._exit(0)
+
+    threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()
+
+
+def _demo() -> None:
+    # orphan iff current ppid differs from the recorded spawning parent
+    assert _is_serve_orphaned(999999999, getppid=lambda: 1) is True
+    assert _is_serve_orphaned(42, getppid=lambda: 42) is False
+    print("web_server parent-death watchdog self-check: OK")
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -17843,6 +17886,16 @@ def start_server(
             await server.startup()
             if server.should_exit:
                 return
+
+            # Parent-death watchdog. The desktop spawns us and is supposed to
+            # SIGTERM us on quit, but a crash / SIGKILL / update handoff that
+            # exits before reaping leaves us orphaned (ppid→1) yet still
+            # serving — leaking the whole backend + its MCP child subtree
+            # (each MCP watchdog is parented to THIS process, so os._exit here
+            # cascades their teardown). Same pattern as
+            # tui_gateway/slash_worker.py::_start_parent_death_watchdog. No-op
+            # for standalone `hermes serve` (no HERMES_PARENT_PID env).
+            _start_parent_death_watchdog()
 
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port

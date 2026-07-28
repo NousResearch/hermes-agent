@@ -8071,6 +8071,14 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
       try {
         if (IS_WINDOWS && Number.isInteger(child.pid)) {
           forceKillProcessTree(child.pid)
+        } else if (Number.isInteger(child.pid)) {
+          // POSIX: SIGKILL the whole group (pgid==pid, start_new_session) so
+          // MCP grandchildren die with the backend. Fall back to the child.
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch {
+            child.kill('SIGKILL')
+          }
         } else {
           child.kill('SIGKILL')
         }
@@ -8298,6 +8306,11 @@ async function spawnPoolBackend(profile, entry) {
         // Marks this dashboard backend as desktop-spawned so it runs the cron
         // scheduler tick loop (the gateway isn't running under the app).
         HERMES_DESKTOP: '1',
+        // Our PID so the backend's parent-death watchdog self-exits if we die
+        // uncleanly (crash / SIGKILL / update handoff) instead of leaking a
+        // serving backend + its MCP child subtree. See web_server.py
+        // _start_parent_death_watchdog.
+        HERMES_PARENT_PID: String(process.pid),
         HERMES_WEB_DIST: webDist,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
@@ -8591,6 +8604,11 @@ async function startHermes() {
           // Marks this dashboard backend as desktop-spawned so it runs the cron
           // scheduler tick loop (the gateway isn't running under the app).
           HERMES_DESKTOP: '1',
+          // Our PID so the backend's parent-death watchdog self-exits if we die
+          // uncleanly (crash / SIGKILL / update handoff) instead of leaking a
+          // serving backend + its MCP child subtree. See web_server.py
+          // _start_parent_death_watchdog.
+          HERMES_PARENT_PID: String(process.pid),
           HERMES_WEB_DIST: webDist,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },

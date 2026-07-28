@@ -19,6 +19,11 @@ Env vars::
 
     TAVILY_API_KEY=...           # https://app.tavily.com/home (required)
     TAVILY_BASE_URL=...          # optional override of https://api.tavily.com
+
+Config keys::
+
+    web:
+      search_proxy: "http://proxy:8080"   # optional proxy URL for all web search providers
 """
 
 from __future__ import annotations
@@ -30,6 +35,22 @@ from typing import Any, Dict, List
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _load_tavily_config() -> Dict[str, Any]:
+    """Read ``web`` section from config.yaml, return tavily-specific subset.
+
+    Returns ``{}`` when config is unavailable or the section is missing so
+    callers always get a dict they can ``.get()`` on.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        web_section = cfg.get("web") if isinstance(cfg, dict) else None
+        return web_section if isinstance(web_section, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -56,7 +77,15 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
 
-    response = httpx.post(url, json=payload, timeout=60)
+    tavily_cfg = _load_tavily_config()
+    proxy = tavily_cfg.get("search_proxy")
+    if not proxy:
+        try:
+            from hermes_cli.config import get_env_value
+            proxy = get_env_value("WEB_SEARCH_PROXY")
+        except Exception:
+            proxy = None
+    response = httpx.post(url, json=payload, timeout=60, proxy=proxy)
     response.raise_for_status()
     return response.json()
 

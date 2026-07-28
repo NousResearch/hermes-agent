@@ -234,15 +234,20 @@ export function mergeSessionPage(
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
   const prevById = new Map(previous.map(session => [session.id, session]))
+  // Tip rotation changes the live id — carry activity/title across the lineage
+  // root so a mid-turn refresh can't drop a touchSessionActivity bump.
+  const prevByLineage = new Map(previous.map(session => [session._lineage_root_id ?? session.id, session]))
 
   const merged = incoming.map(session => {
-    if (session.title?.trim()) {
-      return session
-    }
+    const prev = prevById.get(session.id) ?? prevByLineage.get(session._lineage_root_id ?? session.id)
+    // User-send stamps last_active before the DB flushes the user row
+    // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
+    const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
+    const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
 
-    const carried = prevById.get(session.id)?.title?.trim()
-
-    return carried ? { ...session, title: carried } : session
+    return last_active === session.last_active && title === session.title
+      ? session
+      : { ...session, last_active, title }
   })
 
   if (keep.size === 0) {
@@ -265,6 +270,42 @@ export function mergeSessionPage(
   )
 
   return survivors.length ? [...survivors, ...merged] : merged
+}
+
+/** Raise a session in recents on user send (before stream / turn resolve). */
+export function touchSessionActivity(
+  sessionId: string | null | undefined,
+  options?: { at?: number; preview?: string }
+): void {
+  const id = sessionId?.trim()
+
+  if (!id) {
+    return
+  }
+
+  const at = options?.at ?? Date.now() / 1000
+  const preview = options?.preview?.trim().slice(0, 200) || undefined
+
+  setSessions(prev => {
+    let changed = false
+    const next = prev.map(session => {
+      if (!sessionMatchesStoredId(session, id)) {
+        return session
+      }
+
+      const last_active = Math.max(session.last_active ?? 0, at)
+
+      if (last_active === session.last_active && (!preview || preview === session.preview)) {
+        return session
+      }
+
+      changed = true
+
+      return preview ? { ...session, last_active, preview } : { ...session, last_active }
+    })
+
+    return changed ? next : prev
+  })
 }
 
 export const $connection = atom<HermesConnection | null>(null)

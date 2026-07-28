@@ -9,6 +9,7 @@ import {
   $connection,
   $currentCwd,
   $selectedStoredSessionId,
+  $sessions,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
   getRememberedSessionId,
@@ -19,6 +20,8 @@ import {
   setCurrentCwd,
   setRememberedSessionId,
   setSelectedStoredSessionId,
+  setSessions,
+  touchSessionActivity,
   workspaceCwdForNewSession
 } from './session'
 import {
@@ -204,6 +207,66 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+
+  it('never regresses last_active behind an optimistic user-send bump', () => {
+    const previous = [session({ id: 'old', last_active: 9_000 })]
+    const incoming = [session({ id: 'old', last_active: 100, message_count: 4 })]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+
+    expect(merged[0]?.last_active).toBe(9_000)
+    expect(merged[0]?.message_count).toBe(4)
+  })
+
+  it('carries an optimistic last_active across a compression tip rotation', () => {
+    const previous = [session({ id: 'tip-4', _lineage_root_id: 'root', last_active: 9_000 })] as SessionInfo[]
+    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root', last_active: 50 })] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip-5'])
+    expect(merged[0]?.last_active).toBe(9_000)
+  })
+})
+
+describe('touchSessionActivity', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('bumps last_active for a live id and a lineage-root pin target', () => {
+    setSessions([
+      session({ id: 'tip', _lineage_root_id: 'root', last_active: 10, preview: 'old' }),
+      session({ id: 'other', last_active: 20 })
+    ] as SessionInfo[])
+
+    touchSessionActivity('root', { at: 99, preview: 'just sent' })
+
+    const rows = $sessions.get()
+    const tip = rows.find(s => s.id === 'tip')
+    const other = rows.find(s => s.id === 'other')
+
+    expect(tip?.last_active).toBe(99)
+    expect(tip?.preview).toBe('just sent')
+    expect(other?.last_active).toBe(20)
+  })
+
+  it('is monotonic — a stale stamp does not pull the row down', () => {
+    setSessions([session({ id: 'a', last_active: 50 })])
+
+    touchSessionActivity('a', { at: 10 })
+
+    expect($sessions.get()[0]?.last_active).toBe(50)
+  })
+
+  it('preserves array identity when nothing matched', () => {
+    const prev = [session({ id: 'a', last_active: 1 })]
+    setSessions(prev)
+
+    touchSessionActivity('missing', { at: 99 })
+
+    expect($sessions.get()).toBe(prev)
   })
 })
 

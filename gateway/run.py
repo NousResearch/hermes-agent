@@ -2207,6 +2207,7 @@ from gateway.platforms.base import (
     MessageType,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
+    build_auto_tts_output_path,
     merge_pending_message_event,
     utf16_len,
 )
@@ -15835,7 +15836,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
-        import uuid as _uuid
         audio_path = None
         actual_path = None
         try:
@@ -15845,14 +15845,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not tts_text:
                 return
 
-            # Telegram's adapter only sends native voice bubbles for OGG/Opus.
-            # Other platforms keep the existing MP3 default.
-            audio_ext = "ogg" if event.source.platform == Platform.TELEGRAM else "mp3"
-            audio_path = os.path.join(
-                tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.{audio_ext}",
-            )
-            os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+            # Platform-aware output path: platforms whose native voice
+            # bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS — Telegram,
+            # Matrix, Feishu, WhatsApp, Signal) get an explicit .ogg path;
+            # the TTS tool's central container repair guarantees real
+            # Ogg/Opus bytes for every provider. Others keep MP3.
+            audio_path = build_auto_tts_output_path(event.source.platform)
 
             result_json = await asyncio.to_thread(
                 text_to_speech_tool, text=tts_text, output_path=audio_path

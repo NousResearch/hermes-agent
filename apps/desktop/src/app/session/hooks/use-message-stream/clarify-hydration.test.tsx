@@ -126,8 +126,21 @@ describe('clarify.request stream hydration', () => {
     })
   })
 
-  it('merges with the real tool.start row even though its id differs from the request id', () => {
-    mountStream()
+  it('marks a non-empty all-invalid choice array as malformed', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await mountStream()
+
+    clarifyRequest({ choices: ['', '   ', '\n'], question: 'Pick one', request_id: 'req-invalid' })
+
+    expect($clarifyRequests.get()[SID]).toMatchObject({
+      choices: null,
+      choicesMalformed: true,
+      requestId: 'req-invalid'
+    })
+  })
+
+  it('merges with the real tool.start row even though its id differs from the request id', async () => {
+    await mountStream()
 
     // Reality: tool.start carries the model's tool_call_id, clarify.request a
     // separately-generated request_id. They must still collapse to ONE card

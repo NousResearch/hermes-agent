@@ -4,6 +4,7 @@ import { restorePendingClarifyToolCall, settlePendingClarifyToolCall } from '@/l
 import {
   $clarifyRequests,
   clearClarifyRequest,
+  hasMalformedStructuredChoices,
   normalizeChoices,
   normalizeQuestions,
   setClarifyRequest,
@@ -44,6 +45,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const rawChoices = payload?.choices
     const choices = normalizeChoices(rawChoices)
     const multiSelect = payload?.multi_select === true
+    const choicesMalformed = hasMalformedStructuredChoices(rawChoices, choices)
     // Batch (multi-question) clarify: `questions` replaces question/choices
     // on the wire. `answers` rides along only on reconnect replay, carrying
     // the per-question locks the server already accepted.
@@ -105,7 +107,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         title: translateNow('notifications.native.inputTitle')
       })
     } else if (requestId && question) {
-      if (rawChoices != null && choices.length === 0) {
+      if (choicesMalformed) {
         warnDroppedChoices('gateway', question, rawChoices)
       }
 
@@ -114,6 +116,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         question,
         choices: choices.length > 0 ? choices : null,
         multiSelect,
+        choicesMalformed,
         receivedAt: Date.now() / 1000,
         sessionId: sessionId ?? null
       }

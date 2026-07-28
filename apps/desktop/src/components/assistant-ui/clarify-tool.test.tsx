@@ -44,7 +44,7 @@ afterEach(() => {
   $activeSessionId.set(null)
   $gateway.set(null)
   messageRunning = true
-  vi.clearAllMocks()
+  vi.restoreAllMocks()
 })
 
 function clarifyTree(ui: ReactNode) {
@@ -370,6 +370,62 @@ describe('ClarifyTool settled view', () => {
 })
 
 describe('ClarifyTool keyboard navigation', () => {
+  it('shows a recoverable error instead of free text for all-invalid choices', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    setClarifyRequest({
+      choices: null,
+      choicesMalformed: true,
+      question: 'Pre-flight decisions (4 items)',
+      requestId: 'request-invalid',
+      sessionId: 'session-1'
+    })
+
+    renderClarify(
+      <ClarifyTool
+        {...liveClarifyProps(['', '   ', '\n'])}
+        args={{ choices: ['', '   ', '\n'], question: 'Pre-flight decisions (4 items)' }}
+      />
+    )
+
+    expect(screen.getByRole('alert').textContent).toContain('no usable options')
+    expect(screen.queryByPlaceholderText(/Type your answer/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: '',
+        request_id: 'request-invalid'
+      })
+    })
+  })
+
+  it('accepts raw choice shapes that the backend can normalize', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    setClarifyRequest({
+      choices: ['descriptive label'],
+      choicesMalformed: false,
+      question: 'Pick a layout',
+      requestId: 'request-structured',
+      sessionId: 'session-1'
+    })
+
+    renderClarify(
+      <ClarifyTool
+        {...liveClarifyProps()}
+        args={{ choices: [{ description: 'descriptive label' }], question: 'Pick a layout' }}
+      />
+    )
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: /descriptive label/ })).toBeTruthy()
+  })
+
   it('cycles through choices and Other with the arrow keys', () => {
     renderLiveClarify()
 

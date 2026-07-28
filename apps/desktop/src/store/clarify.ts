@@ -18,6 +18,7 @@ export interface ClarifyRequest {
   multiSelect: boolean
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
+  choicesMalformed?: boolean
   sessionId: string | null
   /** Batch (multi-question) clarify: present instead of question/choices. */
   questions?: ClarifyQuestion[]
@@ -40,8 +41,9 @@ export const bareChoice = (choice: string): string =>
  * Validate and normalize a choices array.
  *
  * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
- * and returns an empty array when nothing usable survives — the caller then
- * falls back to a free-text answer instead of dead buttons.
+ * and returns an empty array when nothing usable survives. Callers can use
+ * `hasMalformedStructuredChoices` to distinguish that failure from a
+ * deliberately open-ended prompt.
  */
 export function normalizeChoices(choices: unknown): string[] {
   if (!Array.isArray(choices)) {
@@ -50,6 +52,55 @@ export function normalizeChoices(choices: unknown): string[] {
 
   return choices.filter(
     (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
+  )
+}
+
+/** Mirror the backend's permissive `_flatten_choice` just far enough to decide
+ * whether a raw tool argument can become a usable label before the gateway
+ * emits its normalized strings. The renderer still displays only strings from
+ * `normalizeChoices`; this helper prevents supported dict/scalar arguments from
+ * being mistaken for an all-invalid choice set during the tool.start race. */
+function flattenStructuredChoice(choice: unknown): string {
+  if (choice == null) {
+    return ''
+  }
+
+  if (typeof choice === 'string') {
+    return choice.trim()
+  }
+
+  if (Array.isArray(choice)) {
+    return choice.map(flattenStructuredChoice).join(' ').trim()
+  }
+
+  if (typeof choice === 'object') {
+    const row = choice as Record<string, unknown>
+
+    for (const key of ['label', 'description', 'text', 'title']) {
+      const value = row[key]
+
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim()
+      }
+    }
+
+    return ''
+  }
+
+  return String(choice).trim()
+}
+
+/** True when a caller attempted a structured prompt but every option was
+ * rejected. Omitted, null, and explicitly empty choices remain open-ended. */
+export function hasMalformedStructuredChoices(
+  rawChoices: unknown,
+  normalizedChoices = normalizeChoices(rawChoices)
+): boolean {
+  return (
+    Array.isArray(rawChoices) &&
+    rawChoices.length > 0 &&
+    normalizedChoices.length === 0 &&
+    normalizeChoices(rawChoices.map(flattenStructuredChoice)).length === 0
   )
 }
 

@@ -1808,8 +1808,14 @@ and messaging gateway:
 max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
 ```
 
-When the cap is reached, Hermes returns a direct limit message for new sessions.
-Existing active sessions keep their normal behavior.
+A slot is taken when a session runs its **first turn**, not when a chat window
+is opened. Opening, resuming or reconnecting to a chat costs nothing until you
+send a message, so idle desktop tabs (and the background resumes a flaky
+websocket triggers) cannot starve the messaging gateway that shares this cap.
+
+When the cap is reached, Hermes returns a direct limit message naming which
+surfaces hold the slots. Existing active sessions keep their normal behavior.
+Run `hermes status` to see the current slot usage and every holder.
 
 The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when

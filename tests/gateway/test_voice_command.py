@@ -1872,14 +1872,23 @@ class TestSendVoiceReplyFilename:
     """_send_voice_reply uses uuid for unique filenames."""
 
     def test_filename_uses_uuid(self):
-        """The method uses uuid in the filename, not time-based."""
+        """The path builder uses uuid in the filename, not time-based.
+
+        Filename construction moved into build_auto_tts_output_path
+        (gateway/platforms/base.py) when the path became platform-aware;
+        the uniqueness contract lives there now.
+        """
         import inspect
+        from gateway.platforms.base import build_auto_tts_output_path
         from gateway.run import GatewayRunner
-        source = inspect.getsource(GatewayRunner._send_voice_reply)
+        source = inspect.getsource(build_auto_tts_output_path)
         assert "uuid" in source, \
-            "_send_voice_reply should use uuid for unique filenames"
+            "build_auto_tts_output_path should use uuid for unique filenames"
         assert "int(time.time())" not in source, \
-            "_send_voice_reply should not use int(time.time()) — collision risk"
+            "build_auto_tts_output_path should not use int(time.time()) — collision risk"
+        runner_source = inspect.getsource(GatewayRunner._send_voice_reply)
+        assert "build_auto_tts_output_path" in runner_source, \
+            "_send_voice_reply should build its path via build_auto_tts_output_path"
 
     def test_filenames_are_unique(self):
         """Two calls produce different filenames."""

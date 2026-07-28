@@ -680,7 +680,7 @@ def set_pinned(skill_name: str, pinned: bool) -> None:
 
 
 def set_sync(skill_name: str, sync: bool) -> None:
-    """Set the HSP-sync opt-in flag on a skill's usage record (M1-D).
+    """Set the sync opt-in flag on a skill's usage record.
 
     Sync is OPT-IN: nothing propagates to the sync plane unless the user marks
     a skill with ``sync: true`` here. Sits alongside ``pinned``/``created_by``
@@ -695,7 +695,7 @@ def set_sync(skill_name: str, sync: bool) -> None:
 
 
 def is_sync_enabled(skill_name: str) -> bool:
-    """Whether a skill is opted into HSP sync (``sync: true`` in its record)."""
+    """Whether a skill is opted into sync (``sync: true`` in its record)."""
     return get_record(skill_name).get("sync") is True
 
 

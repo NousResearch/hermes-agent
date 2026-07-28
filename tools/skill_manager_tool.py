@@ -639,7 +639,7 @@ def _maybe_auto_propose_org_edit(name: str, skill_path: Path) -> Optional[str]:
             return (
                 f"This skill is shared by your organisation. Your edit is "
                 f"saved locally and will not be overwritten by org updates. "
-                f"Run `hermes skills propose {name}` to share it back."
+                f"Run `hermes sync propose {name}` to share it back."
             )
         result = ssc.propose_skill(name)
         if result.get("proposal_pending"):
@@ -652,7 +652,7 @@ def _maybe_auto_propose_org_edit(name: str, skill_path: Path) -> Optional[str]:
         logger.debug("auto-propose skipped for %s: %s", name, e)
         return (
             f"Edit saved locally. Could not submit it to your organisation "
-            f"right now — run `hermes skills propose {name}` to retry."
+            f"right now — run `hermes sync propose {name}` to retry."
         )
 
 
@@ -668,7 +668,7 @@ def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optiona
 
     Now an edit lands in the mirror and is protected from being overwritten by
     the next org pull (see the baseline sidecar in skills_sync_client). It
-    reaches the organisation when the user runs `hermes skills propose`, or
+    reaches the organisation when the user runs `hermes sync propose`, or
     immediately if `sync.org_auto_propose` is on.
 
     Deletion is still refused: the mirror is a materialized view of the org
@@ -688,7 +688,7 @@ def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optiona
                     "organisation, so a local delete would just come back on "
                     "the next sync. Ask an org admin to remove it for "
                     "everyone. (Editing it IS allowed — your changes are kept "
-                    "and can be proposed back with `hermes skills propose "
+                    "and can be proposed back with `hermes sync propose "
                     f"{name}`.)"
                 ),
             }
@@ -1438,7 +1438,7 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
         _skill_gate_bypass.reset(token)
 
 
-# Debounce state for the HSP sync push hook. A burst of skill_manage writes
+# Debounce state for the sync push hook. A burst of skill_manage writes
 # (e.g. create + several write_file calls) collapses into a single push after
 # a short quiet window, on a daemon timer so the agent write never blocks.
 _sync_push_timer = None
@@ -1447,7 +1447,7 @@ _SYNC_PUSH_DEBOUNCE_S = 5.0
 
 
 def _maybe_debounced_sync_push(skill_name: str) -> None:
-    """Schedule a debounced best-effort HSP push after a skill write.
+    """Schedule a debounced best-effort sync push after a skill write.
 
     Cheap fast-path: if the skill isn't opted into sync, do nothing (no auth,
     no network). Otherwise (re)arm a daemon timer; the actual push runs through
@@ -1586,7 +1586,7 @@ def skill_manage(
         except Exception:
             pass
 
-        # HSP sync push hook (debounced, best-effort). Fires only AFTER the
+        # Sync push hook (debounced, best-effort). Fires only AFTER the
         # write gate passed (staged/unapproved writes never reach here -- the
         # gate returns early above), so we never push un-reviewed content.
         # Inert unless the DEV-PHASE gate is open (tool_gateway_admin on the

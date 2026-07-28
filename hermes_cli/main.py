@@ -4440,26 +4440,27 @@ def cmd_cron(args):
 
 
 def cmd_sync(args):
-    """HSP/1 personal skill sync management (status/pull/push/now/enable/disable)."""
+    """Skill Sync — personal sync across devices, plus sharing with your org."""
     import json as _json
 
     sub = getattr(args, "sync_command", None)
 
     if sub in {None, ""}:
         print(
-            "usage: hermes sync <status|pull|push|now|enable|disable|device>\n"
+            "usage: hermes sync "
+            "<status|pull|push|now|enable|disable|device|propose>\n"
             "\n"
-            "  status            Show sync gate, opt-in, and head state\n"
-            "  pull              Pull the owner's HEAD, materialize opted-in skills\n"
-            "  push              Push opted-in skills to the owner's HEAD\n"
+            "Your skills, across your devices:\n"
+            "  status            Show what is synced, and from where\n"
+            "  pull              Pull your synced skills\n"
+            "  push              Push your opted-in skills\n"
             "  now               Reconcile now: pull then push\n"
-            "  enable <skill>    Opt a skill into sync\n"
-            "  disable <skill>   Opt a skill out of sync\n"
-            "  device [--name N] Show or set this device's sync label\n"
+            "  enable <skill>    Include a skill in your sync\n"
+            "  disable <skill>   Exclude a skill from your sync\n"
+            "  device [--name N] Show or set this device's label\n"
             "\n"
-            "These cover your PERSONAL skills, across your own devices.\n"
-            "To share a skill with your organisation instead:\n"
-            "  hermes skills propose <skill>",
+            "Shared with your team:\n"
+            "  propose <skill>   Share a skill with your organisation",
             file=sys.stderr,
         )
         return 1
@@ -4483,6 +4484,28 @@ def cmd_sync(args):
             return 0
         # No --name: print the current (creating a default on first use).
         print(ssc.stable_device_id())
+        return 0
+
+    if sub == "propose":
+        from tools import skills_sync_client as ssc
+
+        name = args.name
+        try:
+            result = ssc.propose_skill(name, message=args.message)
+        except ssc.SyncInertError as e:
+            print(f"cannot share this skill: {e}", file=sys.stderr)
+            return 1
+        except ssc.SyncError as e:
+            print(f"could not share '{name}': {e}", file=sys.stderr)
+            return 1
+        if result.get("proposal_pending"):
+            print(
+                f"Shared '{name}' with your organisation — an admin needs to "
+                f"approve it (proposal #{result.get('proposal_id')}). It is "
+                f"not live for the team until then."
+            )
+        else:
+            print(f"Added '{name}' to your organisation's shared skills.")
         return 0
 
     if sub in {"enable", "disable"}:
@@ -4519,7 +4542,7 @@ def cmd_sync(args):
                 print(
                     f"  {len(modified)} with local edits not yet shared: "
                     f"{', '.join(modified)}\n"
-                    f"  Share them back with `hermes skills propose <skill>`. "
+                    f"  Share them back with `hermes sync propose <skill>`. "
                     f"Org updates will not overwrite them.",
                     file=sys.stderr,
                 )
@@ -4603,7 +4626,7 @@ def cmd_sync(args):
         else:
             print(f"Unknown sync subcommand: {sub}", file=sys.stderr)
             return 1
-    except ssc.HSPError as e:
+    except ssc.SyncError as e:
         print(f"sync failed: {e}", file=sys.stderr)
         return 1
 
@@ -13942,34 +13965,6 @@ def cmd_skills(args):
         from hermes_cli.skills_config import skills_command as skills_config_command
 
         skills_config_command(args)
-    elif getattr(args, "skills_action", None) == "propose":
-        # M2 org-shared skills (hsp-1-contract.md §11.5): propose a local
-        # skill to the org canonical set. 202 => pending review (NEVER shown
-        # as live); direct merge for admins. Personal orgs have no org
-        # workflow — say so plainly instead of a raw 403.
-        from tools import skills_sync_client as ssc
-
-        name = args.name
-        try:
-            result = ssc.propose_skill(name, message=args.message)
-        except ssc.SyncInertError as e:
-            print(f"org sync unavailable: {e}", file=sys.stderr)
-            return 1
-        except ssc.HSPError as e:
-            print(f"propose failed: {e}", file=sys.stderr)
-            return 1
-        if result.get("proposal_pending"):
-            print(
-                f"proposed '{name}' — pending admin review "
-                f"(proposal #{result.get('proposal_id')}). Not live for the "
-                f"org until approved."
-            )
-        else:
-            print(
-                f"merged '{name}' into the org set "
-                f"(head {str(result.get('head', ''))[:19]}…)."
-            )
-        return 0
     else:
         from hermes_cli.skills_hub import skills_command
 

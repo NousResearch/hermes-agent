@@ -261,7 +261,9 @@ class TestOrgPullIsWiredIn:
             root / "hermes_cli" / "subcommands" / "sync.py",
             root / "hermes_cli" / "subcommands" / "skills.py",
         ]
-        banned = re.compile(r"\(M[12]\)|HSP/1|§[0-9]|DEV-PHASE|hsp-1-contract")
+        banned = re.compile(
+            r"\(M[12]\)|\bHSP\b|HSP/1|§[0-9]|DEV-PHASE|hsp-1-contract"
+        )
         for path in targets:
             for i, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
                 if "help=" in line or "description=" in line:
@@ -270,41 +272,41 @@ class TestOrgPullIsWiredIn:
                     )
 
 
-class TestOrgSharingIsDiscoverable:
-    """`hermes sync` must point users at the org-sharing command.
+class TestSkillSyncIsOneCommand:
+    """Every Skill Sync verb lives under `hermes sync` for launch.
 
-    Without this, there is no path from "I want to share this with my team"
-    to `hermes skills propose` — sync looks like the only sharing surface
-    while being personal-only.
+    The surface is deliberately encapsulated: one command to learn, one to
+    document, and top-level `sync` stays free of skill-management verbs that
+    belong elsewhere. `propose` in particular used to sit under `hermes
+    skills`, which split one feature across two commands.
     """
 
-    def test_sync_usage_block_mentions_propose(self):
+    def _src(self, *parts):
         import pathlib
 
-        main_src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "hermes_cli"
-            / "main.py"
+        return (
+            pathlib.Path(__file__).resolve().parents[2].joinpath(*parts)
         ).read_text(encoding="utf-8")
-        usage_start = main_src.index(
-            "usage: hermes sync <status|pull|push|now|enable|disable|device>"
-        )
-        usage_block = main_src[usage_start : usage_start + 1200]
-        assert "hermes skills propose" in usage_block, (
-            "`hermes sync` usage must point at the org-sharing command."
+
+    def test_propose_is_a_sync_subcommand(self):
+        sync_src = self._src("hermes_cli", "subcommands", "sync.py")
+        assert '"propose"' in sync_src, (
+            "`propose` must be a `hermes sync` subcommand."
         )
 
-    def test_sync_parser_epilog_mentions_propose(self):
-        import pathlib
+    def test_propose_is_not_under_skills(self):
+        skills_src = self._src("hermes_cli", "subcommands", "skills.py")
+        assert '"propose"' not in skills_src, (
+            "`propose` must NOT remain under `hermes skills` — Skill Sync is "
+            "one command for launch."
+        )
 
-        src = (
-            pathlib.Path(__file__).resolve().parents[2]
-            / "hermes_cli"
-            / "subcommands"
-            / "sync.py"
-        ).read_text(encoding="utf-8")
-        assert "hermes skills propose" in src, (
-            "`hermes sync --help` must point at the org-sharing command."
+    def test_sync_usage_lists_propose(self):
+        main_src = self._src("hermes_cli", "main.py")
+        usage_start = main_src.index("usage: hermes sync ")
+        usage_block = main_src[usage_start : usage_start + 1400]
+        assert "propose" in usage_block, (
+            "`hermes sync` usage must list the propose verb."
         )
 
 

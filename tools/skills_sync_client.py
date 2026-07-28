@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-HSP/1 sync client -- Hermes Sync Protocol version 1, client (personal skill sync).
+Skill Sync client -- the low-level sync layer.
 
-This is the LOW-LEVEL sync layer. It builds content-addressed HSP objects
-(blob/tree/commit) from local skills, talks the HSP/1 wire contract to a sync
+This is the LOW-LEVEL sync layer. It builds content-addressed objects
+(blob/tree/commit) from local skills, talks the sync wire contract to a sync
 plane (push objects + CAS a ref, pull the owner's HEAD, three-way merge on a
 409), and is driven by:
 
@@ -15,7 +15,7 @@ It lives beside ``tools/skills_sync.py`` (NOT under ``hermes_cli/``) so the
 low-level sync layer never imports the CLI -- same rule the bundled-skills
 sync module documents at ``skills_sync.py:43-50``.
 
-Contract: ``~/src/specs/collective-wisdom/hsp-1-contract.md`` (HSP/1, frozen
+Contract: the Skill Sync wire contract (version 1, frozen
 for Milestone 1). Endpoint shapes, object model, canonicalization, and status
 codes below all trace to that document.
 
@@ -58,7 +58,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # Sync protocol constants
-HSP_VERSION = "1"
+# Wire protocol version. The over-the-wire names below (the `hsp_version`
+# capability field and the `x-hsp-object-type` response header) are part of
+# the deployed server contract and are NOT renamed with the product — the
+# user-facing feature is "Skill Sync"; these are protocol identifiers.
+WIRE_VERSION = "1"
 DEFAULT_MAX_OBJECT_BYTES = 26214400  # 25 MiB, mirrors capabilities default
 
 # Object kinds (sync contract)
@@ -77,7 +81,7 @@ ARTIFACT_TYPE_SKILL = "skill"
 # `sync-manifest` object convention (design notes).
 #
 # Per-skill sync opt-in ("this skill syncs / this one does not"
-# opt-in state) is CONTENT inside the HSP object model, NOT a device-local flag
+# opt-in state) is CONTENT inside the sync object model, NOT a device-local flag
 # or a mutable preference table. An owner's synced set is a small committed blob
 # named ``sync-manifest`` at the ROOT of the tree referenced by
 # ``refs/user/<owner>/HEAD``, recording per-skill ``{name, enabled}``. Toggling
@@ -158,14 +162,14 @@ def parse_sync_manifest(data: bytes) -> Optional[Dict[str, bool]]:
 # ---------------------------------------------------------------------------
 # Content addressing
 #
-# HSP uses the FULL 64-hex sha256 digest on the wire. This is a DIFFERENT
+# The wire uses the FULL 64-hex sha256 digest. This is a DIFFERENT
 # namespace from hermes-agent's local ``content_hash`` (skills_guard.py:846),
 # which is a truncated 16-hex digest used for local dedup. They must never be
 # conflated -- we compute full digests here.
 # ---------------------------------------------------------------------------
 
-def hsp_address(data: bytes) -> str:
-    """Return ``sha256:<64-hex>`` -- the HSP wire address of ``data`` (sync contract)."""
+def wire_address(data: bytes) -> str:
+    """Return ``sha256:<64-hex>`` -- the wire address of ``data``."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
@@ -279,14 +283,14 @@ def dev_gate_open() -> bool:
 # ---------------------------------------------------------------------------
 # Sync-plane endpoint resolution
 #
-# The HSP routes are mounted under /v1/sync/ (sync contract). The base URL is
+# The sync routes are mounted under /v1/sync/. The base URL is
 # configurable (config.yaml sync.base_url or HERMES_SYNC_BASE_URL bridge env);
 # it is NOT the inference base_url. When unset, sync is inert -- there is no
 # server to talk to yet (the server is being built in parallel).
 # ---------------------------------------------------------------------------
 
 def resolve_sync_base_url() -> Optional[str]:
-    """Resolve the HSP sync-plane base URL, or None when unconfigured.
+    """Resolve the sync-plane base URL, or None when unconfigured.
 
     Order: HERMES_SYNC_BASE_URL env bridge -> config.yaml ``sync.base_url``.
     Returns a base without a trailing slash (e.g. ``https://host``); the
@@ -318,7 +322,7 @@ def resolve_sync_base_url() -> Optional[str]:
 # precedence as base_url: the HERMES_SYNC_* env var wins, else config.yaml
 # ``sync.*``, else a built-in default.
 #
-#   HERMES_SYNC_BASE_URL        -> sync.base_url        (the HSP plane URL)
+#   HERMES_SYNC_BASE_URL        -> sync.base_url        (the sync plane URL)
 #   HERMES_SYNC_ENABLED         -> sync.enabled         (master on/off; default off)
 #   HERMES_SYNC_DEFAULT_OPT_IN  -> sync.default_opt_in  (personal sync policy; default false
 #                                                        = opt-in. Set true to make
@@ -383,7 +387,7 @@ def sync_org_auto_propose() -> bool:
     ``HERMES_SYNC_ORG_AUTO_PROPOSE`` -> ``sync.org_auto_propose`` -> False.
 
     False (default): edits to an org-shared skill stay LOCAL until the user
-    runs ``hermes skills propose <skill>``. The skill keeps working with the
+    runs ``hermes sync propose <skill>``. The skill keeps working with the
     edit applied; the organisation just doesn't see it yet.
 
     True: every local edit to an org skill is submitted to the org as a
@@ -427,7 +431,7 @@ def _skills_dir() -> Path:
 
 
 def is_sync_eligible(skill_name: str) -> bool:
-    """Whether *skill_name* is a candidate for HSP sync (before the opt-in check).
+    """Whether *skill_name* is a candidate for sync (before the opt-in check).
 
     Eligible = present locally under ~/.hermes/skills/, NOT bundled, NOT
     hub-installed, NOT an external-dir skill, and NOT under the org mirror
@@ -525,7 +529,7 @@ def _all_local_skill_names() -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Object building -- turn a skill directory into HSP blob/tree/commit objects
+# Object building -- turn a skill directory into blob/tree/commit objects
 #
 # A skill dir becomes one tree (sync contract). Each file is a blob; each
 # subdir a nested tree. The profile-root tree (the sync contract: "a tree whose
@@ -533,7 +537,7 @@ def _all_local_skill_names() -> List[str]:
 # ---------------------------------------------------------------------------
 
 class ObjectSet:
-    """Accumulates HSP objects to push: hash -> (kind, bytes).
+    """Accumulates objects to push: hash -> (kind, bytes).
 
     Deduped by content address, so identical blobs across skills upload once.
     """
@@ -542,7 +546,7 @@ class ObjectSet:
         self.objects: Dict[str, Tuple[str, bytes]] = {}
 
     def add(self, kind: str, data: bytes) -> str:
-        addr = hsp_address(data)
+        addr = wire_address(data)
         self.objects.setdefault(addr, (kind, data))
         return addr
 
@@ -551,7 +555,7 @@ class ObjectSet:
 
 
 def _file_mode(path: Path) -> str:
-    """Return the HSP tree mode for a regular file: ``exec`` if +x else ``file``
+    """Return the tree mode for a regular file: ``exec`` if +x else ``file``
     (contract §2.3). No symlinks / other modes are emitted."""
     try:
         if path.stat().st_mode & (_stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH):
@@ -562,7 +566,7 @@ def _file_mode(path: Path) -> str:
 
 
 def build_tree(dir_path: Path, objects: ObjectSet, *, max_object_bytes: int) -> str:
-    """Recursively build HSP objects for *dir_path*; return the tree address.
+    """Recursively build objects for *dir_path*; return the tree address.
 
     Regular files become blobs; subdirectories become nested trees. Symlinks,
     sockets, and other special files are skipped (contract §2.3 security: no
@@ -705,22 +709,22 @@ def set_device_name(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# HSP/1 wire client
+# Sync wire client
 #
 # Thin requests-based client for the endpoints in the sync contract- Uploads all
 # new objects (batch), then CAS-es the ref. A 409 returns the actual head for
 # the caller's three-way merge. Auth is the Nous bearer resolved above.
 # ---------------------------------------------------------------------------
 
-class HSPError(RuntimeError):
-    """A non-recoverable HSP wire error (4xx that the client can't retry)."""
+class SyncError(RuntimeError):
+    """A non-recoverable wire error (4xx that the client can't retry)."""
 
     def __init__(self, message: str, *, status: Optional[int] = None):
         super().__init__(message)
         self.status = status
 
 
-class HSPConflict(RuntimeError):
+class SyncConflict(RuntimeError):
     """CAS lost (409). ``actual`` is the current head to merge against
     (contract §4.4). NOT a rejection -- pushed objects are already durable."""
 
@@ -729,7 +733,7 @@ class HSPConflict(RuntimeError):
         self.actual = actual
 
 
-class HSPClient:
+class SyncClient:
     """Sync client bound to a base URL + bearer (routes under
     ``/v1/sync/``)."""
 
@@ -751,7 +755,7 @@ class HSPClient:
         """GET /v1/sync/capabilities (sync contract). No auth required."""
         r = self._session.get(self._url("capabilities"), timeout=self.timeout)
         if r.status_code != 200:
-            raise HSPError(f"capabilities failed: {r.status_code}", status=r.status_code)
+            raise SyncError(f"capabilities failed: {r.status_code}", status=r.status_code)
         return r.json()
 
     def get_refs(self, prefix: str) -> List[Dict[str, str]]:
@@ -760,22 +764,22 @@ class HSPClient:
             self._url("refs"), params={"prefix": prefix}, timeout=self.timeout
         )
         if r.status_code != 200:
-            raise HSPError(f"get_refs failed: {r.status_code}", status=r.status_code)
+            raise SyncError(f"get_refs failed: {r.status_code}", status=r.status_code)
         return (r.json() or {}).get("refs", [])
 
     def get_object(self, obj_hash: str) -> Tuple[str, bytes]:
         """GET /v1/sync/objects/:hash (sync contract). Returns (kind, bytes).
 
-        Kind comes from ``X-HSP-Object-Type`` for tree/commit; a blob response
+        Kind comes from the object-type response header for tree/commit; a blob
         (application/octet-stream) is returned as ``blob``.
         """
         r = self._session.get(self._url(f"objects/{obj_hash}"), timeout=self.timeout)
         if r.status_code == 404:
-            raise HSPError(f"object {obj_hash} not found", status=404)
+            raise SyncError(f"object {obj_hash} not found", status=404)
         if r.status_code == 403:
-            raise HSPError(f"object {obj_hash} not readable", status=403)
+            raise SyncError(f"object {obj_hash} not readable", status=403)
         if r.status_code != 200:
-            raise HSPError(f"get_object failed: {r.status_code}", status=r.status_code)
+            raise SyncError(f"get_object failed: {r.status_code}", status=r.status_code)
         kind = r.headers.get("X-HSP-Object-Type") or KIND_BLOB
         return kind, r.content
 
@@ -783,14 +787,14 @@ class HSPClient:
         """Fetch a commit object and parse its canonical JSON."""
         kind, data = self.get_object(commit_hash)
         if kind != KIND_COMMIT:
-            raise HSPError(f"{commit_hash} is {kind}, expected commit")
+            raise SyncError(f"{commit_hash} is {kind}, expected commit")
         return json.loads(data.decode("utf-8"))
 
     def get_tree_json(self, tree_hash: str) -> Dict[str, Any]:
         """Fetch a tree object and parse its canonical JSON."""
         kind, data = self.get_object(tree_hash)
         if kind != KIND_TREE:
-            raise HSPError(f"{tree_hash} is {kind}, expected tree")
+            raise SyncError(f"{tree_hash} is {kind}, expected tree")
         return json.loads(data.decode("utf-8"))
 
     # -- write -------------------------------------------------------------
@@ -833,17 +837,17 @@ class HSPClient:
             timeout=self.timeout,
         )
         if r.status_code == 413:
-            raise HSPError("object too large (413)", status=413)
+            raise SyncError("object too large (413)", status=413)
         if r.status_code == 422:
-            raise HSPError(f"hash_mismatch (422): {r.text}", status=422)
+            raise SyncError(f"hash_mismatch (422): {r.text}", status=422)
         if r.status_code not in (200, 201):
-            raise HSPError(f"put_objects failed: {r.status_code}", status=r.status_code)
+            raise SyncError(f"put_objects failed: {r.status_code}", status=r.status_code)
         return r.json() if r.content else {}
 
     def cas_ref(self, name: str, from_hash: Optional[str], to_hash: str) -> Dict[str, Any]:
         """POST /v1/sync/refs/:name -- atomic compare-and-swap (sync contract).
 
-        Raises :class:`HSPConflict` (carrying the actual head) on 409.
+        Raises :class:`SyncConflict` (carrying the actual head) on 409.
 
         M2 (contract §11.5): a non-admin member's CAS on an org HEAD is never
         rejected — the server converts it to a proposal and returns
@@ -862,16 +866,16 @@ class HSPClient:
             return {"proposal_pending": True, **body}
         if r.status_code == 409:
             actual = (r.json() or {}).get("actual", "")
-            raise HSPConflict(actual)
+            raise SyncConflict(actual)
         if r.status_code == 403:
-            raise HSPError("forbidden (403) -- owner/permission", status=403)
+            raise SyncError("forbidden (403) -- owner/permission", status=403)
         if r.status_code != 200:
-            raise HSPError(f"cas_ref failed: {r.status_code}", status=r.status_code)
+            raise SyncError(f"cas_ref failed: {r.status_code}", status=r.status_code)
         return r.json() if r.content else {}
 
 
 # ---------------------------------------------------------------------------
-# HSP local sync STATE (client-local head bookkeeping, FULL-digest namespace)
+# Local sync STATE (client-local head bookkeeping, FULL-digest namespace)
 #
 # Records the last commit HEAD we pushed/pulled and, per synced skill, the tree
 # hash of the on-disk content at that point. Distinct from the bundled manifest
@@ -894,7 +898,7 @@ def _legacy_sync_state_path() -> Path:
 
 
 def read_sync_state() -> Dict[str, Any]:
-    """Read the local HSP sync state. Returns a default on missing/corrupt.
+    """Read the local sync state. Returns a default on missing/corrupt.
 
     Shape: ``{"head": "sha256:...|null", "skills": {name: {tree, commit}}}``.
     ``head`` is the last profile-root HEAD commit we reconciled with.
@@ -933,7 +937,7 @@ def read_sync_state() -> Dict[str, Any]:
 
 
 def write_sync_state(data: Dict[str, Any]) -> None:
-    """Write the local HSP sync state atomically. Best-effort."""
+    """Write the local sync state atomically. Best-effort."""
     import tempfile
 
     path = _sync_state_path()
@@ -957,11 +961,11 @@ def write_sync_state(data: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tree materialization (pull) -- write an HSP tree back to a skill directory
+# Tree materialization (pull) -- write a tree back to a skill directory
 # ---------------------------------------------------------------------------
 
-def materialize_tree(client: HSPClient, tree_hash: str, dest: Path) -> None:
-    """Write the HSP tree at *tree_hash* into *dest* (created if needed).
+def materialize_tree(client: SyncClient, tree_hash: str, dest: Path) -> None:
+    """Write the tree at *tree_hash* into *dest* (created if needed).
 
     Blobs become files (with +x restored for ``exec`` mode), nested trees
     become subdirectories. Does NOT delete files absent from the tree -- the
@@ -1017,7 +1021,7 @@ def _skill_rel_path(skill_name: str) -> Optional[PurePosixPath]:
 def snapshot_profile(
     skill_names: List[str], *, max_object_bytes: int = DEFAULT_MAX_OBJECT_BYTES
 ) -> Tuple[ObjectSet, str, Dict[str, str]]:
-    """Build all HSP objects for *skill_names* + the profile-root tree.
+    """Build all objects for *skill_names* + the profile-root tree.
 
     Returns ``(objects, root_tree_hash, skill_tree_map)`` where
     ``skill_tree_map`` is ``{skill_name: tree_hash}``. Skills whose blobs
@@ -1074,7 +1078,7 @@ def snapshot_profile(
 def _build_root_tree(
     node: Dict[str, Any], objects: ObjectSet, *, manifest_hash: Optional[str] = None
 ) -> str:
-    """Recursively canonicalize the nested root structure into HSP trees.
+    """Recursively canonicalize the nested root structure into trees.
 
     ``manifest_hash`` (only passed at the top level) adds a root-level
     ``sync-manifest`` BLOB entry (design.md §2.8) alongside the skill subtrees.
@@ -1117,12 +1121,12 @@ def user_conflict_ref(owner: str, n: int) -> str:
     return f"refs/user/{owner}/conflict/{n}"
 
 
-def _root_tree_of_commit(client: "HSPClient", commit_hash: str) -> str:
+def _root_tree_of_commit(client: "SyncClient", commit_hash: str) -> str:
     """Return the tree hash referenced by a commit."""
     return client.get_commit_json(commit_hash)["tree"]
 
 
-def _skill_trees_of_root(client: "HSPClient", root_tree_hash: str) -> Dict[str, str]:
+def _skill_trees_of_root(client: "SyncClient", root_tree_hash: str) -> Dict[str, str]:
     """Flatten a profile-root tree into ``{posix_rel_path: skill_tree_hash}``.
 
     A skill tree is any tree containing a ``SKILL.md`` blob entry. We walk the
@@ -1150,7 +1154,7 @@ def _skill_trees_of_root(client: "HSPClient", root_tree_hash: str) -> Dict[str, 
 
 
 def read_manifest_of_root(
-    client: "HSPClient", root_tree_hash: str
+    client: "SyncClient", root_tree_hash: str
 ) -> Optional[Dict[str, bool]]:
     """Read the ``sync-manifest`` blob at the root of *root_tree_hash* into
     ``{name: enabled}`` (design.md §2.8), or ``None`` if there is no manifest
@@ -1178,10 +1182,13 @@ def read_manifest_of_root(
 
 def _check_version(caps: Dict[str, Any]) -> None:
     """Reject an incompatible server major version (sync contract)."""
-    ver = str(caps.get("hsp_version") or "")
+    ver = str(caps.get("hsp_version") or "")  # wire field name
     major = ver.split(".", 1)[0]
-    if major != HSP_VERSION:
-        raise HSPError(f"incompatible HSP version {ver!r} (client speaks {HSP_VERSION})")
+    if major != WIRE_VERSION:
+        raise SyncError(
+            f"this server speaks sync version {ver!r}, but this Hermes speaks "
+            f"{WIRE_VERSION} — update Hermes to sync with it"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1189,7 +1196,7 @@ def _check_version(caps: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def push_skills(
-    client: Optional["HSPClient"] = None,
+    client: Optional["SyncClient"] = None,
     *,
     skill_names: Optional[List[str]] = None,
     identity: Optional[Dict[str, Any]] = None,
@@ -1208,7 +1215,7 @@ def push_skills(
         base = resolve_sync_base_url()
         if not base:
             return {"ok": False, "reason": "no sync base url configured", "noop": True}
-        client = HSPClient(base, identity["api_key"])
+        client = SyncClient(base, identity["api_key"])
 
     if skill_names is None:
         skill_names = list_synced_skill_names()
@@ -1245,7 +1252,7 @@ def push_skills(
         manifest["root"] = root_hash
         write_sync_state(manifest)
         return {"ok": True, "head": commit_hash, "pushed_objects": len(objects)}
-    except HSPConflict as conflict:
+    except SyncConflict as conflict:
         return _resolve_push_conflict(
             client, identity, conflict.actual, root_hash, commit_hash,
             objects, skill_names, message, base_head,
@@ -1273,7 +1280,7 @@ def push_skills(
 # ---------------------------------------------------------------------------
 
 def _resolve_push_conflict(
-    client: "HSPClient",
+    client: "SyncClient",
     identity: Dict[str, Any],
     actual_head: str,
     our_root: str,
@@ -1321,7 +1328,7 @@ def _resolve_push_conflict(
         conflict_ref = user_conflict_ref(owner, n)
         try:
             client.cas_ref(conflict_ref, None, our_commit)
-        except HSPConflict:
+        except SyncConflict:
             pass  # someone else grabbed this index; the head still exists
         return {
             "ok": False,
@@ -1353,7 +1360,7 @@ def _resolve_push_conflict(
     client.put_objects(merge_objects.objects)
     try:
         client.cas_ref(user_head_ref(owner), actual_head, merge_commit)
-    except HSPConflict as c2:
+    except SyncConflict as c2:
         return {
             "ok": False,
             "conflict": True,
@@ -1388,7 +1395,7 @@ def _merge_skill(base: Optional[str], ours: Optional[str], theirs: Optional[str]
 
 
 def _assemble_root_from_skill_trees(
-    client: "HSPClient", skill_trees: Dict[str, str], objects: "ObjectSet"
+    client: "SyncClient", skill_trees: Dict[str, str], objects: "ObjectSet"
 ) -> str:
     """Build a profile-root tree object from ``{posix_rel_path: tree_hash}``.
 
@@ -1406,11 +1413,11 @@ def _assemble_root_from_skill_trees(
     return _build_root_tree(root, objects)
 
 
-def _next_conflict_index(client: "HSPClient", owner: str) -> int:
+def _next_conflict_index(client: "SyncClient", owner: str) -> int:
     """Pick the next free conflict ref index for the owner."""
     try:
         refs = client.get_refs(f"refs/user/{owner}/conflict/")
-    except HSPError:
+    except SyncError:
         return 1
     used = []
     for r in refs:
@@ -1426,7 +1433,7 @@ def _next_conflict_index(client: "HSPClient", owner: str) -> int:
 # ---------------------------------------------------------------------------
 
 def pull_skills(
-    client: Optional["HSPClient"] = None,
+    client: Optional["SyncClient"] = None,
     *,
     identity: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -1445,7 +1452,7 @@ def pull_skills(
         base = resolve_sync_base_url()
         if not base:
             return {"ok": False, "reason": "no sync base url configured", "noop": True}
-        client = HSPClient(base, identity["api_key"])
+        client = SyncClient(base, identity["api_key"])
 
     caps = client.capabilities()
     _check_version(caps)
@@ -1652,7 +1659,7 @@ def list_org_skill_names() -> List[str]:
 # here is inert (org_sync_available() False; pull/propose raise SyncInertError)
 # and the personal personal sync experience is untouched.
 #
-# TRAJECTORY (Ben): `hermes skills propose` is the org sharing MVP surface; proposal is
+# `hermes sync propose` is the org sharing surface; proposal is
 # intended to become largely automated later (curator/background hooks driving
 # the same propose_skill() path). Keep this callable non-interactive.
 # ---------------------------------------------------------------------------
@@ -1702,7 +1709,7 @@ def _org_dir() -> Path:
 
 
 def pull_org_skills(
-    client: Optional["HSPClient"] = None,
+    client: Optional["SyncClient"] = None,
     *,
     identity: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -1722,7 +1729,7 @@ def pull_org_skills(
         base_url = resolve_sync_base_url()
         if not base_url:
             raise SyncInertError("no sync base URL configured")
-        client = HSPClient(base_url, identity["api_key"])
+        client = SyncClient(base_url, identity["api_key"])
 
     caps = client.capabilities()
     _check_version(caps)
@@ -1916,7 +1923,7 @@ def _write_org_provenance(org_id: str, data: Dict[str, Any]) -> None:
 
 def propose_skill(
     skill_name: str,
-    client: Optional["HSPClient"] = None,
+    client: Optional["SyncClient"] = None,
     *,
     identity: Optional[Dict[str, Any]] = None,
     message: Optional[str] = None,
@@ -1942,7 +1949,7 @@ def propose_skill(
         base_url = resolve_sync_base_url()
         if not base_url:
             raise SyncInertError("no sync base URL configured")
-        client = HSPClient(base_url, identity["api_key"])
+        client = SyncClient(base_url, identity["api_key"])
 
     caps = client.capabilities()
     _check_version(caps)
@@ -1953,10 +1960,10 @@ def propose_skill(
     # Locate the local skill directory (personal namespace, NOT _org/).
     rel = _skill_rel_path(skill_name)
     if rel is None:
-        raise HSPError(f"skill '{skill_name}' not found under the skills dir")
+        raise SyncError(f"skill '{skill_name}' not found under the skills dir")
     skill_dir = _skills_dir() / rel
     if not (skill_dir / "SKILL.md").exists():
-        raise HSPError(f"skill '{skill_name}' has no SKILL.md")
+        raise SyncError(f"skill '{skill_name}' has no SKILL.md")
 
     # Build the proposed skill tree.
     objects = ObjectSet()

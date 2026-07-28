@@ -2911,6 +2911,16 @@ DEFAULT_CONFIG = {
         # jobs from silently inheriting a paid default. Set to false only when
         # jobs should deliberately track changing global inference defaults.
         "model_drift_guard": True,
+        # Default inference model for cron jobs (Axis A — WHAT model an
+        # agent job runs on). Resolution at fire time: per-job user pin >
+        # cron.model > global model.default. When set, unpinned jobs follow
+        # this deliberately, so the #44585 model-drift fail-closed guard does
+        # not engage for the model axis — cron spend no longer shadows chat
+        # `/model` switches. Empty string = fall through to model.default.
+        "model": "",
+        # Inference provider paired with cron.model (NOT the scheduler
+        # provider below). Empty string = resolve from global config.
+        "model_provider": "",
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
@@ -8894,6 +8904,31 @@ def cron_model_drift_guard_enabled(
     return cron_config.get("model_drift_guard", True) is not False
 
 
+def _cron_fleet_default_covers_axis(
+    axis: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True when cron.model / cron.model_provider covers *axis*.
+
+    An axis covered by the explicit cron-fleet default no longer follows the
+    global model/provider at fire time, so the drift guard never engages for
+    it and switch-time warnings would be false alarms.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return False
+    if not isinstance(config, dict):
+        return False
+    cron_config = config.get("cron")
+    if not isinstance(cron_config, dict):
+        return False
+    key = "model" if axis == "model" else "model_provider"
+    value = cron_config.get(key)
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _load_cron_jobs_for_config_warning() -> List[Dict[str, Any]]:
     """Best-effort read of the active profile's cron jobs database.
 
@@ -8924,6 +8959,12 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     if axis is None:
         return
     if not cron_model_drift_guard_enabled(config):
+        return
+    # A cron-fleet default covering this axis (cron.model /
+    # cron.model_provider) means unpinned jobs no longer follow the global
+    # value at all — the drift guard will not engage, so warning here would
+    # be a false alarm.
+    if _cron_fleet_default_covers_axis(axis, config):
         return
 
     new_value = str(value or "").strip().lower()

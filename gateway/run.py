@@ -6172,48 +6172,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         the automatic STT contract used by ``_prepare_inbound_message_text``.
         If transcription fails, preserve any caption and let the existing
         steer fallback handle an otherwise empty event without losing it.
+
+        Routes through ``_transcribe_and_echo_pending_voice`` — the single
+        out-of-band transcription choke point shared with the interrupt
+        monitor and the pending-drain path — so the STT call is made at most
+        once per platform message (cached on the event) and the transcript
+        echo respects the count-based ledger.  If steering later falls back
+        to queue mode, the drain path reuses the cached transcript instead of
+        paying for a second STT call or re-echoing the same line.
         """
         text = (event.text or "").strip()
-        media_urls = getattr(event, "media_urls", None) or []
-        media_types = getattr(event, "media_types", None) or []
-        voice_paths: List[str] = []
-
-        for index, path in enumerate(media_urls):
-            media_type = media_types[index] if index < len(media_types) else ""
-            is_voice = event.message_type == MessageType.VOICE or (
-                media_type.startswith("audio/")
-                and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
-            )
-            if is_voice:
-                voice_paths.append(path)
-
-        if not voice_paths:
+        if not self._pending_event_audio_paths(event):
             return text
 
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+        adapter = self._adapter_for_source(event.source)
+        enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
+            event,
+            adapter,
+            event.source,
             text,
-            voice_paths,
+            log_context="Busy-steer",
         )
         if not successful_transcripts:
             return text
-
-        if self._should_echo_stt_transcripts():
-            adapter = self._adapter_for_source(event.source)
-            if adapter:
-                echo_meta = self._thread_metadata_for_source(
-                    event.source,
-                    self._reply_anchor_for_event(event),
-                )
-                for transcript in successful_transcripts:
-                    try:
-                        await adapter.send(
-                            event.source.chat_id,
-                            f'🎙️ "{transcript}"',
-                            metadata=echo_meta,
-                        )
-                    except Exception as exc:
-                        logger.debug("Busy-steer transcript echo failed (non-fatal): %s", exc)
-
         return (enriched_text or text).strip()
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
@@ -6404,11 +6385,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         redirected = False
         if effective_mode == "steer":
             steer_text = await self._prepare_busy_steer_text(event)
+            # A follow-up qualifies for steering when it is plain text, OR
+            # when every attachment is STT-eligible voice media whose
+            # transcript was just folded into steer_text — otherwise a voice
+            # note in steer mode silently degrades to queue mode (#58780).
+            _steer_media_urls = getattr(event, "media_urls", None) or []
+            _steer_all_voice = bool(_steer_media_urls) and (
+                len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
+            )
             can_steer = (
                 steer_text
-                and event.message_type == MessageType.TEXT
-                and not event.media_urls
-                and not event.media_types
+                and (
+                    (
+                        event.message_type == MessageType.TEXT
+                        and not event.media_urls
+                        and not event.media_types
+                    )
+                    or _steer_all_voice
+                )
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")

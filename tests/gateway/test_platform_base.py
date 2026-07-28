@@ -370,6 +370,29 @@ class TestExtractMedia:
         assert media[0][0] == "/path/to/voice.ogg"
         assert media[0][1] is True  # voice tag present
 
+    def test_voice_directive_only_taints_audio_files(self):
+        """[[audio_as_voice]] is message-global but must only flag audio files.
+
+        A non-audio file marked is_voice is excluded from the embedded-photo
+        batch and falls through to send_document, so an image sharing a
+        message with a voice note used to arrive as a file attachment
+        (#44826).
+        """
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/pic.png\nMEDIA:/tmp/voice.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        flags = dict(media)
+        assert flags["/tmp/pic.png"] is False
+        assert flags["/tmp/voice.ogg"] is True
+        assert "[[audio_as_voice]]" not in cleaned
+
+    def test_voice_directive_skips_video_and_documents(self):
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/clip.mp4\nMEDIA:/tmp/report.pdf\nMEDIA:/tmp/note.opus"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        flags = dict(media)
+        assert flags["/tmp/clip.mp4"] is False
+        assert flags["/tmp/report.pdf"] is False
+        assert flags["/tmp/note.opus"] is True
+
     def test_multiple_media_tags(self):
         content = "MEDIA:/a.ogg\nMEDIA:/b.ogg"
         media, _ = BasePlatformAdapter.extract_media(content)

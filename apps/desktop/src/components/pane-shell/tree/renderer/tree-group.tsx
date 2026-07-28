@@ -24,7 +24,7 @@ import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
-import { hiddenPaneProps, PaneVisibleContext } from '../../pane-visibility'
+import { hiddenPaneProps, PaneGroupContext, PaneVisibleContext } from '../../pane-visibility'
 import type { DropPosition, GroupNode, RootEdge } from '../model'
 import { adjacentGroup } from '../model'
 import {
@@ -567,10 +567,14 @@ export function TreeGroup({
                 >
                   {pane?.render ? (
                     // Visibility flows to the pane so a kept-alive chat surface
-                    // can gate its hot (per-token) subscriptions while hidden.
-                    <PaneVisibleContext.Provider value={isActive}>
-                      <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
-                    </PaneVisibleContext.Provider>
+                    // can gate its hot (per-token) subscriptions while hidden;
+                    // the group id identifies the ZONE it lives in, for state
+                    // that is per-zone rather than per-tab (composer pop-out).
+                    <PaneGroupContext.Provider value={node.id}>
+                      <PaneVisibleContext.Provider value={isActive}>
+                        <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
+                      </PaneVisibleContext.Provider>
+                    </PaneGroupContext.Provider>
                   ) : (
                     isActive && (
                       <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">

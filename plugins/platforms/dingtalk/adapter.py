@@ -920,11 +920,15 @@ class DingTalkAdapter(BasePlatformAdapter):
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
         elif msg_type_str == "richText":
-            msg_type = (
-                MessageType.PHOTO
-                if any("image" in t for t in media_types)
-                else MessageType.TEXT
-            )
+            # Only re-derive the type when the rich-text scan above left it
+            # at TEXT. The scan may already have promoted it to VOICE/AUDIO/
+            # VIDEO/DOCUMENT for embedded media items — resetting those here
+            # dropped native voice notes back to TEXT and skipped STT
+            # (#38211, #38219; analysis from #38276).
+            if msg_type == MessageType.TEXT and any(
+                "image" in t for t in media_types
+            ):
+                msg_type = MessageType.PHOTO
         elif msg_type_str == "audio":
             # Voice message — DingTalk already provides recognition text.
             # Do NOT add media_urls here: if audio_paths is non-empty,

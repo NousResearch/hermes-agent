@@ -735,6 +735,40 @@ class TestExtractMedia:
         assert urls == ["dl_voice_abc"]
         assert mtypes == ["audio"]
 
+    def test_richtext_reset_does_not_clobber_voice(self):
+        """A richText envelope containing a native voice item must stay
+        VOICE — the ``msg_type_str == "richText"`` re-derivation used to
+        reset it to TEXT, dropping the voice note from the STT path
+        (#38211, #38219)."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [{"type": "voice", "downloadCode": "dl_voice_rt"}]
+        )
+        msg.message_type = "richText"
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.VOICE
+        assert urls == ["dl_voice_rt"]
+        assert mtypes == ["audio"]
+
+    def test_richtext_with_image_still_photo(self):
+        """richText with only an embedded image keeps the PHOTO promotion."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [{"type": "picture", "downloadCode": "dl_img_rt"}]
+        )
+        msg.message_type = "richText"
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.PHOTO
+        assert urls == ["dl_img_rt"]
+
     def test_audio_rich_text_item_stays_audio(self):
         """Generic audio uploads (e.g. an mp3 the user attached) must NOT
         be auto-transcribed — they stay MessageType.AUDIO."""

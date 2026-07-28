@@ -47,6 +47,20 @@ describe('applyWakeStatus', () => {
     expect(state.listening).toBe(false)
     expect(state.notice).toBe('pip install openwakeword')
   })
+
+  it('keeps the dead-mic hint visible while listening (audio_silent)', () => {
+    applyWakeStatus({
+      audio_silent: true,
+      available: true,
+      hint: 'Microphone delivers only silence — grant mic access',
+      listening: true,
+      phrase: 'hey hermes'
+    })
+
+    const state = $wakeWord.get()
+    expect(state.listening).toBe(true)
+    expect(state.notice).toBe('Microphone delivers only silence — grant mic access')
+  })
 })
 
 describe('toggleWakeWord', () => {

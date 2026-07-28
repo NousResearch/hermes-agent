@@ -48,6 +48,14 @@ SAMPLE_RATE = 16000
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
 
+# Dead-mic detection: an int16 stream whose peak stays at/below this for this
+# many consecutive seconds is flagged as silent. macOS grants the *app* mic
+# permission per-process — a backend spawned without the entitlement gets a
+# "working" CoreAudio stream that delivers zeros forever, so the listener
+# looks armed but can never hear the phrase.
+_SILENCE_PEAK = 10
+_SILENCE_ALERT_SECONDS = 10
+
 
 class WakeWordInUse(RuntimeError):
     """Raised when another surface or process owns the wake-word listener."""
@@ -561,6 +569,12 @@ class WakeWordDetector:
         self._callback_inflight = threading.Event()
         self._last_fire = 0.0
         self._lock = threading.Lock()
+        # True when the stream is open but every frame is (near-)silence — the
+        # classic macOS symptom of a backend process without mic permission:
+        # CoreAudio "succeeds" and delivers zeros forever. Surfaced via
+        # wake.status / /wake status so users can tell "armed" from "deaf".
+        self.audio_silent = False
+        self._silent_frames = 0
 
     @property
     def running(self) -> bool:
@@ -653,6 +667,9 @@ class WakeWordDetector:
         logger.info("wake word: listening (frame=%d, rate=%d)", frame_length, SAMPLE_RATE)
         ready.set()
         failed = False
+        # ~seconds of consecutive near-zero frames before we flag the stream
+        # as silent (macOS no-permission streams deliver zeros forever).
+        silent_alert_frames = max(1, int(_SILENCE_ALERT_SECONDS * SAMPLE_RATE / max(1, frame_length)))
         try:
             while not self._stop.is_set():
                 try:
@@ -662,6 +679,25 @@ class WakeWordDetector:
                     failed = not self._stop.is_set()
                     break
                 frame = data[:, 0] if getattr(data, "ndim", 1) == 2 else data
+                try:
+                    peak = int(abs(frame).max()) if len(frame) else 0
+                except Exception:
+                    peak = _SILENCE_PEAK + 1
+                if peak <= _SILENCE_PEAK:
+                    self._silent_frames += 1
+                    if self._silent_frames == silent_alert_frames:
+                        self.audio_silent = True
+                        logger.warning(
+                            "wake word: mic delivers only silence (peak<=%d for %ds) — "
+                            "on macOS check System Settings > Privacy & Security > "
+                            "Microphone for the Hermes backend process",
+                            _SILENCE_PEAK, _SILENCE_ALERT_SECONDS,
+                        )
+                elif self._silent_frames:
+                    if self.audio_silent:
+                        logger.info("wake word: mic audio detected — stream healthy")
+                    self._silent_frames = 0
+                    self.audio_silent = False
                 try:
                     fired = self.engine.process(frame)
                 except Exception as e:
@@ -859,6 +895,18 @@ def is_listening() -> bool:
     with _detector_lock:
         det = _detector
     return det is not None and det.running
+
+
+def audio_is_silent() -> bool:
+    """True when the armed stream has delivered only silence (dead mic).
+
+    The macOS no-permission failure mode: the stream opens fine but every
+    frame is zeros, so detection can never fire. Lets status surfaces show
+    "listening but the microphone appears silent" instead of a healthy state.
+    """
+    with _detector_lock:
+        det = _detector
+    return det is not None and det.audio_silent
 
 
 def get_last_match() -> Optional[tuple[str, str]]:

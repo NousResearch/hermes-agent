@@ -6355,6 +6355,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 "timestamp": datetime.now(tz=UTC).isoformat(), "observed": True}
             if event.message_id:
                 entry["message_id"] = str(event.message_id)
+            # Record cached attachment paths structurally, not just as the
+            # text note ``_cache_observed_media`` appends.  The note tells the
+            # model a file existed; only these let the gateway re-attach the
+            # image on a later addressed turn (#47415).  Omitted entirely for
+            # plain chatter so text-only rows keep their existing shape.
+            if event.media_urls:
+                entry["media_urls"] = list(event.media_urls)
+                entry["media_types"] = list(event.media_types or [])
             self._accept_update()
             store.append_to_transcript(session_entry.session_id, entry)
             logger.info(

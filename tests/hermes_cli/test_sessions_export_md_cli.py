@@ -189,11 +189,11 @@ def test_sessions_export_md_bulk_dry_run_lists_candidates(monkeypatch, tmp_path,
     class FakeDB:
         def list_prune_candidates(self, **kwargs):
             # Export flows through the shared prune-filter machinery:
-            # --older-than 30 becomes a started_before epoch bound, source
+            # --older-than 30 becomes a last-active epoch bound, source
             # passes through, and archived is tri-state None (export includes
             # archived sessions).
             assert kwargs.get("source") == "cron"
-            assert kwargs.get("started_before") is not None
+            assert kwargs.get("last_active_before") is not None
             assert kwargs.get("archived") is None
             return [{"id": "s1", "source": "cron"}, {"id": "s2", "source": "cron"}]
 
@@ -444,7 +444,7 @@ def test_sessions_export_md_accepts_duration_age_grammar(monkeypatch, tmp_path, 
 
     class FakeDB:
         def list_prune_candidates(self, **kwargs):
-            assert kwargs.get("started_before") is not None
+            assert kwargs.get("last_active_before") is not None
             return [{"id": "s1", "source": "cli"}]
 
         def close(self):

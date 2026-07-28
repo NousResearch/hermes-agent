@@ -13,11 +13,24 @@ from unittest.mock import MagicMock, patch
 from tools.interrupt import set_interrupt
 
 
-def _make_slow_api_response(delay=5.0):
-    """Create a mock that simulates a slow API response (like a real LLM call)."""
+def _make_slow_api_response(delay=5.0, abort_event=None):
+    """Create a mock that simulates a slow API response (like a real LLM call).
+
+    When ``abort_event`` is provided, the fake call unblocks early if the
+    event fires and raises a connection error — modelling what a real httpx
+    request does when ``_abort_request_openai_client`` shuts down the
+    client's TCP sockets (the pending recv returns EOF). Delegated children
+    run their request INLINE on the conversation thread (#60203), so
+    interrupt responsiveness there comes from the socket abort, not from
+    abandoning a worker thread; a bare ``time.sleep`` cannot simulate that.
+    """
     def slow_create(**kwargs):
         # Simulate a slow API call
-        time.sleep(delay)
+        if abort_event is not None:
+            if abort_event.wait(delay):
+                raise ConnectionError("socket shut down by interrupt abort")
+        else:
+            time.sleep(delay)
         # Return a simple text response (no tool calls)
         resp = MagicMock()
         resp.choices = [MagicMock()]
@@ -89,13 +102,24 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                 # Patch the OpenAI client creation inside AIAgent.__init__
                 with patch('run_agent.OpenAI') as MockOpenAI:
                     mock_client = MagicMock()
-                    # API call takes 5 seconds — should be interrupted before that
-                    mock_client.chat.completions.create = _make_slow_api_response(delay=5.0)
+                    # API call takes 5 seconds — should be interrupted before
+                    # that. Children run the request INLINE (#60203), so the
+                    # interrupt path is the cross-thread socket abort: wire
+                    # the fake request to unblock when the child's abort hook
+                    # fires, as a real httpx recv would on socket shutdown.
+                    abort_event = threading.Event()
+                    mock_client.chat.completions.create = _make_slow_api_response(
+                        delay=5.0, abort_event=abort_event
+                    )
                     mock_client.close = MagicMock()
                     MockOpenAI.return_value = mock_client
 
+                    def fake_abort(self_agent, client, *, reason):
+                        abort_event.set()
+
                     # Patch the instance method so it skips prompt assembly
-                    with patch.object(AIAgent, '_build_system_prompt', return_value="You are a test agent"):
+                    with patch.object(AIAgent, '_build_system_prompt', return_value="You are a test agent"), \
+                         patch.object(AIAgent, '_abort_request_openai_client', fake_abort):
                         # Signal when child starts
                         original_run = AIAgent.run_conversation
 

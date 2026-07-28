@@ -120,4 +120,106 @@ describe('useComposerTrigger — slash anywhere in the prompt', () => {
 
     expect(hook.result.current.trigger).toBeNull()
   })
+
+  it('opens the list for a second slash after a leading command', () => {
+    // `/work /cle`: the command regex's argument tail would otherwise swallow
+    // `/cle` as an argument to `/work`, and a no-arg command suppresses the
+    // popover — so every slash after the first went dead.
+    const editor = mountEditor('/work /cle')
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.trigger).toMatchObject({ kind: '/', inline: true, query: 'cle' })
+    expect(hook.result.current.triggerItems).toHaveLength(1)
+  })
+
+  it('inserts the second command without disturbing the first', () => {
+    const editor = mountEditor('/work rewrite the composer /cle')
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('/work rewrite the composer /clean ')
+  })
+})
+
+describe('useComposerTrigger — free-text slash arguments', () => {
+  it('keeps a picked /goal command as editable text while retaining subcommand completion', () => {
+    const editor = mountEditor('/go')
+    const goal = item('/goal', 'Commands')
+    const { hook } = mountTrigger(editor, [goal])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(goal))
+
+    expect(composerPlainText(editor)).toBe('/goal ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(hook.result.current.trigger).not.toBeNull()
+  })
+
+  it('does not seal a multi-word /goal into a chip when the option list runs empty', () => {
+    const editor = mountEditor('/goal finish the full prompt')
+    const { hook } = mountTrigger(editor, [])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.slashFreeTextArgStage).toBe(true)
+    expect(hook.result.current.commitTypedSlashDirective()).toBe(false)
+    expect(composerPlainText(editor)).toBe('/goal finish the full prompt')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
+
+  it('treats the default highlight as a suggestion until the user arrows to a row', () => {
+    const editor = mountEditor('/goal stat')
+    const { hook } = mountTrigger(editor, [item('/goal status', 'Options')])
+
+    act(() => hook.result.current.refreshTrigger())
+    expect(hook.result.current.triggerActiveExplicit).toBe(false)
+
+    act(() => hook.result.current.moveTriggerActive(1))
+    expect(hook.result.current.triggerActiveExplicit).toBe(true)
+  })
+
+  it('drops a deliberate selection once the query moves on', () => {
+    const editor = mountEditor('/goal stat')
+    const { hook } = mountTrigger(editor, [item('/goal status', 'Options')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.moveTriggerActive(1))
+
+    renderComposerContents(editor, '/goal start the migration')
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.triggerActiveExplicit).toBe(false)
+  })
+
+  it('keeps a multi-word /resume search typeable instead of firing the picker action', () => {
+    // The session list always ends in a "Browse all sessions…" action row, so
+    // an accept here doesn't insert a chip — it empties the composer and opens
+    // the overlay, taking the half-typed query with it.
+    const editor = mountEditor('/resume my new')
+    const { hook } = mountTrigger(editor, [item('/resume', 'Sessions')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.slashFreeTextArgStage).toBe(true)
+    expect(hook.result.current.commitTypedSlashDirective()).toBe(false)
+    expect(composerPlainText(editor)).toBe('/resume my new')
+  })
+
+  it('still commits a fully typed finite option as one directive chip', () => {
+    const editor = mountEditor('/personality creative')
+    const { hook } = mountTrigger(editor, [])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.slashFreeTextArgStage).toBe(false)
+    act(() => {
+      expect(hook.result.current.commitTypedSlashDirective()).toBe(true)
+    })
+    expect(composerPlainText(editor)).toBe('/personality creative ')
+    expect(editor.querySelector('[data-slash-kind]')?.getAttribute('data-ref-text')).toBe('/personality creative')
+  })
 })

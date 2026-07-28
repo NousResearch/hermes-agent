@@ -16,7 +16,7 @@ import pytest
 import tui_gateway.server as srv
 import hermes_cli.nous_billing as nb
 import agent.billing_view as bv
-from agent.billing_view import BillingState, CardInfo, MonthlyCap
+from agent.billing_view import BillingState, CardInfo, MonthlyCap, PaymentMethodInfo
 
 
 def _call(method: str, params: dict) -> dict:
@@ -41,6 +41,11 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
         min_usd=Decimal("10"),
         max_usd=Decimal("10000"),
         card=CardInfo(brand="visa", last4="4242"),
+        payment_method=PaymentMethodInfo(
+            kind="link",
+            email="billing@example.com",
+            resolved_via="customerDefault",
+        ),
         monthly_cap=MonthlyCap(
             limit_usd=Decimal("1000"), spent_this_month_usd=Decimal("180"), is_default_ceiling=True
         ),
@@ -53,7 +58,18 @@ def test_billing_state_serializes_decimals_as_strings(monkeypatch):
     assert res["balance_usd"] == "142.5"
     assert res["balance_display"] == "$142.50"
     assert res["charge_presets"] == ["100", "250"]
-    assert res["card"]["masked"] == "visa ····4242"
+    assert res["card"] == {
+        "brand": "visa",
+        "last4": "4242",
+        "masked": "visa ····4242",
+        "display": "visa ····4242",
+        "resolved_via": None,
+    }
+    assert res["payment_method"] == {
+        "kind": "link",
+        "email": "billing@example.com",
+        "resolved_via": "customerDefault",
+    }
     assert res["monthly_cap"]["is_default_ceiling"] is True
     assert res["is_admin"] is True and res["can_charge"] is True
 
@@ -65,6 +81,77 @@ def test_billing_state_fail_open(monkeypatch):
     monkeypatch.setattr(bv, "build_billing_state", _boom)
     res = _call("billing.state", {})
     assert res["ok"] is True and res["logged_in"] is False
+
+
+@pytest.mark.parametrize(
+    "raw_payment_method,expected",
+    [
+        (
+            {
+                "kind": "card",
+                "brand": "visa",
+                "last4": "4242",
+                "wallet": "apple_pay",
+                "paymentMethodId": "pm_card",
+                "resolvedVia": "subPin",
+            },
+            {
+                "kind": "card",
+                "brand": "visa",
+                "last4": "4242",
+                "wallet": "apple_pay",
+                "resolved_via": "subPin",
+            },
+        ),
+        (
+            {
+                "kind": "link",
+                "email": "billing@example.com",
+                "resolvedVia": "customerDefault",
+            },
+            {
+                "kind": "link",
+                "email": "billing@example.com",
+                "resolved_via": "customerDefault",
+            },
+        ),
+        # A kind added after this gateway shipped: normalised to "unknown",
+        # keeping the real name for logs and neutral copy.
+        (
+            {"kind": "future_method", "resolvedVia": "subPin"},
+            {"kind": "unknown", "raw_kind": "future_method", "resolved_via": "subPin"},
+        ),
+    ],
+)
+def test_billing_state_carries_payment_method_from_server_to_client(
+    monkeypatch, raw_payment_method, expected
+):
+    payload = {
+        "org": {"id": "org_1", "name": "Acme", "role": "OWNER"},
+        "balanceUsd": "10",
+        "paymentMethod": raw_payment_method,
+    }
+    monkeypatch.setattr(
+        bv,
+        "build_billing_state",
+        lambda *a, **kw: bv.billing_state_from_payload(payload),
+    )
+
+    res = _call("billing.state", {})
+
+    assert res["payment_method"] == expected
+
+
+def test_billing_state_serializes_absent_payment_method(monkeypatch):
+    monkeypatch.setattr(
+        bv,
+        "build_billing_state",
+        lambda *a, **kw: BillingState(logged_in=False),
+    )
+
+    res = _call("billing.state", {})
+
+    assert res["payment_method"] is None
 
 
 # ---------------------------------------------------------------------------

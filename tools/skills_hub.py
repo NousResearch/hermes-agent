@@ -3277,7 +3277,9 @@ class OptionalSkillSource(SkillSource):
         if not self._optional_dir.is_dir():
             return None
         for skill_md in self._optional_dir.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(
+                skill_md.relative_to(self._optional_dir), root=self._optional_dir
+            ):
                 continue
             if skill_md.parent.name == name:
                 return skill_md.parent
@@ -3290,7 +3292,9 @@ class OptionalSkillSource(SkillSource):
 
         results: List[SkillMeta] = []
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(
+                skill_md.relative_to(self._optional_dir), root=self._optional_dir
+            ):
                 continue
             parent = skill_md.parent
 
@@ -3742,7 +3746,22 @@ def check_for_skill_updates(
     for entry in installed:
         identifier = entry.get("identifier", "")
         source_name = entry.get("source", "")
-        candidate_sources = [src for src in sources if _source_matches(src, source_name)] or sources
+        candidate_sources = [src for src in sources if _source_matches(src, source_name)]
+        if not candidate_sources:
+            # No adapter for the recorded source (e.g. a tap was removed, or the
+            # source was renamed upstream). Previously this fell back to *all*
+            # sources, which meant a same-named skill in a DIFFERENT registry
+            # could satisfy the fetch and be reported as an update for this
+            # entry -- silently reassigning provenance. Skill names are not
+            # namespaced across registries, so that fallback is unsafe by
+            # construction. Report unavailable instead and let the user decide.
+            results.append({
+                "name": entry.get("name", ""),
+                "identifier": identifier,
+                "source": source_name,
+                "status": "unavailable",
+            })
+            continue
 
         bundle = None
         for src in candidate_sources:

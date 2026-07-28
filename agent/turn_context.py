@@ -336,6 +336,8 @@ def build_turn_context(
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
     *,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     restore_or_build_system_prompt,
     install_safe_stdio,
     sanitize_surrogates,
@@ -537,6 +539,19 @@ def build_turn_context(
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
     # stamped by an earlier close flush.
+    #
+    # A synthesized turn (auto-continue recovery note, delegation completion)
+    # declares how it should READ in a transcript. Stamp that on the live
+    # message so the crash persist below writes the row already typed. Typing
+    # it after the turn instead leaves the row untyped for the whole run — and
+    # forever if the turn crashes — so the raw system note paints as a user
+    # bubble. The model still receives role/content unchanged; the api_messages
+    # build strips both fields from every outgoing copy.
+    if persist_user_display_kind:
+        user_msg["display_kind"] = persist_user_display_kind
+        if persist_user_display_metadata:
+            user_msg["display_metadata"] = persist_user_display_metadata
+
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

@@ -412,6 +412,18 @@ DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
 COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
 
+# Platforms whose native voice-bubble delivery requires Ogg/Opus audio.
+# Previously only Telegram was recognized, so Matrix/Feishu/WhatsApp/Signal
+# voice replies were synthesized as MP3 and rendered as broken attachments
+# (#14841, #45557 and siblings).
+OPUS_VOICE_PLATFORMS = frozenset({
+    "telegram",
+    "matrix",
+    "feishu",
+    "whatsapp",
+    "signal",
+})
+
 
 def _get_provider_section(tts_config: Dict[str, Any], name: str) -> Dict[str, Any]:
     """Return a provider config block if it's a dict, else an empty dict."""
@@ -913,10 +925,11 @@ def _has_ffmpeg() -> bool:
 
 def _convert_to_opus(mp3_path: str) -> Optional[str]:
     """
-    Convert an MP3 file to OGG Opus format for Telegram voice bubbles.
+    Convert an audio file (MP3/WAV/anything ffmpeg reads) to OGG Opus
+    format for Telegram voice bubbles.
 
     Args:
-        mp3_path: Path to the input MP3 file.
+        mp3_path: Path to the input audio file.
 
     Returns:
         Path to the .ogg file, or None if conversion fails.
@@ -925,19 +938,36 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
         return None
 
     ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+    return _ffmpeg_transcode_to_opus(mp3_path, ogg_path)
+
+
+def _ffmpeg_transcode_to_opus(input_path: str, ogg_path: str) -> Optional[str]:
+    """Transcode *input_path* to real Ogg/Opus at *ogg_path* via ffmpeg.
+
+    Safe when ``input_path == ogg_path`` (writes to a temp file, then
+    replaces). Returns the output path on success, None on failure.
+    """
+    if not _has_ffmpeg():
+        return None
+
+    in_place = os.path.abspath(input_path) == os.path.abspath(ogg_path)
+    work_path = ogg_path + ".tmp.ogg" if in_place else ogg_path
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
-             "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
+            ["ffmpeg", "-i", input_path, "-acodec", "libopus",
+             "-ac", "1", "-b:a", "64k", "-vbr", "off", "-f", "ogg",
+             work_path, "-y"],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
-            logger.warning("ffmpeg conversion failed with return code %d: %s", 
+            logger.warning("ffmpeg conversion failed with return code %d: %s",
                           result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
             return None
-        if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0:
+        if os.path.exists(work_path) and os.path.getsize(work_path) > 0:
+            if in_place:
+                os.replace(work_path, ogg_path)
             return ogg_path
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg OGG conversion timed out after 30s")
@@ -945,7 +975,77 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
         logger.warning("ffmpeg not found in PATH")
     except Exception as e:
         logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
+    finally:
+        if in_place and os.path.exists(work_path):
+            try:
+                os.remove(work_path)
+            except OSError:
+                pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Container sniffing — class-level guard against "MP3/WAV bytes in a .ogg
+# file". Several TTS backends silently ignore the requested opus format
+# (Edge only emits MP3, Piper writes WAV, xAI writes MP3, some
+# OpenAI-compatible servers reject/ignore response_format="opus"), which
+# breaks native voice bubbles on Telegram/Matrix/Feishu/WhatsApp. Rather
+# than special-casing every provider, sniff the magic bytes once after
+# synthesis and repair the container when it doesn't match the extension.
+# ---------------------------------------------------------------------------
+
+def _sniff_audio_container(path: str) -> str:
+    """Return 'ogg' | 'wav' | 'mp3' | 'flac' | 'unknown' from magic bytes."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(12)
+    except OSError:
+        return "unknown"
+    if head[:4] == b"OggS":
+        return "ogg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "wav"
+    if head[:4] == b"fLaC":
+        return "flac"
+    if head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
+        return "mp3"
+    return "unknown"
+
+
+def _repair_ogg_container(file_str: str) -> str:
+    """Ensure a path claiming ``.ogg`` actually contains an Ogg container.
+
+    When the bytes are MP3/WAV/FLAC (a backend ignored the opus request),
+    transcode in place to real Ogg/Opus. On any failure, rename to the
+    sniffed real extension so downstream players/platforms at least get an
+    honest file instead of a 0-second voice bubble. Returns the (possibly
+    updated) path.
+    """
+    if not file_str.endswith(".ogg"):
+        return file_str
+    container = _sniff_audio_container(file_str)
+    if container in ("ogg", "unknown"):
+        return file_str
+
+    logger.info(
+        "TTS wrote %s bytes into a .ogg path (%s) — transcoding to real Ogg/Opus",
+        container, file_str,
+    )
+    repaired = _ffmpeg_transcode_to_opus(file_str, file_str)
+    if repaired:
+        return repaired
+
+    # ffmpeg unavailable/failed: rename to the honest extension.
+    honest = file_str[:-4] + "." + container
+    try:
+        os.replace(file_str, honest)
+        logger.warning(
+            "Could not transcode %s to Ogg/Opus — renamed to %s so the "
+            "file is delivered with its real format", file_str, honest,
+        )
+        return honest
+    except OSError:
+        return file_str
 
 
 # ===========================================================================
@@ -2332,12 +2432,13 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Several platforms deliver native voice bubbles only for Ogg/Opus
+    # (Telegram, Matrix, Feishu/Lark, WhatsApp, Signal); OpenAI and
+    # ElevenLabs can produce Opus natively (no ffmpeg needed). Edge TTS
+    # always outputs MP3 and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in OPUS_VOICE_PLATFORMS
 
     # Determine output path
     if output_path:
@@ -2538,6 +2639,14 @@ def text_to_speech_tool(
                 "success": False,
                 "error": f"TTS generation produced no output (provider: {provider})"
             }, ensure_ascii=False)
+
+        # Class-level container repair: several backends silently write
+        # MP3/WAV bytes into a .ogg output path (Edge, Piper, xAI,
+        # OpenAI-compatible servers without opus support), which platforms
+        # like Telegram render as broken 0-second voice bubbles. Sniff the
+        # magic bytes once here — covering every current and future
+        # provider — and transcode in place when they don't match.
+        file_str = _repair_ogg_container(file_str)
 
         # Try Opus conversion for Telegram compatibility.
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV. Keep those native

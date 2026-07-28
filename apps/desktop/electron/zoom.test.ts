@@ -11,9 +11,11 @@ import { test, vi } from 'vitest'
 import {
   applyZoomLevel,
   clampZoomLevel,
+  DEFAULT_ZOOM_LEVEL,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
+  ZOOM_STEP,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomReassertWindowEvents,
@@ -24,26 +26,32 @@ test('storage key stays stable so persisted zoom survives upgrades', () => {
   assert.equal(ZOOM_STORAGE_KEY, 'hermes:desktop:zoomLevel')
 })
 
+test('default zoom matches the Appearance 90% preset', () => {
+  assert.equal(ZOOM_STEP, 0.1)
+  assert.equal(zoomLevelToPercent(DEFAULT_ZOOM_LEVEL), 90)
+  assert.equal(DEFAULT_ZOOM_LEVEL, percentToZoomLevel(90))
+})
+
 test('clampZoomLevel rejects garbage and enforces bounds', () => {
-  assert.equal(clampZoomLevel(NaN), 0)
-  assert.equal(clampZoomLevel(Infinity), 0)
-  assert.equal(clampZoomLevel(undefined), 0)
-  assert.equal(clampZoomLevel('2'), 0)
+  assert.equal(clampZoomLevel(NaN), DEFAULT_ZOOM_LEVEL)
+  assert.equal(clampZoomLevel(Infinity), DEFAULT_ZOOM_LEVEL)
+  assert.equal(clampZoomLevel(undefined), DEFAULT_ZOOM_LEVEL)
+  assert.equal(clampZoomLevel('2'), DEFAULT_ZOOM_LEVEL)
   assert.equal(clampZoomLevel(0.3), 0.3)
   assert.equal(clampZoomLevel(-42), -9)
   assert.equal(clampZoomLevel(42), 9)
 })
 
-test('level 0 is exactly 100 percent', () => {
+test('level 0 is exactly 100 percent (Chromium actual-size baseline)', () => {
   assert.equal(zoomLevelToPercent(0), 100)
   assert.equal(percentToZoomLevel(100), 0)
 })
 
-test('percentToZoomLevel rejects garbage', () => {
-  assert.equal(percentToZoomLevel(NaN), 0)
-  assert.equal(percentToZoomLevel(0), 0)
-  assert.equal(percentToZoomLevel(-50), 0)
-  assert.equal(percentToZoomLevel(undefined), 0)
+test('percentToZoomLevel rejects garbage by falling back to the shipped default', () => {
+  assert.equal(percentToZoomLevel(NaN), DEFAULT_ZOOM_LEVEL)
+  assert.equal(percentToZoomLevel(0), DEFAULT_ZOOM_LEVEL)
+  assert.equal(percentToZoomLevel(-50), DEFAULT_ZOOM_LEVEL)
+  assert.equal(percentToZoomLevel(undefined), DEFAULT_ZOOM_LEVEL)
 })
 
 test('preset percentages roundtrip within rounding', () => {

@@ -7,7 +7,6 @@ import type {
   ReactNode
 } from 'react'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
@@ -18,6 +17,7 @@ import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
+import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
 import { PageLoader } from '@/components/page-loader'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
@@ -338,7 +338,7 @@ function MarkdownPreview({ text }: { text: string }) {
   )
 }
 
-function PreviewModeSwitcher({
+export function PreviewModeSwitcher({
   active,
   modes,
   onSelect,
@@ -439,7 +439,10 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
+/** Windowed, Shiki-highlighted source. The gutter's line selection produces a
+ *  `path:line` composer ref, so it is inert without a `filePath` (artifact
+ *  content has no path to reference lines against). */
+export function SourceView({ filePath, language, text }: { filePath?: string; language: string; text: string }) {
   const { t } = useI18n()
   const chunks = useMemo(() => chunkTextLines(text, SOURCE_CHUNK_LINES), [text])
   const lastChunk = chunks.at(-1)
@@ -457,6 +460,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
 
   const handleLineClick = (event: ReactMouseEvent, line: number) => {
+    if (!filePath) {
+      return
+    }
+
     if (event.shiftKey && selection) {
       setSelection({ end: Math.max(selection.end, line), start: Math.min(selection.start, line) })
 
@@ -473,6 +480,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   }
 
   const handleDragStart = (event: ReactDragEvent<HTMLElement>, line: number) => {
+    if (!filePath) {
+      return
+    }
+
     startLineDrag(event, filePath, inSelection(line) && selection ? selection : { end: line, start: line })
   }
 
@@ -481,7 +492,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   // the composer. Capture-phase + stopPropagation so it beats the terminal's
   // global ⌘L handler (which would otherwise grab the native text selection).
   useEffect(() => {
-    if (!selection) {
+    if (!selection || !filePath) {
       return
     }
 
@@ -524,16 +535,17 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
                 return (
                   <div
                     className={cn(
-                      'h-5 w-9 cursor-pointer pr-2 leading-5 tabular-nums transition-colors',
+                      'h-5 w-9 pr-2 leading-5 tabular-nums transition-colors',
+                      filePath && 'cursor-pointer',
                       selected
                         ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
-                        : 'hover:text-foreground'
+                        : filePath && 'hover:text-foreground'
                     )}
-                    draggable
+                    draggable={Boolean(filePath)}
                     key={line}
                     onClick={event => handleLineClick(event, line)}
                     onDragStart={event => handleDragStart(event, line)}
-                    title={t.preview.sourceLineTitle}
+                    title={filePath ? t.preview.sourceLineTitle : undefined}
                   >
                     {line}
                   </div>
@@ -561,7 +573,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   )
 }
 
-type PreviewViewMode = 'diff' | 'rendered' | 'source'
+export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()

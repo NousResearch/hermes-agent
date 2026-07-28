@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
-from utils import base_url_host_matches, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -546,15 +546,49 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return "/anthropic" in normalized.rstrip("/").lower()
 
 
+def _is_nous_portal_endpoint(base_url: str | None) -> bool:
+    """Return True for Nous Portal's Anthropic Messages route.
+
+    Portal serves its ``anthropic/*`` catalog natively at
+    ``https://inference-api.nousresearch.com/v1/messages``.  Portal-specific
+    behaviours key off this: Bearer JWT auth, verbatim catalog model ids,
+    and native thinking-signature replay.
+
+    Trusted hosts only:
+
+    1. Prod hostname ``inference-api.nousresearch.com``
+    2. The operator-set ``NOUS_INFERENCE_BASE_URL`` hostname (staging/preview)
+
+    Lookalikes such as ``inference-api.nousresearch.com.attacker.test`` are
+    rejected (hostname match, not substring).
+    """
+    if base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
+        return True
+    try:
+        from hermes_cli.auth import _nous_inference_env_override
+
+        override = _nous_inference_env_override()
+    except Exception:
+        return False
+    if not override:
+        return False
+    # Exact host equality (not subdomain) so the env override can't broaden
+    # into sibling hosts the operator did not set.
+    override_host = base_url_hostname(override)
+    return bool(override_host) and base_url_hostname(base_url or "") == override_host
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
     require Authorization: Bearer instead of Anthropic's native x-api-key header.
     MiniMax's global and China Anthropic-compatible endpoints, Azure AI
-    Foundry's Anthropic-style endpoint, and Palantir Foundry's LLM proxy
-    follow this pattern.
+    Foundry's Anthropic-style endpoint, Palantir Foundry's LLM proxy, and Nous
+    Portal's Messages route follow this pattern.
     """
+    if _is_nous_portal_endpoint(base_url):
+        return True
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
@@ -721,7 +755,11 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    # Same env-inference trap as build_anthropic_client: auth_token-only
+    # construction would otherwise also send ANTHROPIC_API_KEY as X-Api-Key.
+    client.api_key = None
+    return client
 
 
 def build_anthropic_client(
@@ -850,7 +888,16 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    return _anthropic_sdk.Anthropic(**kwargs)
+    client = _anthropic_sdk.Anthropic(**kwargs)
+    # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
+    # from ``ANTHROPIC_API_KEY`` (Hermes loads that into the process env from
+    # ``~/.hermes/.env``). The result is dual auth —
+    # ``X-Api-Key: sk-ant-…`` *and* ``Authorization: Bearer <portal-jwt>`` —
+    # on every Portal / MiniMax / OAuth Messages request. Clear the env-filled
+    # key whenever we intentionally authenticated via auth_token alone.
+    if "auth_token" in kwargs and "api_key" not in kwargs:
+        client.api_key = None
+    return client
 
 
 def build_anthropic_bedrock_client(region: str):
@@ -2060,6 +2107,28 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             _apply_assistant_cache_control_to_last_cacheable_block(
                 replayed, m.get("cache_control")
             )
+            # apply_anthropic_cache_control marks an assistant turn with
+            # non-empty text by writing cache_control INTO ``content`` (see
+            # _apply_cache_marker's list branch), not at the top level. This
+            # branch rebuilds the message from ordered_blocks and never reads
+            # ``content``, so that marker would be dropped -- and because
+            # _can_carry_marker already counted this message as a carrier, the
+            # breakpoint is burned rather than relocated. #56195 covered the
+            # complementary shape (blank content -> top-level marker); this is
+            # the interleaved thinking + preamble-text + tool_use shape.
+            _inline_cc = None
+            _msg_content = m.get("content")
+            if isinstance(_msg_content, list):
+                for _blk in _msg_content:
+                    if isinstance(_blk, dict) and isinstance(
+                        _blk.get("cache_control"), dict
+                    ):
+                        _inline_cc = _blk["cache_control"]
+                        break
+            if _inline_cc is not None:
+                _apply_assistant_cache_control_to_last_cacheable_block(
+                    replayed, _inline_cc
+                )
             return {"role": "assistant", "content": replayed}
 
     blocks = _extract_preserved_thinking_blocks(m)
@@ -2394,10 +2463,22 @@ def _manage_thinking_signatures(
     replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
     hermes-agent#16748 (DeepSeek).
 
+    Nous Portal's ``/v1/messages`` route is the exception among third-party
+    hosts: it proxies Claude to Anthropic/Vertex/Bedrock and validates the
+    same signed thinking blocks.  Sticky ``session_id`` keeps a conversation
+    on one upstream instance so those signatures stay warm — stripping them
+    here would 400 the first tool-loop turn ("thinking must be passed back").
+    Portal therefore takes the native Anthropic replay path below.
+
     Mutates ``result`` in place.
     """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
-    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    # Portal speaks Anthropic's thinking contract end-to-end; do not treat it
+    # as a signature-blind proxy even though the host is not anthropic.com.
+    _is_third_party = (
+        _is_third_party_anthropic_endpoint(base_url)
+        and not _is_nous_portal_endpoint(base_url)
+    )
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -2654,7 +2735,12 @@ def build_anthropic_kwargs(
     )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
-    model = normalize_model_name(model, preserve_dots=preserve_dots)
+    # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``);
+    # normalizing to the bare Anthropic slug would make the model unresolvable
+    # there. Skipping the call preserves the prefix AND the dots, so
+    # ``preserve_dots`` stays irrelevant for Portal.
+    if not _is_nous_portal_endpoint(base_url):
+        model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
     # Use the resolver helper so non-positive values (negative ints,
     # fractional floats, NaN, non-numeric) fail locally with a clear error
@@ -2894,6 +2980,7 @@ def create_anthropic_message(
     log_prefix: str = "",
     prefer_stream: bool = True,
     on_stream_event=None,
+    on_response=None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available.
 
@@ -2910,6 +2997,13 @@ def create_anthropic_message(
     progress hook so a slow-but-generating summary model isn't treated as
     hung. Only fires on the streaming path; the ``create()`` fallback has no
     events to report.
+
+    ``on_response``: optional callable invoked once with the underlying httpx
+    response before the message is aggregated (best-effort, exceptions
+    swallowed). Response *headers* carry out-of-band provider state that the
+    parsed ``Message`` drops — Nous Portal's ``x-nous-credits-*`` balance family
+    in particular. Only fires on the streaming path, which is the one the main
+    turn loop takes.
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
@@ -2920,6 +3014,14 @@ def create_anthropic_message(
         stream_kwargs.pop("stream", None)
         try:
             with stream_fn(**stream_kwargs) as stream:
+                if callable(on_response):
+                    try:
+                        on_response(getattr(stream, "response", None))
+                    except Exception:
+                        logger.debug(
+                            "%son_response callback failed",
+                            log_prefix, exc_info=True,
+                        )
                 if callable(on_stream_event):
                     # Consume the event stream manually so each event can
                     # tick the caller's progress callback; get_final_message

@@ -24,6 +24,7 @@ import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { compactNumber } from '@/lib/format'
 import { queryClient, writeCache } from '@/lib/query-client'
+import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -222,6 +223,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
     ])
 
+    invalidateSlashCompletions()
+
     // An explicit refresh is the one time we bypass the analytics TTL — but
     // only if the badges are already on screen; otherwise let the lazy load
     // pick it up when Toolsets is first shown. Guard the async set against a
@@ -336,6 +339,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       await toggleSkill(skill.name, enabled)
+      // A disabled skill loses its `/name` command, so the composer's cached
+      // `/` list has to be dropped along with the row repaint.
+      invalidateSlashCompletions()
     } catch (err) {
       setSkills(
         current => current?.map(row => (row.name === skill.name ? { ...row, enabled: !enabled } : row)) ?? current
@@ -390,6 +396,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     } catch (err) {
       notifyError(err, t.skills.failedToUpdate(mode === 'skills' ? t.skills.tabSkills : t.skills.tabToolsets))
     } finally {
+      invalidateSlashCompletions()
       setBulkBusy(false)
     }
   }
@@ -674,6 +681,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
             const snapshot = skills
 
             setSkills(current => current?.filter(skill => skill.name !== name) ?? current)
+            invalidateSlashCompletions()
 
             if (skillEditor?.name === name) {
               setSkillEditor(null)

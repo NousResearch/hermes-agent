@@ -136,6 +136,38 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     return is_truthy_value(enabled, default=True)
 
 
+def _resolve_stt_language(
+    provider_key: str,
+    stt_config: Optional[Dict[str, Any]] = None,
+    *,
+    extra_keys: tuple = (),
+) -> Optional[str]:
+    """Resolve the language hint for an STT provider (class-level, all providers).
+
+    Resolution order (first non-empty wins):
+      1. ``stt.<provider>.language`` (plus any *extra_keys* aliases, e.g.
+         ElevenLabs' historical ``language_code``)
+      2. ``stt.language``           — global default for every provider
+      3. ``HERMES_LOCAL_STT_LANGUAGE`` env var (legacy escape hatch)
+      4. ``None``                   — let the provider auto-detect
+
+    Returns a stripped ISO-639-1-ish code or None. Never returns "".
+    """
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    provider_cfg = _get_stt_section(stt_config, provider_key)
+    candidates = [provider_cfg.get("language")]
+    for key in extra_keys:
+        candidates.append(provider_cfg.get(key))
+    if isinstance(stt_config, dict):
+        candidates.append(stt_config.get("language"))
+    candidates.append(os.getenv(LOCAL_STT_LANGUAGE_ENV))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
 def _has_openai_audio_backend() -> bool:
     """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
     try:
@@ -672,7 +704,7 @@ def _transcribe_command_stt(
     output_format = _get_command_stt_output_format(config)
     language = (
         config.get("language")
-        or stt_config.get("language")
+        or _resolve_stt_language(provider_name, stt_config)
         or DEFAULT_COMMAND_STT_LANGUAGE
     )
     model = model_override or config.get("model") or ""
@@ -1154,15 +1186,16 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model = _load_local_whisper_model(model_name)
             _local_model_name = model_name
 
-        # Language: config.yaml (stt.local.language) > env var > auto-detect.
-        _forced_lang = (
-            (_load_stt_config().get("local") or {}).get("language")
-            or os.getenv(LOCAL_STT_LANGUAGE_ENV)
-            or None
-        )
+        # Language: stt.local.language > stt.language > env var > auto-detect.
+        stt_config = _load_stt_config()
+        local_config = stt_config.get("local") or {}
+        _forced_lang = _resolve_stt_language("local", stt_config)
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        initial_prompt = local_config.get("initial_prompt")
+        if isinstance(initial_prompt, str) and initial_prompt.strip():
+            transcribe_kwargs["initial_prompt"] = initial_prompt
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
@@ -1237,12 +1270,8 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             ),
         }
 
-    # Language: config.yaml (stt.local.language) > env var > "en" default.
-    language = (
-        (_load_stt_config().get("local") or {}).get("language")
-        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
-        or DEFAULT_LOCAL_STT_LANGUAGE
-    )
+    # Language: stt.local.language > stt.language > env var > "en" default.
+    language = _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_command_model(model_name)
 
     try:
@@ -1302,7 +1331,13 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
 
 def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using Groq Whisper API (free tier available)."""
+    """Transcribe using Groq Whisper API (free tier available).
+
+    Honours an optional ISO-639-1 language hint resolved from
+    ``stt.groq.language`` > ``stt.language`` (config.yaml) >
+    ``HERMES_LOCAL_STT_LANGUAGE`` (env). When none is set, Groq
+    Whisper auto-detects.
+    """
     api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
@@ -1315,20 +1350,27 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
 
+    language = _resolve_stt_language("groq")
+
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
         try:
+            create_kwargs = {
+                "model": model_name,
+                "response_format": "text",
+            }
+            if language:
+                create_kwargs["language"] = language
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
-                    model=model_name,
                     file=audio_file,
-                    response_format="text",
+                    **create_kwargs,
                 )
 
             transcript_text = str(transcription).strip()
-            logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
+            logger.info("Transcribed %s via Groq API (%s, lang=%s, %d chars)",
+                         Path(file_path).name, model_name, language or "auto", len(transcript_text))
 
             return {"success": True, "transcript": transcript_text, "provider": "groq"}
         finally:
@@ -1376,6 +1418,10 @@ def _transcribe_openai(
             return {"success": False, "transcript": "", "error": str(exc)}
         base_url = base_url or fallback_base
 
+    # Language: stt.<provider>.language > stt.language > env > auto-detect.
+    # Explicit language hint improves accuracy for non-English languages.
+    language = _resolve_stt_language(provider_label)
+
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
 
@@ -1391,11 +1437,16 @@ def _transcribe_openai(
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
-                )
+                create_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text" if model_name == "whisper-1" else "json",
+                }
+                if language:
+                    create_kwargs["language"] = language
+                    logger.debug("Using language hint '%s' for OpenAI STT", language)
+
+                transcription = client.audio.transcriptions.create(**create_kwargs)
 
             transcript_text = _extract_transcript_text(transcription)
             logger.info(
@@ -1446,10 +1497,15 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
         with Mistral(api_key=api_key) as client:
             with open(file_path, "rb") as audio_file:
-                result = client.audio.transcriptions.complete(
-                    model=model_name,
-                    file={"content": audio_file, "file_name": Path(file_path).name},
-                )
+                complete_kwargs: Dict[str, Any] = {
+                    "model": model_name,
+                    "file": {"content": audio_file, "file_name": Path(file_path).name},
+                }
+                # Language: stt.mistral.language > stt.language > env > auto.
+                language = _resolve_stt_language("mistral")
+                if language:
+                    complete_kwargs["language"] = language
+                result = client.audio.transcriptions.complete(**complete_kwargs)
 
             transcript_text = _extract_transcript_text(result)
             logger.info(
@@ -1496,11 +1552,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
-    language = str(
-        xai_config.get("language")
-        or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
-        or DEFAULT_LOCAL_STT_LANGUAGE
-    ).strip()
+    language = _resolve_stt_language("xai", stt_config) or ""
     # .get("format", True) already defaults to True when the key is absent;
     # is_truthy_value only normalizes truthy/falsy strings from config.
     use_format = is_truthy_value(xai_config.get("format", True))
@@ -1591,7 +1643,9 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         or get_env_value("ELEVENLABS_STT_BASE_URL")
         or ELEVENLABS_STT_BASE_URL
     ).strip().rstrip("/")
-    language_code = str(elevenlabs_config.get("language_code") or "").strip()
+    language_code = _resolve_stt_language(
+        "elevenlabs", stt_config, extra_keys=("language_code",)
+    ) or ""
     tag_audio_events = is_truthy_value(elevenlabs_config.get("tag_audio_events", False))
     diarize = is_truthy_value(elevenlabs_config.get("diarize", False))
 
@@ -1768,7 +1822,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_local_command(file_path, model_name)
 
     if provider == "groq":
-        model_name = model or DEFAULT_GROQ_STT_MODEL
+        groq_cfg = stt_config.get("groq") or {}
+        model_name = model or groq_cfg.get("model") or DEFAULT_GROQ_STT_MODEL
         return _transcribe_groq(file_path, model_name)
 
     if provider == "openai":
@@ -1827,7 +1882,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     # forwards ``language`` from there. Top-level ``model`` argument
     # overrides any config-set model.
     plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
-    plugin_language = plugin_cfg.get("language")
+    plugin_language = _resolve_stt_language(provider, stt_config)
     plugin_model = model or plugin_cfg.get("model")
     plugin_result = _dispatch_to_plugin_provider(
         file_path,

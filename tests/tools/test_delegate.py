@@ -505,6 +505,56 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_nous_child_rederives_api_mode_from_model(self):
+        """Portal is dual-wire — same provider + different model prefix must
+        not inherit the parent's Messages/chat_completions mode verbatim."""
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://inference-api.nousresearch.com/v1"
+        parent.api_key = "portal-jwt"
+        parent.provider = "nous"
+        parent.api_mode = "anthropic_messages"
+        parent.model = "anthropic/claude-opus-4.8"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Stay on chat completions",
+                context=None,
+                toolsets=None,
+                model="hermes-4-405b",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "nous")
+            self.assertEqual(kwargs["model"], "hermes-4-405b")
+            self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+            parent.api_mode = "chat_completions"
+            parent.model = "hermes-4-405b"
+
+            _build_child_agent(
+                task_index=0,
+                goal="Move onto Messages",
+                context=None,
+                toolsets=None,
+                model="anthropic/claude-opus-4.8",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["api_mode"], "anthropic_messages")
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()
@@ -784,6 +834,10 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
             self.assertIn("args_bytes", entry["tool_trace"][0])
             self.assertIn("result_bytes", entry["tool_trace"][0])
+            self.assertEqual(
+                entry["tool_trace"][0]["input_summary"],
+                {"argument_keys": ["query"], "targets": {}},
+            )
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
 
     def test_tool_trace_handles_list_content_blocks(self):

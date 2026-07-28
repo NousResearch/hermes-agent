@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 
+import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { Tip } from '@/components/ui/tooltip'
@@ -149,8 +149,13 @@ interface PanelListRowProps {
   icon?: string
   // Custom leading element (colored swatch, avatar, …). Wins over dot/icon.
   lead?: ReactNode
-  // Trailing per-row kebab menu (pass a <PanelRowMenu/>). Reveals on hover/focus.
+  // Per-row actions. Pass `menuItems` to get BOTH the hover kebab and a matching
+  // right-click menu from one array (preferred). `menu` takes a raw node for the
+  // rare custom trigger; it gets no right-click parity.
   menu?: ReactNode
+  menuItems?: PanelMenuItem[]
+  // aria/tooltip label for the kebab + right-click menu built from `menuItems`.
+  menuLabel?: string
   // Short always-visible trailing meta (a tag/time, like the trace label's duration).
   meta?: ReactNode
   onSelect: () => void
@@ -160,19 +165,22 @@ interface PanelListRowProps {
 
 // A row is a container (not a <button>) so it can host both the select target
 // and a kebab menu without nesting interactive elements. Hover/active bg lives
-// on the wrapper so the whole row highlights as one.
+// on the wrapper so the whole row highlights as one. When `menuItems` is passed,
+// the whole row also answers right-click with the same actions as its kebab.
 export function PanelListRow({
   active,
   dotClassName,
   icon,
   lead,
   menu,
+  menuItems,
+  menuLabel,
   meta,
   onSelect,
   rowKey,
   title
 }: PanelListRowProps) {
-  return (
+  const row = (
     <div
       className={cn(
         'group/row row-hover relative flex h-7 w-full items-center rounded-md text-[0.78rem] hover:text-foreground',
@@ -193,8 +201,29 @@ export function PanelListRow({
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/85">{title}</span>
       </RowButton>
       {meta ? <span className="shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
-      {menu ? <div className="shrink-0 pr-1">{menu}</div> : null}
+      {menuItems ? (
+        <div className="shrink-0 pr-1">
+          <PanelRowMenu items={menuItems} label={menuLabel} />
+        </div>
+      ) : menu ? (
+        <div className="shrink-0 pr-1">{menu}</div>
+      ) : null}
     </div>
+  )
+
+  // Right-click parity: same items as the kebab. `disabled` (no actionable
+  // items) renders the row bare.
+  return menuItems ? (
+    <ActionsContextMenu
+      ariaLabel={menuLabel}
+      contentClassName="w-40"
+      disabled={menuItems.length === 0}
+      items={renderPanelMenuItems(menuItems)}
+    >
+      {row}
+    </ActionsContextMenu>
+  ) : (
+    row
   )
 }
 
@@ -204,6 +233,22 @@ export interface PanelMenuItem {
   label: string
   onSelect: () => void
   tone?: 'danger' | 'default'
+}
+
+// Bridge PanelMenuItem[] → the shared actions-menu render fn, so a panel row's
+// kebab and its right-click menu render from one source.
+function renderPanelMenuItems(items: PanelMenuItem[]) {
+  return (kit: MenuKit) =>
+    items.map(item =>
+      renderActionItem(kit, {
+        disabled: item.disabled,
+        icon: item.icon,
+        key: item.label,
+        label: item.label,
+        onSelect: item.onSelect,
+        variant: item.tone === 'danger' ? 'destructive' : 'default'
+      })
+    )
 }
 
 // Per-row "⋮" actions menu — mirrors the sidebar session row's settled pattern
@@ -216,33 +261,16 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
   }
 
   return (
-    <DropdownMenu>
-      <Tip label={label}>
-        <DropdownMenuTrigger asChild>
-          <Button
-            aria-label={label}
-            className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
-            size="icon"
-            variant="ghost"
-          >
-            <Codicon name="kebab-vertical" size="0.875rem" />
-          </Button>
-        </DropdownMenuTrigger>
-      </Tip>
-      <DropdownMenuContent align="end" className="w-40" sideOffset={6}>
-        {items.map(item => (
-          <DropdownMenuItem
-            disabled={item.disabled}
-            key={item.label}
-            onSelect={item.onSelect}
-            variant={item.tone === 'danger' ? 'destructive' : undefined}
-          >
-            {item.icon ? <Codicon name={item.icon} size="0.875rem" /> : null}
-            <span>{item.label}</span>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ActionsMenu ariaLabel={label} contentClassName="w-40" items={renderPanelMenuItems(items)}>
+      <Button
+        aria-label={label}
+        className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+        size="icon"
+        variant="ghost"
+      >
+        <Codicon name="kebab-vertical" size="0.875rem" />
+      </Button>
+    </ActionsMenu>
   )
 }
 

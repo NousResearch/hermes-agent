@@ -1190,6 +1190,54 @@ class TestConvertMessages:
         assert tool_use["id"] == "tc_1"
         assert tool_use["cache_control"] == {"type": "ephemeral"}
 
+    def test_ordered_replay_keeps_cache_control_from_nonempty_content(self):
+        """An assistant turn that interleaves signed thinking with a tool_use
+        AND has preamble text carries its cache_control INSIDE ``content``
+        (apply_anthropic_cache_control marks the last content block, not the
+        top level). The ordered-replay branch rebuilds the message from
+        ``anthropic_content_blocks`` alone, so without harvesting that marker
+        the breakpoint is dropped -- and it is *burned*, because
+        _can_carry_marker already spent a budget slot on this message.
+
+        #56195 covers the blank-content shape; this is the non-empty one, which
+        is what a Claude thinking+tools turn normally looks like.
+        """
+        preamble = "I will read a.py now."
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Read a.py"},
+            {
+                "role": "assistant",
+                "content": preamble,
+                "anthropic_content_blocks": [
+                    {"type": "thinking", "thinking": "Need a tool.", "signature": "sig_1"},
+                    {"type": "text", "text": preamble},
+                    {"type": "tool_use", "id": "tc_1", "name": "test_tool", "input": {}},
+                ],
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "test_tool", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "contents"},
+        ])
+
+        _system, converted = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in converted if m.get("role") == "assistant")
+        marked = [
+            b for b in assistant["content"]
+            if isinstance(b, dict) and b.get("cache_control")
+        ]
+        assert marked, (
+            "the assistant cache breakpoint was dropped by the ordered-replay "
+            "path and the budget slot is burned"
+        )
+        # The signed thinking block must still lead the replayed message.
+        assert assistant["content"][0]["type"] == "thinking"
+
     def test_ordered_replay_tool_use_cache_control_is_preserved(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},

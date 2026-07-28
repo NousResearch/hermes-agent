@@ -216,6 +216,14 @@ function recoverableTail(messages: ChatMessage[], streamId: null | string): Chat
     if (visible[index].role === 'user') {
       start = index
 
+      // A mid-turn redirect inserts its correction as another user row right
+      // before the live reply, so the turn can open with a RUN of user rows.
+      // Keep walking back over them: stopping at the nearest one journals the
+      // correction alone and loses the prompt that actually started the turn.
+      while (start > 0 && visible[start - 1].role === 'user') {
+        start -= 1
+      }
+
       break
     }
   }
@@ -283,6 +291,16 @@ function overlayProjectionRow(projection: ChatMessage, journalRow: ChatMessage):
   return { ...merged, parts }
 }
 
+/** Rows the base transcript doesn't already hold by id. The journal and the
+ *  base can both carry the same row (a resume that replays a still-journaled
+ *  turn), and appending it twice puts a duplicate id in the transcript —
+ *  which assistant-ui's MessageRepository rejects by throwing. */
+function withoutBaseIds(rows: ChatMessage[], baseMessages: ChatMessage[]): ChatMessage[] {
+  const baseIds = new Set(baseMessages.map(message => message.id))
+
+  return rows.filter(row => !baseIds.has(row.id))
+}
+
 export function mergeInFlightMessages(
   baseMessages: ChatMessage[],
   tailMessages: ChatMessage[],
@@ -313,7 +331,13 @@ export function mergeInFlightMessages(
     // append the whole tail.
     const streamId = lastJournalRow?.id ?? null
 
-    return { applied: true, caughtUp: false, messages: [...baseMessages, ...tail], streamId, turnStartedAt: null }
+    return {
+      applied: true,
+      caughtUp: false,
+      messages: [...baseMessages, ...withoutBaseIds(tail, baseMessages)],
+      streamId,
+      turnStartedAt: null
+    }
   }
 
   const afterUser = baseMessages.slice(matchingUserIndex + 1)
@@ -342,7 +366,7 @@ export function mergeInFlightMessages(
     return {
       applied: true,
       caughtUp: false,
-      messages: [...baseMessages, ...tailAssistants],
+      messages: [...baseMessages, ...withoutBaseIds(tailAssistants, baseMessages)],
       streamId,
       turnStartedAt: null
     }

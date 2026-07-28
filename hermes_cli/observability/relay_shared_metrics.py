@@ -351,7 +351,17 @@ class _Runtime:
         with session.lock:
             if session.closing:
                 return
-            self._finish_task(session, task_id, event)
+            finished = self._finish_task(session, task_id, event)
+        if finished:
+            try:
+                self.relay.subscribers.flush()
+            except Exception:
+                logger.warning(
+                    "Hermes shared-metrics task flush failed",
+                    exc_info=True,
+                )
+            else:
+                self._export()
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -380,7 +390,8 @@ class _Runtime:
             self.relay.subscribers.flush()
         except Exception as exc:
             failures.append(f"subscriber flush failed: {exc}")
-        self._export()
+        else:
+            self._export()
         with self._sessions_lock:
             if self._sessions.get(session.session_id) is session:
                 self._sessions.pop(session.session_id, None)
@@ -399,8 +410,15 @@ class _Runtime:
             self._safe(self.close_session, {"session_id": session_id})
         if not self._registered:
             return
-        self._safe(self.relay.subscribers.flush)
-        self._export()
+        try:
+            self.relay.subscribers.flush()
+        except Exception:
+            logger.warning(
+                "Hermes shared-metrics shutdown flush failed",
+                exc_info=True,
+            )
+        else:
+            self._export()
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
         self.host.release_managed_execution(self._subscriber_name)
         self._registered = False
@@ -560,10 +578,10 @@ class _Runtime:
         session: _MetricsSession,
         task_id: str,
         event: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         task = session.tasks.get(task_id)
         if task is None:
-            return
+            return False
         self._end_pending_model_calls(session, {**event, "task_id": task_id})
         fields = task_terminal_fields(
             {**task.start_fields, **event},
@@ -592,9 +610,10 @@ class _Runtime:
                     turn_key = (session.session_id, turn_id)
                     if self._turn_sessions.get(turn_key) is session:
                         self._turn_sessions.pop(turn_key, None)
+        return True
 
     def _export(self) -> None:
-        self._safe(self.subscriber.store.create_and_export_package)
+        self._safe(self.subscriber.store.create_and_export_package_if_due)
 
     def _event_metadata(self) -> dict[str, str]:
         return {

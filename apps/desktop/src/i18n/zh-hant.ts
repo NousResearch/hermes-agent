@@ -2495,7 +2495,6 @@ export const zhHant = defineLocale({
       lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
     },
     tool: {
-      code: '程式碼',
       copyCode: '複製程式碼',
       renderingImage: '正在渲染圖片',
       copyOutput: '複製輸出',

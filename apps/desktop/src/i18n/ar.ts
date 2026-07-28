@@ -2326,7 +2326,6 @@ export const ar = defineLocale({
       continueLabel: 'متابعة'
     },
     tool: {
-      code: 'الكود',
       copyCode: 'نسخ الكود',
       renderingImage: 'جار عرض الصورة...',
       copyOutput: 'نسخ الإخراج',

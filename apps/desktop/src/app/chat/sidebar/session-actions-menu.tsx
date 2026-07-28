@@ -388,13 +388,10 @@ function useSessionActions({
 interface SessionActionsMenuProps
   extends SessionActions, Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'> {
   children: React.ReactNode
-  /** Tooltip label for the trigger. */
-  tooltip?: React.ReactNode
 }
 
 export function SessionActionsMenu({
   children,
-  tooltip,
   align = 'end',
   sideOffset = 6,
   ...actions
@@ -410,7 +407,6 @@ export function SessionActionsMenu({
         contentClassName="w-40"
         items={renderItems}
         sideOffset={sideOffset}
-        tooltip={tooltip}
       >
         {children}
       </ActionsMenu>

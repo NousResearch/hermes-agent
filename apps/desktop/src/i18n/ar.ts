@@ -640,7 +640,6 @@ export const ar = defineLocale({
     },
     envActions: {
       actionsFor: label => `إجراءات ${label}`,
-      credentialActions: 'إجراءات بيانات الاعتماد',
       docs: 'الوثائق',
       hideValue: 'إخفاء القيمة',
       revealValue: 'إظهار القيمة',

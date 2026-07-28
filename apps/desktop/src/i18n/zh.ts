@@ -780,7 +780,6 @@ export const zh: Translations = {
     },
     envActions: {
       actionsFor: label => `${label} 的操作`,
-      credentialActions: '凭据操作',
       manageInKeys: '在 API 密钥中管理',
       docs: '文档',
       hideValue: '隐藏值',

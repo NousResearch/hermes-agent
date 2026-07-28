@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import type { BillingBlock } from '@hermes/shared'
+import { type BillingBlock, skillInvocationText } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
@@ -299,6 +299,15 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
 
   if (role !== 'user') {
     return textContent
+  }
+
+  // A `/skill` turn is stored expanded (the whole skill body). Current
+  // gateways project it to the invocation before it ever reaches us; this is
+  // the fallback for an older backend that still ships the raw payload.
+  const invocation = skillInvocationText(textContent)
+
+  if (invocation) {
+    return invocation
   }
 
   const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)

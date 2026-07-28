@@ -268,10 +268,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
+      // What the bubble shows. A `/skill` send carries the whole expanded
+      // skill body as its text — model-facing scaffolding — so the dispatcher
+      // hands us the invocation to render instead. Everything else shows what
+      // was typed.
+      const bubbleText = options?.displayText ?? visibleText
+
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
-        parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
+        parts: [textPart(bubbleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
         attachmentRefs
       })
 
@@ -466,7 +472,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (!sessionId) {
         try {
-          sessionId = await createBackendSessionForSend(visibleText)
+          sessionId = await createBackendSessionForSend(bubbleText)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()

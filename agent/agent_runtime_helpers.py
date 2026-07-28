@@ -2341,10 +2341,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         _destination_context_intent
     )
     if agent._lmstudio_load_was_unverified(_runtime_context_length):
-        _restore_snapshot()
-        raise RuntimeError(
+        logger.warning(
             "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length; model switch aborted"
+            "verifiable active context length during model switch; continuing "
+            "with configured context"
         )
     _effective_context_length = agent._effective_lmstudio_context_length(
         _destination_context_intent,

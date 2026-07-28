@@ -28,7 +28,7 @@ export function closeFindBar(): void {
   void window.hermesDesktop?.stopFindInPage()
 }
 
-export function setFindQuery(query: string): void {
+export async function setFindQuery(query: string): Promise<void> {
   const prev = $findInPage.get()
 
   // Never search for a closed bar. The component clears its debounce on
@@ -46,7 +46,7 @@ export function setFindQuery(query: string): void {
   }
 
   $findInPage.set({ ...prev, query })
-  void window.hermesDesktop?.findInPage(query, { forward: true, findNext: false })
+  await window.hermesDesktop?.findInPage(query, { forward: true, findNext: false })
 }
 
 export function findNext(): void {

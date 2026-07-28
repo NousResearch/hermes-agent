@@ -10,7 +10,14 @@ import { EventEmitter } from 'node:events'
 import type { BrowserWindow } from 'electron'
 import { describe, test } from 'vitest'
 
-import { formatFoundInPage, installFindShortcut, installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
+import {
+  formatFoundInPage,
+  installFindShortcut,
+  installFoundInPageForwarder,
+  performFind,
+  performFindAfterIndexingStarted,
+  stopFind
+} from './find-in-page'
 
 // Minimal webContents stub. The Electron.WebContents type is huge, so we
 // model just the slice the helpers touch (`isDestroyed`, `findInPage`,
@@ -24,10 +31,11 @@ interface FakeWebContents {
   }
   isDestroyed: () => boolean
   destroy: () => void
-  findInPage: (query: string, options: { forward: boolean; findNext: boolean }) => void
+  findInPage: (query: string, options: { forward: boolean; findNext: boolean }) => number
   stopFindInPage: (action: 'clearSelection' | 'keepSelection' | 'activateSelection') => void
   send: (channel: string, payload: unknown) => void
   on: typeof EventEmitter.prototype.on
+  once: typeof EventEmitter.prototype.once
   off: typeof EventEmitter.prototype.off
   emit: (event: string | symbol, ...args: unknown[]) => boolean
 }
@@ -52,6 +60,8 @@ function makeFakeWebContents(): FakeWebContents {
     },
     findInPage(query: string, options: { forward: boolean; findNext: boolean }) {
       calls.find.push({ query, options })
+
+      return 17
     },
     stopFindInPage(action: 'clearSelection' | 'keepSelection' | 'activateSelection') {
       calls.stop.push(action)
@@ -60,6 +70,7 @@ function makeFakeWebContents(): FakeWebContents {
       calls.send.push({ channel, payload })
     },
     on: emitter.on.bind(emitter),
+    once: emitter.once.bind(emitter),
     off: emitter.off.bind(emitter),
     emit: emitter.emit.bind(emitter)
   }
@@ -134,6 +145,39 @@ describe('performFind', () => {
     wc.destroy()
     performFind(asWC(wc), 'q', null)
     assert.equal(wc.calls.find.length, 0)
+  })
+})
+
+describe('performFindAfterIndexingStarted', () => {
+  test('resolves only after the matching request emits its first result', async () => {
+    const wc = makeFakeWebContents()
+    let resolved = false
+
+    const pending = performFindAfterIndexingStarted(asWC(wc), 'needle', {
+      forward: true,
+      findNext: false
+    }).then(() => {
+      resolved = true
+    })
+
+    await Promise.resolve()
+    assert.equal(resolved, false)
+
+    wc.emit('found-in-page', {}, { requestId: 9, matches: 1 })
+    await Promise.resolve()
+    assert.equal(resolved, false)
+
+    wc.emit('found-in-page', {}, { requestId: 17, matches: 1 })
+    await pending
+    assert.equal(resolved, true)
+  })
+
+  test('resolves safely if the webContents is destroyed before a result', async () => {
+    const wc = makeFakeWebContents()
+    const pending = performFindAfterIndexingStarted(asWC(wc), 'needle', null)
+
+    wc.destroy()
+    await pending
   })
 })
 

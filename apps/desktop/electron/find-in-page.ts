@@ -72,6 +72,46 @@ export function performFind(
 }
 
 /**
+ * Start a find request and resolve after Chromium emits its first matching
+ * result. This acknowledgment lets the renderer remove a temporary `inert`
+ * boundary only after the query field has been excluded from the index.
+ */
+export function performFindAfterIndexingStarted(
+  webContents: Electron.WebContents | null | undefined,
+  query: string,
+  options: FindInPageOptions | null | undefined
+): Promise<void> {
+  if (!webContents || webContents.isDestroyed()) {
+    return Promise.resolve()
+  }
+
+  return new Promise(resolve => {
+    let requestId: number | undefined
+
+    const finish = () => {
+      webContents.off('found-in-page', onFound)
+      webContents.off('destroyed', finish)
+      resolve()
+    }
+
+    const onFound = (_event: Electron.Event, result: { requestId?: number }) => {
+      if (requestId !== undefined && result?.requestId === requestId) {
+        finish()
+      }
+    }
+
+    webContents.on('found-in-page', onFound)
+    webContents.once('destroyed', finish)
+
+    const opts = options && typeof options === 'object' ? options : {}
+    requestId = webContents.findInPage(String(query ?? ''), {
+      forward: opts.forward !== false,
+      findNext: Boolean(opts.findNext)
+    })
+  })
+}
+
+/**
  * Stop the current find and clear highlights. The default `action` matches
  * what the renderer sends on Escape / close.
  */

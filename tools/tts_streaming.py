@@ -2,15 +2,19 @@
 
 The keystone of Hermes' conversational voice UX. `stream_tts_to_speaker`
 (``tools.tts_tool``) owns the sentence buffer, sounddevice output, and
-stop/queue protocol; this module owns the *provider* half — turning one
-sentence into audio the moment it's ready, so playback starts on sentence one
+stop/queue protocol; this module owns the *provider* half — turning text
+into audio the moment it's ready, so playback starts on sentence one
 instead of after the whole reply.
 
 Two provider shapes, one contract (int16 mono PCM at ``sample_rate``):
 
 * **True streamers** (`StreamingTTSProvider.stream`) — chunked APIs
   (ElevenLabs pcm_24000, OpenAI pcm, …) that yield audio as it synthesizes.
-  Lowest time-to-first-audio.
+  Lowest time-to-first-audio. The speaker pipeline fires a per-sentence
+  prefetch: each sentence gets its own ``stream()`` call the moment it's
+  complete, and a background thread fires the HTTP request immediately,
+  buffering PCM while the previous sentence plays — no inter-sentence gap,
+  no batching.
 * **Everyone else** — providers with no chunked API still get per-*sentence*
   playback via the proven sync `text_to_speech_tool` path (handled by the
   dispatcher, not here), so edge (the default) is conversational too.
@@ -25,6 +29,7 @@ import logging
 import re
 import time
 from abc import ABC, abstractmethod
+from functools import cached_property
 from typing import Callable, Dict, Iterator, List, Optional
 
 from tools.tts_tool import _get_provider, get_env_value
@@ -196,24 +201,72 @@ class ElevenLabsStreamer(StreamingTTSProvider):
 
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
-    """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16)."""
+    """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16).
+
+    Supports both direct OpenAI credentials and the Nous managed audio
+    gateway. When ``tts.use_gateway`` is set (or no direct key is present
+    but the managed gateway is available), the streamer resolves the
+    gateway's token and base_url via the existing auth chain in
+    ``tts_tool._resolve_openai_audio_client_config`` — the same path the
+    sync synthesizer uses — so the prefetch pipeline fires through the
+    gateway too, not just direct API.
+    """
 
     sample_rate = 24000
 
     @staticmethod
     def available() -> bool:
-        return bool(get_env_value("OPENAI_API_KEY"))
+        # Direct key path.
+        if get_env_value("OPENAI_API_KEY") or get_env_value("VOICE_TOOLS_OPENAI_KEY"):
+            return True
+        # Managed gateway path — note: _has_openai_audio_backend calls
+        # resolve_managed_tool_gateway() which can trigger a synchronous
+        # token refresh. Acceptable for availability checks (called once
+        # at pipeline setup), not in a hot loop.
+        from tools.tts_tool import _has_openai_audio_backend
+        return _has_openai_audio_backend()
+
+    @cached_property
+    def _client_config(self):
+        """Lazily resolve ``(client, is_managed)`` and cache the OpenAI
+        client — one HTTP/2 connection pool for every ``stream()`` call on
+        this instance, so per-sentence requests share a single TCP+TLS
+        connection (no handshake overhead).
+
+        Returns ``(client, is_managed)`` so ``stream()`` can coerce the
+        model for the managed gateway (same logic as the sync path).
+        """
+        from openai import OpenAI
+        from tools.tts_tool import _resolve_openai_audio_client_config
+
+        api_key, base_url, is_managed = _resolve_openai_audio_client_config()
+        # Honor OPENAI_BASE_URL env var for direct-key usage with custom
+        # endpoints (e.g. OpenAI-compatible proxies). The managed gateway
+        # path already provides the correct base_url.
+        if not is_managed and not base_url:
+            base_url = get_env_value("OPENAI_BASE_URL") or None
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        return client, is_managed
+
+    @property
+    def _client(self):
+        """Backwards-compat alias — delegates to the cached config."""
+        return self._client_config[0]
 
     def stream(self, text: str) -> Iterator[bytes]:
-        from openai import OpenAI
+        from tools.tts_tool import MANAGED_OPENAI_TTS_MODELS, DEFAULT_OPENAI_MODEL
 
-        client = OpenAI(
-            api_key=get_env_value("OPENAI_API_KEY"),
-            base_url=get_env_value("OPENAI_BASE_URL") or None,
-        )
         model = self.section.get("model", "gpt-4o-mini-tts")
         voice = self.section.get("voice", "alloy")
-        with client.audio.speech.with_streaming_response.create(
+        _client, is_managed = self._client_config
+        # The managed OpenAI audio gateway only proxies
+        # MANAGED_OPENAI_TTS_MODELS — coerce like the sync path does.
+        # Skip coercion when the user explicitly set a custom base_url
+        # (non-gateway endpoint), matching the sync path's behavior.
+        _explicit_base = bool(get_env_value("OPENAI_BASE_URL") or self.section.get("base_url"))
+        if is_managed and not _explicit_base and model not in MANAGED_OPENAI_TTS_MODELS:
+            model = DEFAULT_OPENAI_MODEL
+        with _client.audio.speech.with_streaming_response.create(
             model=model,
             voice=voice,
             input=text,

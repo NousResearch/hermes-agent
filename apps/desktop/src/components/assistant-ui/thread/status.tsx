@@ -6,6 +6,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
@@ -16,6 +17,9 @@ import { sessionAwaitingInput } from '@/store/prompts'
 import { $turnStartedAt } from '@/store/session'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 
+// A status line is scaffolding like any other — "Editing" while the model
+// drafts a call is the same kind of line as "Explored 3 files" once it has run,
+// and reads as one continuous column only if it shares their type and colour.
 const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentPropsWithoutRef<'div'>> = ({
   children,
   label,
@@ -25,7 +29,11 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
   <div
     aria-label={label}
     aria-live="polite"
-    className={cn('flex max-w-full items-center gap-2 self-start text-sm text-muted-foreground/70', className)}
+    className={cn(
+      'flex max-w-full items-center gap-1.5 self-start leading-(--conversation-line-height)',
+      'text-(--conversation-scaffold-text)',
+      className
+    )}
     role="status"
     {...rest}
   >
@@ -37,7 +45,7 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 const COMPACTION_LABEL = 'Summarizing thread'
 
 const HintText: FC<{ children: ReactNode }> = ({ children }) => (
-  <span className="shimmer min-w-0 truncate text-muted-foreground/55">{children}</span>
+  <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 truncate')}>{children}</span>
 )
 
 /** These indicators render inside whichever transcript mounted them, so every
@@ -120,11 +128,7 @@ export const ResponseLoadingIndicator: FC = () => {
   const hint = useStatusHint(compacting, drafting)
 
   return (
-    <StatusRow
-      className="text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height)"
-      data-slot="aui_response-loading"
-      label={hint || t.assistant.thread.loadingResponse}
-    >
+    <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       {hint && <HintText>{hint}</HintText>}
       <ActivityTimerText seconds={elapsed} />

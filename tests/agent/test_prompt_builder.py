@@ -1087,6 +1087,19 @@ class TestPromptBuilderConstants:
             assert "LOCAL-ONLY" in hint
             assert "deliver" in hint
 
+    def test_tui_hint_describes_math_syntax_and_escaping(self):
+        """#59548 — without this the model over-escapes LaTeX and wraps math
+        in backticks in TUI sessions. The TUI markdown renderer recognizes
+        $...$ and $$...$$ and converts them to Unicode best-effort
+        (ui-tui/src/lib/mathUnicode.ts), so the hint must name both
+        delimiters and the single-backslash rule."""
+        hint = PLATFORM_HINTS["tui"]
+        assert "$...$" in hint
+        assert "$$...$$" in hint
+        assert "single-backslash" in hint
+        # The terminal can't typeset LaTeX; don't promise native rendering.
+        assert "render natively" not in hint
+
     def test_whatsapp_cloud_hint_mentions_24h_window(self):
         """The Cloud API's 24-hour conversation window is a hard rule the
         agent should know about. Phase 5 (template fallback) was deferred,

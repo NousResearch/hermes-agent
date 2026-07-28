@@ -9,8 +9,6 @@ import {
 } from '@/app/chat/surface-vars'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { $composerPoppedOut } from '@/store/composer-popout'
-import { isSecondaryWindow } from '@/store/windows'
 
 import { COMPOSER_COMPACT_PILL_PX, COMPOSER_SINGLE_LINE_MAX_PX, COMPOSER_STACK_BREAKPOINT_PX } from '../composer-utils'
 
@@ -82,6 +80,11 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
   const lastBucketedSurfaceHeightRef = useRef(0)
   const lastTightRef = useRef<boolean | null>(null)
   const lastCompactPillRef = useRef<boolean | null>(null)
+  // Mirrored into a ref so `syncComposerMetrics` stays referentially stable —
+  // it's the shared ResizeObserver's handler, and a new identity every render
+  // would re-register the observation.
+  const poppedOutRef = useRef(poppedOut)
+  poppedOutRef.current = poppedOut
 
   const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
@@ -92,9 +95,10 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
     // Floating composer is out of the thread's flow — it must not reserve any
     // bottom clearance. Zero the measured vars so the thread reclaims the space.
-    // (Read globals here so the callback stays stable; mirror the popoutAllowed
-    // gate since secondary windows are forced docked.)
-    if ($composerPoppedOut.get() && !isSecondaryWindow()) {
+    // Read through a ref so the callback stays stable, and read THIS surface's
+    // own state: pop-out is per layout zone, so a float in the left split must
+    // not zero the right split's clearance.
+    if (poppedOutRef.current) {
       lastBucketedHeightRef.current = 0
       lastBucketedSurfaceHeightRef.current = 0
       setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')

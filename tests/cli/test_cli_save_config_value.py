@@ -77,6 +77,18 @@ class TestSaveConfigValueAtomic:
         assert result["model"]["default"] == "doubao-pro"
         assert result["custom_providers"][0]["api_key"] == "${TU_ZI_API_KEY}"
 
+    def test_model_write_runs_shared_cron_drift_warning(self, config_env, monkeypatch):
+        warning = MagicMock()
+        monkeypatch.setattr(
+            "hermes_cli.config.warn_unpinned_cron_jobs_after_model_config_change",
+            warning,
+        )
+
+        from cli import save_config_value
+
+        assert save_config_value("model.default", "new-model") is True
+        warning.assert_called_once_with("model.default", "new-model")
+
     def test_preserves_comments_after_config_mutation(self, config_env):
         """CLI config writes should not strip existing user comments."""
         config_env.write_text(

@@ -166,6 +166,7 @@ class TestDocumentTypeDetection:
         msg = _make_message(document=doc)
         update = _make_update(msg)
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
 
@@ -200,6 +201,8 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        adapter.handle_message.assert_not_awaited()
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
@@ -238,6 +241,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert "Hello from a text file" in event.text
         assert "[Content of notes.txt]" in event.text
@@ -254,6 +258,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert "# Title" in event.text
 
@@ -269,6 +274,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert "file text" in event.text
         assert "Please summarize" in event.text
@@ -281,6 +287,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls and event.media_urls[0].endswith("archive.zip")
         assert event.media_types == ["application/zip"]
@@ -356,6 +363,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert len(event.media_urls) == 1
         assert event.media_types == ["application/pdf"]
@@ -376,6 +384,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         assert len(event.media_urls) == 1
         assert event.media_types == ["application/octet-stream"]
@@ -394,6 +403,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         # File should still be cached
         assert len(event.media_urls) == 1
@@ -414,6 +424,7 @@ class TestDocumentDownloadBlock:
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
         event = adapter.handle_message.call_args[0][0]
         # File should be cached
         assert len(event.media_urls) == 1
@@ -554,6 +565,61 @@ class TestMediaGroups:
         assert event.text == "two images"
         assert event.media_urls == ["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]
         assert len(event.media_types) == 2
+
+    @pytest.mark.asyncio
+    async def test_document_burst_is_buffered_and_combined(self, adapter):
+        first = _make_document(
+            file_name="a.pdf",
+            mime_type="application/pdf",
+            file_size=100,
+            file_obj=_make_file_obj(b"first"),
+        )
+        second = _make_document(
+            file_name="b.txt",
+            mime_type="text/plain",
+            file_size=5,
+            file_obj=_make_file_obj(b"hello"),
+        )
+
+        await adapter._handle_media_message(
+            _make_update(_make_message(document=first, caption="read these")),
+            MagicMock(),
+        )
+        await adapter._handle_media_message(
+            _make_update(_make_message(document=second)),
+            MagicMock(),
+        )
+        assert adapter.handle_message.await_count == 0
+
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert len(event.media_urls) == 2
+        basenames = [os.path.basename(path) for path in event.media_urls]
+        assert basenames[0].endswith("_a.pdf")
+        assert basenames[1].endswith("_b.txt")
+        assert event.media_types == ["application/pdf", "text/plain"]
+        assert "read these" in event.text
+        assert "[Content of b.txt]" in event.text
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_pending_document_batch_flush(self, adapter):
+        doc = _make_document(file_name="a.pdf", mime_type="application/pdf", file_size=100)
+        await adapter._handle_media_message(
+            _make_update(_make_message(document=doc)),
+            MagicMock(),
+        )
+
+        assert adapter._pending_document_batches
+        assert adapter._pending_document_batch_tasks
+
+        await adapter.disconnect()
+        await asyncio.sleep(adapter._media_batch_delay_seconds + 0.05)
+
+        assert adapter._pending_document_batches == {}
+        assert adapter._pending_document_batch_tasks == {}
+        adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_photo_album_is_buffered_and_combined(self, adapter):

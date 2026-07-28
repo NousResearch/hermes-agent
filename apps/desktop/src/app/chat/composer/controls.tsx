@@ -185,6 +185,9 @@ function ConversationPill({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
+      {/* Keep the ear visible during voice chat — shown paused, since the
+          conversation holds the mic (the one time wake must not listen). */}
+      <WakeWordButton disabled={disabled} pausedForVoice />
       <Tip label={muted ? c.unmuteMic : c.muteMic}>
         <Button
           aria-label={muted ? c.unmuteMic : c.muteMic}
@@ -298,35 +301,42 @@ function AutoSpeakButton({ active, disabled, onToggle }: { active: boolean; disa
   )
 }
 
-// "Hey Hermes" wake-word toggle. Three states: listening (accent-highlighted,
-// like the auto-speak toggle above), off (muted ear-off), and unavailable —
-// when the backend reports the wake word can't run, the button hides entirely
-// so the row stays clean. Backend refusals ({started:false, reason}) keep the
-// toggle off and surface the reason/hint in the tooltip.
-function WakeWordButton({ disabled }: { disabled: boolean }) {
+// "Hey Hermes" wake-word toggle. States: listening (accent-highlighted, like
+// the auto-speak toggle above), off (muted ear-off), paused-for-voice (shown
+// disabled while a voice conversation holds the mic — the one legitimate
+// pause), and hidden — only when the feature can't run AND isn't enabled in
+// config. `enabled` keeps the ear mounted through transient refusals and busy
+// agent turns, so a persistent setting never silently vanishes mid-session.
+// Backend refusals ({started:false, reason}) keep the toggle off and surface
+// the reason/hint in the tooltip.
+function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolean; pausedForVoice?: boolean }) {
   const { t } = useI18n()
   const c = t.composer
   const wake = useStore($wakeWord)
 
-  if (!wake.available) {
+  if (!wake.available && !wake.enabled) {
     return null
   }
 
   const phrase = wake.phrase || 'hey hermes'
-  const label = wake.listening ? c.wakeWordListening(phrase) : c.wakeWordOff(phrase)
-  const tooltip = wake.notice ? `${label} — ${wake.notice}` : label
+  const label = pausedForVoice
+    ? c.wakeWordPausedVoice(phrase)
+    : wake.listening
+      ? c.wakeWordListening(phrase)
+      : c.wakeWordOff(phrase)
+  const tooltip = !pausedForVoice && wake.notice ? `${label} — ${wake.notice}` : label
 
   return (
     <Tip label={tooltip}>
       <Button
         aria-label={label}
-        aria-pressed={wake.listening}
+        aria-pressed={wake.listening && !pausedForVoice}
         className={cn(
           GHOST_ICON_BTN,
           'p-0',
-          wake.listening && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
+          wake.listening && !pausedForVoice && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
         )}
-        disabled={disabled || wake.pending}
+        disabled={disabled || pausedForVoice || wake.pending}
         onClick={() => {
           triggerHaptic(wake.listening ? 'close' : 'open')
           void toggleWakeWord()
@@ -335,7 +345,7 @@ function WakeWordButton({ disabled }: { disabled: boolean }) {
         type="button"
         variant="ghost"
       >
-        {wake.listening ? <Ear className={iconSize.sm} /> : <EarOff className={iconSize.sm} />}
+        {wake.listening && !pausedForVoice ? <Ear className={iconSize.sm} /> : <EarOff className={iconSize.sm} />}
       </Button>
     </Tip>
   )

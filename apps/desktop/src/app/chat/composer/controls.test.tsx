@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
+import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
 import { ComposerControls } from './controls'
 
@@ -75,5 +76,53 @@ describe('ComposerControls shortcut tooltips', () => {
     renderControls({ busy: true, busyAction: 'queue' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
+  })
+})
+
+describe('wake-word ear visibility', () => {
+  afterEach(() => {
+    resetWakeWordState()
+  })
+
+  it('stays mounted during a busy agent turn', () => {
+    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
+    renderControls({ busy: true, busyAction: 'stop' })
+
+    expect(screen.getByLabelText('Wake word: "hey hermes" — listening')).toBeTruthy()
+  })
+
+  it('stays mounted (enabled in config) even when a start was refused', () => {
+    applyWakeStatus({ available: true, enabled: true, listening: false, phrase: 'hey hermes' })
+    // Transient refusal marks available false but enabled keeps it mounted.
+    applyWakeStartResult({ hint: 'mic busy', reason: 'unavailable', started: false })
+    renderControls()
+
+    expect(screen.getByLabelText('Wake word: "hey hermes" — off')).toBeTruthy()
+  })
+
+  it('hides only when unavailable AND not enabled in config', () => {
+    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey hermes' })
+    renderControls()
+
+    expect(screen.queryByLabelText(/Wake word/)).toBeNull()
+  })
+
+  it('shows a disabled paused ear inside the voice-conversation pill', () => {
+    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
+    renderControls({
+      conversation: {
+        active: true,
+        level: 0,
+        muted: false,
+        onEnd: vi.fn(),
+        onStart: vi.fn(),
+        onStopTurn: vi.fn(),
+        onToggleMute: vi.fn(),
+        status: 'listening'
+      }
+    })
+
+    const ear = screen.getByLabelText('Wake word: "hey hermes" — paused during voice chat')
+    expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
 })

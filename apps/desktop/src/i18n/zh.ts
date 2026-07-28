@@ -2153,6 +2153,7 @@ export const zh: Translations = {
     stopSpeakingReplies: '停止朗读回复',
     wakeWordListening: phrase => `唤醒词:"${phrase}" — 正在监听`,
     wakeWordOff: phrase => `唤醒词:"${phrase}" — 已关闭`,
+    wakeWordPausedVoice: phrase => `唤醒词:"${phrase}" — 语音对话期间暂停`,
     lookupLoading: '查找中…',
     lookupNoMatches: '没有匹配项。',
     lookupTry: '试试',

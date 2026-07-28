@@ -521,27 +521,29 @@ class TestCronModelDriftConfigWarning:
         assert "Set model.default = new-model" in captured.out
         assert "fail closed" not in captured.out
 
-    def test_model_name_does_not_warn_for_unread_cron_axis(
+    def test_model_name_change_warns_like_model_default(
         self,
         _isolated_hermes_home,
         capsys,
     ):
+        """model.name is a legacy alias for model.default — the warning must fire."""
         _write_cron_jobs(
             _isolated_hermes_home,
             [
                 {
                     "id": "model-drift-job",
                     "enabled": True,
+                    "model": None,
                     "model_snapshot": "old-model",
                 }
             ],
         )
 
-        set_config_value("model.name", "display-only-name")
+        set_config_value("model.name", "new-model")
 
         captured = capsys.readouterr()
-        assert "Set model.name = display-only-name" in captured.out
-        assert "fail closed" not in captured.out
+        assert "Set model.name = new-model" in captured.out
+        assert "fail closed" in captured.out
 
     def test_explicit_opt_out_suppresses_warning(
         self,

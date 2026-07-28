@@ -8856,7 +8856,7 @@ def edit_config():
 def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:
     """Return the cron drift guard axis affected by a config key, if any."""
     normalized = str(key or "").strip().lower()
-    if normalized in {"model", "model.default", "model.model"}:
+    if normalized in {"model", "model.default", "model.model", "model.name"}:
         return "model"
     if normalized in {"model.provider", "provider"}:
         return "provider"
@@ -8887,29 +8887,23 @@ def cron_model_drift_guard_enabled(
 
 
 def _load_cron_jobs_for_config_warning() -> List[Dict[str, Any]]:
-    """Best-effort direct read of the active profile's cron jobs database."""
-    jobs_path = get_hermes_home() / "cron" / "jobs.json"
+    """Best-effort read of the active profile's cron jobs database.
+
+    Delegates to ``cron.jobs.load_jobs`` to reuse its BOM handling, corruption
+    repair, and context-local store resolution (tests, embedders). Falls back
+    to an empty list on any failure so config writes never break.
+    """
     try:
-        if not jobs_path.exists():
-            return []
-        data = json.loads(jobs_path.read_text(encoding="utf-8"))
+        from cron.jobs import load_jobs
+        return load_jobs()
     except Exception:
         return []
-
-    if isinstance(data, dict):
-        raw_jobs = data.get("jobs", [])
-    elif isinstance(data, list):
-        raw_jobs = data
-    else:
-        return []
-    if not isinstance(raw_jobs, list):
-        return []
-    return [job for job in raw_jobs if isinstance(job, dict)]
 
 
 def warn_unpinned_cron_jobs_after_model_config_change(
     key: str,
     value: Any,
+    config: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Warn when a global model/provider change will trip cron's drift guard.
 
@@ -8921,7 +8915,7 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     axis = _cron_model_drift_axis_for_config_key(key)
     if axis is None:
         return
-    if not cron_model_drift_guard_enabled():
+    if not cron_model_drift_guard_enabled(config):
         return
 
     new_value = str(value or "").strip().lower()
@@ -8946,8 +8940,9 @@ def warn_unpinned_cron_jobs_after_model_config_change(
         return
 
     noun = "job" if affected == 1 else "jobs"
+    verb = "has" if affected == 1 else "have"
     print(
-        f"⚠️  {affected} enabled unpinned cron {noun} have stored "
+        f"⚠️  {affected} enabled unpinned cron {noun} {verb} stored "
         f"{snapshot_field} values that differ from the new global {axis}. "
         "They will fail closed on their next run instead of silently using the "
         "changed model/provider. Inspect with `hermes cron list`, then pin the "
@@ -9270,7 +9265,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     else:
         _display_value = value
     print(f"✓ Set {key} = {_display_value} in {config_path}")
-    warn_unpinned_cron_jobs_after_model_config_change(key, value)
+    warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the
     # user the runtime may never read it and suggest the likely-intended path.

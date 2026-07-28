@@ -127,3 +127,66 @@ class TestCleanupAudioCache:
     def test_empty_cache_returns_zero(self):
         removed = cleanup_audio_cache(max_age_hours=24)
         assert removed == 0
+
+# ---------------------------------------------------------------------------
+# TestUnifiedMediaCacheCleanup — video + screenshot ride the same shared loop
+# ---------------------------------------------------------------------------
+
+class TestUnifiedMediaCacheCleanup:
+    def test_cleanup_video_cache_removes_old_files(self, tmp_path, monkeypatch):
+        from gateway.platforms.base import cleanup_video_cache, get_video_cache_dir
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
+        )
+        cache_dir = get_video_cache_dir()
+        old_file = cache_dir / "old.mp4"
+        old_file.write_text("old")
+        old_mtime = time.time() - 48 * 3600
+        os.utime(old_file, (old_mtime, old_mtime))
+        fresh = cache_dir / "fresh.mp4"
+        fresh.write_text("fresh")
+
+        removed = cleanup_video_cache(max_age_hours=24)
+        assert removed == 1
+        assert not old_file.exists()
+        assert fresh.exists()
+
+    def test_cleanup_screenshot_cache_removes_old_files(self, tmp_path, monkeypatch):
+        from gateway.platforms.base import (
+            cleanup_screenshot_cache,
+            get_screenshot_cache_dir,
+        )
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.SCREENSHOT_CACHE_DIR", tmp_path / "screenshots"
+        )
+        cache_dir = get_screenshot_cache_dir()
+        old_file = cache_dir / "old.png"
+        old_file.write_text("old")
+        old_mtime = time.time() - 48 * 3600
+        os.utime(old_file, (old_mtime, old_mtime))
+        fresh = cache_dir / "fresh.png"
+        fresh.write_text("fresh")
+
+        removed = cleanup_screenshot_cache(max_age_hours=24)
+        assert removed == 1
+        assert not old_file.exists()
+        assert fresh.exists()
+
+    def test_housekeeping_loop_covers_all_media_caches(self):
+        """The housekeeping tick prunes every media cache via one shared loop."""
+        import inspect
+
+        from gateway import run as gateway_run
+
+        src = inspect.getsource(gateway_run._start_gateway_housekeeping)
+        assert "MEDIA_CACHE_CLEANUPS" in src
+        for fn_name in (
+            "cleanup_image_cache",
+            "cleanup_document_cache",
+            "cleanup_audio_cache",
+            "cleanup_video_cache",
+            "cleanup_screenshot_cache",
+        ):
+            assert fn_name in src, f"{fn_name} missing from housekeeping loop"

@@ -842,15 +842,15 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 raise
 
 
-def cleanup_image_cache(max_age_hours: int = 24) -> int:
+def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
     """
-    Delete cached images older than *max_age_hours*.
+    Delete files in *cache_dir* older than *max_age_hours*.
 
-    Returns the number of files removed.
+    Shared implementation behind every ``cleanup_*_cache`` helper — one loop,
+    not N copies.  Returns the number of files removed.
     """
     import time
 
-    cache_dir = get_image_cache_dir()
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
     for f in cache_dir.iterdir():
@@ -861,6 +861,15 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
             except OSError:
                 pass
     return removed
+
+
+def cleanup_image_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached images older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_image_cache_dir(), max_age_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -981,19 +990,7 @@ def cleanup_audio_cache(max_age_hours: int = 24) -> int:
 
     Returns the number of files removed.
     """
-    import time
-
-    cache_dir = get_audio_cache_dir()
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            try:
-                f.unlink()
-                removed += 1
-            except OSError:
-                pass
-    return removed
+    return _cleanup_cache_dir(get_audio_cache_dir(), max_age_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -1031,6 +1028,15 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     return str(filepath)
 
 
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached videos older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_video_cache_dir(), max_age_hours)
+
+
 # ---------------------------------------------------------------------------
 # Document cache utilities
 #
@@ -1040,6 +1046,23 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
+
+
+def get_screenshot_cache_dir() -> Path:
+    """Return the browser screenshot cache directory, creating it if needed."""
+    d = _resolve_cache_dir("SCREENSHOT_CACHE_DIR", "cache/screenshots", "browser_screenshots")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cleanup_screenshot_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached browser screenshots older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_screenshot_cache_dir(), max_age_hours)
+
 
 # Import-time defaults; _resolve_cache_dir compares against these to tell a
 # test monkeypatch from an unmodified constant.
@@ -1820,19 +1843,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 
     Returns the number of files removed.
     """
-    import time
-
-    cache_dir = get_document_cache_dir()
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            try:
-                f.unlink()
-                removed += 1
-            except OSError:
-                pass
-    return removed
+    return _cleanup_cache_dir(get_document_cache_dir(), max_age_hours)
 
 
 # ---------------------------------------------------------------------------

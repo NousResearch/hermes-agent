@@ -36,6 +36,10 @@ import type {
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import {
+  restartGatewayAfterTelegramOnboarding,
+  restartGatewayFromChannelsPage,
+} from "./service-mutation-callers";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -262,7 +266,7 @@ export default function ChannelsPage() {
   const handleRestart = async () => {
     setRestarting(true);
     try {
-      await api.restartGateway();
+      await restartGatewayFromChannelsPage();
       showToast("Gateway restarting…", "success");
       setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
@@ -1231,7 +1235,7 @@ function TelegramOnboardingPanel({
         void watchRestartOutcome();
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
-          await api.restartGateway();
+          await restartGatewayAfterTelegramOnboarding();
           showToast("Telegram saved; gateway restarting…", "success");
           setRestartNeeded(false);
           setTimeout(() => void onChanged(), 4000);

@@ -1,4 +1,7 @@
-import { buildHermesWebSocketUrl } from "@hermes/shared";
+import {
+  buildHermesWebSocketUrl,
+  serviceMutationRequest,
+} from "@hermes/shared";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -954,9 +957,17 @@ export const api = {
 
   // Gateway / update actions
   restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+    fetchJSON<ActionResponse>("/api/gateway/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(serviceMutationRequest("RESTART")),
+    }),
   updateHermes: () =>
-    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
+    fetchJSON<ActionResponse>("/api/hermes/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(serviceMutationRequest("UPDATE")),
+    }),
   checkHermesUpdate: (force = false) =>
     fetchJSON<UpdateCheckResponse>(
       `/api/hermes/update/check${force ? "?force=true" : ""}`,

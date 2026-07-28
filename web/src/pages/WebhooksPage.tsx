@@ -26,6 +26,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { restartGatewayFromWebhooksPage } from "./service-mutation-callers";
 
 interface CreatedWebhook {
   url: string;
@@ -133,7 +134,7 @@ export default function WebhooksPage() {
   const handleRestart = useCallback(async () => {
     setRestarting(true);
     try {
-      await api.restartGateway();
+      await restartGatewayFromWebhooksPage();
       setRestartNeeded(false);
       setRestartError(null);
       setRestartMessage("Gateway restarting…");

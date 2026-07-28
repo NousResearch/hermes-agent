@@ -60,7 +60,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
@@ -1079,6 +1079,7 @@ function SidebarSystemActions({
       title={
         t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
       }
+      typedConfirmation="RESTART"
     />
 
     <ConfirmDialog
@@ -1092,6 +1093,7 @@ function SidebarSystemActions({
       onConfirm={confirmUpdate}
       open={updateConfirmOpen}
       title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}
+      typedConfirmation="UPDATE"
     />
     </>
   );

@@ -40,6 +40,8 @@
     "unicode-animations": "1.0.3"
   },
   "devDependencies": {
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.2",
     "@types/node": "22.20.1",
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",

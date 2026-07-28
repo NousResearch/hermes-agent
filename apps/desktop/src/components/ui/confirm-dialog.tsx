@@ -28,6 +28,7 @@ interface ConfirmDialogProps {
   destructive?: boolean
   /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
   dismissOnConfirm?: boolean
+  typedConfirmation?: string
 }
 
 // Shared confirmation dialog: Enter confirms (from anywhere in the dialog),
@@ -44,11 +45,13 @@ export function ConfirmDialog({
   doneLabel,
   cancelLabel,
   destructive = false,
-  dismissOnConfirm = false
+  dismissOnConfirm = false,
+  typedConfirmation
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
+  const [typedValue, setTypedValue] = useState('')
   const busy = status === 'saving' || status === 'done'
   const resolvedConfirmLabel = confirmLabel ?? t.common.confirm
   const resolvedBusyLabel = busyLabel ?? t.common.loading
@@ -59,11 +62,12 @@ export function ConfirmDialog({
     if (open) {
       setStatus('idle')
       setError(null)
+      setTypedValue('')
     }
   }, [open])
 
   async function run() {
-    if (busy) {
+    if (busy || (typedConfirmation && typedValue !== typedConfirmation)) {
       return
     }
 
@@ -117,11 +121,27 @@ export function ConfirmDialog({
           </div>
         )}
 
+        {typedConfirmation && (
+          <label className="grid gap-2 text-xs text-muted-foreground">
+            Type <strong className="text-foreground">{typedConfirmation}</strong> to confirm
+            <input
+              autoComplete="off"
+              className="rounded-md border border-border bg-background px-3 py-2 text-foreground"
+              onChange={event => setTypedValue(event.target.value)}
+              value={typedValue}
+            />
+          </label>
+        )}
+
         <DialogFooter>
           <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
             {resolvedCancelLabel}
           </Button>
-          <Button disabled={busy} onClick={() => void run()} variant={destructive ? 'destructive' : 'default'}>
+          <Button
+            disabled={busy || Boolean(typedConfirmation && typedValue !== typedConfirmation)}
+            onClick={() => void run()}
+            variant={destructive ? 'destructive' : 'default'}
+          >
             <ActionStatus
               busy={resolvedBusyLabel}
               done={resolvedDoneLabel}

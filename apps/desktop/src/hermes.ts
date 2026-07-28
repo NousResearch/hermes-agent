@@ -1,4 +1,4 @@
-import { JsonRpcGatewayClient } from '@hermes/shared'
+import { JsonRpcGatewayClient, serviceMutationRequest } from '@hermes/shared'
 
 import type {
   ActionResponse,
@@ -1528,7 +1528,8 @@ export function restartGateway(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     ...profileScoped(),
     path: '/api/gateway/restart',
-    method: 'POST'
+    method: 'POST',
+    body: serviceMutationRequest('RESTART')
   })
 }
 
@@ -1536,7 +1537,8 @@ export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     ...profileScoped(),
     path: '/api/hermes/update',
-    method: 'POST'
+    method: 'POST',
+    body: serviceMutationRequest('UPDATE')
   })
 }
 

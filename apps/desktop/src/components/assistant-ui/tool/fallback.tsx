@@ -825,14 +825,15 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
     const parts = state.message.parts
     const tools = parts.slice(Math.max(0, startIndex), endIndex + 1).filter(isToolCallPart)
 
-    // A missing result only means "still working" while this run is the tail of
-    // a running message — the same qualification ToolEntry puts on a row's
-    // pending state. A turn that ends, or an agent that moves on to later
-    // parts, can leave a call unresolved forever; treating that as live would
-    // strand the run in the present tense AND leave it uncollapsible, since a
-    // live run deliberately withholds its toggle.
-    const live =
-      selectMessageRunning(state) && endIndex >= parts.length - 1 && tools.some(tool => tool.result === undefined)
+    // Live means the turn is still working and nothing has come after this run
+    // — not that some call is unresolved. Those differ in the gap between one
+    // call finishing and the next arriving, which for sequential calls is most
+    // of the run: it fell back to past tense there, unmounting the ticker and
+    // dropping its reel to the top instead of scrolling.
+    //
+    // The tail bound is what keeps this honest — a turn that ends, or an agent
+    // that moves on to later parts, leaves the run settled and collapsible.
+    const live = selectMessageRunning(state) && endIndex >= parts.length - 1
 
     const signature = tools
       .map(tool => `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}`)

@@ -202,6 +202,11 @@ export const StreamStallIndicator: FC = () => {
   const { awaitingInput, compacting, drafting, turnTimerKey } = useThreadSessionStatus()
   const hint = useStatusHint(compacting, drafting)
 
+  // A tool run at the tail already narrates the wait — its summary counts the
+  // calls, its ticker names the current one, and it carries its own timer. A
+  // second spinner under that adds a line and says nothing new.
+  const toolNarrating = useAuiState(s => s.message.content.at(-1)?.type === 'tool-call')
+
   useEffect(() => {
     setQuietSince(undefined)
     const seenAt = Date.now()
@@ -213,7 +218,7 @@ export const StreamStallIndicator: FC = () => {
   // A named wait doesn't have to earn the stall threshold first — we already
   // know what the turn is doing, so say it as soon as the label is ready rather
   // than leaving the transcript silent for STREAM_STALL_S.
-  const active = (quietSince !== undefined || Boolean(hint)) && !awaitingInput
+  const active = (quietSince !== undefined || Boolean(hint)) && !awaitingInput && !toolNarrating
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the stream went quiet — the stall's own

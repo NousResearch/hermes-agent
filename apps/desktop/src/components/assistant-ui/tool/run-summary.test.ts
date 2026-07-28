@@ -44,6 +44,13 @@ describe('summarizeToolRun', () => {
     expect(running([tool('terminal', { command: 'npm run typecheck' })])).toMatch(/^Running /)
   })
 
+  // Sequential calls leave a gap where the run is still going but nothing is
+  // pending. Falling back to past tense there contradicted the ticker still
+  // scrolling underneath, so the most recent call carries the present tense.
+  it('stays in the present tense between two sequential calls', () => {
+    expect(running([read('a.ts'), ran('x'), ran('y')])).toBe('Explored a.ts, running 2 commands')
+  })
+
   // A turn can end — or the agent can simply move on — with a call that never
   // got a result. The run is history at that point and has to read as history,
   // or it narrates work that stopped happening and never offers its toggle.

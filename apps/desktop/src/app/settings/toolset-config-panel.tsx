@@ -180,7 +180,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
           </div>
           {!editing && (
             <EnvVarActionsMenu {...actionProps}>
-              <EnvVarActionsTrigger label={envVar.key} onClick={event => event.stopPropagation()} />
+              <EnvVarActionsTrigger onClick={event => event.stopPropagation()} />
             </EnvVarActionsMenu>
           )}
         </div>

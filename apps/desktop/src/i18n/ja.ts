@@ -167,7 +167,7 @@ export const ja = defineLocale({
       inputTitle: '入力が必要です',
       inputBody: 'Hermes が応答を待っています。',
       turnDoneTitle: 'Hermes が完了しました',
-      turnDoneBody: '応答の準備ができました。',
+      turnDoneBody: '',
       turnErrorTitle: 'ターンが失敗しました',
       backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
       backgroundFailedTitle: 'バックグラウンドタスクが失敗しました',
@@ -195,8 +195,7 @@ export const ja = defineLocale({
     search: '検索',
     searchTitle: 'セッション、ビュー、アクションを検索',
     swapSidebarSides: 'サイドバーの向きを切り替え',
-    swapSidebarSidesTitle: 'セッションとファイルブラウザーの位置を入れ替える',
-    hideRightSidebar: '右サイドバーを非表示',
+        hideRightSidebar: '右サイドバーを非表示',
     showRightSidebar: '右サイドバーを表示',
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
@@ -242,7 +241,7 @@ export const ja = defineLocale({
       title: '通知',
       intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
       enableAll: '通知を有効にする',
-      enableAllDesc: 'マスタースイッチ。オフにすると以下のすべての通知を無効にします。',
+      enableAllDesc: 'オフで以下の通知をすべて無効にします。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
       kinds: {
         approval: {
@@ -259,7 +258,7 @@ export const ja = defineLocale({
         },
         turnError: {
           label: 'ターン失敗',
-          description: 'ターンがエラーで終了しました。'
+          description: 'バックグラウンドのターンエラー。'
         },
         backgroundDone: {
           label: 'バックグラウンドタスク完了',
@@ -671,8 +670,8 @@ export const ja = defineLocale({
       saving: '保存中'
     },
     envActions: {
-      actionsFor: label => `${label} のアクション`,
-      credentialActions: '認証情報のアクション',
+      actions: 'アクション',
+
       manageInKeys: 'API キーで管理',
       docs: 'ドキュメント',
       hideValue: '値を非表示',
@@ -1382,9 +1381,10 @@ export const ja = defineLocale({
     showAllProfiles: 'すべてのプロファイルを表示',
     switchToProfile: name => `${name} に切り替え`,
     manageProfiles: 'プロファイルを管理…',
-    actionsFor: name => `${name} のアクション`,
+    actions: 'アクション',
+
     color: 'カラー…',
-    colorFor: name => `${name} のカラー`,
+    colorFor: 'カラー',
     setColor: color => `カラー ${color} に設定`,
     autoColor: '自動',
     noProfiles: 'プロファイルが見つかりません。',
@@ -1519,7 +1519,7 @@ export const ja = defineLocale({
     showRuns: '実行履歴を表示',
     hideRuns: '実行履歴を隠す',
     runHistory: '実行履歴',
-    actionsFor: title => `${title} のアクション`,
+
     actionsTitle: 'Cron ジョブのアクション',
     resume: '再開',
     pause: '一時停止',
@@ -1687,7 +1687,7 @@ export const ja = defineLocale({
       primaryBadge: 'メイン',
       removeFolder: '削除',
       create: '作成',
-      menu: 'プロジェクト操作',
+      menu: 'アクション',
       menuRename: '名前を変更',
       menuAppearance: '外観',
       noColor: '色なし',
@@ -1744,7 +1744,7 @@ export const ja = defineLocale({
       archive: 'アーカイブ',
       newWindow: '新しいウィンドウ',
       copyIdFailed: 'セッション ID をコピーできませんでした',
-      actionsFor: title => `${title} のアクション`,
+
       sessionActions: 'セッションアクション',
       sessionRunning: 'セッション実行中',
       needsInput: '入力が必要です',
@@ -1756,7 +1756,7 @@ export const ja = defineLocale({
       renamed: '名前を変更しました',
       renameFailed: '名前の変更に失敗しました',
       renameTitle: 'セッションの名前を変更',
-      renameDesc: 'このチャットにわかりやすいタイトルをつけてください。空欄にするとクリアされます。',
+      renameDesc: '空欄にするとクリアされます。',
       untitledPlaceholder: '無題のセッション',
       untitledChat: id => `セッション ${id}`,
       ageNow: 'たった今',
@@ -2269,9 +2269,9 @@ export const ja = defineLocale({
       connectionSsh: host => `SSH: ${host}`,
       connectionRemote: host => `リモート: ${host}`,
       connectionCloud: host => `クラウド: ${host}`,
-      connectionCloudTooltip: host => `Hermes Cloud ${host} に接続中 · クリックして管理`,
-      connectionSshTooltip: host => `SSH 経由で ${host} に接続中 · クリックして管理`,
-      connectionRemoteTooltip: host => `リモートバックエンド ${host} に接続中 · クリックして管理`,
+      connectionCloudTooltip: host => `Hermes Cloud · ${host}`,
+      connectionSshTooltip: host => `SSH · ${host}`,
+      connectionRemoteTooltip: host => `Remote · ${host}`,
       backendLabel: version => `バックエンド v${version}`,
       commit: sha => `コミット ${sha}`,
       branch: branch => `ブランチ ${branch}`,
@@ -2286,7 +2286,7 @@ export const ja = defineLocale({
       gatewayConnecting: '接続中',
       gatewayOffline: 'オフライン',
       gatewayRestarting: '再起動中…',
-      gatewayTitle: 'Hermes 推論ゲートウェイのステータス',
+      gatewayTitle: 'ゲートウェイ',
       agents: 'エージェント',
       closeAgents: 'エージェントを閉じる',
       openAgents: 'エージェントを開く',
@@ -2298,8 +2298,7 @@ export const ja = defineLocale({
       starmap: 'メモリグラフ',
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
-      currentTurnElapsed: '現在のターン経過時間',
-      contextUsage: 'コンテキスト使用状況',
+            contextUsage: 'コンテキスト使用状況',
       contextUsagePanel: {
         categories: {
           conversation: '会話',
@@ -2317,11 +2316,9 @@ export const ja = defineLocale({
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      openContextUsage: 'コンテキスト使用状況の内訳を開く',
-      session: 'セッション',
-      runtimeSessionElapsed: 'ランタイムセッション経過時間',
-      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
-      yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。Shift+クリックで全体に切り替え。',
+            session: 'セッション',
+            yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。Shift+クリックで全体に切り替え。',
+      yoloOff: 'YOLO オフ。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',
       noModel: 'モデルなし',
       switchModel: 'モデルを切り替え',
@@ -2342,7 +2339,7 @@ export const ja = defineLocale({
     remotePickerTitle: 'リモートフォルダーを選択',
     remotePickerDescription: '接続中のバックエンド上のフォルダーを参照します。',
     remotePickerSelect: 'フォルダーを選択',
-    folderTip: cwd => `${cwd} — クリックしてフォルダーを変更`,
+    folderTip: cwd => cwd,
     openFolder: 'フォルダーを開く',
     refreshTree: 'ツリーを更新',
     collapseAll: 'すべてのフォルダーを折りたたむ',

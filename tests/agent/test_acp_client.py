@@ -1,4 +1,14 @@
-"""Unit tests for the generic ACP client (issue #5257)."""
+"""Unit tests for the generic ACP client (issue #5257).
+
+``ACPClient`` is agent-agnostic: it drives whatever the registry resolves
+``agent_name`` to. Only ``copilot`` ships registered in core — the "claude"
+and "codex" entries these tests exercise stand in for the plugin-registered
+agents shipped by https://github.com/mvdbastos/hermes-acp-agents (see
+``agent/acp_agent_registry.py``), registered here the same way that plugin's
+``__init__.py`` would via ``register_acp_agent``, so the client's dispatch
+logic — fallback bins, env stripping, install hints — is covered without
+hardcoding third-party agents into core.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.acp_agent_registry import ACP_AGENT_REGISTRY, ACPAgentEntry, register_acp_agent
 from agent.acp_client import (
     ACPClient,
     create_acp_client,
@@ -13,6 +24,36 @@ from agent.acp_client import (
     marker_base_url,
 )
 from agent.copilot_acp_client import ACP_MARKER_BASE_URL, CopilotACPClient
+
+
+@pytest.fixture(autouse=True)
+def _acp_test_agents():
+    """Register the "claude"/"codex" entries hermes-acp-agents ships.
+
+    Autouse + function-scoped so every test in this module sees them and
+    nothing leaks into other test modules' global ``ACP_AGENT_REGISTRY``.
+    """
+    register_acp_agent("claude", ACPAgentEntry(
+        command="claude-agent-acp",
+        command_fallbacks=("claude-code-acp",),
+        env_unset=("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"),
+        display_name="Claude Code",
+        install_hint=(
+            "Install the maintained adapter: "
+            "npm install -g @agentclientprotocol/claude-agent-acp "
+            "(the older @zed-industries/claude-code-acp bin also works)."
+        ),
+    ))
+    register_acp_agent("codex", ACPAgentEntry(
+        command="codex-acp",
+        display_name="Codex CLI",
+        install_hint="npm install -g @zed-industries/codex-acp",
+    ))
+    try:
+        yield
+    finally:
+        ACP_AGENT_REGISTRY.pop("claude", None)
+        ACP_AGENT_REGISTRY.pop("codex", None)
 
 
 def test_extract_agent_from_url():
@@ -42,9 +83,13 @@ def test_agent_name_derived_from_base_url():
 
 
 def test_agent_name_param_used_when_no_base_url():
-    client = ACPClient(agent_name="gemini", acp_cwd="/tmp")
-    assert client.base_url == "acp://gemini"
-    assert client._acp_command == "gemini"
+    register_acp_agent("widget", ACPAgentEntry(command="widget", args=("--experimental-acp",)))
+    try:
+        client = ACPClient(agent_name="widget", acp_cwd="/tmp")
+    finally:
+        ACP_AGENT_REGISTRY.pop("widget", None)
+    assert client.base_url == "acp://widget"
+    assert client._acp_command == "widget"
     assert client._acp_args == ["--experimental-acp"]
 
 
@@ -130,7 +175,7 @@ def test_claude_env_unset_strips_session_markers():
     for marker in markers:
         assert marker not in env
     # Non-claude agents strip nothing.
-    assert agent_env_unset("gemini") == ()
+    assert agent_env_unset("codex") == ()
 
 
 def test_early_exit_hook_default_is_generic(monkeypatch):

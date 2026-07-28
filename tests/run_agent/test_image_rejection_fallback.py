@@ -6,7 +6,7 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
-from run_agent import _strip_images_from_messages
+from run_agent import _looks_like_image_content_rejection, _strip_images_from_messages
 
 
 class TestStripImagesPreservesAlternation:
@@ -178,29 +178,8 @@ class TestImageRejectionPhraseIsolation:
     so they route to the correct recovery handler (e.g. _try_shrink_image_parts).
     """
 
-    # Reproduces the phrase list used in run_agent.py's error-handler block.
-    _REJECTION_PHRASES = (
-        "only 'text' content type is supported",
-        "only text content type is supported",
-        "image_url is not supported",
-        "image content is not supported",
-        "multimodal is not supported",
-        "multimodal content is not supported",
-        "multimodal input is not supported",
-        "vision is not supported",
-        "vision input is not supported",
-        "does not support images",
-        "does not support image input",
-        "does not support multimodal",
-        "does not support vision",
-        "model does not support image",
-        "image_url'. expected",
-        "no endpoints found that support image input",
-    )
-
     def _matches(self, body: str) -> bool:
-        low = body.lower()
-        return any(p in low for p in self._REJECTION_PHRASES)
+        return _looks_like_image_content_rejection(body)
 
     def test_anthropic_image_too_large_does_not_trip(self):
         # From agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —
@@ -248,6 +227,10 @@ class TestImageRejectionPhraseIsolation:
             # OpenRouter 404 when no upstream endpoint for the model accepts
             # image input — issue #21160. The exact wording from the report.
             "HTTP 404: No endpoints found that support image input",
+            # Alibaba/OpenAI-compatible endpoints can reject image-bearing
+            # messages without naming image_url explicitly. The first failed
+            # turn should still switch to text-only/aux-vision mode (#57948).
+            "The provided messages input is invalid. The error info is [Unexpected item type in content].",
         ]
         for body in bodies:
             assert self._matches(body) is True, f"false negative on: {body}"

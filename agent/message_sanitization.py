@@ -432,6 +432,50 @@ def _strip_images_from_messages(messages: list) -> bool:
     return found
 
 
+_IMAGE_REJECTION_PHRASES = (
+    "only 'text' content type is supported",
+    "only text content type is supported",
+    "image_url is not supported",
+    "image content is not supported",
+    "multimodal is not supported",
+    "multimodal content is not supported",
+    "multimodal input is not supported",
+    "vision is not supported",
+    "vision input is not supported",
+    "does not support images",
+    "does not support image input",
+    "does not support multimodal",
+    "does not support vision",
+    "model does not support image",
+    # Some OpenAI-compatible endpoints reject non-text content blocks with this
+    # generic body instead of naming image_url or vision support explicitly.
+    "unexpected item type in content",
+    # ChatGPT-account Codex backend (https://chatgpt.com/backend-api/codex)
+    # rejects data:image/...base64 URLs in input_image fields with HTTP 400
+    # "Invalid 'input[N].content[K].image_url'. Expected a valid URL, but got a
+    # value with an invalid format." The public OpenAI Responses API accepts
+    # data URLs, but the ChatGPT-account variant does not. Match is narrow on
+    # purpose -- keyed on the field-path apostrophe so we don't false-trip on
+    # other URL validation errors. (issue #23570)
+    "image_url'. expected",
+    # DeepSeek's OpenAI-compatible API reports text-only request-body variants
+    # as "unknown variant `image_url`, expected `text`".
+    "unknown variant `image_url`, expected `text`",
+    "unknown variant image_url, expected text",
+    # OpenRouter routes a request to upstream endpoints and, when none of the
+    # candidate endpoints for the model accept image input, returns HTTP 404
+    # "No endpoints found that support image input". The 404 passes the 4xx
+    # gate in the conversation loop.
+    "no endpoints found that support image input",
+)
+
+
+def _looks_like_image_content_rejection(error_body: str) -> bool:
+    """Return True when a provider error says image/multimodal input is unsupported."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _IMAGE_REJECTION_PHRASES)
+
+
 def _sanitize_structure_non_ascii(payload: Any) -> bool:
     """Strip non-ASCII characters from nested dict/list payloads in-place."""
     found = False

@@ -77,6 +77,7 @@ wake_word:
   provider: openwakeword      # "openwakeword" (free, local) | "porcupine"
   phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.5            # 0.0-1.0 — raise to reduce false triggers
+  confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
     model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .onnx/.tflite
@@ -87,6 +88,23 @@ wake_word:
 
 `sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
 `openwakeword` and `porcupine` blocks select the actual detection model.
+
+### Reducing false triggers on ambient speech
+
+openWakeWord scores one short (~80ms) audio frame at a time, so a stray phoneme
+in background conversation can occasionally spike a single frame over the
+threshold and fire the wake word unintentionally. Two knobs control this:
+
+- **`confirmation_frames`** (default `3`, openWakeWord only) — how many
+  *consecutive* over-threshold frames are required before the wake fires. A real
+  "hey hermes" holds a high score across several frames; an ambient blip spikes
+  just one. Raise it (e.g. `4`–`5`) if you still get false triggers in a noisy
+  room; the cost is a few tens of milliseconds of extra latency. `1` restores
+  the old fire-on-first-frame behavior.
+- **`sensitivity`** — raise toward `1.0` to demand a higher score per frame.
+
+The `sherpa` and `porcupine` engines decode the whole phrase internally, so they
+don't have the single-frame-spike problem and ignore `confirmation_frames`.
 
 `inference_framework` picks the openWakeWord backend. Leave it empty (the
 default) to let Hermes choose per platform: **tflite on Apple Silicon**, onnx

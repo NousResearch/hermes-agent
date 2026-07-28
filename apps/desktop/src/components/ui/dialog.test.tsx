@@ -101,5 +101,4 @@ describe('DialogContent close button', () => {
     preventCloseButtonAutoFocus(event)
     expect(event.defaultPrevented).toBe(true)
   })
-
 })

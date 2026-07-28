@@ -194,7 +194,7 @@ export const en: Translations = {
     search: 'Search',
     searchTitle: 'Search sessions, views, and actions',
     swapSidebarSides: 'Swap sidebar sides',
-        hideRightSidebar: 'Hide right sidebar',
+    hideRightSidebar: 'Hide right sidebar',
     showRightSidebar: 'Show right sidebar',
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
@@ -349,8 +349,7 @@ export const en: Translations = {
     },
     plugins: {
       title: 'Desktop plugins',
-      blurb:
-        'Bundled or dropped into the desktop-plugins folder. Disable to unload live.',
+      blurb: 'Bundled or dropped into the desktop-plugins folder. Disable to unload live.',
       count: n => `${n} installed`,
       openFolder: 'Open plugins folder',
       rescan: 'Rescan',
@@ -363,8 +362,7 @@ export const en: Translations = {
     },
     notifications: {
       title: 'Notifications',
-      intro:
-        'OS notifications (not in-app toasts). Per device.',
+      intro: 'OS notifications (not in-app toasts). Per device.',
       enableAll: 'Enable notifications',
       enableAllDesc: 'Off silences every notification below.',
       focusedHint: 'Completion alerts only fire while Hermes is in the background.',
@@ -428,8 +426,7 @@ export const en: Translations = {
     },
     appearance: {
       title: 'Appearance',
-      intro:
-        'Desktop-only. Mode is brightness; theme is palette and chat chrome.',
+      intro: 'Desktop-only. Mode is brightness; theme is palette and chat chrome.',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
@@ -2444,7 +2441,7 @@ export const en: Translations = {
       starmap: 'Memory Graph',
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
-            contextUsage: 'Context usage',
+      contextUsage: 'Context usage',
       contextUsagePanel: {
         categories: {
           conversation: 'Conversation',
@@ -2462,8 +2459,8 @@ export const en: Translations = {
         title: 'Context Usage',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-            session: 'Session',
-            yoloOn: 'YOLO on — auto-approving dangerous commands. Shift+click toggles globally.',
+      session: 'Session',
+      yoloOn: 'YOLO on — auto-approving dangerous commands. Shift+click toggles globally.',
       yoloOff: 'YOLO off. Shift+click toggles globally.',
       modelNone: 'none',
       noModel: 'no model',

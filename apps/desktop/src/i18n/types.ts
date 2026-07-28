@@ -236,7 +236,7 @@ export interface Translations {
     search: string
     searchTitle: string
     swapSidebarSides: string
-        hideRightSidebar: string
+    hideRightSidebar: string
     showRightSidebar: string
     muteHaptics: string
     unmuteHaptics: string
@@ -2049,7 +2049,7 @@ export interface Translations {
       starmap: string
       openStarmap: string
       turnRunning: string
-            contextUsage: string
+      contextUsage: string
       contextUsagePanel: {
         categories: {
           conversation: string
@@ -2067,8 +2067,8 @@ export interface Translations {
         title: string
         tokenSummary: (used: string, max: string) => string
       }
-            session: string
-            yoloOn: string
+      session: string
+      yoloOn: string
       yoloOff: string
       modelNone: string
       noModel: string

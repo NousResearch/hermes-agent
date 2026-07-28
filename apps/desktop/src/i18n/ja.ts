@@ -195,7 +195,7 @@ export const ja = defineLocale({
     search: '検索',
     searchTitle: 'セッション、ビュー、アクションを検索',
     swapSidebarSides: 'サイドバーの向きを切り替え',
-        hideRightSidebar: '右サイドバーを非表示',
+    hideRightSidebar: '右サイドバーを非表示',
     showRightSidebar: '右サイドバーを表示',
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
@@ -2298,7 +2298,7 @@ export const ja = defineLocale({
       starmap: 'メモリグラフ',
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
-            contextUsage: 'コンテキスト使用状況',
+      contextUsage: 'コンテキスト使用状況',
       contextUsagePanel: {
         categories: {
           conversation: '会話',
@@ -2316,8 +2316,8 @@ export const ja = defineLocale({
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-            session: 'セッション',
-            yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。Shift+クリックで全体に切り替え。',
+      session: 'セッション',
+      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。Shift+クリックで全体に切り替え。',
       yoloOff: 'YOLO オフ。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',
       noModel: 'モデルなし',

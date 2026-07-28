@@ -135,13 +135,7 @@ export function EnvVarActionsMenu({ align = 'end', children, sideOffset = 6, ...
   const items = useEnvVarItems(actions)
 
   return (
-    <ActionsMenu
-      align={align}
-      ariaLabel={copy.actions}
-      contentClassName="w-44"
-      items={items}
-      sideOffset={sideOffset}
-    >
+    <ActionsMenu align={align} ariaLabel={copy.actions} contentClassName="w-44" items={items} sideOffset={sideOffset}>
       {children}
     </ActionsMenu>
   )

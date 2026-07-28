@@ -19,13 +19,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
 import { CopyButton } from '@/components/ui/copy-button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -389,12 +383,7 @@ interface SessionActionsMenuProps
   children: React.ReactNode
 }
 
-export function SessionActionsMenu({
-  children,
-  align = 'end',
-  sideOffset = 6,
-  ...actions
-}: SessionActionsMenuProps) {
+export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
 
@@ -424,11 +413,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
 
   return (
     <>
-      <ActionsContextMenu
-        ariaLabel={t.sidebar.row.sessionActions}
-        contentClassName="w-40"
-        items={renderItems}
-      >
+      <ActionsContextMenu ariaLabel={t.sidebar.row.sessionActions} contentClassName="w-40" items={renderItems}>
         {children}
       </ActionsContextMenu>
       {renameDialog}

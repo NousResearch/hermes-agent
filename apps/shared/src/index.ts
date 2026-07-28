@@ -44,6 +44,7 @@ export {
   JsonRpcGatewayClient,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { dispatchDisplayText, skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,
   SKIN_BRANDING_TOKENS,

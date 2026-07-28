@@ -169,6 +169,7 @@ def _install_fake_openai_module(captured, transcription_response=None):
         APIError=Exception,
         APIConnectionError=Exception,
         APITimeoutError=Exception,
+        BadRequestError=type("BadRequestError", (Exception,), {}),
     )
     sys.modules["openai"] = fake_module
 

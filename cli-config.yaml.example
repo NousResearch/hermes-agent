@@ -1128,7 +1128,7 @@ stt:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
     # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
-  # language: ""               # GLOBAL language hint for every STT provider (per-provider language wins)
+  language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"
   #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect

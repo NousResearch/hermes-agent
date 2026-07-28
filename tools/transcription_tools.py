@@ -64,27 +64,19 @@ def get_env_value(name, default=None):
 
 
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
-    """Resolve an API key from env, .env, or the credential pool.
+    """Resolve an STT provider API key via the shared voice-key resolver.
 
-    Used by TTS/STT providers (Mistral, ElevenLabs) that store keys
-    via ``hermes auth add <provider_id>``.
+    Delegates to ``tools.tool_backend_helpers.resolve_provider_secret`` —
+    the single owner of STT/TTS key resolution (config > env/.env > the
+    credential pool populated by ``hermes auth add <provider_id>``).
+    Resolved at call time so tests that reload the helpers module see the
+    live function.
     """
-    key = get_env_value(env_var)
-    if key:
-        return key
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider_id)
-        if pool and pool.has_credentials():
-            entry = pool.peek()
-            if entry:
-                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
-                key = str(key).strip()
-                if key:
-                    return key
-    except Exception:
-        pass
-    return ""
+        from tools.tool_backend_helpers import resolve_provider_secret
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        return str(get_env_value(env_var) or "").strip()
+    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
 
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
@@ -851,7 +843,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "groq":
-            if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
+            if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
                 return "groq"
             logger.warning(
                 "STT provider 'groq' configured but GROQ_API_KEY not set"
@@ -894,7 +886,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "deepinfra":
-            if _HAS_OPENAI and (get_env_value("DEEPINFRA_API_KEY") or "").strip():
+            if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
                 return "deepinfra"
             logger.warning(
                 "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set "
@@ -919,7 +911,7 @@ def _get_provider(stt_config: dict) -> str:
     # Try lazy-install before falling through to cloud providers
     if _try_lazy_install_stt():
         return "local"
-    if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
+    if _HAS_OPENAI and _resolve_provider_key("GROQ_API_KEY", "groq"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
     if _HAS_OPENAI and _has_openai_audio_backend():
@@ -942,7 +934,7 @@ def _get_provider(stt_config: dict) -> str:
     if _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"):
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
-    if _HAS_OPENAI and (get_env_value("DEEPINFRA_API_KEY") or "").strip():
+    if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
         logger.info("No local STT available, using DeepInfra Whisper API")
         return "deepinfra"
     return "none"
@@ -1362,7 +1354,7 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     ``HERMES_LOCAL_STT_LANGUAGE`` (env). When none is set, Groq
     Whisper auto-detects.
     """
-    api_key = get_env_value("GROQ_API_KEY")
+    api_key = _resolve_provider_key("GROQ_API_KEY", "groq")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
 
@@ -1752,7 +1744,7 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
     ``hermes_cli.models`` helpers so every DeepInfra surface resolves the
     base URL and model ids identically.
     """
-    api_key = (get_env_value("DEEPINFRA_API_KEY") or "").strip()
+    api_key = _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
     if not api_key:
         return {"success": False, "transcript": "", "error": "DEEPINFRA_API_KEY not set"}
 

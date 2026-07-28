@@ -305,6 +305,10 @@ def test_openwakeword_default_resolves_to_bundled_model(monkeypatch, model_value
 
 def test_openwakeword_bundled_model_matches_framework(monkeypatch):
     calls = _install_fake_openwakeword(monkeypatch)
+    # Pin the tflite runtime as present so this exercises artifact selection,
+    # not runtime availability — off-Darwin the bridge legitimately returns
+    # False and the engine falls back to onnx (covered separately below).
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
     ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"inference_framework": "tflite"}}
     )

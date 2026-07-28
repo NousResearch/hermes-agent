@@ -236,8 +236,7 @@ export interface Translations {
     search: string
     searchTitle: string
     swapSidebarSides: string
-    swapSidebarSidesTitle: string
-    hideRightSidebar: string
+        hideRightSidebar: string
     showRightSidebar: string
     muteHaptics: string
     unmuteHaptics: string
@@ -476,7 +475,7 @@ export interface Translations {
       saving: string
     }
     envActions: {
-      actionsFor: (label: string) => string
+      actions: string
       manageInKeys: string
       docs: string
       hideValue: string
@@ -1268,9 +1267,9 @@ export interface Translations {
     showAllProfiles: string
     switchToProfile: (name: string) => string
     manageProfiles: string
-    actionsFor: (name: string) => string
+    actions: string
     color: string
-    colorFor: (name: string) => string
+    colorFor: string
     setColor: (color: string) => string
     autoColor: string
     noProfiles: string
@@ -1364,7 +1363,6 @@ export interface Translations {
     showRuns: string
     hideRuns: string
     runHistory: string
-    actionsFor: (title: string) => string
     actionsTitle: string
     resume: string
     pause: string
@@ -1585,7 +1583,6 @@ export interface Translations {
       openInNewTab: string
       openInSplit: string
       copyIdFailed: string
-      actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
       needsInput: string
@@ -2052,8 +2049,7 @@ export interface Translations {
       starmap: string
       openStarmap: string
       turnRunning: string
-      currentTurnElapsed: string
-      contextUsage: string
+            contextUsage: string
       contextUsagePanel: {
         categories: {
           conversation: string
@@ -2071,10 +2067,8 @@ export interface Translations {
         title: string
         tokenSummary: (used: string, max: string) => string
       }
-      openContextUsage: string
-      session: string
-      runtimeSessionElapsed: string
-      yoloOn: string
+            session: string
+            yoloOn: string
       yoloOff: string
       modelNone: string
       noModel: string

@@ -137,7 +137,7 @@ export function EnvVarActionsMenu({ align = 'end', children, sideOffset = 6, ...
   return (
     <ActionsMenu
       align={align}
-      ariaLabel={copy.actionsFor(actions.label)}
+      ariaLabel={copy.actions}
       contentClassName="w-44"
       items={items}
       sideOffset={sideOffset}
@@ -158,23 +158,22 @@ export function EnvVarContextMenu({ children, ...actions }: EnvVarContextMenuPro
   const items = useEnvVarItems(actions)
 
   return (
-    <ActionsContextMenu ariaLabel={copy.actionsFor(actions.label)} contentClassName="w-44" items={items}>
+    <ActionsContextMenu ariaLabel={copy.actions} contentClassName="w-44" items={items}>
       {children}
     </ActionsContextMenu>
   )
 }
 
-interface EnvVarActionsTriggerProps extends Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'> {
-  label: string
-}
-
-export function EnvVarActionsTrigger({ className, label, ...props }: EnvVarActionsTriggerProps) {
+export function EnvVarActionsTrigger({
+  className,
+  ...props
+}: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
   const { t } = useI18n()
   const copy = t.settings.envActions
 
   return (
     <Button
-      aria-label={copy.actionsFor(label)}
+      aria-label={copy.actions}
       className={cn('text-muted-foreground hover:text-foreground', className)}
       size="icon-sm"
       variant="ghost"

@@ -353,8 +353,15 @@ class _Runtime:
                 return
             finished = self._finish_task(session, task_id, event)
         if finished:
-            self._safe(self.relay.subscribers.flush)
-            self._export()
+            try:
+                self.relay.subscribers.flush()
+            except Exception:
+                logger.warning(
+                    "Hermes shared-metrics task flush failed",
+                    exc_info=True,
+                )
+            else:
+                self._export()
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -383,7 +390,8 @@ class _Runtime:
             self.relay.subscribers.flush()
         except Exception as exc:
             failures.append(f"subscriber flush failed: {exc}")
-        self._export()
+        else:
+            self._export()
         with self._sessions_lock:
             if self._sessions.get(session.session_id) is session:
                 self._sessions.pop(session.session_id, None)
@@ -402,8 +410,15 @@ class _Runtime:
             self._safe(self.close_session, {"session_id": session_id})
         if not self._registered:
             return
-        self._safe(self.relay.subscribers.flush)
-        self._export()
+        try:
+            self.relay.subscribers.flush()
+        except Exception:
+            logger.warning(
+                "Hermes shared-metrics shutdown flush failed",
+                exc_info=True,
+            )
+        else:
+            self._export()
         self._safe(self.relay.subscribers.deregister, self._subscriber_name)
         self.host.release_managed_execution(self._subscriber_name)
         self._registered = False

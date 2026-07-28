@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import asyncio
 import json
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2355,6 +2356,65 @@ def test_desktop_task_completion_exports_once_per_utc_day(
             totals[metric["name"]] = totals.get(metric["name"], 0) + metric["value"]
     assert totals["hermes.task_run.started"] == 3
     assert totals["hermes.task_run.finished"] == 3
+
+
+def test_failed_flush_keeps_daily_export_open_for_later_task(
+    direct_runtime, tmp_path, monkeypatch, caplog
+):
+    current_time = datetime(2026, 7, 28, 9, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "hermes_cli.observability.shared_metrics._utc_now",
+        lambda: current_time,
+    )
+    original_flush = direct_runtime.subscribers.flush
+    flush_attempts = 0
+
+    def fail_first_flush() -> None:
+        nonlocal flush_attempts
+        flush_attempts += 1
+        if flush_attempts == 1:
+            raise RuntimeError("simulated flush failure")
+        original_flush()
+
+    direct_runtime.subscribers.flush = fail_first_flush
+
+    def finish_desktop_task(task_id: str) -> None:
+        lifecycle.invoke_hook(
+            "pre_llm_call",
+            session_id="s1",
+            task_id=task_id,
+            platform="desktop",
+        )
+        lifecycle.invoke_hook(
+            "on_session_end",
+            session_id="s1",
+            task_id=task_id,
+            platform="desktop",
+            completed=True,
+            failed=False,
+            interrupted=False,
+            turn_exit_reason="text_response(stop)",
+        )
+
+    finish_desktop_task("t1")
+
+    root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
+    assert list((root / "outbox").glob("*.json")) == []
+    with sqlite3.connect(root / "metrics.sqlite3") as connection:
+        [package_count] = connection.execute(
+            "SELECT COUNT(*) FROM package_outbox"
+        ).fetchone()
+    assert package_count == 0
+
+    finish_desktop_task("t2")
+
+    [package_path] = list((root / "outbox").glob("*.json"))
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    metrics = {metric["name"]: metric for metric in package["metrics"]}
+    assert metrics["hermes.task_run.started"]["value"] == 2
+    assert metrics["hermes.task_run.finished"]["value"] == 2
+    assert flush_attempts == 2
+    assert "Hermes shared-metrics task flush failed" in caplog.text
 
 
 def test_task_ownership_survives_session_id_rotation(direct_runtime):

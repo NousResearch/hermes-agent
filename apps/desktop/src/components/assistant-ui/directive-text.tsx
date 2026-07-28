@@ -521,7 +521,7 @@ export const SessionRefLink: FC<{
 
   return (
     <a
-      className="link-chip font-semibold wrap-anywhere"
+      className="link-chip wrap-anywhere"
       href="#"
       onClick={event => {
         event.preventDefault()

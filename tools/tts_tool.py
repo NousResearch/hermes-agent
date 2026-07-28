@@ -2827,14 +2827,30 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
     gateway (a restricted proxy), so callers can coerce the request to what the
     gateway supports. When ``tts.use_gateway`` is set the gateway is preferred
     even if direct OpenAI credentials are present.
+
+    Resolution order (mirrors the STT resolver):
+    1. ``tts.openai.api_key`` / ``tts.openai.base_url`` from ``config.yaml``
+    2. ``VOICE_TOOLS_OPENAI_KEY`` / ``OPENAI_API_KEY`` environment variables
+       (still honoring ``tts.openai.base_url`` when set)
+    3. Managed OpenAI audio tool gateway
     """
+    tts_config = _load_tts_config()
+    openai_cfg = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+    cfg_api_key = openai_cfg.get("api_key") or ""
+    cfg_base_url = openai_cfg.get("base_url") or ""
+    if cfg_api_key and not prefers_gateway("tts"):
+        return cfg_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
+
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key and not prefers_gateway("tts"):
-        return direct_api_key, DEFAULT_OPENAI_BASE_URL, False
+        return direct_api_key, (cfg_base_url or DEFAULT_OPENAI_BASE_URL), False
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
-        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        message = (
+            "Neither tts.openai.api_key in config nor "
+            "VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
+        )
         if managed_nous_tools_enabled() or prefers_gateway("tts"):
             message += (
                 ". "
@@ -2852,7 +2868,10 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
 
 
 def _has_openai_audio_backend() -> bool:
-    """Return True when OpenAI audio can use direct credentials or the managed gateway."""
+    """Return True when OpenAI audio can use config/env credentials or the managed gateway."""
+    openai_cfg = (_load_tts_config().get("openai") or {})
+    if openai_cfg.get("api_key"):
+        return True
     return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
 
 

@@ -887,8 +887,10 @@ def init_agent(
     # report cumulative micros spent.  Surfaced behind HERMES_DEV_CREDITS.
     agent._credits_state = None
     agent._credits_session_start_micros = None
-    # Threshold-notice latch (L4): active sticky-notice keys + the warn90 crossing gate.
-    agent._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
+    # Threshold-notice latch (L4): active sticky-notice keys + the crossing gates.
+    from agent.credits_tracker import new_credits_latch
+
+    agent._credits_latch = new_credits_latch()
 
     # OpenRouter response cache hit counter — incremented when
     # X-OpenRouter-Cache-Status: HIT is seen in streaming response headers.

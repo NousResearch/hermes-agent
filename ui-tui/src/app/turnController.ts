@@ -989,12 +989,12 @@ class TurnController {
     this.interrupted = false
     this.persistedToolLabels.clear()
     // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
-    // (credits.usage, 50/75/90%) should show once, then get out of the way — not
-    // camp the bar. Depletion (credits.depleted) and other notices stay — they're
-    // explicitly sticky until the policy clears them. The Python `active` latch
-    // retains the key, so a yielded notice won't re-fire on the next turn.
-    // (credits.grant_spent is also cleared here for back-compat with older
-    // backends that still emit it — the notice was removed in July 2026.)
+    // (credits.usage, 50/75/90%) and the one-time "grant spent" transition
+    // (credits.grant_spent) should show once, then get out of the way — not camp the
+    // bar (e.g. "Grant spent · $990 top-up left" sitting there with plenty of top-up
+    // left). Depletion (credits.depleted) and other notices stay — they're explicitly
+    // sticky until the policy clears them. The Python `active` latch retains the key,
+    // so a yielded notice won't re-fire on the next turn.
     const yieldingNoticeKey = getUiState().notice?.key
 
     if (yieldingNoticeKey === 'credits.usage' || yieldingNoticeKey === 'credits.grant_spent') {

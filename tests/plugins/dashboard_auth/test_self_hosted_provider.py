@@ -474,7 +474,7 @@ class TestStartLogin:
             redirect_uri="https://hermes.example/auth/callback"
         )
         pkce = result.cookie_payload["hermes_session_pkce"]
-        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
+        parts = dict(seg.split("=", 1) for seg in pkce.split("|") if "=" in seg)
         assert 43 <= len(parts["verifier"]) <= 128  # RFC 7636 §4.1
 
     def test_state_in_cookie_matches_url(self, provider):
@@ -484,7 +484,7 @@ class TestStartLogin:
         parsed = urllib.parse.urlparse(result.redirect_url)
         params = dict(urllib.parse.parse_qsl(parsed.query))
         pkce = result.cookie_payload["hermes_session_pkce"]
-        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
+        parts = dict(seg.split("=", 1) for seg in pkce.split("|") if "=" in seg)
         assert parts["state"] == params["state"]
 
     def test_code_challenge_is_s256_of_verifier(self, provider):
@@ -494,7 +494,7 @@ class TestStartLogin:
         parsed = urllib.parse.urlparse(result.redirect_url)
         params = dict(urllib.parse.parse_qsl(parsed.query))
         pkce = result.cookie_payload["hermes_session_pkce"]
-        parts = dict(seg.split("=", 1) for seg in pkce.split(";") if "=" in seg)
+        parts = dict(seg.split("=", 1) for seg in pkce.split("|") if "=" in seg)
         expected = (
             base64.urlsafe_b64encode(
                 hashlib.sha256(parts["verifier"].encode("ascii")).digest()

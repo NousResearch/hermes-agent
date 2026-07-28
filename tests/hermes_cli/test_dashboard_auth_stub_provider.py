@@ -15,10 +15,10 @@ from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
 def _pkce_payload(ls) -> dict:
-    """Parse ``state=...;verifier=...`` out of the LoginStart cookie payload."""
+    """Parse ``state=...|verifier=...`` out of the LoginStart cookie payload."""
     return dict(
         item.split("=", 1)
-        for item in ls.cookie_payload["hermes_session_pkce"].split(";")
+        for item in ls.cookie_payload["hermes_session_pkce"].split("|")
     )
 
 

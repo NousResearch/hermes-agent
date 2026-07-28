@@ -351,7 +351,10 @@ class _Runtime:
         with session.lock:
             if session.closing:
                 return
-            self._finish_task(session, task_id, event)
+            finished = self._finish_task(session, task_id, event)
+        if finished:
+            self._safe(self.relay.subscribers.flush)
+            self._export()
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -560,10 +563,10 @@ class _Runtime:
         session: _MetricsSession,
         task_id: str,
         event: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         task = session.tasks.get(task_id)
         if task is None:
-            return
+            return False
         self._end_pending_model_calls(session, {**event, "task_id": task_id})
         fields = task_terminal_fields(
             {**task.start_fields, **event},
@@ -592,9 +595,10 @@ class _Runtime:
                     turn_key = (session.session_id, turn_id)
                     if self._turn_sessions.get(turn_key) is session:
                         self._turn_sessions.pop(turn_key, None)
+        return True
 
     def _export(self) -> None:
-        self._safe(self.subscriber.store.create_and_export_package)
+        self._safe(self.subscriber.store.create_and_export_package_if_due)
 
     def _event_metadata(self) -> dict[str, str]:
         return {

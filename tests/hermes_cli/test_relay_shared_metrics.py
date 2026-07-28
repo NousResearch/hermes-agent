@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from hermes_cli.observability import shared_metrics as shared_metrics_module
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import (
     COUNT_BUCKETS,
@@ -140,6 +141,43 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     assert second_package["metrics"][0]["value"] == 1
     assert restarted.counter_snapshot()[0]["value"] == 3
     assert restarted.counter_snapshot()[0]["packaged_value"] == 3
+
+
+def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
+    tmp_path, monkeypatch
+):
+    current_time = datetime(2026, 7, 28, 9, tzinfo=timezone.utc)
+    monkeypatch.setattr(shared_metrics_module, "_utc_now", lambda: current_time)
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    store.record_model_call(_dimensions(), "test-version")
+    assert len(store.create_and_export_package_if_due()) == 1
+
+    current_time = datetime(2026, 7, 28, 18, tzinfo=timezone.utc)
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_model_call(_dimensions(), "test-version")
+    assert store.create_and_export_package_if_due() == []
+    assert len(list((tmp_path / "outbox").glob("*.json"))) == 1
+    assert store.counter_snapshot()[0] == {
+        "period_start": "2026-07-28",
+        "metric_name": "hermes.model_call.count",
+        "hermes_version": "test-version",
+        "dimensions": _dimensions(),
+        "value": 2,
+        "packaged_value": 1,
+    }
+
+    current_time = datetime(2026, 7, 29, 9, tzinfo=timezone.utc)
+    store.record_model_call(_dimensions(), "test-version")
+    assert len(store.create_and_export_package_if_due()) == 2
+    assert len(list((tmp_path / "outbox").glob("*.json"))) == 3
+    assert all(
+        row["value"] == row["packaged_value"] for row in store.counter_snapshot()
+    )
+
+    store.record_model_call(_dimensions(), "test-version")
+    assert store.create_and_export_package_if_due() == []
+    assert len(list((tmp_path / "outbox").glob("*.json"))) == 3
 
 
 def test_package_schema_matches_the_model_call_contract():
@@ -755,6 +793,32 @@ def test_concurrent_package_builders_commit_one_delta(tmp_path):
 
     assert outbox_count == 1
     assert package["metrics"][0]["value"] == 1
+    assert store.counter_snapshot()[0]["packaged_value"] == 1
+
+
+def test_concurrent_due_exports_create_one_daily_package(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    store.record_model_call(_dimensions(), "test-version")
+    ready = threading.Barrier(8)
+
+    def export() -> None:
+        worker_store = SharedMetricsStore(database_path, outbox_directory)
+        ready.wait(timeout=5)
+        worker_store.create_and_export_package_if_due()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(export) for _ in range(8)]
+        for future in futures:
+            future.result()
+
+    with sqlite3.connect(database_path) as connection:
+        [outbox_count] = connection.execute(
+            "SELECT COUNT(*) FROM package_outbox"
+        ).fetchone()
+    assert outbox_count == 1
+    assert len(list(outbox_directory.glob("*.json"))) == 1
     assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 

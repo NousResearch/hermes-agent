@@ -1,5 +1,7 @@
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { dispatchDisplayText } from '@hermes/shared'
+
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
@@ -264,9 +266,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          if (dispatch.type === 'skill') {
-            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
-          }
+          // A skill/bundle dispatch's `message` is the expanded skill body —
+          // model-facing scaffolding. Never render it; the bubble shows the
+          // invocation instead.
+          const displayText = dispatchDisplayText('display' in dispatch ? dispatch.display : undefined, message)
 
           // Gate on the TARGET session's own busy state, not the foreground
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
@@ -286,7 +289,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // whichever chat is now in front.
             const queueKey = resolveComposerSessionKey(storedSessionId, $sessions.get()) || storedSessionId || sessionId
 
-            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message })) {
+            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message, displayText })) {
               renderSlashOutput('session busy — message queued to send when the current turn finishes')
             } else {
               renderSlashOutput('session busy — /interrupt the current turn before sending this command')
@@ -299,12 +302,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // same pair the output writer and the busy gate above already use.
           // Bare `submitPromptText(message)` let submit re-resolve from
           // `activeSessionIdRef`, which names the FOREGROUND chat: a `/work`
-          // typed into a fresh ⌘T tab loaded the skill in that tab, printed
-          // "⚡ loading skill" there, then fired its kickoff as a user message
-          // into whatever conversation was on screen. Every other target the
-          // dispatcher serves (tile, background queue drain, a session created
-          // by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId })
+          // typed into a fresh ⌘T tab loaded the skill in that tab, then fired
+          // its kickoff as a user message into whatever conversation was on
+          // screen. Every other target the dispatcher serves (tile, background
+          // queue drain, a session created by this very call) had the same leak.
+          await submitPromptText(message, { sessionId, storedSessionId, displayText })
         }
 
         try {

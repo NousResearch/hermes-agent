@@ -106,7 +106,9 @@ export function useComposerQueue({
       entryId: entry.id,
       sessionKey: activeQueueSessionKey
     })
-    loadIntoComposer(entry.text, entry.attachments)
+    // Edit what the panel SHOWS. A queued `/skill` entry's text is the
+    // expanded skill body — never drop that into the composer.
+    loadIntoComposer(entry.displayText ?? entry.text, entry.attachments)
     triggerHaptic('selection')
     focusInput()
   }
@@ -135,7 +137,7 @@ export function useComposerQueue({
 
     if (next) {
       setQueueEditSnapshot({ ...queueEdit, entryId: next.id })
-      loadIntoComposer(next.text, next.attachments)
+      loadIntoComposer(next.displayText ?? next.text, next.attachments)
     } else {
       setQueueEditSnapshot(null)
       loadIntoComposer(queueEdit.draft, queueEdit.attachments)
@@ -213,6 +215,7 @@ export function useComposerQueue({
         const accepted = await Promise.resolve(
           onSubmit(entry.text, {
             attachments: entry.attachments,
+            ...(entry.displayText ? { displayText: entry.displayText } : {}),
             fromQueue: true,
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey

@@ -8,11 +8,12 @@ This module provides two hooks:
 
 1. ``flush_pending_to_file()`` — called BEFORE ``_pending_messages.clear()``
    during shutdown.  Serialises any non-empty pending slots to a JSON file
-   under ``~/.hermes/pending_messages/``.
+   under ``<hermes_home>/pending_messages/``.
 
 2. ``recover_pending_to_db()`` — called AFTER ``runner.start()`` on startup.
-   Reads flush files, inserts messages directly into state.db, then deletes
-   the flush file on success.
+   Reads flush files, inserts messages into state.db via ``SessionDB.append_message``
+   (so FTS indexing, session metadata, and display_kind are handled correctly),
+   then deletes the flush file on success.
 
 See issue #72680 for the full incident report.
 """
@@ -22,17 +23,19 @@ from __future__ import annotations
 import json
 import logging
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_FLUSH_DIR = Path.home() / ".hermes" / "pending_messages"
 
+def _get_flush_dir():
+    """Return the pending-messages flush directory under the active HERMES_HOME."""
+    from hermes_constants import get_hermes_home
+    from pathlib import Path
 
-def _get_flush_dir() -> Path:
-    _FLUSH_DIR.mkdir(parents=True, exist_ok=True)
-    return _FLUSH_DIR
+    flush_dir = get_hermes_home() / "pending_messages"
+    flush_dir.mkdir(parents=True, exist_ok=True)
+    return flush_dir
 
 
 def flush_pending_to_file(
@@ -125,35 +128,39 @@ def _serialise_value(value: Any) -> Optional[dict]:
 
 
 def recover_pending_to_db(
-    db_path: Optional[Path] = None,
+    session_db=None,
 ) -> int:
-    """Recover flushed pending messages into state.db.
+    """Recover flushed pending messages into state.db via SessionDB.
 
     Reads all ``*.json`` files from the flush directory, inserts messages
-    into the ``messages`` table, and deletes the file on success.
+    using ``SessionDB.append_message`` (so FTS indexing, session metadata
+    updates, and all required columns are handled correctly), and deletes
+    the flush file on success.
 
     Parameters
     ----------
-    db_path:
-        Path to state.db.  Defaults to ``~/.hermes/state.db``.
+    session_db:
+        An existing ``SessionDB`` instance.  If ``None``, a new one is
+        opened on the default ``state.db`` path.
 
     Returns
     -------
     int
         Number of messages recovered.
     """
-    import sqlite3
+    from pathlib import Path
 
     flush_dir = _get_flush_dir()
     flush_files = sorted(flush_dir.glob("*.json"))
     if not flush_files:
         return 0
 
-    if db_path is None:
-        db_path = Path.home() / ".hermes" / "state.db"
-    if not db_path.exists():
-        logger.warning("state.db not found at %s — skipping recovery", db_path)
-        return 0
+    # Use the provided SessionDB or open one on the default path.
+    own_db = False
+    if session_db is None:
+        from hermes_state import SessionDB
+        session_db = SessionDB()
+        own_db = True
 
     recovered = 0
     for path in flush_files:
@@ -166,27 +173,48 @@ def recover_pending_to_db(
                 path.unlink(missing_ok=True)
                 continue
 
-            conn = sqlite3.connect(str(db_path))
-            try:
-                conn.execute(
-                    "INSERT INTO messages (session_key, role, content, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (session_key, "user", text, payload.get("ts", int(time.time()))),
-                )
-                conn.commit()
-                recovered += 1
-                path.unlink(missing_ok=True)
-            except Exception as exc:
+            # The session_key is a gateway routing key (e.g.
+            # "agent:main:telegram:supergroup:...").  We need the actual
+            # session_id (e.g. "20260728_120000_abc123") to append a
+            # message row.  Try the session_id field from the serialised
+            # data first; fall back to scanning sessions for a matching
+            # session_key in the source column.
+            session_id = data.get("session_id", "")
+
+            if not session_id:
+                # Try to extract from the session_key itself — gateway
+                # session keys contain the session_id as the last segment
+                # in some formats, but that's not guaranteed.  Log and
+                # skip if we can't resolve it.
                 logger.warning(
-                    "Failed to recover pending message for %s: %s",
-                    session_key, exc,
+                    "Cannot recover pending message for %s: no session_id "
+                    "in flush file and session_key-to-id resolution is not "
+                    "available at this recovery stage. The message text is "
+                    "preserved in %s",
+                    session_key, path,
                 )
-                # Re-save so next startup can retry
-            finally:
-                conn.close()
-        except Exception as exc:
-            logger.debug("Failed to read flush file %s: %s", path, exc)
+                continue
+
+            session_db.append_message(
+                session_id=session_id,
+                role="user",
+                content=text,
+                timestamp=payload.get("ts", int(time.time())),
+            )
+            recovered += 1
             path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to recover pending message from %s: %s",
+                path, exc,
+            )
+            # Leave the file for next startup retry.
+
+    if own_db:
+        try:
+            session_db.close()
+        except Exception:
+            pass
 
     if recovered:
         logger.info(

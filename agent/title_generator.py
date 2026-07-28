@@ -73,8 +73,12 @@ def _clean_generated_title(raw_title: str) -> Optional[str]:
         r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>.*",
         "", raw_title, flags=re.DOTALL | re.IGNORECASE,
     )
-    # Strip any remaining HTML-like tags
+    # Strip any remaining HTML-like tags (preserve newlines for first-line pick)
     title = re.sub(r"<[^>]+>", " ", title)
+    # A title is one line. A model that ignores "return ONLY the title" and
+    # answers the prompt instead (a shell transcript, a bulleted plan) would
+    # otherwise be stored verbatim — keep the first non-empty line.
+    title = next((line.strip() for line in title.splitlines() if line.strip()), "")
     title = re.sub(r"\s+", " ", title).strip()
     title = _strip_wrapping_quotes(title)
 

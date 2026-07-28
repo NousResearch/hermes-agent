@@ -75,6 +75,7 @@ describe('backend action helpers are profile-scoped', () => {
     void getElevenLabsVoices()
 
     expect(api.mock.calls).toHaveLength(3)
+
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('jarvis')
     }

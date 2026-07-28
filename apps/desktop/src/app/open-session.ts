@@ -11,11 +11,7 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
-import {
-  focusedSessionNeedsRoute,
-  focusOpenSession,
-  openSessionTile
-} from '@/store/session-states'
+import { focusedSessionNeedsRoute, focusOpenSession, openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'

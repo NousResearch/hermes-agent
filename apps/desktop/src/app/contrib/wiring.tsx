@@ -72,13 +72,7 @@ import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
-import {
-  CRON_ROUTE,
-  navigateToWorkspacePage,
-  routeSessionId,
-  SETTINGS_ROUTE,
-  syncWorkspaceRoute
-} from '../routes'
+import { CRON_ROUTE, navigateToWorkspacePage, routeSessionId, SETTINGS_ROUTE, syncWorkspaceRoute } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'

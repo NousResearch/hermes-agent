@@ -130,10 +130,7 @@ export function useDesktopIntegrations({
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        openSession(
-          storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current),
-          navigate
-        )
+        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate)
       }
     })
 

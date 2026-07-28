@@ -20,7 +20,13 @@ describe('floating panes stay out of the layout tree', () => {
     const model = await import('@/components/pane-shell/tree/model')
     const { registry } = await import('@/contrib/registry')
 
-    registry.register({ id: 'workspace', area: 'panes', title: 'chat', data: { placement: 'main' }, render: () => null })
+    registry.register({
+      id: 'workspace',
+      area: 'panes',
+      title: 'chat',
+      data: { placement: 'main' },
+      render: () => null
+    })
 
     tree.declareDefaultTree(model.group(['workspace'], { id: 'grp-main' }))
 

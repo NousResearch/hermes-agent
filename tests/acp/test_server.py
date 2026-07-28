@@ -36,7 +36,11 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import (
+    ACP_MAX_MODELS_PER_PROVIDER,
+    HermesACPAgent,
+    HERMES_VERSION,
+)
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -238,23 +242,167 @@ class TestSessionOps:
         assert state.cwd == "/home/user/project"
 
     @pytest.mark.asyncio
-    async def test_new_session_returns_model_state(self):
+    async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
-            agent_factory=lambda: SimpleNamespace(model="gpt-5.4", provider="openai-codex")
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+            )
         )
         acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["claude-sonnet-4-6", "claude-sonnet-4-6"],
+                },
+                {
+                    "slug": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "models": [
+                        {"id": "gpt-5.4"},
+                        "gpt-5.4-mini",
+                    ],
+                },
+            ],
+        }
 
-        with patch(
-            "hermes_cli.models.curated_models_for_provider",
-            return_value=[("gpt-5.4", "recommended"), ("gpt-5.4-mini", "")],
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload) as build_payload,
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
         assert isinstance(resp.models, SessionModelState)
         assert resp.models.current_model_id == "openai-codex:gpt-5.4"
-        assert resp.models.available_models[0].model_id == "openai-codex:gpt-5.4"
-        assert resp.models.available_models[0].description is not None
-        assert "Provider:" in resp.models.available_models[0].description
+        assert [model.model_id for model in resp.models.available_models] == [
+            "anthropic:claude-sonnet-4-6",
+            "openai-codex:gpt-5.4",
+            "openai-codex:gpt-5.4-mini",
+        ]
+        assert [model.name for model in resp.models.available_models] == [
+            "Anthropic · claude-sonnet-4-6",
+            "OpenAI Codex · gpt-5.4",
+            "OpenAI Codex · gpt-5.4-mini",
+        ]
+        assert resp.models.available_models[1].description is not None
+        assert "current" in resp.models.available_models[1].description
+        picker_context.with_overrides.assert_called_once_with(
+            current_provider="openai-codex",
+            current_model="gpt-5.4",
+            current_base_url="https://api.openai.com/v1",
+        )
+        build_payload.assert_called_once_with(
+            picker_context,
+            explicit_only=True,
+            include_unconfigured=False,
+            picker_hints=False,
+            canonical_order=True,
+            pricing=False,
+            capabilities=False,
+            refresh=False,
+            probe_custom_providers=False,
+            probe_current_custom_provider=False,
+            max_models=ACP_MAX_MODELS_PER_PROVIDER,
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_session_bounds_models_and_keeps_current_selection(self):
+        """A large provider catalog stays bounded and never drops the selection.
+
+        Asserts the contract (bounded row + current model reachable), not a
+        specific catalog size, so growing the shared inventory cannot break it.
+        """
+        oversized = [
+            f"model-{index}" for index in range(ACP_MAX_MODELS_PER_PROVIDER * 2)
+        ]
+        current = oversized[-1]
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model=current,
+                provider="openrouter",
+                base_url="",
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+
+        def bounded_payload(_context, **kwargs):
+            # Mirror the shared inventory's per-provider slicing so the test
+            # exercises the cap Hermes actually requests.
+            cap = kwargs.get("max_models")
+            models = oversized if cap is None else oversized[:cap]
+            return {
+                "providers": [
+                    {"slug": "openrouter", "name": "OpenRouter", "models": models}
+                ]
+            }
+
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", side_effect=bounded_payload),
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        assert isinstance(resp.models, SessionModelState)
+        model_ids = [model.model_id for model in resp.models.available_models]
+
+        # Bounded: the emitted list must not exceed the requested cap, plus at
+        # most the one current-model entry re-inserted by the fallback.
+        assert len(model_ids) <= ACP_MAX_MODELS_PER_PROVIDER + 1
+        # Selection preserved: a current model outside the cap is still offered.
+        assert resp.models.current_model_id == f"openrouter:{current}"
+        assert resp.models.current_model_id in model_ids
+        # No duplicates leak through the dedup path.
+        assert len(model_ids) == len(set(model_ids))
+
+    @pytest.mark.asyncio
+    async def test_new_session_keeps_current_model_missing_from_inventory(self):
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="claude-custom",
+                provider="anthropic",
+                base_url="https://api.anthropic.com",
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {
+                    "slug": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["claude-sonnet-4-6"],
+                },
+                {
+                    "slug": "openai-codex",
+                    "name": "OpenAI Codex",
+                    "models": ["gpt-5.4"],
+                },
+            ],
+        }
+
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload),
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        assert resp.models is not None
+        assert resp.models.current_model_id == "anthropic:claude-custom"
+        assert [model.model_id for model in resp.models.available_models] == [
+            "anthropic:claude-custom",
+            "anthropic:claude-sonnet-4-6",
+            "openai-codex:gpt-5.4",
+        ]
+        assert resp.models.available_models[0].name == "Anthropic · claude-custom"
+        assert resp.models.available_models[0].description == "Provider: Anthropic • current"
 
     @pytest.mark.asyncio
     async def test_available_commands_include_help(self, agent):
@@ -1106,6 +1254,9 @@ class TestSessionConfiguration:
         with patch("run_agent.AIAgent", side_effect=fake_agent):
             acp_agent = HermesACPAgent(session_manager=manager)
             state = manager.create_session(cwd="/tmp")
+            assert state.agent.provider == "openrouter"
+            assert state.agent.base_url == "https://openrouter.example/v1"
+            assert state.agent.api_mode == "chat_completions"
             result = await acp_agent.set_session_model(
                 model_id="anthropic:claude-sonnet-4-6",
                 session_id=state.session_id,
@@ -1115,7 +1266,57 @@ class TestSessionConfiguration:
         assert state.model == "claude-sonnet-4-6"
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
+        assert state.agent.api_mode == "anthropic_messages"
         assert runtime_calls[-1] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_plain_choice_keeps_current_provider_runtime(
+        self, tmp_path, monkeypatch
+    ):
+        manager = SessionManager(
+            db=SessionDB(tmp_path / "state.db"),
+            agent_factory=lambda: SimpleNamespace(
+                model="old-model",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="chat_completions",
+            ),
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+        replacement_agent = SimpleNamespace(
+            model="new-model",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+        make_agent = MagicMock(return_value=replacement_agent)
+        monkeypatch.setattr(manager, "_make_agent", make_agent)
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: (current, raw),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
+
+        result = await acp_agent.set_session_model(
+            model_id="new-model",
+            session_id=state.session_id,
+        )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert state.model == "new-model"
+        assert state.agent is replacement_agent
+        make_agent.assert_called_once_with(
+            session_id=state.session_id,
+            cwd="/tmp",
+            model="new-model",
+            requested_provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1438,6 +1639,47 @@ class TestPrompt:
             text and "[plugin appended this]" in text for text in all_texts
         ), f"expected transformed final to be delivered, got: {all_texts!r}"
 
+    @pytest.mark.asyncio
+    async def test_prompt_pins_the_session_cwd_for_the_turn(self, agent, tmp_path):
+        """The turn must resolve the ACP client's cwd, not the Hermes workspace.
+
+        ``resolve_agent_cwd()`` is what the system prompt reports as "Current
+        working directory". When it is left unpinned it falls back to
+        TERMINAL_CWD / the launch dir, so the prompt advertises one root while
+        the tools are rooted at the editor's project. The model then emits
+        absolute paths under the advertised root and the edit silently lands
+        outside the workspace the client asked for.
+        """
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+
+        new_resp = await agent.new_session(cwd=str(workspace))
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        observed = {}
+
+        def capture_cwd(*args, **kwargs):
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            observed["cwd"] = str(resolve_agent_cwd())
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = capture_cwd
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hello")],
+            session_id=new_resp.session_id,
+        )
+
+        assert observed.get("cwd") == str(workspace), (
+            "the turn resolved "
+            f"{observed.get('cwd')!r} instead of the ACP client's cwd "
+            f"{str(workspace)!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):
@@ -1798,6 +2040,77 @@ class TestSlashCommands:
         state = self._make_state(mock_manager)
         result = agent._handle_slash_command("/nonexistent", state)
         assert result is None
+
+    def test_slash_handler_pins_the_session_cwd(self, agent, mock_manager, tmp_path):
+        """A slash handler must resolve the client's cwd, not the install tree.
+
+        Slash commands run on the event-loop thread, outside the per-turn
+        ``copy_context()`` that pins the cwd for the agent call. ``/compress``
+        reaches ``agent._build_system_prompt()``, whose "Current working
+        directory" line comes from ``resolve_agent_cwd()`` — and the rebuilt
+        prompt is PERSISTED as the session's cached prompt, so an unpinned
+        handler poisons every later turn even though the turn is pinned.
+        """
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        state = mock_manager.create_session(cwd=str(workspace))
+        state.cwd = str(workspace)
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        state.history = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+        ]
+        state.agent.compression_enabled = True
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = None
+        state.agent._session_db = None
+
+        observed = {}
+
+        def _compress(messages, system_prompt, **kwargs):
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            observed["cwd"] = str(resolve_agent_cwd())
+            return [{"role": "user", "content": "summary"}], "new-system"
+
+        state.agent._compress_context = _compress
+
+        with (
+            patch.object(agent.session_manager, "save_session"),
+            patch(
+                "agent.model_metadata.estimate_request_tokens_rough",
+                side_effect=[40, 12],
+            ),
+        ):
+            agent._handle_slash_command("/compress", state)
+
+        assert observed.get("cwd") == str(workspace), (
+            "the slash handler resolved "
+            f"{observed.get('cwd')!r} instead of the ACP client's cwd "
+            f"{str(workspace)!r}"
+        )
+
+    def test_slash_handler_cwd_pin_does_not_leak(self, agent, mock_manager, tmp_path):
+        """The pin is scoped to the handler's own context copy.
+
+        Concurrent ACP sessions share the event loop, so a handler that pinned
+        the ambient context would leave its workspace bound for whatever runs
+        next. Asserting the ambient value is unchanged after dispatch keeps the
+        fix from trading one cross-session leak for another.
+        """
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        state = mock_manager.create_session(cwd=str(workspace))
+        state.cwd = str(workspace)
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        before = str(resolve_agent_cwd())
+        agent._handle_slash_command("/help", state)
+        assert str(resolve_agent_cwd()) == before
 
     @pytest.mark.asyncio
     async def test_slash_command_intercepted_in_prompt(self, agent, mock_manager):

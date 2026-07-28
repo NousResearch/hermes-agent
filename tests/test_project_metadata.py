@@ -223,3 +223,124 @@ def test_nemo_relay_extra_uses_supported_official_distribution_range():
         spec == "hermes-agent[nemo-relay]"
         for spec in optional_dependencies["all"]
     )
+
+
+def _uv_lock_version(package: str) -> str:
+    """Resolved version of ``package`` in uv.lock, or fail loudly."""
+    versions = _uv_lock_versions(package)
+    assert versions, f"{package} not found in uv.lock"
+    assert len(versions) == 1, f"{package} resolves to multiple versions in uv.lock: {versions}"
+    return next(iter(versions))
+
+
+def _uv_lock_versions(package: str) -> set[str]:
+    """All resolved versions of ``package`` in uv.lock (normally 0 or 1)."""
+    import re
+
+    lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
+    lock = lock_path.read_text(encoding="utf-8")
+    return {
+        m.group(1)
+        for m in re.finditer(
+            rf'\[\[package\]\]\nname = "{re.escape(package)}"\nversion = "([^"]+)"',
+            lock,
+        )
+    }
+
+
+def test_every_lazy_deps_exact_pin_matches_uv_lock():
+    """Class invariant for #60783/#60685: one version per package, everywhere.
+
+    Any package that is BOTH exact-pinned in ``tools/lazy_deps.py`` AND
+    resolved in the committed uv.lock is a *shared* package: the core
+    install ships the locked version, and the ``hermes update`` lazy-refresh
+    pass re-asserts the LAZY_DEPS pin whenever the package is present
+    (``active_features()``). If the two disagree, every update churns the
+    package — and when the lazy pin is older, it force-DOWNGRADES a version
+    another consumer needs (huggingface-hub==1.2.3 vs transformers'
+    >=1.5.0 broke Hindsight local embeddings; stale aiohttp pins reopened
+    patched CVEs in #31817). Contract: for every such package, pin ==
+    locked version. When bumping a pin, regenerate the lock in the same
+    commit (`uv lock --upgrade-package <name>`), and vice versa.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    drift = {}
+    seen = set()
+    for feature, specs in LAZY_DEPS.items():
+        for package, pin in _exact_pins(specs).items():
+            if (package, pin) in seen:
+                continue
+            seen.add((package, pin))
+            locked = _uv_lock_versions(package)
+            if not locked:
+                # Lazy-only package never resolved by the core lock — no
+                # shared-version hazard.
+                continue
+            if pin not in locked:
+                drift.setdefault(package, {})[feature] = {
+                    "lazy_pin": pin,
+                    "uv_lock": sorted(locked),
+                }
+
+    assert not drift, (
+        "LAZY_DEPS exact pins must match the uv.lock resolved version for "
+        "every package the core lock also ships — otherwise `hermes update` "
+        "churns/downgrades the shared package out from under its other "
+        "consumers (#60783, #31817). Bump the pin AND run "
+        "`uv lock --upgrade-package <name>` in the same commit. Drift: "
+        f"{drift}"
+    )
+
+
+def test_huggingface_hub_lazy_pin_matches_uv_lock():
+    """The whole tree must converge on ONE huggingface-hub version (#60783).
+
+    huggingface-hub is a shared dependency: the core lock resolves it (via
+    faster-whisper/tokenizers, and transformers/sentence-transformers when
+    local Hindsight embeddings are installed), and LAZY_DEPS
+    ['tool.trace_upload'] exact-pins it. Because active_features() activates
+    a feature from mere package presence, the `hermes update` lazy-refresh
+    pass re-asserts the LAZY_DEPS pin on every install where hub is present.
+    If that pin drifts from the lock's resolved version, every update churns
+    the shared package — and a pin below transformers' floor (>=1.5.0)
+    force-downgrades it and breaks the Hindsight local daemon on startup.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    lazy_pin = _exact_pins(LAZY_DEPS["tool.trace_upload"]).get("huggingface-hub")
+    assert lazy_pin, "tool.trace_upload must exact-pin huggingface-hub"
+
+    locked = _uv_lock_version("huggingface-hub")
+    assert lazy_pin == locked, (
+        "LAZY_DEPS['tool.trace_upload'] pins huggingface-hub=="
+        f"{lazy_pin} but uv.lock resolves {locked}. These must move in "
+        "lockstep (bump the pin AND run `uv lock --upgrade-package "
+        "huggingface-hub`), or `hermes update` will churn/downgrade the "
+        "shared package and break Hindsight local embeddings (#60783)."
+    )
+
+
+def test_huggingface_hub_lazy_pin_inside_transformers_window():
+    """The hub pin must stay in transformers' accepted range (#60783).
+
+    transformers (pulled by sentence-transformers for Hindsight
+    local/local_embedded embeddings) requires huggingface-hub>=1.5.0,<2.
+    An exact pin outside that window makes the lazy-refresh downgrade the
+    shared package below what the embedding stack imports, and the
+    Hindsight daemon fails on startup. Contract, not a snapshot: any
+    future exact pin is fine as long as it stays inside the window.
+    """
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    from tools.lazy_deps import LAZY_DEPS
+
+    pin = _exact_pins(LAZY_DEPS["tool.trace_upload"]).get("huggingface-hub")
+    assert pin, "tool.trace_upload must exact-pin huggingface-hub"
+    transformers_window = SpecifierSet(">=1.5.0,<2")
+    assert Version(pin) in transformers_window, (
+        f"huggingface-hub=={pin} falls outside transformers' accepted "
+        "range (>=1.5.0,<2). The lazy refresh would downgrade the shared "
+        "package and break Hindsight local embeddings (#60783)."
+    )

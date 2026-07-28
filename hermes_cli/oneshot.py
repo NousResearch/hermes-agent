@@ -469,10 +469,15 @@ def _run_agent(
                 logging.debug("oneshot session store cleanup failed", exc_info=True)
 
 
-def _oneshot_clarify_callback(question: str, choices=None) -> str:
+def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:
     """Clarify is disabled in oneshot mode — tell the agent to pick a
     default and proceed instead of stalling or erroring."""
     if choices:
+        if multi_select:
+            return (
+                f"[oneshot mode: no user available. Pick the best subset from "
+                f"{choices} using your own judgment and continue.]"
+            )
         return (
             f"[oneshot mode: no user available. Pick the best option from "
             f"{choices} using your own judgment and continue.]"

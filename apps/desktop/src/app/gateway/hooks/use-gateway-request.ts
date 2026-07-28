@@ -9,6 +9,14 @@ import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
   const gatewayState = useStore($gatewayState)
+  // Reactive companion to `gatewayRef`. The ref exists so `requestGateway`
+  // keeps a stable identity and always reaches the live socket, but it is only
+  // populated by the subscription effect below — i.e. AFTER the first render.
+  // A component that reads `gatewayRef.current` while rendering therefore sees
+  // null on mount, and if the connection state doesn't happen to flip
+  // afterwards it never re-renders to pick the instance up. Anything that needs
+  // the gateway as a render-time VALUE (props, memo deps) must use this.
+  const gateway = useStore($gateway) as HermesGateway | null
   const gatewayRef = useRef<HermesGateway | null>(null)
 
   const connectionRef = useRef<Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null>(
@@ -22,6 +30,7 @@ export function useGatewayRequest() {
   // message instead of the opaque "connection closed" that triggered the retry.
   const reauthErrorRef = useRef<unknown>(null)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     gatewayStateRef.current = gatewayState
   }, [gatewayState])
@@ -135,5 +144,5 @@ export function useGatewayRequest() {
     [ensureGatewayOpen]
   )
 
-  return { connectionRef, gatewayRef, requestGateway }
+  return { connectionRef, gateway, gatewayRef, requestGateway }
 }

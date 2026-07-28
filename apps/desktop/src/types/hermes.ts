@@ -182,6 +182,7 @@ export interface CustomEndpointUpdate {
   id?: string
   make_default?: boolean
   model: string
+  models?: string[]
   name: string
 }
 
@@ -362,6 +363,11 @@ export interface ModelOptionProvider {
   slug: string
   total_models?: number
   warning?: string
+  /** Curated shortlist (one flagship per lab) the picker shows by default for
+   *  aggregator providers that serve dozens of models across many labs. Empty
+   *  for providers with no manifest entry — the picker falls back to top-N.
+   *  The rest of `models` stays reachable via search / Edit Models. */
+  featured_models?: string[]
   /** True when the provider has usable credentials. False for canonical
    *  providers surfaced by `include_unconfigured` that the user hasn't set up
    *  yet — render these with a setup affordance instead of hiding them. */
@@ -493,8 +499,12 @@ export interface SessionMessage {
   reasoning?: null | string
   reasoning_content?: null | string
   reasoning_details?: unknown
-  display_kind?: 'async_delegation_complete' | 'hidden' | 'model_switch' | string
-  display_metadata?: TimelineDisplayMetadata
+  display_kind?: 'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | string
+  /**
+   * A backend older than this app can still serve this as unparsed JSON text,
+   * so readers must narrow before indexing into it.
+   */
+  display_metadata?: string | TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: unknown
   timestamp?: number
@@ -509,8 +519,23 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResponse {
+  /** Present when the backend found a fresh crash-interrupted turn and
+   *  scheduled its automatic continuation; the turn arrives as a normal
+   *  message.start stream right after this resume. */
+  auto_continue?: {
+    attempt: number
+    interrupted_at: number
+  }
   inflight?: null | {
     assistant?: string
+    /** Mid-turn redirect corrections, oldest first. The turn's original prompt
+     *  stays in `user`; these are the follow-ups typed while it ran. */
+    corrections?: string[]
+    /** Retained failed turn: the error the terminal frame carried (the frame
+     *  itself may have been lost to a disconnect). */
+    error?: string
+    recoverable?: boolean
+    status?: string
     streaming?: boolean
     user?: string
   }

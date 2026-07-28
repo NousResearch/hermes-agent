@@ -25,6 +25,7 @@ import type {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
@@ -81,10 +82,6 @@ export function ModelSettingsSkeleton() {
   )
 }
 
-// Hermes' reasoning levels (VALID_REASONING_EFFORTS); `none` = thinking off.
-// Empty config = Hermes default (medium), shown as Medium.
-const EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
-
 // agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
 // normal (mirrors tui_gateway _load_service_tier).
 const isFastTier = (tier: unknown): boolean =>
@@ -93,9 +90,6 @@ const isFastTier = (tier: unknown): boolean =>
       .trim()
       .toLowerCase()
   )
-
-// Reuse the composer's effort labels.
-const effortLabelKey = (v: string) => v as 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'ultra' | 'xhigh'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -353,6 +347,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // setState updater) and hand it straight to the debounced autosave.
   const moaRef = useRef<MoaConfigResponse | null>(null)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     moaRef.current = moa
   }, [moa])
@@ -514,7 +509,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     .trim()
     .toLowerCase()
 
-  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || 'medium'
+  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
@@ -821,9 +816,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {EFFORT_VALUES.map(value => (
+                    {REASONING_EFFORT_VALUES.map(value => (
                       <SelectItem key={value} value={value}>
-                        {value === 'none' ? m.reasoningOff : t.shell.modelOptions[effortLabelKey(value)]}
+                        {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
                       </SelectItem>
                     ))}
                   </SelectContent>

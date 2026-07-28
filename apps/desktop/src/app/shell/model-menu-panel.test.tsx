@@ -124,6 +124,26 @@ describe('ModelMenuPanel MoA presets', () => {
   })
 })
 
+describe('ModelMenuPanel current selection', () => {
+  it('keeps the checkmark on the live SessionView model when a stale options response disagrees', async () => {
+    $currentProvider.set('google')
+    $currentModel.set('gemini-3.1-pro')
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      providers: MOCK_PROVIDERS
+    })
+
+    const { content } = renderPanel()
+
+    const currentRow = (await content.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')
+    const staleRow = content.getByText('Deepseek Chat').closest('[role="menuitem"]')
+
+    expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
+    expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+  })
+})
+
 describe('ModelMenuPanel provider collapse', () => {
   it('shows all provider models by default (none collapsed)', async () => {
     const { content } = renderPanel()
@@ -158,7 +178,7 @@ describe('ModelMenuPanel provider collapse', () => {
     })
   })
 
-  it('auto-expands the active provider even when collapsed', async () => {
+  it('collapses the active provider too (no forced auto-expand)', async () => {
     $currentProvider.set('deepseek')
     $currentModel.set('deepseek-v4-pro')
     const { content } = renderPanel()
@@ -166,8 +186,11 @@ describe('ModelMenuPanel provider collapse', () => {
     const header = await content.findByText('DeepSeek')
     fireEvent.click(header)
 
-    // Should still show models because it's the active provider
-    expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+    // The current provider is collapsible like any other — clicking its header
+    // hides its models rather than forcing them to stay open.
+    await vi.waitFor(() => {
+      expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    })
   })
 
   it('bypasses collapse when search is active', async () => {

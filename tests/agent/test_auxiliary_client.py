@@ -1741,7 +1741,7 @@ class TestVisionClientFallback:
         real_client = SimpleNamespace(messages=messages_api)
         captured_kwargs = {}
 
-        def fake_create_anthropic_message(_client, kwargs):
+        def fake_create_anthropic_message(_client, kwargs, **_kw):
             captured_kwargs.update(kwargs)
             return final_message
 
@@ -2858,6 +2858,7 @@ class TestAuxiliaryFallbackLayering:
             "title_generation",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
         mock_main.assert_not_called()
 
@@ -2891,6 +2892,7 @@ class TestAuxiliaryFallbackLayering:
             "compression",
             "nvidia",
             reason="invalid provider response",
+            failed_model="minimaxai/minimax-m3",
         )
 
     def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
@@ -2918,8 +2920,12 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert main_chain_client.chat.completions.create.called
+        # Payment errors are provider-wide, so the configured chain is
+        # asked to skip the whole provider (failed_model=None), not just
+        # the failed model — a sibling model can't recover from a 402.
         mock_task_chain.assert_called_once_with(
-            "title_generation", "auto", reason="payment error")
+            "title_generation", "auto", reason="payment error",
+            failed_model=None)
         mock_main_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error")
         mock_builtin_chain.assert_not_called()
@@ -3161,6 +3167,47 @@ class TestTryMainAgentModelFallback:
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
         assert client is None
 
+    def test_same_provider_different_model_falls_back_when_failed_model_given(self):
+        """Self-hosted shape: aux model and main model share one custom
+        provider label. A timeout on the aux model must still reach the main
+        model — same provider, DIFFERENT model (real incident: aux glm-5.2
+        timed out while main macaron-v1-venti on the same endpoint was
+        healthy; the provider-label skip discarded the working fallback)."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "mindai/macaron-v1-venti")):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression", failed_model="zai-org/glm-5.2")
+        assert client is fake_client
+        assert model == "mindai/macaron-v1-venti"
+        assert label == "main-agent(custom)"
+
+    def test_same_provider_same_model_still_skips_with_failed_model(self):
+        """When the model that failed IS the main model, there is nothing to
+        fall back to — the narrowed skip must not regress into a self-retry."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression",
+                failed_model="MindAI/Macaron-V1-Venti")  # case-insensitive match
+        assert client is None and model is None and label == ""
+
+    def test_same_provider_no_failed_model_keeps_provider_wide_skip(self):
+        """Legacy / provider-wide callers (auth 401, payment 402) pass no
+        failed_model: the whole-provider skip must be preserved so broken
+        shared credentials don't trigger a doomed main-model attempt."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression")
+        assert client is None and model is None and label == ""
+
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -3356,6 +3403,44 @@ class TestTransientTransportRetry:
         # Primary tried ONCE only — no same-provider timeout retry — then fallback.
         assert primary.chat.completions.create.call_count == 1
         assert fb_client.chat.completions.create.call_count == 1
+
+    def test_timeout_forwards_failed_model_to_configured_chain(self):
+        """A timeout is model-specific, so call_llm must forward the failed
+        model to the configured chain (failed_model=<model>, not None). This
+        lets a same-provider sibling in the chain be tried instead of the
+        whole provider being skipped — the exact NVIDIA NIM bug's trigger.
+        """
+        class _Timeout(Exception):
+            pass
+        _Timeout.__name__ = "APITimeoutError"
+
+        primary = MagicMock()
+        primary.base_url = "https://integrate.api.nvidia.com/v1"
+        primary.chat.completions.create.side_effect = _Timeout("Request timed out.")
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://integrate.api.nvidia.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fb_client, "sibling-model", "fallback_chain[0](openrouter)"),
+            ) as mock_chain,
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(None, None, ""),
+            ),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        _, kwargs = mock_chain.call_args
+        assert kwargs.get("failed_model") == "some-model", (
+            "A timeout is model-specific — the failed model must be forwarded "
+            "so a same-provider sibling can be tried, not skipped wholesale."
+        )
 
     def test_non_compression_still_retries_same_provider_on_timeout(self):
         """The timeout skip is scoped to compression only; other auxiliary
@@ -4872,7 +4957,7 @@ class TestCodexAdapterPromptCacheKey:
     """
 
     @staticmethod
-    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex"):
+    def _build_adapter(base_url="https://chatgpt.com/backend-api/codex", model="gpt-5.5"):
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
@@ -4905,7 +4990,7 @@ class TestCodexAdapterPromptCacheKey:
         real_client = MagicMock()
         real_client.base_url = base_url
         real_client.responses.create = _create
-        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        adapter = _CodexCompletionsAdapter(real_client, model)
         return adapter, captured_kwargs
 
     def test_cache_key_set_and_prefixed(self):
@@ -4957,6 +5042,69 @@ class TestCodexAdapterPromptCacheKey:
             {"role": "user", "content": "hi"},
         ])
         assert "prompt_cache_key" not in captured
+
+    @pytest.mark.parametrize("model", [
+        "gpt-4.1",
+        "gpt-5.1-codex-max",
+        "openai.gpt-5.5-pro",
+    ])
+    def test_extended_cache_models_set_prompt_cache_retention(self, model):
+        adapter, captured = self._build_adapter(
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+            model=model,
+        )
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert captured["prompt_cache_retention"] == "24h"
+
+    def test_prompt_cache_retention_skipped_for_codex_backend(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+    @pytest.mark.parametrize("base_url", [
+        "https://api.openai.com/v1",
+        "https://example.services.ai.azure.com/openai/v1",
+        "https://responses.example.com/v1",
+    ])
+    def test_prompt_cache_retention_skipped_for_other_compatible_endpoints(self, base_url):
+        adapter, captured = self._build_adapter(base_url=base_url)
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+    def test_prompt_cache_retention_skipped_for_xai_and_github_hosts(self):
+        adapter, captured = self._build_adapter(base_url="https://api.x.ai/v1")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+        adapter, captured = self._build_adapter(base_url="https://api.githubcopilot.com")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+    def test_prompt_cache_retention_skipped_for_github_models_host(self):
+        """models.github.ai is a GitHub Responses host in the main transport
+        (agent/chat_completion_helpers.py) — the auxiliary path must exclude
+        it from cache-retention emission the same way as githubcopilot.com."""
+        adapter, captured = self._build_adapter(base_url="https://models.github.ai/inference")
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
 
 
 class TestCodexAdapterGithubResponsesMessageIdDrop:
@@ -6243,6 +6391,106 @@ class TestCompressionFallbackContextFilter:
 
         assert client is large_client
         assert model == "large-512k"
+
+    # ── same-provider, different-model chain entries ────────────────────
+    # A configured fallback_chain may legitimately list several models
+    # under the *same* provider (e.g. two more NVIDIA NIM models after the
+    # primary NIM model). failed_provider alone must not skip those
+    # sibling entries — only failed_model narrows the skip to the exact
+    # (provider, model) pair that just failed.
+
+    def test_same_provider_sibling_model_not_skipped_when_failed_model_given(
+        self, monkeypatch
+    ):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        sibling_client = MagicMock(name="sibling_nim_client")
+        entries = [
+            self._make_chain_entry("nvidia", "minimaxai/minimax-m3"),
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-flash"),
+        ]
+
+        def fake_resolve(entry):
+            if entry is entries[0]:
+                return sibling_client, "minimaxai/minimax-m3"
+            raise AssertionError("second entry should not be reached")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   return_value=1_048_576):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression",
+                failed_provider="nvidia",
+                failed_model="deepseek-ai/deepseek-v4-pro",
+            )
+
+        assert client is sibling_client, (
+            "A same-provider entry with a DIFFERENT model must still be "
+            "tried when failed_model narrows the skip — regression for the "
+            "bug where an NVIDIA NIM timeout fell straight through to the "
+            "main Codex model instead of trying the other two configured "
+            "NIM models."
+        )
+        assert model == "minimaxai/minimax-m3"
+        assert "nvidia" in label
+
+    def test_same_provider_same_model_still_skipped(self, monkeypatch):
+        """The exact (provider, model) pair that just failed is still
+        skipped — failed_model narrows the skip, it doesn't disable it."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        entries = [
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-pro"),
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=AssertionError("must not be resolved")):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression",
+                failed_provider="nvidia",
+                failed_model="deepseek-ai/deepseek-v4-pro",
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
+
+    def test_same_provider_skipped_wholesale_without_failed_model(self, monkeypatch):
+        """Backward compat: callers that don't know the failed model (e.g.
+        client-build failures where the whole provider is unreachable)
+        still skip every entry sharing that provider, as before."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        entries = [
+            self._make_chain_entry("nvidia", "minimaxai/minimax-m3"),
+            self._make_chain_entry("nvidia", "deepseek-ai/deepseek-v4-flash"),
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=AssertionError("must not be resolved")):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression", failed_provider="nvidia",
+            )
+
+        assert client is None
+        assert model is None
+        assert label == ""
 
     # ── L3: main fallback chain ────────────────────────────────────────
 

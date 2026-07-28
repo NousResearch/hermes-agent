@@ -229,6 +229,394 @@ def test_interrupt_all_signals_running_children():
     assert evt["status"] == "interrupted"
 
 
+def _fast_stale_monitor(monkeypatch, *, idle=0.15, in_tool=0.3, grace=0.15):
+    """Shrink the stale-monitor cadence so tests run in milliseconds."""
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
+    monkeypatch.setattr(ad, "_STALE_IDLE_SECONDS", idle)
+    monkeypatch.setattr(ad, "_STALE_IN_TOOL_SECONDS", in_tool)
+    monkeypatch.setattr(ad, "_STALL_GRACE_SECONDS", grace)
+
+
+def test_stalled_runner_is_interrupted_then_finalized(monkeypatch):
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    interrupted = {"count": 0}
+
+    def stuck_runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "too late"}
+
+    def interrupt_fn():
+        interrupted["count"] += 1
+
+    res = ad.dispatch_async_delegation(
+        goal="stuck child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_runner,
+        interrupt_fn=interrupt_fn, max_async_children=1,
+        # Frozen progress token: the child never advances an API call.
+        progress_fn=lambda: ((0, None), False),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    try:
+        assert evt is not None
+        assert evt["type"] == "async_delegation"
+        assert evt["status"] == "stalled"
+        assert evt["delegation_id"] == res["delegation_id"]
+        assert evt["api_calls"] == 0
+        assert "stalled" in evt["error"]
+        # Interrupt was requested BEFORE force-finalization (grace window).
+        assert interrupted["count"] >= 1
+        assert ad.active_count() == 0
+    finally:
+        gate.set()
+
+    # If the ignored runner eventually returns, it must not enqueue a second
+    # completion for a delegation the monitor already finalized.
+    assert _drain_one(timeout=0.5) is None
+
+
+def test_progressing_runner_is_never_stalled(monkeypatch):
+    """A child that keeps advancing is left alone no matter how long it runs."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    ticks = {"n": 0}
+
+    def slow_but_alive_runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "done", "api_calls": 7}
+
+    def progress_fn():
+        # Token advances on every sample — simulates a child making steady
+        # API-call progress.
+        ticks["n"] += 1
+        return (ticks["n"], None), False
+
+    res = ad.dispatch_async_delegation(
+        goal="slow child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=slow_but_alive_runner,
+        max_async_children=1, progress_fn=progress_fn,
+    )
+    assert res["status"] == "dispatched"
+
+    # Run well past the (shrunk) idle threshold — several monitor sweeps.
+    time.sleep(0.6)
+    assert ad.active_count() == 1
+    assert process_registry.completion_queue.empty()
+
+    gate.set()
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "done"
+
+
+def test_stalling_runner_that_honors_interrupt_keeps_its_result(monkeypatch):
+    """Interrupt-responsive children finalize through the NORMAL path.
+
+    The monitor's interrupt gives a wedged-looking child a grace window; if
+    the runner returns during it, the real result (partial work, api_calls)
+    is delivered instead of a synthetic stalled event.
+    """
+    _fast_stale_monitor(monkeypatch, grace=5.0)
+    interrupted = threading.Event()
+
+    def runner():
+        # "Wedged" until interrupted, then unwinds and reports partial work.
+        interrupted.wait(timeout=10)
+        return {
+            "status": "interrupted",
+            "summary": "partial work saved",
+            "api_calls": 3,
+        }
+
+    res = ad.dispatch_async_delegation(
+        goal="responsive child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=runner,
+        interrupt_fn=interrupted.set, max_async_children=1,
+        progress_fn=lambda: ((3, None), False),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "interrupted"
+    assert evt["summary"] == "partial work saved"
+    assert evt["api_calls"] == 3
+    assert ad.active_count() == 0
+
+
+def test_streaming_child_counts_as_alive(monkeypatch):
+    """A child mid-stream (api_call_count frozen, last_activity_ts ticking)
+    must never be stalled — streamed chunks tick _touch_activity, and the
+    progress token includes that timestamp (same liveness signal as the
+    compaction inactivity budget, PR #71508)."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    now = {"ts": 1000.0}
+
+    def progress_fn():
+        # api_call_count and current_tool frozen (long streaming response in
+        # flight), but the activity timestamp advances with every chunk.
+        now["ts"] += 1.0
+        return ((1, None, now["ts"]),), False
+
+    res = ad.dispatch_async_delegation(
+        goal="streaming child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: (gate.wait(timeout=10), {"status": "completed", "summary": "streamed"})[1],
+        progress_fn=progress_fn,
+    )
+    assert res["status"] == "dispatched"
+
+    time.sleep(0.6)  # several sweeps past the shrunk idle threshold
+    assert ad.active_count() == 1
+    assert process_registry.completion_queue.empty()
+
+    gate.set()
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+
+
+def test_stalled_event_carries_structured_stall_metadata(monkeypatch):
+    """The terminal stalled event must expose machine-readable stall context
+    (#51690) — quiet duration, tripped threshold, phase, grace — mirroring
+    the sync path's timeout_seconds/timed_out_after_seconds/timeout_phase."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+
+    res = ad.dispatch_async_delegation(
+        goal="stall metadata", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: {} if gate.wait(timeout=10) else {},
+        progress_fn=lambda: ((0, "terminal"), True),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    try:
+        assert evt is not None
+        assert evt["status"] == "stalled"
+        assert evt["stalled_after_quiet_seconds"] >= 0.3  # in-tool threshold
+        assert evt["stall_threshold_seconds"] == ad._STALE_IN_TOOL_SECONDS
+        assert evt["stall_phase"] == "in_tool"
+        assert evt["stall_grace_seconds"] == ad._STALL_GRACE_SECONDS
+    finally:
+        gate.set()
+
+
+def test_list_async_delegations_exposes_live_activity(monkeypatch):
+    """list_async_delegations must expose per-child live activity sampled
+    from progress_fn plus seconds_since_progress, for /agents UIs (#51690)."""
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
+    gate = threading.Event()
+    base_ts = time.time() - 12.0
+
+    res = ad.dispatch_async_delegation(
+        goal="live listing", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: {} if gate.wait(timeout=10) else {},
+        progress_fn=lambda: (((3, "web_search", base_ts),), True),
+    )
+    try:
+        time.sleep(0.1)  # let the monitor stamp _progress_ts at least once
+        item = next(
+            d for d in ad.list_async_delegations()
+            if d["delegation_id"] == res["delegation_id"]
+        )
+        assert item["status"] == "running"
+        assert item["in_tool"] is True
+        assert "seconds_since_progress" in item
+        (child,) = item["children_activity"]
+        assert child["api_calls"] == 3
+        assert child["current_tool"] == "web_search"
+        assert 10.0 <= child["seconds_since_activity"] <= 20.0
+        # Callables and private bookkeeping must never leak.
+        assert "progress_fn" not in item
+        assert "interrupt_fn" not in item
+        assert not any(k.startswith("_") for k in item)
+    finally:
+        gate.set()
+
+
+def test_stalled_batch_is_interrupted_then_finalized(monkeypatch):
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    interrupted = {"count": 0}
+
+    def stuck_batch():
+        gate.wait(timeout=10)
+        return {"results": [{"status": "completed", "summary": "too late"}]}
+
+    def interrupt_fn():
+        interrupted["count"] += 1
+
+    res = ad.dispatch_async_delegation_batch(
+        goals=["a", "b"], context="ctx", toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_batch,
+        interrupt_fn=interrupt_fn, max_async_children=1,
+        progress_fn=lambda: (((0, None), (0, None)), False),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    try:
+        assert evt is not None
+        assert evt["type"] == "async_delegation"
+        assert evt["status"] == "stalled"
+        assert evt["is_batch"] is True
+        assert evt["goals"] == ["a", "b"]
+        assert evt["results"] == []
+        assert "stalled" in evt["error"]
+        assert interrupted["count"] >= 1
+        assert ad.active_count() == 0
+    finally:
+        gate.set()
+
+    assert _drain_one(timeout=0.5) is None
+
+
+def test_in_tool_stall_uses_higher_threshold(monkeypatch):
+    """A frozen child inside a tool gets the in-tool ceiling, not the idle one."""
+    _fast_stale_monitor(monkeypatch, idle=0.1, in_tool=10.0, grace=0.1)
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "long tool finished"}
+
+    res = ad.dispatch_async_delegation(
+        goal="long tool child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=runner, max_async_children=1,
+        # Frozen token but in_tool=True — a legitimately slow terminal
+        # command / web fetch. Must NOT be stalled at the idle threshold.
+        progress_fn=lambda: ((1, "terminal"), True),
+    )
+    assert res["status"] == "dispatched"
+
+    time.sleep(0.5)  # far past idle threshold, well under in-tool threshold
+    assert ad.active_count() == 1
+    assert process_registry.completion_queue.empty()
+
+    gate.set()
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+
+
+def test_stall_stays_finalizing_until_durable_persistence(tmp_path, monkeypatch):
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    persist_entered = threading.Event()
+    allow_persist = threading.Event()
+    real_persist = ad._persist_completion
+
+    def blocking_persist(event, result):
+        persist_entered.set()
+        allow_persist.wait(timeout=5)
+        real_persist(event, result)
+
+    def stuck_runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "too late"}
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ad, "_persist_completion", blocking_persist)
+    dispatched = ad.dispatch_async_delegation(
+        goal="durable stall", context=None, toolsets=None, role="leaf",
+        model="m", session_key="owner", runner=stuck_runner,
+        max_async_children=1, progress_fn=lambda: ((0, None), False),
+    )
+
+    try:
+        assert persist_entered.wait(timeout=5)
+        assert ad.active_count() == 1
+        record = next(
+            item for item in ad.list_async_delegations()
+            if item["delegation_id"] == dispatched["delegation_id"]
+        )
+        assert record["status"] == "finalizing"
+        assert process_registry.completion_queue.empty()
+
+        allow_persist.set()
+        evt = _drain_for(dispatched["delegation_id"])
+        assert evt is not None
+        assert evt["status"] == "stalled"
+        assert ad.active_count() == 0
+        durable = ad.get_durable_delegation(dispatched["delegation_id"])
+        assert durable["state"] == "stalled"
+        assert durable["delivery_state"] == "pending"
+    finally:
+        allow_persist.set()
+        gate.set()
+
+
+def test_stalled_completion_restores_once_after_process_restart(tmp_path):
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import json
+import threading
+import time
+from tools import async_delegation as ad
+ad._STALE_CHECK_INTERVAL = 0.03
+ad._STALE_IDLE_SECONDS = 0.1
+ad._STALL_GRACE_SECONDS = 0.1
+gate = threading.Event()
+r = ad.dispatch_async_delegation(
+    goal="restart stall", context=None, toolsets=None, role="leaf", model="m",
+    session_key="owner-session", parent_session_id="durable-parent",
+    runner=lambda: gate.wait(timeout=60),
+    progress_fn=lambda: ((0, None), False),
+)
+deadline = time.time() + 10
+while ad.active_count() and time.time() < deadline:
+    time.sleep(.01)
+row = ad.get_durable_delegation(r["delegation_id"])
+print(json.dumps({"delegation_id": r["delegation_id"], "row": row}, sort_keys=True))
+'''
+    first = subprocess.run(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=30, check=True,
+    )
+    produced = json.loads(first.stdout.strip().splitlines()[-1])
+    delegation_id = produced["delegation_id"]
+    assert produced["row"]["state"] == "stalled"
+    assert produced["row"]["delivery_state"] == "pending"
+
+    consumer = r'''
+import json
+from tools.process_registry import process_registry
+evt = process_registry.completion_queue.get_nowait()
+print(json.dumps({"event": evt, "remaining": process_registry.completion_queue.qsize()}, sort_keys=True))
+'''
+    second = subprocess.run(
+        [sys.executable, "-c", consumer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    restored = json.loads(second.stdout.strip().splitlines()[-1])
+    assert restored["remaining"] == 0
+    assert restored["event"]["delegation_id"] == delegation_id
+    assert restored["event"]["status"] == "stalled"
+    assert restored["event"]["restored"] is True
+
+    acker = f'''
+from tools import async_delegation as ad
+assert ad.mark_completion_delivered({delegation_id!r})
+'''
+    subprocess.run(
+        [sys.executable, "-c", acker], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    probe = subprocess.run(
+        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
+    )
+    assert probe.stdout.strip().splitlines()[-1] == "0"
+
+
 def test_completed_records_pruned_to_cap():
     # Run more than the retention cap quickly; ensure list doesn't grow forever.
     for i in range(ad._MAX_RETAINED_COMPLETED + 10):
@@ -793,6 +1181,57 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert "done: a" in text and "done: b" in text and "done: c" in text
     # No more events — it's a single combined completion, not N of them.
     assert _drain_one() is None
+
+
+def test_delegate_task_background_passes_progress_fn_to_async_registry(monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    fake_child._subagent_id = "s1"
+    fake_child.get_activity_summary.return_value = {
+        "api_call_count": 4,
+        "current_tool": "terminal",
+        "last_activity_ts": 1234.5,
+    }
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    captured = {}
+
+    def fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return {"status": "dispatched", "delegation_id": "deleg_progress"}
+
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", fake_dispatch)
+
+    out = dt.delegate_task(goal="background stall guard", background=True, parent_agent=parent)
+
+    parsed = json.loads(out)
+    assert parsed["status"] == "dispatched"
+    assert parsed["delegation_id"] == "deleg_progress"
+    # The dispatch wires a live progress sampler over the child agents so the
+    # async registry's stale monitor can watch the detached batch. The token
+    # includes last_activity_ts so streamed chunks count as liveness (each
+    # chunk ticks _touch_activity), not just completed API calls.
+    progress_fn = captured["progress_fn"]
+    assert callable(progress_fn)
+    token, in_tool = progress_fn()
+    assert token == ((4, "terminal", 1234.5),)
+    assert in_tool is True
 
 
 def test_model_dispatch_forces_background():

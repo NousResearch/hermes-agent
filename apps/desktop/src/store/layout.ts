@@ -38,9 +38,10 @@ const RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY = 'hermes.desktop.rightRailActiveTab'
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
 export const PREVIEW_PANE_ID = 'preview'
-export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
 
-export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
+/** Every rail tab is a preview of something, namespaced by what backs it: a
+ *  path on disk, a live URL, or an id into the in-memory artifact registry. */
+export type RightRailTabId = `artifact:${string}` | `file:${string}` | `url:${string}`
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })
@@ -56,13 +57,12 @@ export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
   states => states[FILE_BROWSER_PANE_ID]?.open ?? false
 )
 
-// Persisted so a relaunch reopens the same rail tab. A restored file-tab id with
-// no matching tab is reconciled back to the preview tab in the preview store.
-export const $rightRailActiveTabId = persistentAtom<RightRailTabId>(
-  RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY,
-  RIGHT_RAIL_PREVIEW_TAB_ID,
-  { decode: raw => raw as RightRailTabId, encode: tabId => tabId }
-)
+// Persisted so a relaunch reopens the same rail tab. Null when the rail has no
+// tabs; a restored id with no matching tab is reconciled in the preview store.
+export const $rightRailActiveTabId = persistentAtom<RightRailTabId | null>(RIGHT_RAIL_ACTIVE_TAB_STORAGE_KEY, null, {
+  decode: raw => (raw ? (raw as RightRailTabId) : null),
+  encode: tabId => tabId ?? ''
+})
 
 export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states => {
   const override = states[CHAT_SIDEBAR_PANE_ID]?.widthOverride
@@ -308,7 +308,7 @@ export function togglePanesFlipped() {
   $panesFlipped.set(!$panesFlipped.get())
 }
 
-export function selectRightRailTab(id: RightRailTabId) {
+export function selectRightRailTab(id: RightRailTabId | null) {
   $rightRailActiveTabId.set(id)
 }
 

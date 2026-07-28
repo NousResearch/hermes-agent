@@ -7,6 +7,7 @@ import { hasLeadGap } from '../domain/blockLayout.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { splitSlashSkillRefs } from '../domain/slash.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
@@ -200,6 +201,27 @@ export const MessageLine = memo(function MessageLine({
             [long message]
           </Text>
           {rest.join('')}
+        </Text>
+      )
+    }
+
+    // A skill the user referenced mid-prose (`clean this up with /clean`)
+    // keeps the accent it wore as a completion in the composer, instead of
+    // flattening back into the body text.
+    if (msg.role === 'user') {
+      const segments = splitSlashSkillRefs(msg.text)
+
+      return (
+        <Text {...(body ? { color: body } : {})}>
+          {segments.map((segment, i) =>
+            segment.ref ? (
+              <Text color={t.color.accent} key={i}>
+                {segment.text}
+              </Text>
+            ) : (
+              segment.text
+            )
+          )}
         </Text>
       )
     }

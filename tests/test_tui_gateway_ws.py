@@ -9,13 +9,14 @@ from tui_gateway import server
 from tui_gateway import ws as ws_mod
 
 
-def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
-    """The desktop app and dashboard chat reach the agent through this WS
-    sidecar, not through tui_gateway.entry.main() (which spawns the discovery
-    thread for the stdio TUI). handle_ws must start discovery itself, otherwise
-    _make_agent's wait_for_mcp_discovery no-ops and the agent snapshots an
-    MCP-less tool list. Regression test for #38945."""
+def test_ws_does_not_own_mcp_discovery_startup(monkeypatch):
+    """WebSocket transport must not start MCP discovery itself.
+
+    MCP discovery ownership belongs to the profile-scoped agent build path.
+    The WS layer only establishes the transport and emits gateway readiness.
+    """
     calls = []
+
     monkeypatch.setattr(
         mcp_startup,
         "start_background_mcp_discovery",
@@ -41,7 +42,7 @@ def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
     finally:
         server._sessions.clear()
 
-    assert calls == [{"logger": ws_mod._log, "thread_name": "tui-ws-mcp-discovery"}]
+    assert calls == []
 
 
 def _run_disconnect(monkeypatch, seed):
@@ -186,6 +187,37 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_starts_mcp_discovery_before_ready(monkeypatch):
+    import tui_gateway.entry as entry
+
+    calls = []
+    events = []
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: calls.append("mcp"))
+
+    class FakeWS:
+        async def accept(self):
+            events.append("accept")
+
+        async def send_text(self, line):
+            if '"gateway.ready"' in line:
+                events.append(f"ready_after_{len(calls)}")
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+
+    # Discovery moved to profile-aware agent construction. WebSocket transport
+    # should not start MCP discovery before a profile has been bound.
+    assert calls == []
+    assert events == ["accept", "ready_after_0"]
 
 
 def test_ws_transport_serializes_concurrent_sends():

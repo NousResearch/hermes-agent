@@ -2,8 +2,11 @@
  * Pure helpers for window zoom. The main process owns webContents.setZoomLevel,
  * so the menu items, the Ctrl/Cmd shortcuts, and the settings UI all funnel
  * through this one clamped scale. Percent is the user-facing unit (100 = the
- * default size); Chromium's internal unit is the zoom level, where
- * factor = 1.2 ^ level.
+ * Chromium actual-size baseline); Chromium's internal unit is the zoom level,
+ * where factor = 1.2 ^ level.
+ *
+ * Our shipped default is the Appearance 90% preset — tight enough to feel
+ * denser than Chromium 100%, and selected in the UI Scale control on first run.
  */
 
 export const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
@@ -12,9 +15,15 @@ const ZOOM_FACTOR_BASE = 1.2
 const MIN_ZOOM_LEVEL = -9
 const MAX_ZOOM_LEVEL = 9
 
+/** Half Chromium's default step; matching the shortcuts and View menu. */
+export const ZOOM_STEP = 0.1
+
+/** Appearance 90% preset. Fresh installs + Actual Size / Ctrl+0. */
+export const DEFAULT_ZOOM_LEVEL = Math.log(0.9) / Math.log(ZOOM_FACTOR_BASE)
+
 export function clampZoomLevel(value) {
   if (!Number.isFinite(value)) {
-    return 0
+    return DEFAULT_ZOOM_LEVEL
   }
 
   return Math.min(Math.max(value, MIN_ZOOM_LEVEL), MAX_ZOOM_LEVEL)
@@ -26,7 +35,7 @@ export function zoomLevelToPercent(level) {
 
 export function percentToZoomLevel(percent) {
   if (!Number.isFinite(percent) || percent <= 0) {
-    return 0
+    return DEFAULT_ZOOM_LEVEL
   }
 
   return clampZoomLevel(Math.log(percent / 100) / Math.log(ZOOM_FACTOR_BASE))
@@ -90,15 +99,16 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
 
 /**
  * Zoom-wiring decision per window kind. Chat windows (main + session) keep
- * global UI zoom; the pet overlay opts out because it sizes its own OS window
- * to the sprite and inheriting zoom would crop it.
+ * global UI zoom; the pet overlay and the Quick Entry composer opt out because
+ * they size their own OS window and inheriting zoom would crop/overflow them.
  *
- * Extracted so the "pet opts out, everything else opts in" contract is
+ * Extracted so the "helper windows opt out, everything else opts in" contract is
  * unit-testable without booting a BrowserWindow or reading source.
  */
 export const ZOOM_WINDOW_CONFIG = {
   chat: { zoom: true },
-  petOverlay: { zoom: false }
+  petOverlay: { zoom: false },
+  quickEntry: { zoom: false }
 } as const
 
 export function zoomWiringForWindowKind(kind) {

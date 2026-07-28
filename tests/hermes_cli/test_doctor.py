@@ -32,6 +32,26 @@ class TestDoctorPlatformHints:
         assert doctor._python_install_cmd() == "uv pip install"
         assert doctor._system_package_install_cmd("ripgrep") == "sudo apt install ripgrep"
 
+    def test_sqlite_upgrade_hint_recreates_docker_containers(self, monkeypatch):
+        monkeypatch.setattr(doctor, "detect_install_method", lambda _root: "docker")
+
+        hint = doctor._sqlite_upgrade_hint()
+
+        assert "docker pull nousresearch/hermes-agent:latest" in hint
+        assert "recreate all Hermes containers" in hint
+        assert "hermes update" not in hint
+
+    def test_sqlite_upgrade_hint_keeps_git_runtime_repair(self):
+        hint = doctor._sqlite_upgrade_hint("git")
+
+        assert "run `hermes update`" in hint
+
+    def test_sqlite_upgrade_hint_uses_nix_package_manager(self):
+        hint = doctor._sqlite_upgrade_hint("nix")
+
+        assert "Nix source that installed it" in hint
+        assert "hermes update" not in hint
+
 
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
@@ -122,6 +142,30 @@ class TestDoctorEnvFileEncoding:
 
         # Run doctor. If the .env read still uses locale encoding, this
         # raises UnicodeDecodeError and the test fails.
+        with pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+
+
+    def test_doctor_reads_invalid_utf8_env_via_latin1_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        """cp1252/latin-1 .env with ASCII provider hints must not abort doctor."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        env_path = hermes_home / ".env"
+        # 0xff is invalid UTF-8; latin-1 decodes it. Keep an ASCII provider key
+        # so the scan still reports a configured endpoint/key.
+        env_path.write_bytes(b"OPENAI_API_KEY=sk-test\xff\n")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
         with pytest.raises(SystemExit):
             doctor_mod.run_doctor(Namespace(fix=False))
 

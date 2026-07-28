@@ -7,13 +7,14 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
-import { code } from '@streamdown/code'
+import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -30,8 +31,11 @@ import {
   resolveMediaDisplaySrc
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
+import { ArtifactCard } from './artifact-card'
+import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
@@ -47,6 +51,41 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 // `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
 // LLM convention). The default false-setting only accepts `$$...$$`.
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
+
+// `@streamdown/code` statically imports ALL of shiki (every grammar + theme —
+// the single largest chunk in the renderer), so it must never sit on the
+// entry graph. Load it on first markdown mount and swap it into the plugin
+// table when it lands; until then fenced code renders through the
+// `SyntaxHighlighter` override's plain path (same output Shiki's own
+// `delay` fallback shows), so nothing flashes or reflows unexpectedly.
+type CodePlugin = typeof streamdownCode
+let codePluginCache: CodePlugin | null = null
+
+function useCodePlugin(): CodePlugin | null {
+  const [plugin, setPlugin] = useState(codePluginCache)
+
+  useEffect(() => {
+    if (plugin) {
+      return
+    }
+
+    let cancelled = false
+
+    void import('@streamdown/code').then(({ code }) => {
+      codePluginCache = code
+
+      if (!cancelled) {
+        setPlugin(code)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [plugin])
+
+  return plugin
+}
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
@@ -98,7 +137,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   return (
     <span className="block">
       <button
-        className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+        className="mt-2 link-chip bg-transparent text-xs font-medium text-muted-foreground hover:text-foreground"
         onClick={open}
         type="button"
       >
@@ -194,7 +233,7 @@ function MediaAttachment({ path }: { path: string }) {
   return (
     <span className="wrap-anywhere">
       <a
-        className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        className="link-chip wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()
@@ -233,15 +272,18 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
   }
 
+  const sessionRef = sessionRefFromMarkdownHref(href)
+
+  if (sessionRef) {
+    return <SessionRefLink value={sessionRef} />
+  }
+
   const target = href ? normalizeExternalUrl(href) : href
 
   if (!target || !/^https?:\/\//i.test(target)) {
     return (
       <a
-        className={cn(
-          'font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere',
-          className
-        )}
+        className={cn('link-chip wrap-anywhere', className)}
         href={href}
         rel="noopener noreferrer"
         target="_blank"
@@ -316,7 +358,7 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
       <span className="my-2 block text-sm text-muted-foreground">
         Couldn&apos;t load {name}.{' '}
         <button
-          className="bg-transparent font-medium text-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+          className="link-chip bg-transparent font-medium text-foreground hover:text-foreground"
           onClick={open}
           type="button"
         >
@@ -331,14 +373,18 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
     return <span className="my-2 block text-sm text-muted-foreground">Loading {name}...</span>
   }
 
+  // The width cap belongs on the container, not the <img>: a percentage
+  // max-width resolves to none while the container measures its fit-content
+  // width, so the box overshoots the rendered image and strands the download
+  // button — which anchors to the container — out in the margin.
   return (
     <ZoomableImage
       alt={alt}
       className={cn(
-        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-[min(100%,var(--image-preview-max-width))] rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
         className
       )}
-      containerClassName="my-2 block w-fit max-w-full"
+      containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
       slot="aui_markdown-image"
       src={resolvedSrc}
       {...props}
@@ -350,6 +396,9 @@ interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
+  /** Disable artifact-card promotion for fenced blocks (reasoning text — a
+   *  model's scratchpad draft must not register artifact versions). */
+  disableArtifacts?: boolean
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -398,14 +447,21 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
-function MarkdownTextSurface({ containerClassName, containerProps, defer }: MarkdownTextSurfaceProps) {
+function MarkdownTextSurface({
+  containerClassName,
+  containerProps,
+  defer,
+  disableArtifacts
+}: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by
-  // `SyntaxHighlighter` below when `isStreaming` is true.
-  const plugins = useMemo(() => ({ math: mathPlugin, code }), [])
+  // `SyntaxHighlighter` below when `isStreaming` is true, and the code plugin
+  // itself arrives async (useCodePlugin) so shiki never blocks cold start.
+  const code = useCodePlugin()
+  const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
 
   const components = useMemo(
     () =>
@@ -503,18 +559,28 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),
         img: MarkdownImage,
-        // ```mermaid / ```svg fences route to their lazy renderers; every other
-        // language falls back to the Shiki-highlighted code block.
-        SyntaxHighlighter: (props: SyntaxHighlighterProps) => (
-          <RichCodeBlock
-            code={props.code}
-            fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
-            language={props.language}
-            streaming={isStreaming}
-          />
-        )
+        // ```mermaid / ```svg fences route to their lazy renderers; substantial
+        // html/svg/code fences promote to an artifact card that opens in the
+        // right rail; every other language falls back to the Shiki-highlighted
+        // code block.
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
+          const artifact = disableArtifacts ? null : detectArtifact(props.language, props.code)
+
+          if (artifact) {
+            return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
+          }
+
+          return (
+            <RichCodeBlock
+              code={props.code}
+              fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
+              language={props.language}
+              streaming={isStreaming}
+            />
+          )
+        }
       }) as StreamdownTextComponents,
-    [isStreaming]
+    [disableArtifacts, isStreaming]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {

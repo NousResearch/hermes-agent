@@ -212,6 +212,93 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_skill_invocation_is_titled_from_what_the_user_typed(self):
+        """A /skill turn embeds the whole skill body — the titler must never
+        see it, or the session gets named after the SKILL, not the request."""
+        skill_body = "Kick off a task in a fresh isolated git worktree. " * 20
+        expanded = (
+            '[IMPORTANT: The user has invoked the "work" skill, indicating they want '
+            "you to follow its instructions. The full skill content is loaded below.]\n\n"
+            f"{skill_body}\n\n"
+            "The user has provided the following instruction alongside the skill "
+            "invocation: fix the session title leak"
+        )
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Fixing The Session Title Leak"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title(expanded, "On it.")
+
+        sent = captured_kwargs["messages"][1]["content"]
+        assert "/work — fix the session title leak" in sent
+        assert "worktree" not in sent
+        assert "IMPORTANT" not in sent
+
+    def test_bare_skill_invocation_still_titles(self):
+        """No typed instruction — the titler gets the command, not the body."""
+        expanded = (
+            '[IMPORTANT: The user has invoked the "weather-forecast-lookup" skill, '
+            "indicating they want you to follow its instructions. The full skill "
+            "content is loaded below.]\n\nPull clean multi-day forecasts."
+        )
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Weather Forecast Lookup"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title(expanded, "Here you go.") == "Weather Forecast Lookup"
+
+        sent = captured_kwargs["messages"][1]["content"]
+        assert "/weather-forecast-lookup" in sent
+        assert "Pull clean multi-day forecasts" not in sent
+
+    def test_plain_message_reaches_the_titler_unchanged(self):
+        """The scaffolding summary must not touch an ordinary user turn."""
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "A Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("fix the session title leak", "On it.")
+
+        assert "fix the session title leak" in captured_kwargs["messages"][1]["content"]
+
+    def test_multiline_answer_collapses_to_its_first_line(self):
+        """A model that answers the prompt instead of titling it must not have
+        a shell transcript stored as the session title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "macOS Disk Cleanup\n\n$ df -h /\nFilesystem      Size  Used Avail\n"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("clean my disk", "Sure.") == "macOS Disk Cleanup"
+
+    def test_leading_blank_lines_do_not_empty_the_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "\n\n  Real Title  \nmore prose"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("q", "a") == "Real Title"
+
     def test_skips_when_title_generation_disabled(self):
         """auxiliary.title_generation.enabled=false disables automatic titles."""
         config = {"auxiliary": {"title_generation": {"enabled": False}}}

@@ -2376,3 +2376,135 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+# =========================================================================
+# Reader loop: orphaned grandchild holding the stdout pipe (issue #68915)
+# =========================================================================
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: select() on pipes")
+class TestReaderLoopOrphanedPipe:
+    """Regression tests for issue #68915.
+
+    When an agent command backgrounds a long-lived process (``node server.js
+    &``), the grandchild inherits the write end of the reader's stdout pipe.
+    The direct bash child exits, but the pipe never EOFs — the old blocking
+    ``read1()`` parked the reader thread forever, ``session.exited`` never
+    flipped on its own, and ``notify_on_complete`` never fired. The reader
+    must instead terminate shortly after the direct child exits, even while
+    a descendant still holds the pipe open.
+    """
+
+    def test_reader_exits_when_orphan_holds_pipe(self, registry):
+        """Reader loop must return promptly after the direct child exits,
+        even though a backgrounded descendant keeps the pipe open."""
+        proc = subprocess.Popen(
+            ["sh", "-c", "echo started; sleep 30 & exit 0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_orphan_reader")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        done = threading.Event()
+
+        def _run():
+            registry._reader_loop(s)
+            done.set()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        try:
+            # The direct child exits immediately; the reader must notice and
+            # return well before the 30s descendant releases the pipe.
+            assert done.wait(timeout=10.0), (
+                "_reader_loop is still blocked on the orphan-held pipe "
+                "(issue #68915) — session.exited would never flip and "
+                "notify_on_complete would never fire"
+            )
+            assert s.exited is True
+            assert s.exit_code == 0
+            assert s.completion_reason == "exited"
+            assert "started" in s.output_buffer
+            assert s.id in registry._finished
+        finally:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def test_reader_exit_fires_notify_on_complete(self, registry):
+        """The autonomous completion notification must not depend on a
+        poll()/wait() call when an orphan holds the pipe."""
+        proc = subprocess.Popen(
+            ["sh", "-c", "sleep 30 & echo bg-started"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_orphan_notify")
+        s.process = proc
+        s.pid = proc.pid
+        s.notify_on_complete = True
+        registry._running[s.id] = s
+
+        done = threading.Event()
+
+        def _run():
+            registry._reader_loop(s)
+            done.set()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        try:
+            assert done.wait(timeout=10.0), (
+                "_reader_loop blocked — completion notification lost (#68915)"
+            )
+            # Exactly one completion event must have been queued.
+            item = registry.completion_queue.get_nowait()
+            assert item["type"] == "completion"
+            assert item["session_id"] == s.id
+            assert item["exit_code"] == 0
+        finally:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def test_reader_still_streams_full_output_to_eof(self, registry):
+        """No-orphan case: the reader must still capture ALL output through
+        true EOF (the early-exit path must not race away buffered tail)."""
+        script = (
+            "for i in 1 2 3 4 5; do echo line-$i; done; "
+            "sleep 0.3; echo tail-after-sleep"
+        )
+        proc = subprocess.Popen(
+            ["sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_orphan_fulldrain")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        registry._reader_loop(s)
+
+        assert s.exited is True
+        assert s.exit_code == 0
+        for i in range(1, 6):
+            assert f"line-{i}" in s.output_buffer
+        assert "tail-after-sleep" in s.output_buffer

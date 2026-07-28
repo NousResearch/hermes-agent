@@ -149,9 +149,10 @@ class TestGenerate:
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
         assert captured["input"][0]["content"][0]["type"] == "input_text"
-        assert captured["tool_choice"]["type"] == "allowed_tools"
-        assert captured["tool_choice"]["mode"] == "required"
-        assert captured["tool_choice"]["tools"] == [{"type": "image_generation"}]
+        # Regression for #19505: the Codex backend 400s on every tool_choice
+        # shape we have for the hosted ``image_generation`` tool, so the
+        # provider must omit tool_choice entirely and rely on instructions.
+        assert "tool_choice" not in captured
 
         tool = captured["tools"][0]
         assert tool["type"] == "image_generation"
@@ -308,60 +309,73 @@ class TestGenerate:
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
 
-    def test_unsupported_image_tool_returns_capability_error(self, provider, monkeypatch):
+    def test_tool_choice_400_surfaces_verbatim_not_as_capability_error(
+        self, provider, monkeypatch
+    ):
+        """The tool_choice 400 must NOT be reported as an account limitation.
+
+        Regression for #19505 / #49008 / #31335: a previous version classified
+        this exact request-shape rejection as "Image generation is not enabled
+        for the current Codex account", telling every affected user to abandon
+        Codex over a bug in our own payload. The wire error must reach the user
+        unedited so it stays diagnosable.
+
+        Drives the REAL httpx boundary (not a mocked ``_collect_image_b64``) so
+        the classification path is actually exercised — mocking the collector
+        would skip the code under test entirely.
+        """
+        import httpx
+
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
 
-        def _unsupported(*args, **kwargs):
-            raise codex_plugin.CodexImageGenerationUnsupportedError(
-                "Tool choice 'image_generation' not found in 'tools' parameter."
-            )
+        body = json.dumps({
+            "error": {
+                "message": "Tool choice 'image_generation' not found in 'tools' parameter.",
+                "type": "invalid_request_error",
+                "param": "tool_choice",
+            }
+        })
 
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _unsupported)
+        def _handler(request):
+            return httpx.Response(400, text=body, request=request)
+
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda *args, **kwargs: real_client(
+                transport=httpx.MockTransport(_handler),
+                headers=kwargs.get("headers"),
+                timeout=kwargs.get("timeout"),
+            ),
+        )
 
         result = provider.generate("a cat")
 
         assert result["success"] is False
-        assert result["error_type"] == "capability_unsupported"
-        assert "current Codex account" in result["error"]
-        assert "OpenAI API key, FAL, or xAI" in result["error"]
+        assert result["error_type"] == "api_error"
+        assert "HTTP 400" in result["error"]
+        assert "tools' parameter" in result["error"]
+        # The account-entitlement misdiagnosis must not come back.
+        assert "not enabled for the current Codex account" not in result["error"]
+        assert result["error_type"] != "capability_unsupported"
 
 
-class TestCapabilityErrorDetection:
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "Tool choice 'image_generation' not found in 'tools' parameter.",
-            '{"error":{"message":"Tool choice \'image_generation\' not found in \'tools\' parameter."}}',
-        ],
-    )
-    def test_detects_exact_codex_image_tool_rejection(self, body):
-        assert codex_plugin._is_image_generation_unsupported_error(400, body) is True
+class TestRequestShape:
+    def test_payload_omits_tool_choice(self):
+        """Codex rejects every tool_choice shape for hosted image_generation."""
+        payload = codex_plugin._build_responses_payload(
+            prompt="a red circle",
+            size="1024x1024",
+            quality="low",
+        )
+        assert "tool_choice" not in payload
+        # The hosted tool itself is still requested, and instructions do the steering.
+        assert payload["tools"][0]["type"] == "image_generation"
+        assert payload["instructions"]
 
-    @pytest.mark.parametrize(
-        ("status_code", "body"),
-        [
-            (401, "Tool choice 'image_generation' not found in 'tools' parameter."),
-            (400, "Tool choice 'web_search' not found in 'tools' parameter."),
-            (400, "The image_generation request was rejected by moderation."),
-            (500, "Tool choice 'image_generation' not found in 'tools' parameter."),
-        ],
-    )
-    def test_does_not_misclassify_other_failures(self, status_code, body):
-        assert codex_plugin._is_image_generation_unsupported_error(status_code, body) is False
-
-    def test_does_not_match_error_message_with_extra_text(self):
-        body = json.dumps({
-            "error": {
-                "message": (
-                    "Tool choice 'image_generation' not found in 'tools' parameter "
-                    "because the request is malformed."
-                )
-            }
-        })
-
-        assert codex_plugin._is_image_generation_unsupported_error(400, body) is False
-
-    def test_collect_classifies_exact_http_error_after_large_metadata(self, monkeypatch):
+    def test_http_error_body_is_truncated_but_preserved(self, monkeypatch):
+        """A large error body is capped at 500 chars and still surfaced."""
         import httpx
 
         body = json.dumps({
@@ -385,13 +399,18 @@ class TestCapabilityErrorDetection:
             ),
         )
 
-        with pytest.raises(codex_plugin.CodexImageGenerationUnsupportedError):
+        with pytest.raises(RuntimeError, match="HTTP 400") as excinfo:
             codex_plugin._collect_image_b64(
                 "codex-token",
                 prompt="a cat",
                 size="1024x1024",
                 quality="low",
             )
+
+        message = str(excinfo.value)
+        # Body is capped, but the actionable wire message still reaches the user.
+        assert "tools' parameter" in message
+        assert len(message) < len(body)
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

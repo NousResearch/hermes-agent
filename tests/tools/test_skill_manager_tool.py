@@ -1027,6 +1027,12 @@ class TestExternalSkillMutations:
                 with patch(
                     "tools.skill_usage.get_record",
                     side_effect=lambda n: {"pinned": False},
+                ), patch(
+                    # Ownership runs before the pin guard; mark the skill
+                    # curator-managed so this test still isolates the PIN guard
+                    # (since #67140 an unmarked skill fails closed on ownership).
+                    "tools.skill_usage.load_usage",
+                    return_value={"my-skill": {"created_by": "agent"}},
                 ):
                     raw = skill_manage(
                         action="patch",
@@ -1073,7 +1079,95 @@ class TestExternalSkillMutations:
 
         result = json.loads(raw)
         assert result["success"] is False
-        assert "manually authored" in result["error"].lower()
+        # Refusal must name the ownership reason and point at the supported way
+        # in (`hermes curator adopt`), not just say "no".
+        assert "not curator-managed" in result["error"].lower()
+        assert "curator adopt" in result["error"]
+
+    @pytest.mark.parametrize(
+        ("action", "kwargs"),
+        [
+            ("patch", {"old_string": "Do the thing.", "new_string": "Changed."}),
+            ("edit", {"content": VALID_SKILL_CONTENT_2}),
+            ("delete", {}),
+            (
+                "write_file",
+                {"file_path": "references/new.md", "file_content": "new"},
+            ),
+            ("remove_file", {"file_path": "references/existing.md"}),
+        ],
+    )
+    def test_background_review_fails_closed_without_agent_ownership_record(
+        self, tmp_path, action, kwargs
+    ):
+        """Every autonomous mutation requires positive agent ownership proof."""
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            support = tmp_path / "manual-skill" / "references" / "existing.md"
+            support.parent.mkdir(parents=True)
+            support.write_text("keep", encoding="utf-8")
+            before = {
+                path.relative_to(tmp_path): path.read_bytes()
+                for path in tmp_path.rglob("*")
+                if path.is_file()
+            }
+
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch("tools.skill_usage.load_usage", return_value={}):
+                    raw = skill_manage(action=action, name="manual-skill", **kwargs)
+            finally:
+                reset_current_write_origin(token)
+
+            after = {
+                path.relative_to(tmp_path): path.read_bytes()
+                for path in tmp_path.rglob("*")
+                if path.is_file()
+            }
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        # Wording landed as "not curator-managed" (#67140) rather than
+        # "ownership"; the contract asserted here is the refusal + zero writes.
+        assert "not curator-managed" in result["error"].lower()
+        assert before == after
+
+    def test_background_review_fails_closed_when_ownership_lookup_errors(self, tmp_path):
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("manual-skill", VALID_SKILL_CONTENT)
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                with patch(
+                    "tools.skill_usage.load_usage",
+                    side_effect=ValueError("corrupt usage data"),
+                ):
+                    raw = skill_manage(
+                        action="patch",
+                        name="manual-skill",
+                        old_string="Do the thing.",
+                        new_string="Changed.",
+                    )
+            finally:
+                reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "ownership" in result["error"].lower()
+        assert "Do the thing." in (
+            tmp_path / "manual-skill" / "SKILL.md"
+        ).read_text(encoding="utf-8")
 
     def test_background_review_allows_agent_created_skill(self, tmp_path):
         """Agent-created skills (created_by='agent') are NOT blocked by the
@@ -1111,10 +1205,168 @@ class TestExternalSkillMutations:
                 reset_current_write_origin(token)
 
         result = json.loads(raw)
-        # Should not be blocked by the manual-skill guard (may be blocked by
+        # Should not be blocked by the ownership guard (may be blocked by
         # the consolidation-delete guard if absorbed_into is empty, but the
-        # manual-skill guard must not fire).
-        assert "manually authored" not in result.get("error", "").lower()
+        # ownership guard must not fire).
+        assert "not curator-managed" not in result.get("error", "").lower()
+
+
+class TestBackgroundOwnershipPolicyConsistency:
+    """The autonomous write policy must not depend on its own side effects.
+
+    Issue #67140: the ownership guard keyed on ``isinstance(usage_rec, dict)``,
+    so a local skill with NO usage record passed. The successful write then
+    called ``bump_patch()``, creating a ``created_by: null`` record — and the
+    identical write was refused from then on. "Allowed exactly once" is a race
+    with our own bookkeeping, not a policy.
+    """
+
+    @staticmethod
+    def _bg_patch(tmp_path, name, old, new):
+        from tools.skill_manager_tool import mark_background_review_skill_read
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            mark_background_review_skill_read(tmp_path / name / "SKILL.md")
+            return json.loads(skill_manage(
+                action="patch", name=name, old_string=old, new_string=new,
+            ))
+        finally:
+            reset_current_write_origin(token)
+
+    def test_missing_record_fails_closed_like_explicit_null(self, tmp_path, monkeypatch):
+        """Both unmanaged record shapes must produce the SAME verdict."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        with _skill_dir(tmp_path):
+            _create_skill("no-record", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.load_usage", return_value={}):
+                missing = self._bg_patch(
+                    tmp_path, "no-record", "Do the thing.", "Do the new thing.",
+                )
+            with patch(
+                "tools.skill_usage.load_usage",
+                return_value={"no-record": {"created_by": None}},
+            ):
+                null_rec = self._bg_patch(
+                    tmp_path, "no-record", "Do the thing.", "Do the new thing.",
+                )
+
+        assert missing["success"] is False
+        assert null_rec["success"] is False
+        assert ("not curator-managed" in missing["error"].lower()
+                and "not curator-managed" in null_rec["error"].lower())
+
+    def test_repeated_identical_write_gets_the_same_answer(self, tmp_path, monkeypatch):
+        """The real #67140 shape: no stubbing of load_usage, so the first write's
+        telemetry side effect is live. Both attempts must agree."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes" / "skills").mkdir(parents=True, exist_ok=True)
+        with _skill_dir(tmp_path):
+            _create_skill("flip-skill", VALID_SKILL_CONTENT)
+            first = self._bg_patch(
+                tmp_path, "flip-skill", "Do the thing.", "Do the new thing.",
+            )
+            second = self._bg_patch(
+                tmp_path, "flip-skill", "Do the thing.", "Do the new thing.",
+            )
+
+        assert first["success"] == second["success"], (
+            "autonomous write policy flipped between two identical attempts: "
+            f"first={first.get('success')} second={second.get('success')}"
+        )
+        assert first["success"] is False
+
+    def test_refusal_points_at_the_supported_way_in(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        with _skill_dir(tmp_path):
+            _create_skill("no-record", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.load_usage", return_value={}):
+                res = self._bg_patch(
+                    tmp_path, "no-record", "Do the thing.", "Do the new thing.",
+                )
+        assert "hermes curator adopt no-record" in res["error"]
+
+    def test_foreground_write_to_unmanaged_skill_still_allowed(self, tmp_path, monkeypatch):
+        """Fail-closed applies to AUTONOMOUS writes only. A user-directed
+        foreground edit to their own skill must keep working."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        with _skill_dir(tmp_path):
+            _create_skill("no-record", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.load_usage", return_value={}):
+                res = json.loads(skill_manage(
+                    action="patch", name="no-record",
+                    old_string="Do the thing.", new_string="Do the new thing.",
+                ))
+        assert res["success"] is True
+
+    def test_adopted_skill_becomes_writable_by_autonomous_curation(self, tmp_path, monkeypatch):
+        """Adoption is the documented path from refused to allowed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        with _skill_dir(tmp_path):
+            _create_skill("adopt-me", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.load_usage", return_value={}):
+                before = self._bg_patch(
+                    tmp_path, "adopt-me", "Do the thing.", "Do the new thing.",
+                )
+            with patch(
+                "tools.skill_usage.load_usage",
+                return_value={"adopt-me": {"created_by": "agent"}},
+            ), patch(
+                "tools.skill_usage.get_record",
+                side_effect=lambda n: {"created_by": "agent", "pinned": False},
+            ):
+                after = self._bg_patch(
+                    tmp_path, "adopt-me", "Do the thing.", "Do the new thing.",
+                )
+
+        assert before["success"] is False
+        assert after["success"] is True, after
+
+
+class TestReviewPromptMatchesEnforcement:
+    """The session-review prompt must only ask for writes enforcement permits.
+
+    Issue #67140 claims 1 and 3: the prompt told the reviewer to patch any
+    skill consulted in the conversation and stated pinned skills could be
+    improved, while the shared background guard refuses both. A prompt that
+    requests refused writes burns review turns on guaranteed failures.
+    """
+
+    @staticmethod
+    def _prompts():
+        from agent import background_review as br
+
+        out = []
+        for attr in ("_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT"):
+            text = getattr(br, attr, "")
+            if text:
+                out.append((attr, text))
+        assert out, "no review prompts found to check"
+        return out
+
+    def test_prompts_do_not_claim_pinned_skills_are_patchable(self):
+        for attr, text in self._prompts():
+            assert "CAN be improved" not in text, (
+                f"{attr} still tells the reviewer pinned skills are patchable, "
+                "but _background_review_write_guard refuses pinned writes"
+            )
+
+    def test_prompts_list_pinned_and_user_owned_as_protected(self):
+        for attr, text in self._prompts():
+            assert "PINNED skills" in text, f"{attr} omits the pin restriction"
+            assert "USER-OWNED skills" in text, f"{attr} omits the ownership restriction"
+
+    def test_prompts_point_at_adopt_instead_of_patching(self):
+        for attr, text in self._prompts():
+            assert "curator adopt" in text, (
+                f"{attr} does not tell the reviewer what to recommend when the "
+                "right skill is user-owned"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1309,6 +1561,15 @@ def _curator_pass(tmp_path, *, monkeypatch):
     (``get_hermes_home()``) resolves into the same tree the skill manager
     searches, and flips ``is_background_review()`` → True so the consolidation
     guard fires.
+
+    Also stubs the ownership check to report every skill as curator-managed.
+    The ownership guard runs BEFORE the consolidation / read-before-write
+    guards these tests target, and since #67140 a skill with no usage record
+    fails closed — so without this, every test in this class would be refused
+    by ownership and never reach the guard under test. The real curator only
+    ever operates on managed sediment, so "managed" is the correct premise
+    here; tests that specifically exercise the ownership guard set their own
+    records instead.
     """
     hermes_home = tmp_path / ".hermes"
     skills_root = hermes_home / "skills"
@@ -1317,6 +1578,7 @@ def _curator_pass(tmp_path, *, monkeypatch):
     with patch("tools.skill_manager_tool.SKILLS_DIR", skills_root), \
          patch("tools.skills_tool.SKILLS_DIR", skills_root), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
+         patch("tools.skill_usage._is_curator_managed_record", return_value=True), \
          patch("tools.skill_provenance.is_background_review", return_value=True):
         yield skills_root
 
@@ -1337,6 +1599,15 @@ def _skill_content(name: str) -> str:
         "Step 1: Do the thing.\n"
     )
 
+def _create_curator_skill(name: str, content: str):
+    """Create a skill and record the agent ownership a real curator create has."""
+    from tools.skill_usage import mark_agent_created
+
+    result = _create_skill(name, content)
+    assert result["success"] is True, result
+    mark_agent_created(name)
+    return result
+
 
 class TestCuratorConsolidationDeleteGuard:
     """The curator's LLM consolidation pass must fail CLOSED on unverified
@@ -1351,7 +1622,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_bare_prune_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill", absorbed_into="")
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1360,7 +1631,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_omitted_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill")  # absorbed_into omitted
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1368,7 +1639,7 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_whitespace_absorbed_into_during_curator_pass_refused(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("active-skill", VALID_SKILL_CONTENT)
+            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("active-skill", absorbed_into="   ")
         assert result["success"] is False
         assert result.get("_fail_closed") is True
@@ -1376,8 +1647,8 @@ class TestCuratorConsolidationDeleteGuard:
 
     def test_verified_consolidation_archives_recoverably(self, tmp_path, monkeypatch):
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("umbrella", _skill_content("umbrella"))
-            _create_skill("narrow", _skill_content("narrow"))
+            _create_curator_skill("umbrella", _skill_content("umbrella"))
+            _create_curator_skill("narrow", _skill_content("narrow"))
             result = _delete_skill("narrow", absorbed_into="umbrella")
         assert result["success"] is True, result
         assert result.get("_archived") is True
@@ -1392,7 +1663,7 @@ class TestCuratorConsolidationDeleteGuard:
         # The pre-existing target-existence check fires before the recoverable
         # archive — a hallucinated umbrella is refused and the skill stays put.
         with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_curator_skill("narrow", VALID_SKILL_CONTENT)
             result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
         assert result["success"] is False
         assert "does not exist" in result["error"]
@@ -1431,7 +1702,7 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
-            _create_skill("reviewed", _skill_content("reviewed"))
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
 
             blocked = json.loads(skill_manage(
                 action="patch",
@@ -1461,7 +1732,7 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
-            _create_skill("reviewed", _skill_content("reviewed"))
+            _create_curator_skill("reviewed", _skill_content("reviewed"))
             ref = tmp_path / ".hermes" / "skills" / "reviewed" / "references"
             ref.mkdir()
             (ref / "workflow.md").write_text("old workflow\n", encoding="utf-8")

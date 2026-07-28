@@ -38,6 +38,7 @@ For captures / actions with `capture_after=True`:
 
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 import logging
@@ -177,16 +178,39 @@ def _get_backend() -> ComputerUseBackend:
         return _backend
 
 
+def _shutdown_backend_atexit() -> None:
+    """Stop the cached backend so the cua-driver child doesn't outlive us.
+
+    The backend is cached per-process and holds a long-lived ``cua-driver``
+    subprocess, so without this the driver survives the Hermes process that
+    spawned it (#28152 item 3). #69903 kept the orphan from burning a core by
+    disabling the cursor overlay; the process itself still lingered.
+
+    Mirrors ``browser_tool``'s ``atexit.register(_emergency_cleanup_all_sessions)``
+    — same spawn-and-drive-a-subprocess shape. atexit only, no signal handlers:
+    a ``SystemExit`` raised from a prompt_toolkit key binding corrupts its
+    coroutine state and makes the process unkillable. Never raises, since an
+    exception escaping atexit prints a traceback on every exit.
+    """
+    global _backend
+    # Drop the lock before stop() — teardown budgets 5s and shouldn't block
+    # an unrelated caller waiting to spawn.
+    with _backend_lock:
+        backend, _backend = _backend, None
+    if backend is None:
+        return
+    try:
+        backend.stop()
+    except Exception as e:
+        logger.debug("cua-driver atexit teardown failed: %s", e)
+
+
+atexit.register(_shutdown_backend_atexit)
+
+
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
-    global _backend
-    with _backend_lock:
-        if _backend is not None:
-            try:
-                _backend.stop()
-            except Exception:
-                pass
-        _backend = None
+    _shutdown_backend_atexit()
     _AUX_VISION_ROUTE_CACHE.clear()
     with _approval_lock:
         _session_auto_approve.clear()

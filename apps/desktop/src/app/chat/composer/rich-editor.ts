@@ -11,6 +11,7 @@ import {
   directiveIconElement,
   directiveIconSvg,
   formatRefValue,
+  refChipLabel,
   slashChipClass,
   type SlashChipKind,
   slashIconElement
@@ -34,10 +35,6 @@ export function unquoteRef(raw: string) {
   return quoted ? raw.slice(1, -1) : raw.replace(/[,.;!?]+$/, '')
 }
 
-export function refLabel(id: string) {
-  return id.split(/[\\/]/).filter(Boolean).pop() || id
-}
-
 /** Always-quote variant of formatRefValue — chips need a fence even for safe values. */
 export function quoteRefValue(value: string) {
   if (!value.includes('`')) {
@@ -59,7 +56,9 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
 
-  return `<span contenteditable="false" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(displayLabel || refLabel(id))}</span></span>`
+  const label = displayLabel || refChipLabel(kind, id)
+
+  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -69,12 +68,13 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   const label = document.createElement('span')
 
   chip.contentEditable = 'false'
+  chip.title = id
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
   chip.className = DIRECTIVE_CHIP_CLASS
   label.className = 'truncate'
-  label.textContent = displayLabel || refLabel(id)
+  label.textContent = displayLabel || refChipLabel(kind, id)
   chip.append(directiveIconElement(kind), label)
 
   return chip
@@ -144,14 +144,15 @@ function composerSelectionRange(editor: HTMLElement) {
   return { range, selection }
 }
 
-/** Insert plain text at the caret (replacing any selection). Pastes use this
- *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
- *  ~O(n²) on large multiline blobs. */
-export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+/** Insert text at the caret (replacing any selection), with any `@kind:value`
+ *  directives in it landing as chips. Pastes use this instead of
+ *  `execCommand('insertText')` — Chromium's editing pipeline is ~O(n²) on large
+ *  multiline blobs. */
+export function insertComposerContentsAtCaret(editor: HTMLElement, text: string) {
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
 
-  appendTextWithBreaks(fragment, text)
+  appendComposerContents(fragment, text)
 
   const tail = fragment.lastChild
 
@@ -170,6 +171,41 @@ export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
     selection?.removeAllRanges()
     selection?.addRange(caret)
   }
+}
+
+/** Swap the `length` characters immediately before a collapsed caret for
+ *  `fragment`, leaving the caret after it. Returns whether it ran — a caret that
+ *  isn't inside a text node holding the whole token is left alone. */
+export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment: DocumentFragment) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit?.range.collapsed) {
+    return false
+  }
+
+  const { startContainer, startOffset } = hit.range
+
+  if (startContainer.nodeType !== Node.TEXT_NODE || startOffset < length) {
+    return false
+  }
+
+  const range = document.createRange()
+  const tail = fragment.lastChild
+
+  range.setStart(startContainer, startOffset - length)
+  range.setEnd(startContainer, startOffset)
+  range.deleteContents()
+  range.insertNode(fragment)
+
+  if (tail) {
+    range.setStartAfter(tail)
+  }
+
+  range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(range)
+
+  return true
 }
 
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND
@@ -294,6 +330,106 @@ export function placeCaretEnd(element: HTMLElement) {
   range.collapse(false)
   selection?.removeAllRanges()
   selection?.addRange(range)
+}
+
+/** The caret's offset in `composerPlainText` coordinates, so it can be restored
+ *  after the editor is re-rendered from text (undo/redo). A chip counts as its
+ *  whole `@kind:value` text — the same units the snapshot measures. */
+export function caretOffsetInEditor(editor: HTMLElement): number {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  if (!range || !editor.contains(range.commonAncestorContainer)) {
+    return composerPlainText(editor).length
+  }
+
+  const before = range.cloneRange()
+  before.selectNodeContents(editor)
+  before.setEnd(range.startContainer, range.startOffset)
+
+  // The scratch container must carry the editor's slot marker: composerPlainText
+  // appends a trailing "\n" to any other block element, which would inflate
+  // every offset by one and land the restored caret a character late.
+  const container = document.createElement('div')
+  container.dataset.slot = RICH_INPUT_SLOT
+  container.append(before.cloneContents())
+
+  return composerPlainText(container).length
+}
+
+/** Place the caret `offset` characters into the editor, in the same
+ *  `composerPlainText` coordinates `caretOffsetInEditor` reports. Lands after a
+ *  chip it would otherwise split, since a chip is a single atomic unit. */
+export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
+  const selection = window.getSelection()
+
+  if (!selection) {
+    return
+  }
+
+  let remaining = offset
+
+  const walk = (node: Node): Range | null => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const length = (child.textContent || '').length
+
+        if (remaining <= length) {
+          const range = document.createRange()
+          range.setStart(child, remaining)
+          range.collapse(true)
+
+          return range
+        }
+
+        remaining -= length
+
+        continue
+      }
+
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        continue
+      }
+
+      const el = child as HTMLElement
+
+      // Chips and <br> are atomic: consume their serialized length whole.
+      if (el.dataset.refText || el.tagName === 'BR') {
+        const length = el.dataset.refText ? el.dataset.refText.length : 1
+
+        if (remaining < length) {
+          const range = document.createRange()
+          range.setStartBefore(el)
+          range.collapse(true)
+
+          return range
+        }
+
+        remaining -= length
+
+        continue
+      }
+
+      const hit = walk(el)
+
+      if (hit) {
+        return hit
+      }
+    }
+
+    return null
+  }
+
+  const range = walk(editor)
+
+  if (range) {
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    return
+  }
+
+  placeCaretEnd(editor)
 }
 
 /** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */

@@ -213,6 +213,19 @@ Use HTTP servers when:
 
 Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, dynamic client registration, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
 
+:::tip Figma remote MCP
+Figma's hosted endpoint (`https://mcp.figma.com/mcp`) allowlists Dynamic Client Registration by **exact `client_name`** — bare `"Hermes Agent"` 403s, while `"Claude Code"` and `"Codex"` succeed. Hermes auto-sets `oauth.client_name: "Claude Code"` for `mcp.figma.com` so install/login works without a special trick:
+
+```yaml
+mcp_servers:
+  figma:
+    url: "https://mcp.figma.com/mcp"
+    auth: oauth
+```
+
+Or: `hermes mcp install figma`, then `hermes mcp login figma`.
+:::
+
 ```yaml
 mcp_servers:
   linear:
@@ -459,6 +472,24 @@ mcp_servers:
 ```
 
 All server tools are registered except the excluded ones.
+
+### Glob patterns
+
+Both lists accept fnmatch-style globs alongside exact names — essential for
+huge flat surfaces like Cloudflare's API MCP (`?codemode=false`, ~3,300
+tools) where excluding product areas one endpoint at a time is impractical:
+
+```yaml
+mcp_servers:
+  cloudflare:
+    url: "https://mcp.cloudflare.com/mcp?codemode=false"
+    auth: oauth
+    tools:
+      exclude: ["*_radar_*", "*_accounts_dlp_*", "*_zones_web3_*"]
+```
+
+Entries without glob metacharacters (`*`, `?`, `[`) match exactly — `docs`
+excludes only the tool named `docs`, never `docs_search`.
 
 ### Precedence rule
 

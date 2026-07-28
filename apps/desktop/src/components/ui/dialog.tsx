@@ -3,7 +3,6 @@ import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -28,7 +27,7 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        'fixed inset-0 z-[120] pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        'fixed inset-0 z-(--z-modal-backdrop) pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
         className
       )}
       data-slot="dialog-overlay"
@@ -99,25 +98,19 @@ function DialogContent({
   // an input) is what most dialogs want. Dialogs with no input should pass
   // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
 
-  // `Tip` wraps `DialogPrimitive.Close asChild` (not the other way around) so
-  // Radix's `Slot` can forward `Close`'s `onClick` straight through to the
-  // `Button`. When `Tip` was the innermost wrapper, `onClick` was absorbed by
-  // `Tip`'s passthrough `...props` and forwarded to `TooltipContent` instead of
-  // the button, so clicking the close button silently did nothing.
+  // No tip on the X — the glyph is the label. Keep aria-label / sr-only for a11y.
   const closeButton = showCloseButton ? (
-    <Tip label={t.common.close}>
-      <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-        <Button
-          aria-label={t.common.close}
-          className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          size="icon-xs"
-          variant="ghost"
-        >
-          <X className="size-4" />
-          <span className="sr-only">{t.common.close}</span>
-        </Button>
-      </DialogPrimitive.Close>
-    </Tip>
+    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
+    </DialogPrimitive.Close>
   ) : null
 
   // With a banner, the border can't live on the scroll/clip box (it would draw a
@@ -130,7 +123,7 @@ function DialogContent({
         <DialogOverlay />
         <DialogPrimitive.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-[130] pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+            'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             widthClass,
             className,
             // Callers often pass `gap-*` for the no-banner grid layout — suppress
@@ -174,7 +167,7 @@ function DialogContent({
           // Cap height at 85vh and let long content scroll inside the dialog
           // instead of overflowing off-screen (long cron titles, tool detail
           // dumps, etc.). Individual dialogs can still override via className.
-          'fixed left-1/2 top-1/2 z-[130] pointer-events-auto grid max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-3 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto grid max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-3 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           widthClass,
           className
         )}

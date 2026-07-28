@@ -22,7 +22,7 @@ import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
-import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme } from '../theme.js'
+import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -126,11 +126,13 @@ const themesEqual = (a: Theme, b: Theme) => {
 // the theme's text color. Without the pair, a dark skin on a light terminal
 // leaves default-fg text at the HOST's near-black: invisible. Opt-in stays
 // intact: no `background` ⇒ both defaults restore to the terminal's own.
+// The text tone resolves through themeToneHex because a limited-palette
+// terminal quantizes it to `ansi256(N)`, which OSC-10 cannot speak.
 const paintTerminalDefaults = (theme: Theme) => {
   const background = lastSkin?.colors?.background ?? ''
 
   setTerminalBackground(background)
-  setTerminalForeground(isPaintableHex(background) ? theme.color.text : '')
+  setTerminalForeground(isPaintableHex(background) ? themeToneHex(theme.color.text) : '')
 }
 
 const applySkin = (s: GatewaySkin) => {

@@ -58,6 +58,26 @@ def _lane_ids(project):
     return [g["id"] for repo in project["repos"] for g in repo["groups"]]
 
 
+def _home(tree):
+    """The Home bucket, or None when nothing was left unplaced."""
+    return next((p for p in tree["projects"] if p["id"] == pt.NO_PROJECT_ID), None)
+
+
+def _home_session_ids(tree):
+    home = _home(tree)
+    return [s["id"] for s in _sessions_of(home)] if home else []
+
+
+def _sessions_of(project):
+    return [s for repo in project["repos"] for g in repo["groups"] for s in g["sessions"]]
+
+
+def _real_project_ids(tree):
+    """Project ids excluding the Home bucket (which is always present when any
+    session went unplaced, so asserting on it in every test would be noise)."""
+    return [p["id"] for p in tree["projects"] if p["id"] != pt.NO_PROJECT_ID]
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -306,12 +326,12 @@ def test_scoped_session_ids_is_union_of_placed_sessions():
     )
     owned = _session("/www/app", branch="main")
     auto = _session("/www/repo", branch="main")
-    homeless = _session(None)  # no cwd -> belongs to no project
+    homeless = _session(None)  # no cwd -> the Home bucket
 
     tree = pt.build_tree([project], [owned, auto, homeless], [], resolve, hydrate=True)
 
-    assert set(tree["scoped_session_ids"]) == {owned["id"], auto["id"]}
-    assert homeless["id"] not in tree["scoped_session_ids"]
+    assert set(tree["scoped_session_ids"]) == {owned["id"], auto["id"], homeless["id"]}
+    assert _home_session_ids(tree) == [homeless["id"]]
 
 
 def test_overview_drops_session_rows_but_keeps_counts_and_previews():
@@ -403,8 +423,8 @@ def test_nested_project_folders_pick_the_deepest_match():
 
 def test_junk_root_never_becomes_an_auto_project():
     # A session whose git root is HERMES_HOME (config/state) must not spawn a
-    # phantom project; it falls through to flat Recents (unscoped). A real repo
-    # alongside it still groups normally.
+    # phantom project; it lands in the Home bucket. A real repo alongside it
+    # still groups normally.
     resolve = _resolver(
         {
             "/home/me/.hermes": ("/home/me/.hermes", "/home/me/.hermes"),
@@ -417,9 +437,8 @@ def test_junk_root_never_becomes_an_auto_project():
 
     tree = pt.build_tree([], [junk, real], [], resolve, hydrate=True, is_junk_root=is_junk)
 
-    ids = {p["id"] for p in tree["projects"]}
-    assert ids == {"/www/app"}
-    assert junk["id"] not in tree["scoped_session_ids"]
+    assert _real_project_ids(tree) == ["/www/app"]
+    assert _home_session_ids(tree) == [junk["id"]]
     assert real["id"] in tree["scoped_session_ids"]
 
 
@@ -462,8 +481,159 @@ def test_broad_default_non_git_cwd_stays_unscoped():
         is_junk_cwd=lambda path: path in {"/home/test", "/home/test/.hermes"},
     )
 
-    assert tree["projects"] == []
-    assert detached["id"] not in tree["scoped_session_ids"]
+    assert _real_project_ids(tree) == []
+    assert _home_session_ids(tree) == [detached["id"]]
+
+
+def test_deleted_sibling_worktree_folds_into_parent_home_checkout():
+    # A deleted <repo>-<suffix> worktree leaves its session with an unresolvable
+    # cwd and no persisted root. It joins the parent's trunk lane — no dead-path
+    # lane, no phantom project.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-agent-session-links"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+    project = tree["projects"][0]
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+    assert _lane_ids(project) == ["/www/hermes-agent::branch::main"]
+    main = project["repos"][0]["groups"][0]
+    assert main["isMain"] and main["path"] == "/www/hermes-agent"
+    assert len(main["sessions"]) == 2
+
+
+def test_deleted_sibling_worktree_subdir_folds_into_parent_home_checkout():
+    # Same as above, but the session's cwd is a SUBDIR of the deleted worktree
+    # (an agent that cd-ed into `<repo>-<suffix>/apps/desktop`). The leaf name
+    # ("desktop") shares nothing with the repo, so the sibling probe has to walk
+    # the ancestors — otherwise the dead path is minted as its own project.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-agent-guiperf/apps/desktop"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+    project = tree["projects"][0]
+    assert _lane_ids(project) == ["/www/hermes-agent::branch::main"]
+    assert len(project["repos"][0]["groups"][0]["sessions"]) == 2
+
+
+def test_deleted_unrelated_workspace_does_not_become_a_project():
+    # A deleted dir the sibling probe can't reach by name (`hermes-salvage-drafts`
+    # shares no prefix with `hermes-agent`; `/tmp/scratch` was never a worktree)
+    # must not be promoted to a phantom project — it can never be opened and can
+    # only be dismissed by hand. Those sessions land in the Home bucket.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    live, salvage, scratch = (
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-salvage-drafts/apps/desktop"),
+        _session("/tmp/scratch"),
+    )
+    on_disk = {"/www/hermes-agent"}
+
+    tree = pt.build_tree([], [live, salvage, scratch], [], resolve, hydrate=True, exists=lambda p: p in on_disk)
+
+    assert _real_project_ids(tree) == ["/www/hermes-agent"]
+    assert set(_home_session_ids(tree)) == {salvage["id"], scratch["id"]}
+
+
+def test_existing_non_git_workspace_still_becomes_a_project():
+    # The existence guard keys on the DIRECTORY, not on git-ness: a plain folder
+    # that's still on disk is a legitimate workspace and must keep its project.
+    sessions = [_session("/www/notes")]
+
+    tree = pt.build_tree([], sessions, [], lambda _cwd: None, hydrate=True, exists=lambda _p: True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/notes"]
+
+
+def test_stale_persisted_repo_root_does_not_become_a_project():
+    # A session carrying a git_repo_root whose repo has since been deleted must
+    # not resurrect it as a project on the strength of the persisted value alone.
+    stale = _session("/tmp/gone/sub", repo_root="/tmp/gone")
+
+    tree = pt.build_tree([], [stale], [], lambda _cwd: None, hydrate=True, exists=lambda _p: False)
+
+    assert _real_project_ids(tree) == []
+    assert _home_session_ids(tree) == [stale["id"]]
+
+
+def test_exists_defaults_to_keeping_everything():
+    # Omitting `exists` (remote backends, which can't stat) preserves the old
+    # behavior: guessing "gone" would wrongly hide a project on the other host.
+    sessions = [_session("/remote/workspace")]
+
+    tree = pt.build_tree([], sessions, [], lambda _cwd: None, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/remote/workspace"]
+
+
+def test_sibling_probe_is_bounded():
+    # Each miss costs a git invocation, and this runs per session, so a deeply
+    # nested unresolvable cwd must not fan out into an unbounded probe storm.
+    probed = []
+
+    def resolve(cwd):
+        probed.append(cwd)
+        return None
+
+    assert pt._probe_sibling_worktree("/a-b-c/d-e-f/g-h-i/j-k-l", resolve) == ""
+    assert len(probed) <= pt._MAX_SIBLING_PROBES
+
+
+def test_home_bucket_leads_the_tree_and_is_lossless():
+    # Every session a project didn't claim belongs to Home, and Home leads the
+    # list — so the grouped view shows the same set of sessions as flat Recents.
+    resolve = _resolver({"/www/app": ("/www/app", "/www/app"), "/home/me": ("/home/me", "/home/me")})
+    owned = _session("/www/app", branch="main")
+    cwdless = _session(None)
+    junked = _session("/home/me", branch="main")
+
+    tree = pt.build_tree(
+        [],
+        [owned, cwdless, junked],
+        [],
+        resolve,
+        hydrate=True,
+        is_junk_root=lambda root: root == "/home/me",
+    )
+
+    assert tree["projects"][0]["id"] == pt.NO_PROJECT_ID
+    assert set(_home_session_ids(tree)) == {cwdless["id"], junked["id"]}
+    assert {s["id"] for p in tree["projects"] for s in _sessions_of(p)} == {
+        owned["id"],
+        cwdless["id"],
+        junked["id"],
+    }
+
+
+def test_home_bucket_is_absent_when_every_session_is_placed():
+    # No leftovers, no Home row — a fully-organized sidebar shows only projects.
+    resolve = _resolver({"/www/app": ("/www/app", "/www/app")})
+
+    tree = pt.build_tree([], [_session("/www/app", branch="main")], [], resolve, hydrate=True)
+
+    assert _home(tree) is None
+
+
+def test_home_bucket_carries_previews_and_drops_rows_in_overview_mode():
+    sessions = [_session(None, started_at=t, last_active=t) for t in (10, 30, 20, 40)]
+
+    tree = pt.build_tree([], sessions, [], resolve=None, preview_limit=3, hydrate=False)
+    home = _home(tree)
+
+    assert home["sessionCount"] == 4
+    assert home["lastActive"] == 40
+    assert [s["last_active"] for s in home["previewSessions"]] == [40, 30, 20]
+    assert _sessions_of(home) == []
+    assert home["isNoProject"] is True
+    assert home["path"] is None
 
 
 def test_colliding_repo_basenames_disambiguate_labels():

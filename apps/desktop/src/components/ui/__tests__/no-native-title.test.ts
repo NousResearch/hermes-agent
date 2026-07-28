@@ -5,12 +5,12 @@ import { describe, expect, it } from 'vitest'
 
 // Static-analysis guard: no <button> or <Button> element in the desktop renderer
 // may use the native HTML `title=` attribute. Native tooltips are unstyled,
-// delayed (~500ms OS default), and visually inconsistent with the app's instant
-// themed `Tip` component. Use `<Tip label={...}>` instead.
+// delayed (~500ms OS default), and visually inconsistent with the themed `Tip`.
+// When a tip is warranted (see DESIGN.md — not every icon, never menu triggers),
+// use `<Tip label={...}>` instead of `title=`.
 //
 // This is a source-text scan, not a behavior test — it's the same category as
 // an ESLint rule, expressed as a vitest so it runs with the rest of the suite.
-// See DESIGN.md "Buttons — one component" for the rule.
 
 // Recursively walk a directory and collect all .tsx file paths.
 function collectTsxFiles(dir: string): string[] {

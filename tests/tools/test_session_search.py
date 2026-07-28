@@ -20,6 +20,7 @@ from tools.session_search_tool import (
     _is_compacted_message,
     _is_compression_ended,
     _resolve_to_parent,
+    _session_link,
     session_search,
 )
 
@@ -380,18 +381,98 @@ class TestScrollShape:
         assert result["success"] is False
 
     def test_scroll_rejects_current_session_lineage(self, db):
-        _seed_modpack_sessions(db)
-        # Grab some valid id from s_oldest
-        disc = json.loads(session_search(query="modpack", limit=3, db=db))
-        match = [r for r in disc["results"] if r["session_id"] == "s_oldest"]
-        if match:
-            mid = match[0]["match_message_id"]
-            result = json.loads(session_search(
-                session_id="s_oldest", around_message_id=mid, db=db,
-                current_session_id="s_oldest",
-            ))
-            assert result["success"] is False
-            assert "current session" in result.get("error", "").lower()
+        db.create_session("s_current", source="cli")
+        mid = db.append_message("s_current", role="user", content="still live")
+
+        result = json.loads(session_search(
+            session_id="s_current", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is False
+        assert "current session" in result.get("error", "").lower()
+
+    def test_scroll_allows_compacted_anchor_in_current_session(self, db):
+        db.create_session("s_current", source="cli")
+        db.append_message(
+            "s_current", role="user", content="history removed from live context"
+        )
+        db.archive_and_compact("s_current", [
+            {"role": "assistant", "content": "Compacted history summary"},
+        ])
+
+        discovery = json.loads(session_search(
+            query="history removed", db=db, current_session_id="s_current",
+        ))
+        assert discovery["count"] == 1
+        anchor = discovery["results"][0]
+
+        result = json.loads(session_search(
+            session_id=anchor["session_id"],
+            around_message_id=anchor["match_message_id"],
+            db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is True
+        assert any(
+            message["id"] == anchor["match_message_id"]
+            for message in result["messages"]
+        )
+
+    def test_scroll_allows_compression_ended_parent_from_continuation(self, db):
+        db.create_session("s_parent", source="cli")
+        mid = db.append_message(
+            "s_parent", role="user", content="history summarized into child"
+        )
+        db.end_session("s_parent", "compression")
+        db.create_session("s_current", source="cli", parent_session_id="s_parent")
+
+        result = json.loads(session_search(
+            session_id="s_parent", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is True
+        assert any(message["id"] == mid for message in result["messages"])
+
+    def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):
+        db.create_session("s_current", source="cli")
+        db.create_session(
+            "s_delegate", source="delegate", parent_session_id="s_current"
+        )
+        mid = db.append_message(
+            "s_delegate", role="assistant", content="live delegated result"
+        )
+
+        result = json.loads(session_search(
+            session_id="s_delegate", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is False
+        assert "current session" in result.get("error", "").lower()
+
+    def test_scroll_rejects_rewound_anchor_in_compression_parent(self, db):
+        db.create_session("s_parent", source="cli")
+        mid = db.append_message(
+            "s_parent", role="user", content="message removed by rewind"
+        )
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
+            (mid,),
+        )
+        db._conn.commit()
+        db.end_session("s_parent", "compression")
+        db.create_session("s_current", source="cli", parent_session_id="s_parent")
+
+        result = json.loads(session_search(
+            session_id="s_parent", around_message_id=mid, db=db,
+            current_session_id="s_current",
+        ))
+
+        assert result["success"] is False
+        assert "current session" in result.get("error", "").lower()
 
     def test_scroll_invalid_around_message_id_errors(self, db):
         _seed_modpack_sessions(db)
@@ -490,6 +571,69 @@ class TestReadShape:
         assert result["message_count"] == 50
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
+
+
+# =========================================================================
+# Session links — the value the agent writes to point the user at a session
+# =========================================================================
+
+def _linked_session_id(link: str) -> str:
+    """Recover the session id from an `@session:[<profile>/]<id>` value."""
+    assert link.startswith("@session:"), link
+    value = link[len("@session:"):]
+
+    return value.rsplit("/", 1)[-1]
+
+
+class TestSessionLink:
+    def test_link_carries_the_named_profile(self):
+        assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
+
+    def test_link_falls_back_to_a_bare_id_when_the_profile_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name",
+            lambda: "custom",
+        )
+
+        assert _session_link("s_oldest") == "@session:s_oldest"
+
+    def test_link_survives_a_failure_to_resolve_the_profile(self, monkeypatch):
+        def boom():
+            raise RuntimeError("no profile")
+
+        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", boom)
+
+        assert _session_link("s_oldest") == "@session:s_oldest"
+
+    def test_read_result_links_to_the_session_it_read(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(session_id="s_oldest", db=db))
+
+        assert _linked_session_id(result["link"]) == result["session_id"]
+
+    def test_every_discovery_result_links_to_its_own_session(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=5, db=db))
+
+        assert result["results"]
+        for entry in result["results"]:
+            assert _linked_session_id(entry["link"]) == entry["session_id"]
+
+    def test_every_browse_result_links_to_its_own_session(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(db=db))
+
+        assert result["results"]
+        for entry in result["results"]:
+            assert _linked_session_id(entry["link"]) == entry["session_id"]
+
+    def test_link_splits_the_way_the_tool_parses_it_back(self):
+        """The agent hands its own link back as session_id; the value has to
+        survive the profile/id partition in session_search."""
+        value = _session_link("s_middle", "work")[len("@session:"):]
+        profile, _, session_id = value.partition("/")
+
+        assert (profile, session_id) == ("work", "s_middle")
 
 
 # =========================================================================

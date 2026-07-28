@@ -66,7 +66,9 @@ def test_busy_interrupt_mode_redirects_active_turn(monkeypatch):
 
     assert resp["result"]["status"] == "redirected"
     assert seen == ["redirect"]
-    assert session["inflight_turn"]["user"] == "redirect"
+    # Appended, not overwritten: the original prompt must stay recoverable.
+    assert session["inflight_turn"]["user"] == "original request"
+    assert session["inflight_turn"]["corrections"] == ["redirect"]
     assert session.get("queued_prompt") is None
 
 
@@ -97,6 +99,35 @@ def test_busy_queue_mode_queues_without_interrupting(monkeypatch):
     assert resp["result"]["status"] == "queued"
     assert calls["interrupt"] == 0
     assert session["queued_prompt"]["text"] == "later"
+
+
+def test_queued_flag_overrides_mode_never_touches_live_turn(monkeypatch):
+    # A client queue drain that loses the settle race (client saw idle, server
+    # still unwinding) must stay queue-semantics: run AFTER the live turn,
+    # never redirect or interrupt it. Without the override, busy_input_mode
+    # "interrupt" turned explicitly-queued text into a live-turn correction —
+    # the "force-sending the queue is a dice roll" bug.
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: (_ for _ in ()).throw(
+            AssertionError("queued drain must not redirect the live turn")
+        ),
+        steer=lambda text: (_ for _ in ()).throw(
+            AssertionError("queued drain must not steer the live turn")
+        ),
+        interrupt=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("queued drain must not interrupt the live turn")
+        ),
+    )
+    session = _session(agent=agent, running=True)
+
+    resp = server._handle_busy_submit(
+        "r1", "sid", session, "next turn text", "ws-1", queued=True
+    )
+
+    assert resp["result"]["status"] == "queued"
+    assert session["queued_prompt"]["text"] == "next turn text"
 
 
 def test_busy_steer_mode_injects_when_accepted(monkeypatch):

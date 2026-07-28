@@ -1576,7 +1576,7 @@ def test_create_task_includes_warning_when_no_dispatcher(client, monkeypatch):
     # Force the dispatcher probe to report "not running".
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence",
-        lambda: (False, "No gateway is running — start `hermes gateway start`."),
+        lambda **kw: (False, "No gateway is running — start `hermes gateway start`."),
     )
     r = client.post(
         "/api/plugins/kanban/tasks",
@@ -1592,7 +1592,7 @@ def test_create_task_no_warning_when_dispatcher_up(client, monkeypatch):
     """Dispatcher running -> no `warning` field in the response."""
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence",
-        lambda: (True, ""),
+        lambda **kw: (True, ""),
     )
     r = client.post(
         "/api/plugins/kanban/tasks",
@@ -1607,7 +1607,7 @@ def test_create_task_no_warning_on_triage(client, monkeypatch):
     anyway until promoted)."""
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence",
-        lambda: (False, "oh no"),
+        lambda **kw: (False, "oh no"),
     )
     r = client.post(
         "/api/plugins/kanban/tasks",
@@ -1700,7 +1700,7 @@ def test_single_task_endpoint_survives_task_age_exception(client, monkeypatch):
 
 def test_create_task_probe_error_does_not_break_create(client, monkeypatch):
     """Probe failure must never break task creation."""
-    def _raise():
+    def _raise(**kw):
         raise RuntimeError("probe crashed")
     monkeypatch.setattr(
         "hermes_cli.kanban._check_dispatcher_presence", _raise,

@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils'
 import { $renamingPath, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
 import { $sidebarWorkspaceNodeOpen, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { setCurrentSessionPreviewTarget } from '@/store/preview'
+import { openPreview } from '@/store/preview'
 import {
   $reviewFiles,
   $reviewLoading,
@@ -105,6 +105,7 @@ export function ReviewFileTree() {
   const [animate, setAnimate] = useState(false)
   const armed = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!open) {
       armed.current = false
@@ -112,6 +113,7 @@ export function ReviewFileTree() {
     }
   }, [open])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (open && !loading && !armed.current) {
       armed.current = true
@@ -275,7 +277,7 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
         const preview = await normalizeOrLocalPreviewTarget(dragPath)
 
         if (preview) {
-          setCurrentSessionPreviewTarget(preview, 'file-browser', dragPath)
+          openPreview(preview, 'file-browser')
         }
       } catch (error) {
         notifyError(error, t.rightSidebar.previewUnavailable)

@@ -156,6 +156,28 @@ ACP mode uses the same Hermes configuration as the CLI:
 
 Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run ACP clients; this opens Hermes' interactive model/provider setup.
 
+## Host integration
+
+These variables are set by an **ACP host process** (an editor or another agent
+harness) on the Hermes subprocess it spawns. They are not user configuration —
+do not set them by hand in `.env` or `config.yaml`.
+
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `HERMES_ACP_SKIP_CONFIGURED_MCP` | `1` | Skip starting the **globally configured** MCP servers from `config.yaml` before the ACP JSON-RPC loop begins. |
+
+Hermes normally starts every MCP server configured in `config.yaml` before it
+enters the ACP JSON-RPC loop. A host that owns MCP itself — passing the
+session's servers explicitly through `session/new` — does not need that global
+startup, and an unrelated slow or interactive MCP server would otherwise delay
+`initialize`. Setting the marker to exactly `1` lets such a host skip it.
+
+Only the global `config.yaml` discovery is skipped. **MCP servers supplied by
+the ACP session through `session/new` are still registered**, so a host loses
+no capability it asked for. Any other value (unset, empty, `0`, `false`) keeps
+the default behavior, so an unrelated truthy-looking string cannot silently
+disable MCP.
+
 ## Session behavior
 
 ACP sessions are tracked by the ACP adapter's in-memory session manager while the server is running.

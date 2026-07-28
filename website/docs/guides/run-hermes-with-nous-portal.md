@@ -228,7 +228,7 @@ The quarantine clears automatically on successful re-login.
 
 ### Model I want isn't in the `/model` picker
 
-The Portal catalog mirrors OpenRouter's model list (300+). If a model is missing, try typing the OpenRouter-style slug directly:
+The Portal catalog draws on OpenRouter's model list (300+) plus models served through proprietary or secondary providers. If a model is missing, try typing the OpenRouter-style slug directly:
 
 ```bash
 /model anthropic/claude-opus-4.6

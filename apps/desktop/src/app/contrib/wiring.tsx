@@ -16,6 +16,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
+import { FindBar } from '@/components/find-bar'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
@@ -31,7 +32,7 @@ import { latestSessionTodos } from '@/lib/todos'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
-import { $filePreviewTarget, $previewTarget } from '@/store/preview'
+import { $previewTarget } from '@/store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
@@ -50,12 +51,8 @@ import {
   sessionPinId,
   setAwaitingResponse,
   setBusy,
-  setCurrentModel,
-  setCurrentModelSource,
-  setCurrentProvider,
   setMessages
 } from '@/store/session'
-import { focusOpenSession } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -68,13 +65,14 @@ import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useKeybinds } from '../hooks/use-keybinds'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
+import { openSession } from '../open-session'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
-import { CRON_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, syncWorkspaceIsPage } from '../routes'
+import { CRON_ROUTE, navigateToWorkspacePage, routeSessionId, SETTINGS_ROUTE, syncWorkspaceRoute } from '../routes'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
@@ -89,7 +87,7 @@ import { useRouteResume } from '../session/hooks/use-route-resume'
 import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
-import { startWorkspaceSession } from '../session/workspace-session-target'
+import { newSessionOpensTab, startWorkspaceSession } from '../session/workspace-session-target'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import { titlebarControlsPosition } from '../shell/titlebar'
@@ -100,6 +98,7 @@ import { ContribWiringContext } from './context'
 import { useBackgroundSync } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { usePetBridge } from './hooks/use-pet-bridge'
+import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -142,6 +141,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const billingSettingsRequest = useStore($billingSettingsRequest)
   const currentCwd = useStore($currentCwd)
 
+  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
     if (billingSettingsRequest === billingSettingsSeenRef.current) {
       return
@@ -176,11 +176,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     routedSessionIdRef.current = null
   }, [])
 
-  // Mirror "the workspace is showing a full page" into its atom — the
-  // workspace pane contribution re-registers headerVeto from it, so the main
-  // zone's tab bar stands down on pages (and returns with the chat).
+  // Point the workspace at the route: the pane contribution re-registers
+  // headerVeto from $workspaceIsPage (so the main zone's tab bar stands down
+  // on pages), and a page route fronts the pane so it can't stay stuck behind
+  // a focused session tile.
   useEffect(() => {
-    syncWorkspaceIsPage(location.pathname)
+    syncWorkspaceRoute(location.pathname)
   }, [location.pathname])
 
   const {
@@ -221,7 +222,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     setMessages
   })
 
-  const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
+  const { connectionRef, gateway, gatewayRef, requestGateway } = useGatewayRequest()
 
   const {
     loadMoreMessagingForPlatform,
@@ -250,7 +251,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   const { refreshProjectBranch } = useCwdActions({
-    activeSessionId,
     activeSessionIdRef,
     onSessionRuntimeInfo: updateActiveSessionRuntimeInfo,
     requestGateway
@@ -258,7 +258,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
 
-  const { refreshCurrentModel, selectModel, updateModelOptionsCache } = useModelControls({
+  const { applySavedMainModel, refreshCurrentModel, selectModel } = useModelControls({
     queryClient,
     requestGateway
   })
@@ -390,13 +390,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // follows) + the preview server restart handler, layered over the base
   // gateway event stream exactly like DesktopController.
   const { handleDesktopGatewayEvent, restartPreviewServer } = usePreviewRouting({
-    activeSessionIdRef,
     baseHandleGatewayEvent: handleGatewayEvent,
     currentCwd,
-    currentView,
-    requestGateway,
-    routedSessionId,
-    selectedStoredSessionId
+    requestGateway
   })
 
   // Composer @-mention context suggestions (files/dirs under the cwd).
@@ -451,6 +447,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const freshSessionRequest = useStore($freshSessionRequest)
   const lastFreshRef = useRef(freshSessionRequest)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (freshSessionRequest === lastFreshRef.current) {
       return
@@ -465,6 +462,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // invalidateQueries on swap doesn't touch them).
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (activeGatewayProfile === lastGatewayProfileRef.current) {
       return
@@ -479,11 +477,22 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
 
-  // New session anchored to a workspace (sidebar "+" on a project/worktree).
-  // Seeds cwd + branch from the clicked workspace; an explicit worktree path
-  // also drills the sidebar into that project so the new lane is visible.
+  // New session anchored to a workspace. Seeds cwd + branch from the clicked
+  // workspace; an explicit worktree path also drills the sidebar into that
+  // project so the new lane is visible.
+  //
+  // `openTab` is the sidebar "+" behavior: once a chat is loaded, stack a new
+  // tab instead of replacing it (see newSessionOpensTab). The composer's
+  // "branch off into a new worktree" flow keeps the fresh-draft path — it
+  // prefills the MAIN composer right after, so it has to own that surface.
   const startSessionInWorkspace = useCallback(
-    (path: null | string) => {
+    (path: null | string, options?: { openTab?: boolean }) => {
+      if (options?.openTab && newSessionOpensTab(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
+        void openNewSessionTile('center', { cwd: path, listed: false })
+
+        return
+      }
+
       startWorkspaceSession({
         activeSessionIdRef,
         followActiveSessionCwd,
@@ -493,7 +502,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         startFreshSessionDraft
       })
     },
-    [activeSessionIdRef, requestGateway, startFreshSessionDraft]
+    [activeSessionIdRef, openNewSessionTile, requestGateway, startFreshSessionDraft]
   )
 
   // Composer "branch off into a new worktree": open a fresh session anchored
@@ -501,6 +510,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const startWorkSessionRequest = useStore($startWorkSessionRequest)
   const lastStartWorkTokenRef = useRef(startWorkSessionRequest?.token ?? 0)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!startWorkSessionRequest || startWorkSessionRequest.token === lastStartWorkTokenRef.current) {
       return
@@ -585,6 +595,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({ requestGateway, resumeSession, submitText })
+
+  // The global-hotkey Quick Entry window's bridge: its captured text rides the
+  // SAME submit machinery the normal composer uses (current chat / picked
+  // session / new session), and it hears gateway truth from this window.
+  useQuickEntryBridge({ startFreshSessionDraft, submitText })
 
   // Clear a failed turn's red error banner. Errors are renderer-local (never
   // persisted): a bare error placeholder is dropped entirely; a partial-output
@@ -697,11 +712,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // deep links, native-notification nav, preview-shortcut enablement,
   // remembered-session restore, and cross-window session-list sync.
   const previewTarget = useStore($previewTarget)
-  const filePreviewTarget = useStore($filePreviewTarget)
 
   useDesktopIntegrations({
     chatOpen,
-    hasPreview: Boolean(filePreviewTarget || previewTarget),
+    hasPreview: Boolean(previewTarget),
     locationPathname: location.pathname,
     navigate,
     refreshSessions,
@@ -788,7 +802,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     },
     onNavigate: selectSidebarItem,
-    onNewSessionInWorkspace: startSessionInWorkspace,
+    onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
     onNewSessionSplit: dir => void openNewSessionTile(dir),
     onPasteClipboardImage: opts => composer.pasteClipboardImage(opts),
     onPickFiles: () => void composer.pickContextPaths('file'),
@@ -798,12 +812,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main.
-    onResumeSession: sessionId => {
-      if (!focusOpenSession(sessionId)) {
-        navigate(sessionRoute(sessionId))
-      }
-    },
+    // otherwise load it into main. Same door every other session link uses.
+    onResumeSession: sessionId => openSession(sessionId, navigate),
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSubmit: submitText,
@@ -939,14 +949,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           requestGateway={requestGateway}
         />
       )}
-      <ModelPickerOverlay
-        gateway={gatewayRef.current || undefined}
-        onSelect={selectModel}
-        profile={activeGatewayProfile}
-      />
-      <SessionPickerOverlay onResume={resumeSession} />
+      <ModelPickerOverlay gateway={gateway || undefined} onSelect={selectModel} profile={activeGatewayProfile} />
+      <SessionPickerOverlay onResume={sessionId => openSession(sessionId, navigate)} />
       <ModelVisibilityOverlay
-        gateway={gatewayRef.current || undefined}
+        gateway={gateway || undefined}
         onOpenProviders={openProviderSettings}
         profile={activeGatewayProfile}
       />
@@ -958,11 +964,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <SessionSwitcher />
       <FileActionDialogs />
       <RemoteFolderPicker />
+      <FindBar />
 
       {settingsOpen && (
         <Suspense fallback={null}>
           <SettingsView
-            gateway={gatewayRef.current}
+            gateway={gateway}
             onClose={closeOverlayToPreviousRoute}
             onConfigSaved={() => {
               void refreshHermesConfig()
@@ -970,10 +977,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
             onMainModelChanged={(provider, model) => {
-              setCurrentProvider(provider)
-              setCurrentModel(model)
-              setCurrentModelSource('default')
-              updateModelOptionsCache($activeSessionId.get(), provider, model, true)
+              applySavedMainModel(provider, model)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
@@ -987,8 +991,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
-            onNavigateRoute={path => navigate(path)}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
+            onOpenSession={sessionId => openSession(sessionId, navigate)}
           />
         </Suspense>
       )}
@@ -1003,7 +1007,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         <Suspense fallback={null}>
           <CronView
             onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
+            onOpenSession={sessionId => openSession(sessionId, navigate)}
           />
         </Suspense>
       )}

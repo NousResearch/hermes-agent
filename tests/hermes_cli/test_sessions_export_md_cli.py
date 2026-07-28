@@ -189,11 +189,11 @@ def test_sessions_export_md_bulk_dry_run_lists_candidates(monkeypatch, tmp_path,
     class FakeDB:
         def list_prune_candidates(self, **kwargs):
             # Export flows through the shared prune-filter machinery:
-            # --older-than 30 becomes a started_before epoch bound, source
+            # --older-than 30 becomes a last-active epoch bound, source
             # passes through, and archived is tri-state None (export includes
             # archived sessions).
             assert kwargs.get("source") == "cron"
-            assert kwargs.get("started_before") is not None
+            assert kwargs.get("last_active_before") is not None
             assert kwargs.get("archived") is None
             return [{"id": "s1", "source": "cron"}, {"id": "s2", "source": "cron"}]
 
@@ -336,8 +336,12 @@ def test_sessions_export_md_delete_after_verified_deletes_after_file_check(monke
         def export_session(self, session_id):
             return {"id": "s1", "title": "Delete", "message_count": 1, "messages": [{"role": "user", "content": "safe"}]}
 
+        def get_session_delete_targets(self, session_id):
+            return [session_id]
+
         def delete_session(self, session_id, **kwargs):
             captured["deleted"] = session_id
+            captured["expected_delete_ids"] = kwargs["expected_delete_ids"]
             return True
 
         def close(self):
@@ -363,9 +367,74 @@ def test_sessions_export_md_delete_after_verified_deletes_after_file_check(monke
 
     main_mod.main()
 
-    assert captured == {"deleted": "s1"}
+    assert captured == {"deleted": "s1", "expected_delete_ids": ["s1"]}
     assert len(list(tmp_path.glob("*.md"))) == 1
     assert "Deleted exported session 's1'" in capsys.readouterr().out
+
+
+def test_sessions_export_md_exports_delegate_cascade_before_deleting(
+    monkeypatch, tmp_path, capsys
+):
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    db_path = tmp_path / "state.db"
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    real_session_db = hermes_state.SessionDB
+    db = real_session_db(db_path)
+    db.create_session("parent", "cli")
+    db.append_message("parent", "user", "parent transcript")
+    db.create_session(
+        "delegate",
+        "subagent",
+        parent_session_id="parent",
+        model_config={"_delegate_from": "parent"},
+    )
+    db.append_message("delegate", "assistant", "delegate-only result")
+    db.close()
+    (sessions_dir / "parent.jsonl").write_text("parent", encoding="utf-8")
+    (sessions_dir / "delegate.jsonl").write_text("delegate", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hermes_state, "SessionDB", lambda: real_session_db(db_path)
+    )
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    output_dir = tmp_path / "exports"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes",
+            "sessions",
+            "export",
+            "--format",
+            "md",
+            "--session-id",
+            "parent",
+            "--delete-after-verified",
+            "--yes",
+            str(output_dir),
+        ],
+    )
+
+    main_mod.main()
+
+    exported = [
+        path.read_text(encoding="utf-8") for path in output_dir.glob("*.md")
+    ]
+    assert len(exported) == 2
+    assert any("parent transcript" in text for text in exported)
+    assert any("delegate-only result" in text for text in exported)
+    check = real_session_db(db_path)
+    assert check.get_session("parent") is None
+    assert check.get_session("delegate") is None
+    check.close()
+    assert not (sessions_dir / "parent.jsonl").exists()
+    assert not (sessions_dir / "delegate.jsonl").exists()
+    output = capsys.readouterr().out
+    assert "Exported 2 sessions (2 messages)" in output
+    assert "and 1 delegate session" in output
 
 
 def test_sessions_export_md_accepts_duration_age_grammar(monkeypatch, tmp_path, capsys):
@@ -375,7 +444,7 @@ def test_sessions_export_md_accepts_duration_age_grammar(monkeypatch, tmp_path, 
 
     class FakeDB:
         def list_prune_candidates(self, **kwargs):
-            assert kwargs.get("started_before") is not None
+            assert kwargs.get("last_active_before") is not None
             return [{"id": "s1", "source": "cli"}]
 
         def close(self):

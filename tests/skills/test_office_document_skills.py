@@ -124,3 +124,88 @@ def test_docs_pages_generated():
         assert (docs_dir / f"productivity-{name}.md").exists(), (
             f"missing generated docs page for {name}; run website/scripts/generate-skill-docs.py"
         )
+
+
+# Document/payload readers must not depend on the host locale. OOXML part
+# files are UTF-8 (declared in the XML prolog) and the form-fields JSON the
+# agent authors is UTF-8, but these sites used locale-default text mode: on
+# Windows (cp1251/GBK/cp932) the validators parsed silently mojibake'd
+# document text and the pdf fill scripts wrote mojibake'd values into the
+# user's form — or crashed outright where the bytes don't decode.
+_ENCODING_SENSITIVE_READS = [
+    (
+        "docx/scripts/office/validators/base.py",
+        'with open(xml_file, "rb") as f:',
+    ),
+    (
+        "powerpoint/scripts/office/validators/base.py",
+        'with open(xml_file, "rb") as f:',
+    ),
+    (
+        "pdf/scripts/check_bounding_boxes.py",
+        'with open(sys.argv[1], encoding="utf-8") as f:',
+    ),
+    (
+        "pdf/scripts/create_validation_image.py",
+        "with open(fields_json_path, 'r', encoding='utf-8') as f:",
+    ),
+    (
+        "pdf/scripts/fill_fillable_fields.py",
+        'with open(fields_json_path, encoding="utf-8") as f:',
+    ),
+    (
+        "pdf/scripts/fill_pdf_form_with_annotations.py",
+        'with open(fields_json_path, "r", encoding="utf-8") as f:',
+    ),
+]
+
+
+@pytest.mark.parametrize("rel_path,expected", _ENCODING_SENSITIVE_READS)
+def test_document_readers_are_locale_independent(rel_path, expected):
+    """XML parts are opened as bytes (lxml honors the XML prolog) and JSON
+    payloads as UTF-8 — never with the locale-default codec."""
+    source = (SKILLS / "productivity" / rel_path).read_text(encoding="utf-8")
+    assert expected in source, (
+        f"{rel_path}: locale-dependent read of a UTF-8 document/payload"
+    )
+
+
+def test_check_bounding_boxes_reads_utf8_fields_json(tmp_path):
+    """Run the real script on a UTF-8 fields.json with non-ASCII field
+    descriptions under a forced non-UTF-8 locale. Without the explicit
+    encoding the json.load crashes (C locale on POSIX; cp1251 chokes on
+    the 0x98 byte of U+2018 on Windows)."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    script = _skill_dir("pdf") / "scripts" / "check_bounding_boxes.py"
+    fields = {
+        "form_fields": [
+            {
+                "description": "Фамилия (‘label’)",
+                "page_number": 1,
+                "label_bounding_box": [0, 0, 10, 10],
+                "entry_bounding_box": [20, 20, 30, 40],
+            }
+        ]
+    }
+    fields_json = tmp_path / "fields.json"
+    fields_json.write_bytes(
+        json.dumps(fields, ensure_ascii=False, indent=2).encode("utf-8")
+    )
+
+    env = dict(os.environ)
+    env.update({"LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONIOENCODING": "utf-8"})
+    result = subprocess.run(
+        [sys.executable, str(script), str(fields_json)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"script failed under non-UTF-8 locale:\n{result.stderr}"
+    )
+    assert "SUCCESS" in result.stdout

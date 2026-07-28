@@ -298,13 +298,16 @@ describe('ClarifyTool keyboard navigation', () => {
 })
 
 describe('ClarifyTool pending marker', () => {
-  it('marks a live choices card so type-to-focus yields its shortcut keys', () => {
+  it('marks a live choices card with its row count so type-to-focus yields exactly its keys', () => {
     renderLiveClarify()
 
-    // The marker is what `composerFocusBlockedBySurface` keys off of, so the
-    // global type-to-focus listener stands down and A/B/C… + 1-9 + Enter reach
-    // the card instead of the composer.
-    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+    // `clarifyCardOwnsKey` reads the count off this marker to yield only the
+    // shortcuts the card renders (A..N + "Other", 1-9, Enter) and let every
+    // other printable through to the composer.
+    const card = document.querySelector('[data-clarify-choices]')
+
+    expect(card).toBeTruthy()
+    expect(Number(card?.getAttribute('data-clarify-choices'))).toBeGreaterThan(0)
   })
 
   it('does not mark a free-text (no-choice) pending card', () => {

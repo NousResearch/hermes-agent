@@ -59,7 +59,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: check_bounding_boxes.py [fields.json]")
         sys.exit(1)
-    with open(sys.argv[1]) as f:
+    with open(sys.argv[1], encoding="utf-8") as f:
         messages = get_bounding_box_messages(f)
     for msg in messages:
         print(msg)

@@ -44,7 +44,7 @@ def has_xai_credentials() -> bool:
         auth_path = get_hermes_home() / "auth.json"
         if not auth_path.exists():
             return False
-        store = json.loads(auth_path.read_text())
+        store = json.loads(auth_path.read_text(encoding="utf-8"))
         providers = store.get("providers") if isinstance(store, dict) else None
         xai_state = providers.get("xai-oauth") if isinstance(providers, dict) else None
         tokens = xai_state.get("tokens") if isinstance(xai_state, dict) else None
@@ -95,6 +95,16 @@ def hermes_xai_user_agent() -> str:
     except Exception:
         __version__ = "unknown"
     return f"Hermes-Agent/{__version__}"
+
+
+def hermes_xai_default_headers() -> Dict[str, str]:
+    """Default headers for OpenAI-SDK and raw HTTP clients talking to xAI.
+
+    Replaces the OpenAI Python SDK's identifying ``User-Agent: OpenAI/Python …``
+    so chat/completions and Responses traffic is attributed as Hermes Agent,
+    matching the direct HTTP integrations (search, TTS, STT, image, video).
+    """
+    return {"User-Agent": hermes_xai_user_agent()}
 
 
 def _load_config_section(section_name: str) -> Dict[str, Any]:
@@ -234,7 +244,7 @@ def maybe_mark_xai_storage_notice_seen(section_name: str) -> Optional[str]:
         marker = marker_dir / f"{section_name}_xai_storage_notice_seen"
         if marker.exists():
             return None
-        marker.write_text(datetime.datetime.now(datetime.UTC).isoformat() + "\n")
+        marker.write_text(datetime.datetime.now(datetime.UTC).isoformat() + "\n", encoding="utf-8")
         return notice
     except Exception:
         return notice

@@ -58,17 +58,49 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     ``curl --resolve api.telegram.org:443:<ip>``.
     """
 
+    # Bound every pool. httpx defaults to 100 connections per pool, so a wedged
+    # endpoint plus the seed IPs can outgrow the process file-descriptor limit
+    # on its own (#63311).
+    _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
+
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        transport_kwargs.setdefault("limits", self._POOL_LIMITS)
+        self._transport_kwargs = transport_kwargs
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
-        self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
-        }
+        # Built on demand and discarded on failure — see _reset_fallback.
+        self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
+        self._fallback_lock = asyncio.Lock()
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
+
+    async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
+        async with self._fallback_lock:
+            transport = self._fallbacks.get(ip)
+            if transport is None:
+                transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+                self._fallbacks[ip] = transport
+            return transport
+
+    async def _reset_fallback(self, ip: str) -> None:
+        """Discard a failed fallback pool so its dead sockets are released.
+
+        A connect that reaches ESTABLISHED and is then closed by the peer leaves
+        its socket in CLOSE_WAIT inside the pool. Retaining the poisoned pool
+        leaks one descriptor per retry until the process hits its file limit and
+        can no longer accept connections or resolve DNS (#63311).
+        """
+        async with self._fallback_lock:
+            transport = self._fallbacks.pop(ip, None)
+        if transport is None:
+            return
+        try:
+            await transport.aclose()
+        except Exception as exc:  # closing a broken pool must never mask the real error
+            logger.debug("[Telegram] Error closing fallback transport %s: %s", ip, exc)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
@@ -85,7 +117,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         last_error: Exception | None = None
         for ip in attempt_order:
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
-            transport = self._primary if ip is None else self._fallbacks[ip]
+            transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
                 response = await transport.handle_async_request(candidate)
                 if ip is not None and self._sticky_ip != ip:
@@ -117,6 +149,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     )
                     continue
                 logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
+                await self._reset_fallback(ip)
                 continue
 
         if last_error is None:
@@ -125,7 +158,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
     async def aclose(self) -> None:
         await self._primary.aclose()
-        for transport in self._fallbacks.values():
+        async with self._fallback_lock:
+            transports = list(self._fallbacks.values())
+            self._fallbacks.clear()
+        for transport in transports:
             await transport.aclose()
 
 

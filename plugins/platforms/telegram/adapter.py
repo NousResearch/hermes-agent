@@ -155,6 +155,16 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
         loop_processed_expiry.set()
 
 
+async def _first_completed(*futures: "asyncio.Future") -> None:
+    """Return when the first of ``futures`` completes.
+
+    Used by the strict cold-start readiness gate to wait on "progress OR
+    polling error", whichever fires first (#67498). Does not cancel the
+    losers — the caller owns their lifecycle.
+    """
+    await asyncio.wait(set(futures), return_when=asyncio.FIRST_COMPLETED)
+
+
 async def _run_abandon_cleanup(on_abandon) -> None:
     """Run the abandonment cleanup coroutine, swallowing any failure.
 
@@ -545,6 +555,10 @@ _UPDATER_STOP_TIMEOUT = 15.0
 # reconnect ladder from stalling indefinitely and allows the heartbeat loop to
 # trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
 _UPDATER_START_TIMEOUT = 30.0
+# Initial connect is not healthy until the dedicated getUpdates request completes
+# one successful round trip. Unlike reconnect, initial bootstrap must fail closed
+# so GatewayRunner disposes the partial adapter and retries with a fresh PTB app.
+_INITIAL_POLLING_PROGRESS_TIMEOUT = 60.0
 # shutdown()/initialize() on the getUpdates httpx request close and rebuild the
 # connection pool. When a connection is wedged on a stale CLOSE-WAIT socket that
 # close can block forever, hanging _drain_polling_connections() and freezing the
@@ -739,6 +753,19 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_teardown_started: bool = False
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        # Live @username, refreshed whenever Telegram tells us what it is.
+        # PTB caches getMe() in Bot._bot_user at initialize() and only rewrites
+        # it inside get_me(), so a BotFather rename leaves self._bot.username
+        # pointing at the old handle until something calls getMe again. Every
+        # mention/routing comparison reads _current_bot_username() instead.
+        self._bot_username_observed: Optional[str] = None
+        # None = never checked. Must NOT be 0.0: these are compared against
+        # time.monotonic(), whose epoch is arbitrary and on a freshly-booted
+        # host starts near zero — so a 0.0 sentinel reads as "checked just
+        # now" and suppresses the first refresh for the first TTL seconds of
+        # uptime.
+        self._bot_identity_checked_at: Optional[float] = None
+        self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         # Consecutive heartbeat probes that saw queued updates the running
         # poller is not consuming. get_me() can't see this — the send path is
         # healthy while the getUpdates consumer is wedged — so the heartbeat
@@ -2129,8 +2156,17 @@ class TelegramAdapter(BasePlatformAdapter):
         *,
         drop_pending_updates: bool,
         error_callback,
-    ) -> None:
-        """Start one generation and verify real getUpdates progress."""
+        abandon_app_on_timeout: bool = False,
+        schedule_verifier: bool = True,
+    ) -> tuple[int, asyncio.Event]:
+        """Start one generation and verify real getUpdates progress.
+
+        Returns the ``(generation, progress_event)`` pair created for this
+        polling generation so callers that must gate on readiness (strict
+        cold start, #67498) can bind to exactly this generation instead of
+        re-reading ``self._polling_progress_event`` — which a concurrent
+        recovery task may have replaced with a newer generation's event.
+        """
         if getattr(self, "_polling_teardown_started", False):
             raise _PollingLifecycleAbort("Telegram polling teardown started")
         generation, progress = self._begin_polling_generation()
@@ -2151,13 +2187,22 @@ class TelegramAdapter(BasePlatformAdapter):
 
         context_token = _POLLING_GENERATION_CONTEXT.set(generation)
         try:
-            await asyncio.wait_for(
+            # asyncio.wait_for can wait forever for cancellation to escape
+            # httpcore/AnyIO shielded scopes (#58236/#67498). Reuse the
+            # proven wall-deadline helper and abandon the partial updater;
+            # caller recovery will dispose/rebuild the whole adapter.
+            await _await_with_thread_deadline(
                 app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=drop_pending_updates,
                     error_callback=_generation_error_callback,
                 ),
                 timeout=_UPDATER_START_TIMEOUT,
+                on_abandon=(
+                    (lambda app=app: _shutdown_abandoned_app(app))
+                    if abandon_app_on_timeout
+                    else None
+                ),
             )
         finally:
             _POLLING_GENERATION_CONTEXT.reset(context_token)
@@ -2165,7 +2210,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_progress_accepting = False
             self._send_path_degraded = True
             raise _PollingLifecycleAbort("Telegram polling teardown started")
-        self._schedule_polling_progress_verifier(generation, progress)
+        if schedule_verifier:
+            self._schedule_polling_progress_verifier(generation, progress)
+        return generation, progress
 
     def _schedule_polling_progress_verifier(
         self, generation: int, progress: asyncio.Event
@@ -2264,12 +2311,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._background_tasks.add(self._polling_error_task)
         self._polling_error_task.add_done_callback(self._background_tasks.discard)
 
-    async def _delete_webhook_best_effort(self) -> bool:
-        """Clear any stale webhook, but never fail polling on a network error.
+    async def _delete_webhook_best_effort(
+        self, *, require_success: bool = False
+    ) -> bool:
+        """Clear stale webhook, optionally failing closed on initial connect.
 
-        Returns True when the webhook was cleared (or there was nothing to do)
-        and False when a transient network error was swallowed so bootstrap can
-        continue to polling; the reconnect ladder recovers from there.
+        Reconnect can recover a transient error in background. Cold startup uses
+        ``require_success`` so GatewayRunner disposes the partial adapter and
+        retries with a fresh PTB Application instead of publishing degraded state.
         """
         if not self._bot:
             return False
@@ -2277,10 +2326,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not callable(delete_webhook):
             return True
         try:
-            await delete_webhook(drop_pending_updates=False)
+            # Same shielded-cancellation class as initialize/start_polling:
+            # never let a wedged duplicate deleteWebhook pin initial connect.
+            await _await_with_thread_deadline(
+                delete_webhook(drop_pending_updates=False),
+                timeout=_UPDATER_START_TIMEOUT,
+            )
             return True
         except Exception as err:
             if self._looks_like_network_error(err):
+                if require_success:
+                    raise OSError(
+                        "Telegram deleteWebhook did not complete during initial connect"
+                    ) from err
                 logger.warning(
                     "[%s] deleteWebhook failed with a recoverable network error; "
                     "continuing to polling so getUpdates/retry can recover: %s",
@@ -2290,17 +2348,57 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             raise
 
-    async def _start_polling_resilient(self, *, drop_pending_updates: bool, error_callback) -> bool:
-        """Start PTB polling; on a transient bootstrap failure, recover in background.
+    async def _start_polling_resilient(
+        self,
+        *,
+        drop_pending_updates: bool,
+        error_callback,
+        require_progress: bool = False,
+    ) -> bool:
+        """Start PTB polling and optionally require real getUpdates readiness.
 
-        Returns True when polling started, False when a transient conflict or
-        network error was scheduled for background recovery instead of raising
-        (keeping the gateway process alive).
+        Reconnects may recover in background. Initial connect sets
+        ``require_progress`` so a bootstrap failure or missing first successful
+        getUpdates response raises; GatewayRunner then disposes this partial
+        adapter and retries with a fresh PTB Application.
         """
         if getattr(self, "_polling_teardown_started", False):
             return False
         if not (self._app and self._app.updater):
             raise RuntimeError("Telegram application/updater not initialized")
+
+        # Strict cold start (#67498): background recovery must not run while
+        # the readiness gate is waiting. A G1 polling error would otherwise
+        # schedule _handle_polling_network_error(), which starts generation
+        # G2 on the same partial application while this coroutine still waits
+        # on G1's event — the cold connect then either times out on G1 despite
+        # G2 succeeding, or G2 "heals" the partial app so GatewayRunner never
+        # disposes it and retries fresh. Instead, capture the first polling
+        # error and fail the cold attempt immediately; GatewayRunner owns
+        # disposal and retry with a fresh adapter.
+        strict_error: list[BaseException] = []
+        strict_error_event = asyncio.Event()
+        strict_gate_open = True
+        effective_callback = error_callback
+        if require_progress:
+            loop = asyncio.get_running_loop()
+
+            def _strict_error_callback(error: Exception) -> None:
+                # PTB registers this callback for the whole polling
+                # generation. After the readiness gate closes (success),
+                # delegate to the real callback so ongoing polling errors
+                # keep flowing into background recovery.
+                if not strict_gate_open:
+                    if error_callback is not None:
+                        error_callback(error)
+                    return
+                if not strict_error:
+                    strict_error.append(error)
+                # PTB invokes error callbacks from the polling task; the
+                # event must be set on the loop to wake the strict waiter.
+                loop.call_soon_threadsafe(strict_error_event.set)
+
+            effective_callback = _strict_error_callback
         try:
             # Same watchdog bound as the reconnect ladders: a wedged httpx
             # connection pool can hang start_polling() forever at bootstrap
@@ -2308,17 +2406,63 @@ class TelegramAdapter(BasePlatformAdapter):
             # TimeoutError (OSError subclass), so the except below classifies
             # it via _looks_like_network_error and schedules background
             # recovery instead of blocking connect() indefinitely.
-            await self._start_polling_once(
+            generation, progress = await self._start_polling_once(
                 self._app,
                 drop_pending_updates=drop_pending_updates,
-                error_callback=error_callback,
+                error_callback=effective_callback,
+                abandon_app_on_timeout=require_progress,
+                # The strict gate below IS the cold-start verifier; the
+                # background verifier would only race it on the partial app.
+                schedule_verifier=not require_progress,
             )
+            if require_progress:
+                # Bind to THIS generation's progress event (returned above),
+                # not self._polling_progress_event — a concurrent task could
+                # have replaced it with a later generation's event.
+                progress_wait = asyncio.ensure_future(progress.wait())
+                error_wait = asyncio.ensure_future(strict_error_event.wait())
+                try:
+                    await _await_with_thread_deadline(
+                        _first_completed(progress_wait, error_wait),
+                        timeout=_INITIAL_POLLING_PROGRESS_TIMEOUT,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise OSError(
+                        "Telegram getUpdates made no progress within "
+                        f"{_INITIAL_POLLING_PROGRESS_TIMEOUT:.0f}s during initial "
+                        "connect — failing startup so the gateway retries with a "
+                        "fresh adapter (#67498)"
+                    ) from exc
+                finally:
+                    for fut in (progress_wait, error_wait):
+                        if not fut.done():
+                            fut.cancel()
+                    await asyncio.gather(
+                        progress_wait, error_wait, return_exceptions=True
+                    )
+                if strict_error and not progress.is_set():
+                    raise OSError(
+                        "Telegram polling errored before first getUpdates "
+                        "success during initial connect: "
+                        f"{_redact_telegram_error_text(strict_error[0])}"
+                    ) from strict_error[0]
+                if not progress.is_set():
+                    raise OSError(
+                        "Telegram getUpdates did not become ready during initial connect"
+                    )
+                # Readiness proven — close the strict gate so any later
+                # polling error flows to the real background-recovery
+                # callback instead of the (now finished) cold-start gate.
+                strict_gate_open = False
+                self._polling_error_callback_ref = error_callback
             return True
         except _PollingLifecycleAbort:
             return False
         except Exception as err:
             if getattr(self, "_polling_teardown_started", False):
                 return False
+            if require_progress:
+                raise
             if self._looks_like_polling_conflict(err):
                 logger.warning(
                     "[%s] Telegram polling bootstrap conflict; gateway stays alive "
@@ -2543,6 +2687,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not callable(getattr(bot, "get_me", None)):
                     return
                 await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
+                # get_me() refreshes PTB's cached bot user in place, so this is
+                # also where a BotFather rename gets picked up: adopt whatever
+                # handle Telegram just reported before anything routes on it.
+                self._bot_identity_checked_at = time.monotonic()
+                self._note_bot_username(getattr(bot, "username", None))
                 # get_me() succeeded — the general/send request path is healthy.
                 # That does NOT prove the getUpdates consumer is alive: PTB can
                 # report updater.running=True while the long-poll task is wedged,
@@ -3310,6 +3459,30 @@ class TelegramAdapter(BasePlatformAdapter):
                             self.name, topic_name, seed_err,
                         )
 
+    async def _bot_identity_refresh_loop(self) -> None:
+        """Keep the cached @username fresh when no heartbeat is running.
+
+        Polling mode re-reads identity via the heartbeat's ``get_me()`` probe.
+        Webhook mode has no such probe — nothing calls ``get_me()`` again after
+        ``initialize()`` — so without this loop a BotFather rename breaks
+        mention routing until the gateway restarts.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self._BOT_IDENTITY_TTL_SECONDS)
+                if getattr(self, "_polling_teardown_started", False):
+                    return
+                if self.has_fatal_error:
+                    return
+                await self._refresh_bot_identity(force=True)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.debug(
+                    "[%s] Telegram identity refresh loop iteration failed",
+                    self.name, exc_info=True,
+                )
+
     def _start_post_connect_housekeeping(self) -> None:
         """Kick off deferred post-connect housekeeping in the background.
 
@@ -3815,7 +3988,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 # updates. Best-effort: a transient Bot API network error here
                 # must not fail gateway startup — degrade to background polling
                 # recovery instead.
-                await self._delete_webhook_best_effort()
+                await self._delete_webhook_best_effort(
+                    require_success=not is_reconnect
+                )
 
                 loop = asyncio.get_running_loop()
 
@@ -3853,6 +4028,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     # sent while the bot was offline are delivered (#46621).
                     drop_pending_updates=not is_reconnect,
                     error_callback=_polling_error_callback,
+                    require_progress=not is_reconnect,
                 )
                 if not polling_started:
                     logger.warning(
@@ -3873,6 +4049,21 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._polling_heartbeat_task.cancel()
                 self._polling_heartbeat_task = asyncio.ensure_future(
                     self._polling_heartbeat_loop()
+                )
+
+            # Seed the live identity from whatever PTB cached during
+            # initialize(), then keep it fresh. Polling mode rides the
+            # heartbeat's get_me() probe; webhook mode has no probe at all, so
+            # it gets a dedicated low-frequency refresh loop — otherwise a
+            # BotFather rename breaks mention routing until restart.
+            self._note_bot_username(getattr(self._bot, "username", None))
+            self._bot_identity_checked_at = time.monotonic()
+            if self._webhook_mode:
+                identity_task = getattr(self, "_bot_identity_refresh_task", None)
+                if identity_task and not identity_task.done():
+                    identity_task.cancel()
+                self._bot_identity_refresh_task = asyncio.ensure_future(
+                    self._bot_identity_refresh_loop()
                 )
 
             # Command-menu registration, DM-topic setup, and the status
@@ -4037,6 +4228,17 @@ class TelegramAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._polling_heartbeat_task = None
+
+        # Cancel the webhook-mode identity refresh loop on the same fence as
+        # the heartbeat so it cannot fire get_me() into a torn-down client.
+        identity_task = getattr(self, "_bot_identity_refresh_task", None)
+        if identity_task and not identity_task.done():
+            identity_task.cancel()
+            try:
+                await identity_task
+            except asyncio.CancelledError:
+                pass
+        self._bot_identity_refresh_task = None
 
         # Mark the bot "Offline" in its short description while the bot's HTTP
         # client is still alive (before app shutdown closes it). Opt-in via
@@ -5149,7 +5351,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
                     )
             buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            keyboard = InlineKeyboardMarkup([buttons])
+            # Pair into rows (2x2 for the full set) so labels stay readable on
+            # mobile — a single 4-button row truncates to "Allo… / Ses… / …".
+            rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+            keyboard = InlineKeyboardMarkup(rows)
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
@@ -6352,7 +6557,7 @@ class TelegramAdapter(BasePlatformAdapter):
             home = get_hermes_home()
             response_path = home / ".update_response"
             tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
+            tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
             logger.info("Telegram update prompt answered '%s' by user %s",
                         answer, getattr(query.from_user, "id", "unknown"))
@@ -7609,22 +7814,140 @@ class TelegramAdapter(BasePlatformAdapter):
             return cls._GENERAL_TOPIC_THREAD_ID
         return None
 
+    # Telegram bot handles historically had to end in "bot", but collectible
+    # (Fragment) usernames can be assigned to bots and drop that suffix
+    # entirely (@jarvis, @pic, ...). This pattern is used ONLY to decide
+    # whether some FOREIGN @handle in a message is bot-shaped; our own handle
+    # is matched by identity, never by shape.
+    _FOREIGN_BOT_HANDLE_RE = re.compile(r"[a-z0-9_]{2,29}bot", re.IGNORECASE)
+    # How long an observed identity is trusted before the heartbeat re-checks.
+    _BOT_IDENTITY_TTL_SECONDS = 300.0
+
+    def _current_bot_username(self) -> str:
+        """Return this bot's live @username (lowercased, no leading ``@``).
+
+        Prefers the most recently observed handle over PTB's ``get_me()``
+        cache. ``Bot.username`` reads ``Bot._bot_user``, which is written only
+        by ``get_me()`` — after a BotFather rename it keeps returning the old
+        handle, so every mention comparison silently stops matching and the
+        exclusive-mention gate concludes the message is addressed to a
+        different bot. Observing the handle from inbound updates closes that
+        window without an extra Bot API round-trip.
+        """
+        observed = getattr(self, "_bot_username_observed", None)
+        if observed:
+            return observed
+        return (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+
+    def _note_bot_username(self, username: Optional[str]) -> None:
+        """Record the bot's current @username, logging real renames."""
+        handle = (username or "").lstrip("@").lower()
+        if not handle:
+            return
+        previous = getattr(self, "_bot_username_observed", None)
+        if previous == handle:
+            return
+        self._bot_username_observed = handle
+        self._bot_identity_checked_at = time.monotonic()
+        if previous:
+            logger.info(
+                "[%s] Telegram bot username changed: @%s -> @%s "
+                "(mention routing now follows the new handle)",
+                self.name, previous, handle,
+            )
+
+    def _observe_bot_identity_from_message(self, message: Message) -> None:
+        """Learn our own handle from a message Telegram says we authored.
+
+        Telegram stamps the *current* username on the bot's own outgoing
+        messages and on ``reply_to_message`` when a user replies to us, so a
+        rename is observable from the update stream itself — no getMe needed.
+        Only trusted when the user id matches this bot, so another account's
+        handle can never be adopted as our own.
+        """
+        bot_id = getattr(self._bot, "id", None)
+        if bot_id is None:
+            return
+        for candidate in (
+            getattr(message, "from_user", None),
+            getattr(getattr(message, "reply_to_message", None), "from_user", None),
+        ):
+            if candidate is None:
+                continue
+            if getattr(candidate, "id", None) != bot_id:
+                continue
+            self._note_bot_username(getattr(candidate, "username", None))
+
+    def _bot_identity_is_fresh(self) -> bool:
+        """True when identity was re-read within the TTL.
+
+        ``None`` means never checked, which is always stale. Do not fold the
+        sentinel into ``0.0``: monotonic clocks have an arbitrary epoch that
+        can legitimately be smaller than the TTL on a freshly-booted host,
+        which would make "never" look like "just now".
+        """
+        checked_at = getattr(self, "_bot_identity_checked_at", None)
+        if checked_at is None:
+            return False
+        return (time.monotonic() - checked_at) < self._BOT_IDENTITY_TTL_SECONDS
+
+    async def _refresh_bot_identity(self, *, force: bool = False) -> None:
+        """Re-read the bot's identity from Telegram when the cache may be stale.
+
+        ``get_me()`` rewrites PTB's ``Bot._bot_user`` in place, so this also
+        repairs every other consumer of ``self._bot.username``. Best-effort:
+        a failed probe leaves the last known handle in place.
+        """
+        bot = self._bot
+        if bot is None or not callable(getattr(bot, "get_me", None)):
+            return
+        if not force and self._bot_identity_is_fresh():
+            return
+        try:
+            me = await asyncio.wait_for(bot.get_me(), self._BOT_IDENTITY_PROBE_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "[%s] Telegram identity refresh failed (keeping @%s): %s",
+                self.name, self._current_bot_username() or "unknown", exc,
+            )
+            return
+        self._bot_identity_checked_at = time.monotonic()
+        self._note_bot_username(getattr(me, "username", None))
+
+    _BOT_IDENTITY_PROBE_TIMEOUT = 15.0
+
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):
             return False
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    @staticmethod
-    def _extract_bot_mention_usernames(message: Message) -> set[str]:
+    @classmethod
+    def _extract_bot_mention_usernames(cls, message: Message, self_username: str = "") -> set[str]:
         """Extract explicit Telegram bot usernames mentioned in text/captions.
 
-        Telegram bot usernames are 5-32 characters and must end in "bot".
+        Foreign handles are only treated as bot mentions when they look
+        bot-shaped (``...bot``), which keeps human ``@handles`` from acting as
+        routing hints. ``self_username`` opts our OWN handle into the same set
+        regardless of shape: collectible (Fragment) usernames can be assigned
+        to bots and need not end in "bot" (@jarvis, @pic), and a bot addressed
+        by such a handle must still recognise itself.
+
         Entity mentions are authoritative. The raw-text fallback is intentionally narrow so
         entity-less mobile/client variants still work without treating email
         addresses or arbitrary substrings as bot mentions.
         """
         mentioned_bot_usernames: set[str] = set()
+        own = (self_username or "").lstrip("@").lower()
+
+        def _is_bot_handle(handle: str) -> bool:
+            if not handle:
+                return False
+            if own and handle == own:
+                return True
+            return bool(cls._FOREIGN_BOT_HANDLE_RE.fullmatch(handle))
 
         def _iter_sources():
             yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
@@ -7643,7 +7966,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 entity_text = source_text[offset:offset + length].strip()
                 if entity_type == "mention":
                     handle = entity_text.lstrip("@").lower()
-                    if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                    if _is_bot_handle(handle):
                         mentioned_bot_usernames.add(handle)
                     continue
 
@@ -7655,7 +7978,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if at_index < 0:
                     continue
                 command_target = entity_text[at_index + 1:].strip().lower()
-                if re.fullmatch(r"[a-z0-9_]{2,29}bot", command_target, re.IGNORECASE):
+                if _is_bot_handle(command_target):
                     mentioned_bot_usernames.add(command_target)
 
         # Entity-less fallback for older/client-specific updates. If Telegram
@@ -7664,8 +7987,10 @@ class TelegramAdapter(BasePlatformAdapter):
         for raw_text, entities in _iter_sources():
             if not raw_text or entities:
                 continue
-            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
-                mentioned_bot_usernames.add(match.group(1).lower())
+            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,31})\b", raw_text):
+                handle = match.group(1).lower()
+                if _is_bot_handle(handle):
+                    mentioned_bot_usernames.add(handle)
 
         return mentioned_bot_usernames
 
@@ -7673,7 +7998,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return False
 
-        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        bot_username = self._current_bot_username()
         bot_id = getattr(self._bot, "id", None)
         expected = f"@{bot_username}" if bot_username else None
 
@@ -7721,9 +8046,36 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     if command_text[at_index:].strip().lower() == expected:
                         return True
-        if bot_username and re.fullmatch(r"[a-z0-9_]{2,29}bot", bot_username, re.IGNORECASE):
-            return bot_username in self._extract_bot_mention_usernames(message)
+        if bot_username:
+            return bot_username in self._extract_bot_mention_usernames(message, bot_username)
         return False
+
+    def _schedule_bot_identity_recheck(self) -> None:
+        """Fire a TTL-guarded identity refresh in the background.
+
+        Called when routing is about to discard a message because the bot
+        handles it names don't include ours — the exact symptom of a stale
+        username after a BotFather rename. The TTL in
+        ``_refresh_bot_identity`` bounds this to one getMe per
+        ``_BOT_IDENTITY_TTL_SECONDS``, so a busy group that legitimately
+        addresses other bots cannot turn this into per-message API traffic.
+        Fire-and-forget: the current message still routes on what we know now.
+        """
+        existing = getattr(self, "_bot_identity_refresh_task", None)
+        if existing is not None and not existing.done():
+            return
+        if self._bot_identity_is_fresh():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._refresh_bot_identity())
+        self._bot_identity_refresh_task = task
+        tracked = getattr(self, "_background_tasks", None)
+        if isinstance(tracked, set):
+            tracked.add(task)
+            task.add_done_callback(tracked.discard)
 
     def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
         """Return True when explicit bot handles target other bots, not this one.
@@ -7735,19 +8087,27 @@ class TelegramAdapter(BasePlatformAdapter):
         adapter's own bot username, this adapter should ignore the message.
 
         MessageEntity values are preferred, but some Telegram clients expose
-        selected bot handles as plain text in group messages. The raw-text
-        fallback is intentionally limited to usernames ending in "bot", which
-        Telegram requires for bot accounts.
+        selected bot handles as plain text in group messages. Foreign handles
+        are limited to the ``...bot`` shape so human @handles never suppress
+        this bot; our own handle is matched by identity, so a collectible
+        username without that suffix still counts as addressing us.
         """
         if not self._bot:
             return False
 
-        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        bot_username = self._current_bot_username()
         if not bot_username:
             return False
 
-        mentioned_bot_usernames = self._extract_bot_mention_usernames(message)
-        return bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
+        mentioned_bot_usernames = self._extract_bot_mention_usernames(message, bot_username)
+        excludes_self = bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
+        if excludes_self:
+            # Either the message really is for another bot, or our cached
+            # handle is stale after a rename and we are about to ignore a
+            # message addressed to us. Re-check identity out of band (TTL
+            # bounded) so the mistake self-corrects instead of persisting.
+            self._schedule_bot_identity_recheck()
+        return excludes_self
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
@@ -7769,9 +8129,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._telegram_guest_mode() and self._message_mentions_bot(message)
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
-        if not text or not self._bot or not getattr(self._bot, "username", None):
+        bot_username = self._current_bot_username()
+        if not text or not bot_username:
             return text
-        username = re.escape(self._bot.username)
+        username = re.escape(bot_username)
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
@@ -7838,7 +8199,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return f"[{sender}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
-        username = getattr(getattr(self, "_bot", None), "username", None) or "unknown"
+        username = self._current_bot_username() or "unknown"
         bot_id = getattr(getattr(self, "_bot", None), "id", None) or "unknown"
         return (
             "You are handling a Telegram group chat message.\n"
@@ -8140,6 +8501,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # environments like groups/supergroups where the bot can see its own
         # messages).  Without this, outbound messages are counted as incoming
         # unread in the Hermes inbox (#52363).
+        #
+        # Telegram stamps our CURRENT @username on those own-messages and on
+        # reply_to_message, so learn the live handle here — before any mention
+        # gate routes on it. Otherwise a BotFather rename leaves the stale
+        # handle in place and the exclusive-mention gate reads a message
+        # addressed to us as one addressed to some other bot.
+        self._observe_bot_identity_from_message(message)
         if self._is_own_message(message):
             return False
 

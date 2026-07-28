@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     sources: dict[str, str] = {}
     if args.models_from_file:
         try:
-            sources = json.loads(Path(args.models_from_file).read_text())
+            sources = json.loads(Path(args.models_from_file).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             log(f"Could not read --models-from-file: {e}")
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import spinners, { type BrailleSpinnerName as SpinnerName } from 'unicode-animations'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { cn } from '@/lib/utils'
 
 export type { SpinnerName }
@@ -43,13 +44,20 @@ interface GlyphSpinnerProps {
 export function GlyphSpinner({ ariaLabel = 'Loading', className, spinner = 'braille' }: GlyphSpinnerProps) {
   const spin = FRAMES_BY_NAME[spinner] ?? FRAMES_BY_NAME.braille!
   const [frame, setFrame] = useState(0)
+  // Pause when this surface is a hidden (kept-alive) tab: N mounted tabs each
+  // ticking a setInterval + setState burn CPU for pixels nobody can see.
+  const visible = usePaneVisible()
 
   useEffect(() => {
+    if (!visible) {
+      return
+    }
+
     setFrame(0)
     const id = window.setInterval(() => setFrame(f => (f + 1) % spin.frames.length), spin.interval)
 
     return () => window.clearInterval(id)
-  }, [spin])
+  }, [spin, visible])
 
   return (
     <span

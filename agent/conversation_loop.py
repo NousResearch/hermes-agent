@@ -1653,15 +1653,22 @@ def run_conversation(
         # turn), but BEFORE apply_anthropic_cache_control rewrites content
         # into list blocks.  Tool-call turns are exempt: ``content: ''``
         # alongside ``tool_calls`` is accepted everywhere and normalizing
-        # it would alter prompt-cache keys.
-        for am in api_messages:
-            if (
-                am.get("role") == "assistant"
-                and not am.get("tool_calls")
-                and isinstance(am.get("content"), str)
-                and not am["content"].strip()
-            ):
-                am["content"] = " "
+        # it would alter prompt-cache keys.  codex_responses is exempt:
+        # empty assistant content is a designed first-class state there
+        # (commentary-phase turns persist with content:'') and the
+        # Responses wire has no empty-content validation.  Keying on the
+        # ACTIVE api_mode means a codex-written empty turn is still
+        # repaired the moment the session replays through a strict
+        # chat-completions provider.
+        if getattr(agent, "api_mode", None) != "codex_responses":
+            for am in api_messages:
+                if (
+                    am.get("role") == "assistant"
+                    and not am.get("tool_calls")
+                    and isinstance(am.get("content"), str)
+                    and not am["content"].strip()
+                ):
+                    am["content"] = " "
 
         # Apply Anthropic prompt caching for Claude models on native
         # Anthropic, OpenRouter, and third-party Anthropic-compatible

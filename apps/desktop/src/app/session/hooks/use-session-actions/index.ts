@@ -558,6 +558,7 @@ export function useSessionActions({
       resetViewSync()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
+
       // A session is EITHER the main thread OR a tile — never both. openSessionTile
       // enforces this from the tile side (it refuses to tile the selected session);
       // this enforces it from the main side. Loading an existing session into main
@@ -570,6 +571,7 @@ export function useSessionActions({
       if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
         closeSessionTile(storedSessionId)
       }
+
       // Optimistically clear any prior resume-failure latch for this session:
       // we're attempting a fresh resume, so the self-heal in use-route-resume
       // must not keep treating it as stranded. It's re-armed below only if THIS

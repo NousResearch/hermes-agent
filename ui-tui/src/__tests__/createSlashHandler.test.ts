@@ -845,6 +845,7 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => {
       expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage, true, '/hermes-agent-dev')
     })
+
     // The expanded skill body is model-facing: no transcript line may carry it.
     for (const [line] of ctx.transcript.sys.mock.calls) {
       expect(line).not.toContain('Use this skill to do X')

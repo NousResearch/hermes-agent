@@ -697,3 +697,79 @@ class TestProfileScopedChatPty:
         with pytest.raises(web_server.HTTPException) as exc:
             web_server._resolve_chat_argv(profile="ghost")
         assert exc.value.status_code == 404
+
+class TestProfileScopedAudio:
+    """Audio endpoints must honor ``profile`` like the rest of the dashboard.
+
+    Historically /api/audio/transcribe|speak|elevenlabs/voices took no profile
+    and always resolved the dashboard's own config/.env, so a non-default
+    profile's TTS/STT settings were silently ignored (#53441 #45506 #66012
+    #64057).
+    """
+
+    def test_elevenlabs_voices_reads_target_profile_env(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        # Key only in the DEFAULT profile's .env; worker_beta has none.
+        (isolated_profiles["default"] / ".env").write_text(
+            "ELEVENLABS_API_KEY=sk-default-profile\n", encoding="utf-8"
+        )
+        resp = client.get("/api/audio/elevenlabs/voices?profile=worker_beta")
+        assert resp.status_code == 200
+        # Scoped to worker_beta → no key found → unavailable, no network call.
+        assert resp.json() == {"available": False, "voices": []}
+
+    def test_speak_synthesizes_inside_target_profile_home(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import tools.tts_tool as tts_tool
+
+        seen = {}
+
+        def _fake_tts(text):
+            from hermes_constants import get_hermes_home
+
+            seen["home"] = str(get_hermes_home())
+            out = isolated_profiles["worker_beta"] / "speech.mp3"
+            out.write_bytes(b"ID3fake")
+            return {"success": True, "file_path": str(out), "provider": "fake"}
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", _fake_tts)
+        resp = client.post(
+            "/api/audio/speak?profile=worker_beta", json={"text": "hello"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert seen["home"] == str(isolated_profiles["worker_beta"])
+
+    def test_transcribe_runs_inside_target_profile_home(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import base64
+
+        import tools.voice_mode as voice_mode
+
+        seen = {}
+
+        def _fake_transcribe(path):
+            from hermes_constants import get_hermes_home
+
+            seen["home"] = str(get_hermes_home())
+            return {"success": True, "transcript": "hi", "provider": "fake"}
+
+        monkeypatch.setattr(voice_mode, "transcribe_recording", _fake_transcribe)
+        payload = base64.b64encode(b"\x00fakeaudio").decode("ascii")
+        resp = client.post(
+            "/api/audio/transcribe?profile=worker_beta",
+            json={"data_url": f"data:audio/webm;base64,{payload}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["transcript"] == "hi"
+        assert seen["home"] == str(isolated_profiles["worker_beta"])
+
+    def test_audio_endpoints_unknown_profile_404(self, client, isolated_profiles):
+        resp = client.get("/api/audio/elevenlabs/voices?profile=ghost")
+        assert resp.status_code == 404
+        resp = client.post("/api/audio/speak?profile=ghost", json={"text": "x"})
+        assert resp.status_code == 404

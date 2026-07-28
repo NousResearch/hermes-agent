@@ -11,6 +11,7 @@ import {
 } from '@/lib/voice-playback'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
+import { $voicePlayback } from '@/store/voice-playback'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -61,6 +62,7 @@ export function useVoiceConversation({
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
+  const speechStartSequenceRef = useRef(0)
   const enabledRef = useRef(enabled)
   const mutedRef = useRef(muted)
   const busyRef = useRef(busy)
@@ -257,7 +259,16 @@ export function useVoiceConversation({
 
       dropSpeechSession()
 
-      if (enabledRef.current) {
+      // If stopVoicePlayback() was called externally (Stop button, end), the
+      // voice-playback sequence has advanced past what we captured at speech
+      // start — don't auto-start the next sentence, the user chose to stop.
+      const stoppedByUser =
+        speechStartSequenceRef.current > 0 &&
+        $voicePlayback.get().sequence > speechStartSequenceRef.current
+
+      speechStartSequenceRef.current = 0
+
+      if (enabledRef.current && !stoppedByUser) {
         pendingStartRef.current = true
       }
 
@@ -387,6 +398,8 @@ export function useVoiceConversation({
           barged = true
         })
 
+        speechStartSequenceRef.current = $voicePlayback.get().sequence
+
         void playSpeechText(response.text, { source: 'voice-conversation' })
           .catch(error => notifyError(error, voiceCopy.playbackFailed))
           .finally(() => {
@@ -411,6 +424,7 @@ export function useVoiceConversation({
     (responseId: string) => {
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
+      speechStartSequenceRef.current = $voicePlayback.get().sequence
       setStatus('speaking')
 
       let barged = false

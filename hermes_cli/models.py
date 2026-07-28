@@ -58,9 +58,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.5-pro",                     ""),
     ("openai/gpt-5.4-mini",                    ""),
     # Google
-    ("google/gemini-3-pro-preview",            ""),
     ("google/gemini-3.1-pro-preview",          ""),
-    ("google/gemini-3.5-flash",                ""),
+    ("google/gemini-3.6-flash",                ""),
     # xAI
     ("x-ai/grok-4.5",                          ""),
     # DeepSeek
@@ -68,8 +67,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("deepseek/deepseek-v4-flash",             ""),
     # Qwen
     ("qwen/qwen3.7-max",                       ""),
-    ("qwen/qwen3.7-plus",                      ""),
-    ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k3",                     "recommended"),
     # MiniMax
@@ -209,9 +206,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.5-pro",
         "openai/gpt-5.4-mini",
         # Google
-        "google/gemini-3-pro-preview",
         "google/gemini-3.1-pro-preview",
-        "google/gemini-3.5-flash",
+        "google/gemini-3.6-flash",
         # xAI
         "x-ai/grok-4.5",
         # DeepSeek
@@ -219,8 +215,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-v4-flash",
         # Qwen
         "qwen/qwen3.7-max",
-        "qwen/qwen3.7-plus",
-        "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k3",
         # MiniMax
@@ -296,7 +290,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3.5-flash",
+        "gemini-3.6-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
@@ -566,12 +560,17 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # /model picker only ever shows the currently-configured model.
     # Model IDs use the "google/" publisher prefix Vertex's openapi
     # endpoint expects (see hermes_cli/model_setup_flows.py).
+    # Entries validated live against a GCP project (global region,
+    # HTTP 200) as of 2026-07-21 (PR #68767).
     "vertex": [
         "google/gemini-3.1-pro-preview",
         "google/gemini-3-pro-preview",
+        "google/gemini-3.6-flash",
         "google/gemini-3.5-flash",
+        "google/gemini-3.5-flash-lite",
         "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview",
+        "google/gemini-3.1-flash-lite",
     ],
     "novita": [
         "moonshotai/kimi-k2.5",

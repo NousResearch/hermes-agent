@@ -11,7 +11,7 @@ import struct
 import subprocess
 import types
 import wave
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -52,6 +52,26 @@ def sample_ogg(tmp_path):
     ogg_path = tmp_path / "test.ogg"
     ogg_path.write_bytes(b"fake audio data")
     return str(ogg_path)
+
+@pytest.fixture
+def sample_silk(tmp_path):
+    """Create a fake WeChat .silk file for preprocessing tests."""
+    silk_path = tmp_path / "voice.silk"
+    silk_path.write_bytes(b"\x02#!SILK_V3fake")
+    return str(silk_path)
+
+
+
+@pytest.fixture
+def oversized_wav(tmp_path):
+    """Create a sparse WAV-shaped file just above the remote upload cap."""
+    from tools.transcription_tools import MAX_FILE_SIZE
+
+    wav_path = tmp_path / "oversized.wav"
+    with wav_path.open("wb") as audio_file:
+        audio_file.seek(MAX_FILE_SIZE)
+        audio_file.write(b"\0")
+    return str(wav_path)
 
 
 pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
@@ -611,6 +631,67 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_config_device_and_compute_type_passed_to_whisper(self, tmp_path):
+        """User-configured device and compute_type should be forwarded to WhisperModel.
+
+        Regression test for #8319: these values were hardcoded to "auto".
+        """
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        fake_config = {
+            "local": {
+                "device": "cpu",
+                "compute_type": "float32",
+            }
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+
+    def test_config_defaults_to_auto_when_not_set(self, tmp_path):
+        """Without config, device and compute_type should default to "auto"."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}):
+            from tools.transcription_tools import _transcribe_local
+            _transcribe_local(str(audio), "base")
+
+        mock_whisper_cls.assert_called_once_with("base", device="auto", compute_type="auto")
+
     def test_multiple_segments_joined(self, tmp_path):
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
@@ -635,6 +716,51 @@ class TestTranscribeLocalExtended:
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
 
+    def test_apple_silicon_forces_cpu_without_auto_probe(self, tmp_path):
+        """Apple Silicon/Rosetta should skip device='auto' to avoid SIGABRT."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "safe"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+        mock_whisper_cls = MagicMock(return_value=cpu_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "safe"
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="int8")
+
+    def test_force_cpu_detects_rosetta_on_apple_silicon(self):
+        from tools.transcription_tools import _should_force_faster_whisper_cpu
+
+        with patch("tools.transcription_tools.platform.system", return_value="Darwin"), \
+             patch("tools.transcription_tools.platform.machine", return_value="x86_64"), \
+             patch("tools.transcription_tools._sysctl_value", side_effect=lambda key: {
+                 "sysctl.proc_translated": "1",
+                 "hw.optional.arm64": "1",
+             }.get(key, "")):
+            assert _should_force_faster_whisper_cpu() is True
+
+    def test_force_cpu_false_on_intel_macos(self):
+        from tools.transcription_tools import _should_force_faster_whisper_cpu
+
+        with patch("tools.transcription_tools.platform.system", return_value="Darwin"), \
+             patch("tools.transcription_tools.platform.machine", return_value="x86_64"), \
+             patch("tools.transcription_tools._sysctl_value", return_value="0"):
+            assert _should_force_faster_whisper_cpu() is False
+
     def test_load_time_cuda_lib_failure_falls_back_to_cpu(self, tmp_path):
         """Missing libcublas at load time → reload on CPU, succeed."""
         audio = tmp_path / "test.ogg"
@@ -658,6 +784,7 @@ class TestTranscribeLocalExtended:
             return cpu_model
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
@@ -696,6 +823,7 @@ class TestTranscribeLocalExtended:
             return models.pop(0)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None):
@@ -710,6 +838,42 @@ class TestTranscribeLocalExtended:
         # then discarded; the CPU model served the retry.
         assert gpu_model.transcribe.call_count == 1
         assert cpu_model.transcribe.call_count == 1
+
+    def test_cublas_status_not_supported_retries_on_cpu(self, tmp_path):
+        """Blackwell cuBLAS unsupported errors should use the CPU fallback path."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "blackwell fallback"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "cuBLAS failed with status CUBLAS_STATUS_NOT_SUPPORTED"
+        )
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        models = [gpu_model, cpu_model]
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            return models.pop(0)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "blackwell fallback"
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
         """'CUDA out of memory' is a real error, not a missing lib — surface it."""
@@ -921,6 +1085,16 @@ class TestValidateAudioFileEdgeCases:
             f.write_bytes(b"data")
             assert _validate_audio_file(str(f)) is None, f"Format {fmt} should be accepted"
 
+    def test_telegram_oga_and_opus_accepted(self, tmp_path):
+        # Telegram delivers voice notes as .oga (OGG/Opus); .opus is the
+        # bare-codec sibling. Both must pass validation or every inbound
+        # voice note fails before reaching any STT backend.
+        from tools.transcription_tools import _validate_audio_file
+        for fmt in (".oga", ".opus"):
+            f = tmp_path / f"voice{fmt}"
+            f.write_bytes(b"data")
+            assert _validate_audio_file(str(f)) is None
+
     def test_case_insensitive_extension(self, tmp_path):
         from tools.transcription_tools import _validate_audio_file
         f = tmp_path / "test.MP3"
@@ -955,6 +1129,39 @@ class TestTranscribeAudioDispatch:
 
         assert result["success"] is True
         mock_local.assert_called_once()
+
+    def test_oversized_local_file_reaches_dispatcher(self, oversized_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local"}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(oversized_wav)
+
+        assert result["success"] is True
+        mock_local.assert_called_once()
+
+    def test_oversized_local_command_file_reaches_dispatcher(self, oversized_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local_command"}), \
+             patch("tools.transcription_tools._get_provider", return_value="local_command"), \
+             patch("tools.transcription_tools._transcribe_local_command",
+                   return_value={"success": True, "transcript": "hi"}) as mock_command:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(oversized_wav)
+
+        assert result["success"] is True
+        mock_command.assert_called_once()
+
+    def test_oversized_remote_file_is_rejected_before_dispatch(self, oversized_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._transcribe_openai") as mock_openai:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(oversized_wav)
+
+        assert result["success"] is False
+        assert "File too large" in result["error"]
+        mock_openai.assert_not_called()
 
     def test_dispatches_to_openai(self, sample_ogg):
         with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
@@ -1018,6 +1225,64 @@ class TestTranscribeAudioDispatch:
             transcribe_audio(sample_ogg, model="large-v3")
 
         assert mock_local.call_args[0][1] == "large-v3"
+
+    def test_converts_silk_before_dispatch(self, sample_silk):
+        with patch("tools.transcription_tools._prepare_audio_for_transcription",
+                   return_value=("/tmp/converted.wav", "/tmp/hermes-silk-123", None),
+                   create=True) as mock_prepare, \
+             patch("tools.transcription_tools._validate_audio_file", return_value=None), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}) as mock_local, \
+             patch("tools.transcription_tools.shutil.rmtree") as mock_rmtree:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_silk)
+
+        assert result["success"] is True
+        mock_prepare.assert_called_once_with(sample_silk)
+        mock_local.assert_called_once_with("/tmp/converted.wav", "base")
+        mock_rmtree.assert_called_once_with("/tmp/hermes-silk-123", ignore_errors=True)
+
+    def test_silk_symlink_is_rejected_before_preprocessing(self, tmp_path):
+        """A Silk symlink must not reach the decoder before path safety validation."""
+        if not hasattr(os, "symlink"):
+            pytest.skip("symlinks are not supported on this platform")
+
+        target = tmp_path / "voice.silk"
+        target.write_bytes(b"\x02#!SILK_V3fake")
+        link = tmp_path / "linked.silk"
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        with patch(
+            "tools.transcription_tools._prepare_audio_for_transcription", create=True
+        ) as mock_prepare:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(link))
+
+        assert result["success"] is False
+        assert "symbolic link" in result["error"]
+        mock_prepare.assert_not_called()
+
+    def test_oversized_silk_is_rejected_before_preprocessing(self, tmp_path):
+        """A Silk source over the upload limit must not reach the decoder."""
+        silk_path = tmp_path / "oversized.silk"
+        from tools.transcription_tools import MAX_FILE_SIZE
+        with silk_path.open("wb") as audio_file:
+            audio_file.truncate(MAX_FILE_SIZE + 1)
+
+        with patch(
+            "tools.transcription_tools._prepare_audio_for_transcription", create=True
+        ) as mock_prepare:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(silk_path))
+
+        assert result["success"] is False
+        assert "File too large" in result["error"]
+        mock_prepare.assert_not_called()
 
     def test_default_model_used_when_none(self, sample_ogg):
         with patch("tools.transcription_tools._load_stt_config", return_value={}), \
@@ -1305,6 +1570,60 @@ class TestTranscribeXAI:
         assert "HTTP 400" in result["error"]
         assert "Invalid audio format" in result["error"]
 
+    @pytest.mark.parametrize("rejected_status", [401, 403])
+    def test_retries_auth_rejection_with_refreshed_oauth_credentials(
+        self, sample_ogg, mock_xai_http_module, rejected_status
+    ):
+        mock_xai_http_module.resolve_xai_http_credentials.side_effect = [
+            {
+                "api_key": "stale-oauth-token",
+                "base_url": "https://api.x.ai/v1",
+                "provider": "xai-oauth",
+            },
+            {
+                "api_key": "fresh-oauth-token",
+                "base_url": "https://api.x.ai/v1",
+                "provider": "xai-oauth",
+            },
+        ]
+
+        rejected = MagicMock()
+        rejected.status_code = rejected_status
+        rejected.json.return_value = {
+            "error": {"message": "OAuth2 access token could not be validated"}
+        }
+        accepted = MagicMock()
+        accepted.status_code = 200
+        accepted.json.return_value = {
+            "text": "fleet speech transcription proof",
+            "language": "en",
+            "duration": 2.1,
+        }
+
+        stt_config = {"provider": "xai"}
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("requests.post", side_effect=[rejected, accepted]) as mock_post:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result == {
+            "success": True,
+            "transcript": "fleet speech transcription proof",
+            "provider": "xai",
+        }
+        assert mock_post.call_count == 2
+        assert mock_post.call_args_list[0].kwargs["headers"]["Authorization"] == (
+            "Bearer stale-oauth-token"
+        )
+        assert mock_post.call_args_list[1].kwargs["headers"]["Authorization"] == (
+            "Bearer fresh-oauth-token"
+        )
+        assert mock_xai_http_module.resolve_xai_http_credentials.call_args_list == [
+            call(),
+            call(force_refresh=True, api_key_hint="stale-oauth-token"),
+        ]
+
     def test_empty_transcript_returns_failure(self, monkeypatch, sample_ogg, mock_xai_http_module):
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
 
@@ -1379,6 +1698,38 @@ class TestTranscribeXAI:
         call_args = mock_post.call_args
         url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
         assert "custom.x.ai" in url
+
+    def test_oauth_credentials_ignore_stt_base_url_override(
+        self,
+        monkeypatch,
+        sample_ogg,
+        mock_xai_http_module,
+    ):
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.setenv("XAI_STT_BASE_URL", "https://attacker.example/v1")
+        mock_xai_http_module.resolve_xai_http_credentials.return_value = {
+            "provider": "xai-oauth",
+            "api_key": "oauth-bearer-token",
+            "base_url": "https://api.x.ai/v1",
+        }
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"xai": {"base_url": "https://attacker.example/config"}},
+        ), patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is True
+        call_args = mock_post.call_args
+        url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
+        assert url == "https://api.x.ai/v1/stt"
+        assert call_args.kwargs["headers"]["Authorization"] == "Bearer oauth-bearer-token"
 
     def test_diarize_sent_when_configured(self, monkeypatch, sample_ogg, mock_xai_http_module):
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
@@ -1651,6 +2002,39 @@ class TestTranscribeAudioElevenLabsDispatch:
         assert mock_elevenlabs.call_args[0][1] == "scribe_v2"
 
 
+# ============================================================================
+# _extract_transcript_text
+# ============================================================================
+
+class TestExtractTranscriptText:
+    def test_strips_qwen3_asr_language_envelope(self):
+        from tools.transcription_tools import _extract_transcript_text
+
+        result = _extract_transcript_text(
+            "language zh\n<audio_language>zh</audio_language>\n<asr_text>你好，世界",
+        )
+
+        assert result == "你好，世界"
+
+    def test_keeps_non_envelope_marker_literal(self):
+        from tools.transcription_tools import _extract_transcript_text
+
+        result = _extract_transcript_text(
+            "The user literally said <asr_text> while reading markup.",
+        )
+
+        assert result == "The user literally said <asr_text> while reading markup."
+
+    def test_keeps_language_sentence_with_marker_literal(self):
+        from tools.transcription_tools import _extract_transcript_text
+
+        result = _extract_transcript_text(
+            "Language teachers may say <asr_text> when discussing markup.",
+        )
+
+        assert result == "Language teachers may say <asr_text> when discussing markup."
+
+
 # Shell safety — shlex.split on auto-detected templates
 # ============================================================================
 class TestShellSafety:
@@ -1690,3 +2074,102 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+class TestLocalModelLock:
+    """#24767 — concurrent first-use must not double-load the whisper model."""
+
+    def test_lock_exists_and_is_a_lock(self):
+        import threading
+        from tools import transcription_tools
+        assert isinstance(transcription_tools._local_model_lock, type(threading.Lock()))
+
+    def test_concurrent_transcribe_loads_model_once(self, tmp_path):
+        import threading
+        from tools import transcription_tools
+        from tools.transcription_tools import _transcribe_local
+
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "hello"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        load_count = 0
+        load_started = threading.Event()
+
+        def slow_load(model_name, device="auto", compute_type="auto"):
+            nonlocal load_count
+            load_count += 1
+            load_started.set()
+            import time
+            time.sleep(0.05)
+            model = MagicMock()
+            model.transcribe.return_value = ([seg], info)
+            return model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._load_local_whisper_model", side_effect=slow_load), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            threads = [
+                threading.Thread(target=_transcribe_local, args=(str(audio), "base"))
+                for _ in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        assert load_count == 1
+
+
+class TestLocalBaseUrlNoApiKey:
+    """#25193 — empty api_key with a local base_url should not raise."""
+
+    def test_local_base_url_returns_placeholder_key(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"openai": {"base_url": "http://localhost:8504/v1"}},
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+        assert api_key == "not-needed"
+        assert base_url == "http://localhost:8504/v1"
+
+    def test_private_ip_base_url_returns_placeholder_key(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"openai": {"base_url": "http://192.168.1.10:8000/v1"}},
+        ):
+            api_key, base_url = _resolve_openai_audio_client_config()
+        assert api_key == "not-needed"
+
+    def test_public_base_url_still_requires_key(self):
+        from tools.transcription_tools import _resolve_openai_audio_client_config
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"openai": {"base_url": "https://api.example.com/v1"}},
+        ), patch(
+            "tools.transcription_tools.resolve_openai_audio_api_key", return_value="",
+        ), patch(
+            "tools.transcription_tools.resolve_managed_tool_gateway", return_value=None,
+        ), patch(
+            "tools.transcription_tools.managed_nous_tools_enabled", return_value=False,
+        ):
+            with pytest.raises(ValueError):
+                _resolve_openai_audio_client_config()
+
+    def test_is_local_or_private_url(self):
+        from tools.transcription_tools import _is_local_or_private_url
+        assert _is_local_or_private_url("http://localhost:8504/v1")
+        assert _is_local_or_private_url("http://127.0.0.1:9000")
+        assert _is_local_or_private_url("http://10.0.0.5/v1")
+        assert _is_local_or_private_url("http://stt.internal/v1")
+        assert not _is_local_or_private_url("https://api.openai.com/v1")
+        assert not _is_local_or_private_url("")

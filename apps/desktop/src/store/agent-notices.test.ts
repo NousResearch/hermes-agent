@@ -83,10 +83,15 @@ test('the leading severity glyph is stripped from the toast message', () => {
 })
 
 test('the trailing "· detail" is split off as a secondary meta line, not inlined', () => {
-  // grant_spent still carries a `· detail` tail.
-  const grant = noticeToToast({ key: 'credits.grant_spent', level: 'info', text: '• Grant spent · $12.00 top-up left' })
-  expect(grant?.message).toBe('Grant spent')
-  expect(grant?.meta).toBe('$12.00 top-up left')
+  // Detail-carrying notices split on the first ` · `.
+  const paused = noticeToToast({
+    key: 'credits.depleted',
+    level: 'error',
+    text: '✕ Credit access paused · run /topup to top up'
+  })
+
+  expect(paused?.message).toBe('Credit access paused')
+  expect(paused?.meta).toBe('run /topup to top up')
 
   // The usage line has no middot → whole line is the message, no meta.
   const plain = noticeToToast(usage())
@@ -95,7 +100,10 @@ test('the trailing "· detail" is split off as a secondary meta line, not inline
 })
 
 test('splitMeta splits on the first space-middot-space only', () => {
-  expect(splitMeta('Grant spent · $12.00 top-up left')).toEqual(['Grant spent', '$12.00 top-up left'])
+  expect(splitMeta('Credit access paused · run /topup to top up')).toEqual([
+    'Credit access paused',
+    'run /topup to top up'
+  ])
   expect(splitMeta('Credit access restored')).toEqual(['Credit access restored', undefined])
   // Interior middots after the first split stay in the meta.
   expect(splitMeta('a · b · c')).toEqual(['a', 'b · c'])
@@ -117,7 +125,7 @@ test('usageFraction derives $used / $cap from the notice text', () => {
   expect(usageFraction("You've used $15.00 of your $20.00 cap")).toBeCloseTo(0.75)
   expect(usageFraction("You've used $198.00 of your $220.00 cap")).toBeCloseTo(0.9)
   // Fewer than two amounts, or a zero cap → no fraction.
-  expect(usageFraction('Grant spent')).toBeNull()
+  expect(usageFraction('Credit access restored')).toBeNull()
   expect(usageFraction("You've used $5.00 of your $0.00 cap")).toBeNull()
   expect(usageFraction(undefined)).toBeNull()
 })
@@ -138,7 +146,7 @@ test('usage accent stays muted below 75%, then ramps orange → red', () => {
 test('terminal credit states carry their own accent; others stay default', () => {
   expect(noticeAccent({ key: 'credits.depleted', text: '✕ paused' })).toBe('var(--ui-red)')
   expect(noticeAccent({ key: 'credits.restored', text: '✓ restored' })).toBe('var(--ui-green)')
-  expect(noticeAccent({ key: 'credits.grant_spent', text: '• Grant spent' })).toBeUndefined()
+  expect(noticeAccent({ key: 'credits.usage', text: '• Credits update' })).toBeUndefined()
   expect(noticeAccent(undefined)).toBeUndefined()
 })
 
@@ -189,7 +197,7 @@ test('clearAgentNotice dismisses only the matching key', () => {
 
 test('only credits.depleted and credits.restored map to a native notification', () => {
   expect(nativeNoticeInput(usage({ key: 'credits.usage' }), 'Credits')).toBeNull()
-  expect(nativeNoticeInput(usage({ key: 'credits.grant_spent' }), 'Credits')).toBeNull()
+  expect(nativeNoticeInput(usage({ key: 'credits.other' }), 'Credits')).toBeNull()
   expect(nativeNoticeInput({ text: 'x', key: undefined }, 'Credits')).toBeNull()
   expect(nativeNoticeInput({ text: '', key: 'credits.depleted' }, 'Credits')).toBeNull()
 })

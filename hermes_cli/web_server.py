@@ -799,7 +799,23 @@ def _memory_provider_options() -> List[str]:
     return list(dict.fromkeys(options))
 
 
+def _timezone_options() -> List[str]:
+    """Return sorted IANA timezone identifiers, cached at import time."""
+    try:
+        import zoneinfo
+        return sorted(zoneinfo.available_timezones()) or ["UTC"]
+    except Exception:  # pragma: no cover
+        return ["UTC"]
+
+
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "timezone": {
+        "type": "select",
+        "description": "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
+        "options": _timezone_options(),
+        "searchable": True,
+        "clearable": True,
+    },
     "memory.provider": {
         "type": "select",
         "description": "Memory provider plugin",
@@ -967,6 +983,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
     "computer_use": "agent",
+    # `telemetry.shared_metrics.enabled` is the only schema-surfaced telemetry
+    # field — fold it into security alongside the other privacy-posture toggles.
+    "telemetry": "security",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -4352,7 +4371,9 @@ async def check_hermes_update(force: bool = False):
 
 
 @app.post("/api/audio/transcribe")
-async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
+async def transcribe_audio_upload(
+    payload: AudioTranscriptionRequest, profile: Optional[str] = None
+):
     data_url = (payload.data_url or "").strip()
     if not data_url.startswith("data:") or "," not in data_url:
         raise HTTPException(status_code=400, detail="Invalid audio payload")
@@ -4402,8 +4423,17 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
         # and re-listens instead of surfacing a 400 on every quiet turn.
         from tools.voice_mode import transcribe_recording
 
+        def _transcribe_scoped():
+            # Home-only scope (contextvar), NOT _profile_scope: transcription
+            # blocks for the provider round-trip and _profile_scope holds a
+            # process-global skills lock for its entire body (see the MCP
+            # probe above). STT only needs config/.env resolution, which the
+            # contextvar override provides inside this worker thread.
+            with _config_profile_scope(profile):
+                return transcribe_recording(temp_path)
+
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, transcribe_recording, temp_path)
+        result = await loop.run_in_executor(None, _transcribe_scoped)
     except HTTPException:
         raise
     except Exception as exc:
@@ -4468,13 +4498,16 @@ def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
 
 
 @app.get("/api/audio/elevenlabs/voices")
-async def get_elevenlabs_voices():
+async def get_elevenlabs_voices(profile: Optional[str] = None):
     """Return ElevenLabs voices when an API key is configured.
 
     The desktop UI uses this for the ``tts.elevenlabs.voice_id`` dropdown.
     Only non-secret voice metadata is returned; the API key stays server-side.
     """
-    api_key = (load_env().get("ELEVENLABS_API_KEY") or os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+    # Config-only scope (await-safe): the key lookup reads the requested
+    # profile's .env, matching the profile the settings UI writes to.
+    with _config_profile_scope(profile):
+        api_key = (load_env().get("ELEVENLABS_API_KEY") or os.environ.get("ELEVENLABS_API_KEY") or "").strip()
     if not api_key:
         return {"available": False, "voices": []}
 
@@ -4536,7 +4569,7 @@ async def get_elevenlabs_voices():
 
 
 @app.post("/api/audio/speak")
-async def speak_text(payload: TTSSpeakRequest):
+async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     """Synthesize speech and return audio as base64 data URL.
 
     Used by the desktop voice-conversation mode to play back assistant
@@ -4550,8 +4583,21 @@ async def speak_text(payload: TTSSpeakRequest):
 
     try:
         from tools.tts_tool import text_to_speech_tool
+
+        def _speak_scoped():
+            # Home-only scope (contextvar), NOT _profile_scope: synthesis
+            # blocks for the provider round-trip and only needs config/.env
+            # resolution, so the task-local override inside this worker
+            # thread is sufficient (same reasoning as the MCP probe scope).
+            with _config_profile_scope(profile):
+                return text_to_speech_tool(text)
+
         loop = asyncio.get_running_loop()
-        result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
+        result_json = await loop.run_in_executor(None, _speak_scoped)
+    except HTTPException:
+        # _config_profile_scope raises 400/404 for a bad profile — pass it
+        # through instead of masking it as a 500 synthesis failure.
+        raise
     except Exception as exc:
         _log.exception("Desktop voice TTS failed")
         raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}")
@@ -4648,15 +4694,22 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         return
     await ws.accept()
 
+    # Profile via query param, like /api/pty and /api/console: the provider
+    # chain + API keys must resolve from the requesting profile's config, not
+    # the dashboard's own. The streamer captures its config at resolve time,
+    # so scoping resolution scopes the whole session.
+    profile = (ws.query_params.get("profile") or "").strip() or None
+
     loop = asyncio.get_running_loop()
 
     def _resolve():
         from tools.tts_streaming import resolve_streaming_provider
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
 
-        cfg = _load_tts_config()
-        streamer = resolve_streaming_provider(cfg)
-        cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
+        with _config_profile_scope(profile):
+            cfg = _load_tts_config()
+            streamer = resolve_streaming_provider(cfg)
+            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
         return streamer, cap
 
     try:
@@ -11103,6 +11156,7 @@ def _xai_device_poller(session_id: str) -> None:
         _save_xai_oauth_tokens,
         _xai_oauth_discovery,
         _xai_oauth_poll_device_token,
+        mark_provider_active_if_unset,
         unsuppress_credential_source,
     )
 
@@ -11139,7 +11193,13 @@ def _xai_device_poller(session_id: str) -> None:
                 discovery=discovery,
                 last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 auth_mode="oauth_device_code",
+                # Persist credentials without hijacking an existing active
+                # chat provider.
+                set_active=False,
             )
+            # Mirror `hermes auth add xai-oauth`: first credential may become
+            # active when none is set yet; never overwrite an existing choice.
+            mark_provider_active_if_unset("xai-oauth")
             # The singleton write above is the single source of truth: the
             # credential-pool load seeds it as the canonical ``device_code``
             # entry. Do NOT also insert a parallel ``manual:dashboard_*`` pool

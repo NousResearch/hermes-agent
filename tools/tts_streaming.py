@@ -27,7 +27,8 @@ import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
-from tools.tts_tool import _get_provider, get_env_value
+from tools.tool_backend_helpers import resolve_openai_audio_api_key
+from tools.tts_tool import _get_provider, _load_tts_config, get_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -177,10 +178,14 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         from tools.tts_tool import (
             DEFAULT_ELEVENLABS_STREAMING_MODEL_ID,
             DEFAULT_ELEVENLABS_VOICE_ID,
+            _elevenlabs_environment_kwargs,
             _import_elevenlabs,
         )
 
-        client = _import_elevenlabs()(api_key=get_env_value("ELEVENLABS_API_KEY"))
+        client = _import_elevenlabs()(
+            api_key=get_env_value("ELEVENLABS_API_KEY"),
+            **_elevenlabs_environment_kwargs(self.section),
+        )
         voice_id = self.section.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
         model_id = self.section.get(
             "streaming_model_id",
@@ -194,6 +199,15 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         )
 
 
+def _openai_config_api_key() -> str:
+    """Return ``tts.openai.api_key`` from config.yaml, or empty string."""
+    try:
+        openai_cfg = (_load_tts_config().get("openai") or {})
+    except Exception:
+        return ""
+    return openai_cfg.get("api_key") or ""
+
+
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
     """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16)."""
@@ -202,14 +216,18 @@ class OpenAIStreamer(StreamingTTSProvider):
 
     @staticmethod
     def available() -> bool:
-        return bool(get_env_value("OPENAI_API_KEY"))
+        return bool(_openai_config_api_key() or resolve_openai_audio_api_key())
 
     def stream(self, text: str) -> Iterator[bytes]:
         from openai import OpenAI
 
         client = OpenAI(
-            api_key=get_env_value("OPENAI_API_KEY"),
-            base_url=get_env_value("OPENAI_BASE_URL") or None,
+            api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
+            base_url=(
+                self.section.get("base_url")
+                or get_env_value("OPENAI_BASE_URL")
+                or None
+            ),
         )
         model = self.section.get("model", "gpt-4o-mini-tts")
         voice = self.section.get("voice", "alloy")

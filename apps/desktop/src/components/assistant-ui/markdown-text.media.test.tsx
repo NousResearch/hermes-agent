@@ -1,9 +1,9 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { MarkdownTextContent } from './markdown-text'
+import { MarkdownImage, MarkdownTextContent } from './markdown-text'
 
 const REMOTE_IMAGE_PATH = '/home/user/project/images/remote-preview.png'
 const REMOTE_IMAGE_DATA_URL = 'data:image/png;base64,cmVtb3RlLWltYWdl'
@@ -48,5 +48,34 @@ describe('MarkdownTextContent remote images', () => {
       path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fimages%2Fremote-preview.png',
       profile: 'remote-work'
     })
+  })
+})
+
+// Regression for #40896: generated media often arrives as image markdown
+// (`![clip](clip.mp4)`). A raw <img> with a video/audio source paints a
+// broken-image icon even though the file is valid, so MarkdownImage must route
+// video/audio sources to the proper <video>/<audio> element.
+describe('MarkdownImage media routing', () => {
+  afterEach(cleanup)
+
+  it('renders a <video> (not a broken <img>) for a video source', async () => {
+    const { container } = render(<MarkdownImage alt="clip" src="file:///tmp/clip.mp4" />)
+
+    await waitFor(() => expect(container.querySelector('video')).not.toBeNull())
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it('renders an <audio> element for an audio source', async () => {
+    const { container } = render(<MarkdownImage alt="note" src="file:///tmp/note.mp3" />)
+
+    await waitFor(() => expect(container.querySelector('audio')).not.toBeNull())
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it('still renders an <img> for an image source', () => {
+    const { container } = render(<MarkdownImage alt="pic" src="file:///tmp/pic.png" />)
+
+    expect(container.querySelector('video')).toBeNull()
+    expect(container.querySelector('audio')).toBeNull()
   })
 })

@@ -1677,6 +1677,31 @@ EOF
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
+    # Also expose `hermes-acp`. ACP hosts (Zed, JetBrains, Buzz) resolve the
+    # agent by command name on the login-shell PATH, and the `hermes-acp`
+    # console script lives inside the venv, which is not on that PATH. Without
+    # this launcher those hosts report Hermes as not installed. (#21454 applies
+    # here too: clear the path first so `cat >` cannot follow an old symlink
+    # into the venv and overwrite the console script.)
+    rm -f "$command_link_dir/hermes-acp"
+    if [ "$USE_VENV" = true ]; then
+        cat > "$command_link_dir/hermes-acp" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" acp "\$@"
+EOF
+    else
+        cat > "$command_link_dir/hermes-acp" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" acp "\$@"
+EOF
+    fi
+    chmod +x "$command_link_dir/hermes-acp"
+    log_success "Installed hermes-acp launcher → $command_link_display_dir/hermes-acp"
+
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
         log_info "$command_link_display_dir is the native Termux command path"

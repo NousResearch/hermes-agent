@@ -259,7 +259,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                   textValue=""
                 >
                   <span className="truncate">{group.provider.name}</span>
-                  <DisclosureCaret className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100" open={!collapsed} size="0.625rem" />
+                  <DisclosureCaret
+                    className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
+                    open={!collapsed}
+                    size="0.625rem"
+                  />
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => {

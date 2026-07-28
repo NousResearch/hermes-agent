@@ -163,11 +163,10 @@ class TestBoundaryFractions:
         assert "credits.usage" in keys
         assert "credits.usage" not in to_clear
 
-    def test_just_below_1_0_does_not_fire_grant_spent(self):
-        """subscription_micros = limit - 1 (used_fraction just under 1.0) must NOT fire grant_spent.
-
-        Locks the boundary so a future used_fraction clamp refactor cannot fire
-        grant_spent a micro early.
+    def test_just_below_1_0_boundary_no_notices_with_topup(self):
+        """subscription_micros = 1 (used_fraction just under 1.0) with top-up
+        funds → nothing fires: gauge suppressed by purchased>0, and the old
+        grant_spent notice no longer exists at any fraction.
         """
         latch = fresh_latch()
         limit = 20_000_000
@@ -182,49 +181,42 @@ class TestBoundaryFractions:
         )
         assert s.used_fraction is not None and s.used_fraction < 1.0
         to_show, to_clear = evaluate_credits_notices(s, latch)
-        assert all(n.key != "credits.grant_spent" for n in to_show)
-        assert "credits.grant_spent" not in to_clear
+        assert to_show == []
+        assert to_clear == []
 
 
-# ── Scenario 4: grant_spent ───────────────────────────────────────────────────
+# ── Scenario 4: grant_spent removed ──────────────────────────────────────────
 
 
-class TestGrantSpent:
-    def _grant_state(self, purchased_micros: int = 12_340_000) -> CreditsState:
+class TestGrantSpentRemoved:
+    """The 'Grant spent · $X top-up left' notice was removed (July 2026) — it
+    camped in the status bar for every sub+top-up user and carried no action.
+    The policy must never emit or clear the key, even for the state that used
+    to fire it (cap reached + purchased top-up funds)."""
+
+    def _old_trigger_state(self) -> CreditsState:
         return state_with_fraction(
             1.0,
             denominator_kind="subscription_cap",
-            purchased_micros=purchased_micros,
+            purchased_micros=12_340_000,
             purchased_usd="12.34",
         )
 
-    def test_grant_spent_fires_on_first_obs(self):
-        """No crossing gate for grant_spent — fires immediately on first obs."""
+    def test_never_fires_on_old_trigger_state(self):
         latch = fresh_latch()
-        to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
-        keys = [n.key for n in to_show]
-        assert "credits.grant_spent" in keys
-
-    def test_grant_spent_no_refire(self):
-        latch = fresh_latch()
-        evaluate_credits_notices(self._grant_state(), latch)
-        to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
+        to_show, to_clear = evaluate_credits_notices(self._old_trigger_state(), latch)
         assert all(n.key != "credits.grant_spent" for n in to_show)
         assert "credits.grant_spent" not in to_clear
+        assert "credits.grant_spent" not in latch["active"]
 
-    def test_grant_spent_clears_when_purchased_zero(self):
+    def test_stale_active_key_is_left_alone(self):
+        """A latch persisted from an older build may still hold the key; the
+        policy neither re-fires nor clears it (frontends drop unknown keys)."""
         latch = fresh_latch()
-        evaluate_credits_notices(self._grant_state(), latch)
-        # Now purchased → 0: grant_cond becomes False
-        s_no_purchase = state_with_fraction(
-            1.0,
-            denominator_kind="subscription_cap",
-            purchased_micros=0,
-            purchased_usd="0.00",
-        )
-        to_show, to_clear = evaluate_credits_notices(s_no_purchase, latch)
-        assert "credits.grant_spent" in to_clear
+        latch["active"].add("credits.grant_spent")
+        to_show, to_clear = evaluate_credits_notices(self._old_trigger_state(), latch)
         assert all(n.key != "credits.grant_spent" for n in to_show)
+        assert "credits.grant_spent" not in to_clear
 
 
 # ── Scenario 5: depleted + recovery ──────────────────────────────────────────
@@ -451,7 +443,9 @@ class TestNoticeCopy:
         assert "$20.00" in warn_notice.text
         assert "cap" in warn_notice.text
 
-    def test_grant_spent_contains_verbatim_purchased_usd(self):
+    def test_grant_spent_never_emitted(self):
+        """Old grant_spent trigger state produces no notice at all — the gauge
+        is suppressed by top-up and the grant_spent notice is gone."""
         latch = fresh_latch()
         s = state_with_fraction(
             1.0,
@@ -460,9 +454,7 @@ class TestNoticeCopy:
             purchased_usd="12.34",
         )
         to_show, _ = evaluate_credits_notices(s, latch)
-        grant_notice = next(n for n in to_show if n.key == "credits.grant_spent")
-        assert "$12.34" in grant_notice.text
-        assert "top-up left" in grant_notice.text
+        assert to_show == []
 
     def test_depleted_mentions_credits_command(self):
         latch = fresh_latch()
@@ -476,18 +468,11 @@ class TestNoticeCopy:
 
 
 class TestSeverityOrder:
-    def test_multiple_new_notices_ordered_ascending_severity(self):
-        """grant_spent < depleted in to_show when both fire in one call.
-
-        (usage is suppressed here: purchased>0 — see TestTopUpSuppression.
-        usage + grant_spent are now mutually exclusive by design.)
-        """
+    def test_depleted_only_notice_with_topup_at_cap(self):
+        """With top-up funds and cap reached while unpaid, only depleted fires:
+        the usage gauge is suppressed by purchased>0 and grant_spent is gone."""
         latch = {"active": set(), "seen_below_90": True, "usage_band": None}
 
-        # Build state: subscription_cap, uf >= 1.0, purchased_micros > 0, NOT paid_access
-        # grant_cond: subscription_cap + uf >= 1.0 + purchased > 0 ✓
-        # depleted_cond: not paid_access ✓
-        # usage band: suppressed (purchased > 0)
         s = CreditsState(
             subscription_limit_micros=20_000_000,
             subscription_limit_usd="20.00",
@@ -499,11 +484,7 @@ class TestSeverityOrder:
         )
         to_show, _ = evaluate_credits_notices(s, latch)
         keys = [n.key for n in to_show]
-        assert "credits.usage" not in keys
-        assert "credits.grant_spent" in keys
-        assert "credits.depleted" in keys
-        # Ascending severity: grant_spent before depleted
-        assert keys.index("credits.grant_spent") < keys.index("credits.depleted")
+        assert keys == ["credits.depleted"]
 
     def test_usage_before_depleted_without_topup(self):
         """With no top-up funds, usage fires and precedes depleted."""
@@ -573,9 +554,9 @@ class TestTopUpSuppression:
         assert "$19.00" in n.text
         assert latch["usage_band"] == 90
 
-    def test_grant_spent_still_fires_with_topup(self):
-        """Suppression only affects the gauge — grant_spent (which NEEDS purchased>0)
-        is untouched."""
+    def test_no_notice_at_cap_with_topup(self):
+        """Cap reached with top-up funds → nothing fires: gauge suppressed,
+        grant_spent removed."""
         latch = fresh_latch()
         s = state_with_fraction(
             1.0,
@@ -584,9 +565,7 @@ class TestTopUpSuppression:
             purchased_usd="12.34",
         )
         to_show, _ = evaluate_credits_notices(s, latch)
-        keys = [n.key for n in to_show]
-        assert "credits.grant_spent" in keys
-        assert "credits.usage" not in keys
+        assert to_show == []
 
     def test_depleted_unaffected_by_topup_suppression(self):
         latch = fresh_latch()

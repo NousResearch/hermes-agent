@@ -1542,7 +1542,7 @@ display:
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
-  credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
+  credits_notices: true   # Nous credits status-bar notices (usage bands, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 
@@ -1755,6 +1755,7 @@ voice:
   max_recording_seconds: 120    # Hard stop for long recordings
   auto_tts: false               # Enable spoken replies automatically when /voice on
   beep_enabled: true            # Play record start/stop beeps in CLI voice mode
+  beep_volume: 0.3              # Beep amplitude (0.0-1.0); raise it on quiet systems / headphones
   silence_threshold: 200        # RMS threshold for speech detection
   silence_duration: 3.0         # Seconds of silence before auto-stop
 ```
@@ -1808,8 +1809,14 @@ and messaging gateway:
 max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
 ```
 
-When the cap is reached, Hermes returns a direct limit message for new sessions.
-Existing active sessions keep their normal behavior.
+A slot is taken when a session runs its **first turn**, not when a chat window
+is opened. Opening, resuming or reconnecting to a chat costs nothing until you
+send a message, so idle desktop tabs (and the background resumes a flaky
+websocket triggers) cannot starve the messaging gateway that shares this cap.
+
+When the cap is reached, Hermes returns a direct limit message naming which
+surfaces hold the slots. Existing active sessions keep their normal behavior.
+Run `hermes status` to see the current slot usage and every holder.
 
 The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when

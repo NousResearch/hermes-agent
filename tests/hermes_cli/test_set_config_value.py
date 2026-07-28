@@ -573,6 +573,34 @@ class TestCronModelDriftConfigWarning:
         assert "Set model.default = new-model" in captured.out
         assert "fail closed" not in captured.out
 
+    def test_cron_fleet_default_suppresses_model_axis_warning(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        """With cron.model set, unpinned jobs follow the fleet default, not the
+        global model — a model.default change cannot trip the guard, so no
+        warning should be printed."""
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "model-drift-job",
+                    "enabled": True,
+                    "model": None,
+                    "model_snapshot": "old-model",
+                }
+            ],
+        )
+
+        set_config_value("cron.model", "cron-fleet-model")
+        capsys.readouterr()
+        set_config_value("model.default", "new-model")
+
+        captured = capsys.readouterr()
+        assert "Set model.default = new-model" in captured.out
+        assert "fail closed" not in captured.out
+
     @pytest.mark.parametrize(
         ("configured_value", "expected"),
         [

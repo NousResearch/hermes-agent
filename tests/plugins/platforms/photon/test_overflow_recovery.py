@@ -260,3 +260,131 @@ async def _drain_pending_tasks(limit: int = 50) -> None:
         if not pending:
             return
         await asyncio.wait(pending, timeout=1.0)
+
+
+# -- Gap 5: self-cancellation race in _stop_sidecar() (issue #73159) --------
+#
+# The tests above mock out _notify_fatal_error() entirely, so the real
+# integration chain (supervisor task -> _notify_fatal_error() ->
+# disconnect() -> _stop_sidecar() -> cancel the supervisor task) is never
+# exercised end to end. That chain is exactly where the bug lives: when
+# _notify_fatal_error() is a real callback that calls adapter.disconnect(),
+# _stop_sidecar() is invoked FROM WITHIN the currently-running supervisor
+# task, and cancelling self._sidecar_supervisor_task there cancels the very
+# task executing the fatal-error handler -- aborting it (via CancelledError,
+# a BaseException the handler's `except Exception` guards don't catch)
+# before the Gateway's reconnect-queue step ever runs.
+
+class _FakeStoppedProc:
+    """Minimal proc stand-in so _stop_sidecar() reaches its finally block
+    (it early-returns entirely when self._sidecar_proc is None) without
+    spawning a real subprocess or doing any real I/O."""
+
+    def __init__(self) -> None:
+        self.stdin = None
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_supervisor_task_survives_self_triggered_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real chain: _supervise_sidecar() (running as the actual
+    self._sidecar_supervisor_task) detects the crash and calls a REAL
+    _notify_fatal_error() that calls adapter.disconnect() -- which reaches
+    _stop_sidecar() from inside the task it's about to try to cancel.
+
+    Before the fix: this raises CancelledError out of _supervise_sidecar(),
+    so the task ends up in the "cancelled" state and reconnect_queued below
+    is never set (mirroring how the real Gateway's fatal-error handler,
+    which runs the reconnect-queue logic AFTER disconnect() returns, never
+    gets there either).
+
+    After the fix: disconnect() completes normally, _supervise_sidecar()
+    returns normally, and the task is NOT cancelled.
+    """
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True
+    # A minimal fake proc so _stop_sidecar() reaches its finally block
+    # (the real process-management behavior is covered separately by
+    # test_sidecar_lifecycle.py) -- this test is purely about the
+    # self-cancellation race.
+    adapter._sidecar_proc = _FakeStoppedProc()
+
+    reconnect_queued: list[bool] = []
+
+    async def _real_notify_fatal_error() -> None:
+        # Stand-in for the Gateway's actual fatal-error handler: it calls
+        # adapter.disconnect() (real chain: disconnect -> _stop_sidecar,
+        # which used to self-cancel), then -- only if that completes
+        # without the CancelledError escaping -- proceeds to queue the
+        # platform for background reconnection.
+        await adapter.disconnect()
+        reconnect_queued.append(True)
+
+    monkeypatch.setattr(adapter, "_notify_fatal_error", _real_notify_fatal_error)
+
+    async def _run_supervisor():
+        await adapter._supervise_sidecar(_DeadProc(exit_code=75))
+
+    task = asyncio.ensure_future(_run_supervisor())
+    adapter._sidecar_supervisor_task = task
+
+    # Must complete cleanly -- must NOT raise CancelledError out to us.
+    await task
+
+    assert task.cancelled() is False, (
+        "The supervisor task must not end up cancelled by its own "
+        "fatal-error handling chain"
+    )
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "SIDECAR_CRASHED"
+    assert reconnect_queued == [True], (
+        "The reconnect-queue step (everything after disconnect() returns "
+        "in the real Gateway handler) must actually run -- this is the "
+        "exact step issue #73159 reports as silently skipped"
+    )
+    # _stop_sidecar() must have cleared the task reference either way.
+    assert adapter._sidecar_supervisor_task is None
+
+
+@pytest.mark.asyncio
+async def test_external_disconnect_still_cancels_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OTHER call path -- external cleanup (Gateway shutdown, an
+    explicit /platform disconnect) -- calls _stop_sidecar() from a
+    DIFFERENT task than the supervisor. That legitimate case must still
+    cancel a still-running supervisor task exactly as before."""
+    adapter = _make_adapter(monkeypatch)
+    adapter._sidecar_proc = _FakeStoppedProc()
+
+    supervisor_ran_forever = asyncio.Event()
+
+    async def _hangs_forever():
+        try:
+            supervisor_ran_forever.set()
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            raise
+
+    task = asyncio.ensure_future(_hangs_forever())
+    adapter._sidecar_supervisor_task = task
+    await supervisor_ran_forever.wait()
+
+    # Called from THIS (different) task -- the external-cleanup case.
+    await adapter._stop_sidecar()
+
+    # cancel() only schedules the CancelledError; await it so the task
+    # actually settles into the cancelled state before asserting.
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert task.cancelled() is True, (
+        "External cleanup must still cancel a running supervisor task"
+    )
+    assert adapter._sidecar_supervisor_task is None

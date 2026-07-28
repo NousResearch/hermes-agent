@@ -1336,7 +1336,31 @@ class PhotonAdapter(BasePlatformAdapter):
             # standalone senders don't chase a dead port/token.
             _delete_runtime_record()
             if self._sidecar_supervisor_task is not None:
-                self._sidecar_supervisor_task.cancel()
+                # _stop_sidecar() is called both from external cleanup
+                # (Gateway shutdown, explicit disconnect) AND, indirectly,
+                # from WITHIN the supervisor task's own crash-handling
+                # chain: _supervise_sidecar() detects the sidecar exit,
+                # calls _set_fatal_error() + self._notify_fatal_error(),
+                # which the Gateway's fatal-error handler answers by
+                # calling adapter.disconnect() -> this same _stop_sidecar().
+                # In that second case, self._sidecar_supervisor_task IS the
+                # currently-running task. Cancelling it raises
+                # CancelledError into its own call stack (at the next
+                # await point in _notify_fatal_error() or here), which
+                # aborts the fatal-error handler before the Gateway ever
+                # reaches the "queue for background reconnection" step --
+                # Photon then stays permanently dead until a manual
+                # restart, since asyncio.CancelledError inherits from
+                # BaseException (not Exception) and isn't caught by the
+                # handler's `except Exception` guards (issue #73159).
+                # A task cannot legally cancel itself anyway (the
+                # cancellation would only take effect at its own next
+                # await, which is exactly the corruption described above),
+                # so skip it here and let the task finish exiting on its
+                # own instead.
+                current_task = asyncio.current_task()
+                if self._sidecar_supervisor_task is not current_task:
+                    self._sidecar_supervisor_task.cancel()
                 self._sidecar_supervisor_task = None
 
     # -- Outbound ----------------------------------------------------------

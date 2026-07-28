@@ -72,27 +72,20 @@ def get_env_value(name, default=None):
 
 
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
-    """Resolve an API key from env, .env, or the credential pool.
+    """Resolve a TTS provider API key via the shared voice-key resolver.
 
-    Used by TTS providers (Mistral, ElevenLabs) that store keys
-    via ``hermes auth add <provider_id>``.
+    Delegates to ``tools.tool_backend_helpers.resolve_provider_secret`` —
+    the single owner of STT/TTS key resolution (config > env/.env > the
+    credential pool populated by ``hermes auth add <provider_id>``).
+    Resolved at call time so tests that reload the helpers module see the
+    live function.
     """
-    key = get_env_value(env_var)
-    if key:
-        return key
     try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider_id)
-        if pool and pool.has_credentials():
-            entry = pool.peek()
-            if entry:
-                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
-                key = str(key).strip()
-                if key:
-                    return key
-    except Exception:
-        pass
-    return ""
+        from tools.tool_backend_helpers import resolve_provider_secret
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        return str(get_env_value(env_var) or "").strip()
+    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
@@ -1285,7 +1278,7 @@ def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, A
     the shared ``hermes_cli.models`` helpers so every DeepInfra surface
     resolves them identically.
     """
-    api_key = (get_env_value("DEEPINFRA_API_KEY") or "").strip()
+    api_key = _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
     if not api_key:
         raise ValueError(
             "DEEPINFRA_API_KEY not set. Run `hermes setup` to configure, "
@@ -1566,7 +1559,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     """
     import requests
 
-    api_key = (get_env_value("MINIMAX_API_KEY") or "")
+    api_key = (_resolve_provider_key("MINIMAX_API_KEY", "minimax") or "")
     if not api_key:
         raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
 
@@ -1936,7 +1929,10 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     """
     import requests
 
-    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
+    api_key = (
+        _resolve_provider_key("GEMINI_API_KEY", "gemini")
+        or _resolve_provider_key("GOOGLE_API_KEY", "gemini")
+    )
     if not api_key:
         raise ValueError(
             "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
@@ -2782,9 +2778,9 @@ def check_tts_requirements() -> bool:
             _import_openai_client()
         except ImportError:
             return False
-        return bool(get_env_value("DEEPINFRA_API_KEY"))
+        return bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"))
     if provider == "minimax":
-        return bool(get_env_value("MINIMAX_API_KEY"))
+        return bool(_resolve_provider_key("MINIMAX_API_KEY", "minimax"))
     if provider == "xai":
         try:
             from tools.xai_http import resolve_xai_http_credentials
@@ -2793,7 +2789,10 @@ def check_tts_requirements() -> bool:
         except Exception:
             return False
     if provider == "gemini":
-        return bool(get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"))
+        return bool(
+            _resolve_provider_key("GEMINI_API_KEY", "gemini")
+            or _resolve_provider_key("GOOGLE_API_KEY", "gemini")
+        )
     if provider == "mistral":
         try:
             _import_mistral_client()

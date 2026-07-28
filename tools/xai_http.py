@@ -311,7 +311,12 @@ def resolve_xai_http_credentials(
     except Exception:
         pass
 
-    api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+    try:
+        from tools.tool_backend_helpers import resolve_provider_secret
+
+        api_key = resolve_provider_secret("XAI_API_KEY", "xai", env_getter=get_env_value)
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
     base_url = str(get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")
     return {
         "provider": "xai",

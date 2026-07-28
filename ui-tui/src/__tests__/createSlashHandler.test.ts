@@ -825,7 +825,12 @@ describe('createSlashHandler', () => {
             }
 
             if (method === 'command.dispatch') {
-              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+              return Promise.resolve({
+                type: 'skill',
+                message: skillMessage,
+                name: 'hermes-agent-dev',
+                display: '/hermes-agent-dev'
+              })
             }
 
             return Promise.resolve({})

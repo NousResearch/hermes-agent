@@ -74,7 +74,7 @@ _WAIT_ALREADY_TIMED_OUT = False
 # Duplicated rather than imported to avoid a circular import (prompt_builder
 # imports nothing from tools).
 _REMOTE_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
+    "docker", "singularity", "modal", "daytona", "e2b", "ssh", "managed_modal",
 })
 
 

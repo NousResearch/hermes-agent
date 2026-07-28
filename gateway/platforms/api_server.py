@@ -58,7 +58,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -1027,6 +1027,99 @@ _MEDIA_MIME = {
     ".bmp": "image/bmp",
 }
 _MEDIA_DATA_URL_MAX_BYTES = 5 * 1024 * 1024  # skip images larger than 5MB
+
+
+_MEDIA_HOLDBACK_WORD = "MEDIA"
+# How much text may accumulate after a bare "MEDIA" sighting before giving up
+# on it becoming a real tag and releasing it as plain text. Generous enough
+# for any real MEDIA:<path> (paths are rarely anywhere near this long), small
+# enough that an ordinary prose mention of the word "media" doesn't visibly
+# stall a live stream for long.
+_MEDIA_HOLDBACK_CAP = 400
+
+
+class StreamingMediaTagResolver:
+    """Buffers streamed text so a ``MEDIA:<path>`` tag is never split across
+    two delta chunks, then resolves completed tags to inline data URLs.
+
+    Real per-token LLM streaming can (and does) land a ``MEDIA:`` tag's
+    characters across several separate delta chunks. ``_resolve_media_to_data_urls``
+    only recognizes a COMPLETE tag, so calling it on each raw delta
+    independently -- what every SSE/streaming call site in this file did
+    before this class existed -- lets a split tag pass through untouched:
+    confirmed in production (2026-07-28) as literal ``MEDIA:/path...`` text
+    reaching a live client instead of an image, across every streaming
+    endpoint in this module (only the non-streaming responses ever called
+    the resolver).
+
+    Usage: call :meth:`feed` with each incoming delta and emit whatever it
+    returns (may be empty -- text is being held back pending more input);
+    call :meth:`flush` once at stream end and emit its (possibly empty)
+    return value before closing.
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self) -> None:
+        self._pending: str = ""
+
+    def feed(self, text: str) -> str:
+        """Feed one delta chunk; return the text now safe to emit (resolved)."""
+        if not text:
+            return ""
+        self._pending += text
+        safe, self._pending = self._split_safe_boundary(self._pending)
+        return _resolve_media_to_data_urls(safe) if safe else ""
+
+    def flush(self) -> str:
+        """Release and resolve whatever is still held back (stream end)."""
+        if not self._pending:
+            return ""
+        remainder = self._pending
+        self._pending = ""
+        return _resolve_media_to_data_urls(remainder)
+
+    @staticmethod
+    def _split_safe_boundary(buffer: str) -> Tuple[str, str]:
+        """Split *buffer* into (safe_to_emit, held_back).
+
+        Anchored on "MEDIA:" -- WITH the colon, not the bare word. An
+        earlier version searched for bare "MEDIA" and broke on exactly the
+        realistic case this whole class exists for: a delivered path
+        containing the substring "media" anywhere in a component (a
+        directory or filename like ".../social_media_post.png", or even a
+        test fixture's own tempdir name) rfind()-matched THAT occurrence
+        instead of the real tag start, releasing part of the actual
+        "MEDIA:<path>" tag as unresolved plain text. The colon is what makes
+        a tag start unambiguous -- "media" as an ordinary word/path
+        component is never immediately followed by ":" in real text.
+
+        Falls back to holding a trailing partial prefix of the literal
+        string "MEDIA:" (e.g. buffer ending in "...see ME" -- next chunk
+        might complete it) only when no confirmed "MEDIA:" exists yet.
+        Bounded by ``_MEDIA_HOLDBACK_CAP`` so a "MEDIA:" that never resolves
+        to a valid tag doesn't hold the stream hostage -- matches the
+        existing design principle elsewhere in this file that validation,
+        not a length guess, is the oracle for whether a tag is real: once
+        released past the cap, ``_resolve_media_to_data_urls`` still leaves
+        a genuinely invalid/nonexistent path as visible plain text.
+        """
+        upper = buffer.upper()
+        idx = upper.rfind(_MEDIA_HOLDBACK_WORD + ":")
+        if idx != -1:
+            tail = buffer[idx:]
+            if len(tail) > _MEDIA_HOLDBACK_CAP:
+                return buffer, ""
+            return buffer[:idx], tail
+        # No confirmed "MEDIA:" yet. Check only the buffer's TAIL (not any
+        # mid-buffer occurrence, which is just a word/path component, e.g.
+        # "social_media_post.png") for a partial prefix of "MEDIA:" that the
+        # next chunk could still complete.
+        word = _MEDIA_HOLDBACK_WORD
+        for n in range(min(len(word), len(buffer)), 0, -1):
+            if upper.endswith(word[:n]):
+                return buffer[:-n], buffer[-n:]
+        return buffer, ""
 
 
 def _resolve_media_to_data_urls(text: str) -> str:
@@ -3879,9 +3972,21 @@ class APIServerAdapter(BasePlatformAdapter):
             except RuntimeError:
                 pass
 
+        # Buffers raw deltas so a MEDIA:<path> tag split across chunk
+        # boundaries still resolves to an inline data URL instead of leaking
+        # as literal text to a client rendering deltas live -- the eventual
+        # "assistant.completed" event below already carries the fully
+        # resolved text, but a client that renders each delta as it arrives
+        # (the common UX pattern this event stream exists for) would
+        # otherwise see the raw tag flash by first. See
+        # StreamingMediaTagResolver's docstring.
+        _delta_media_resolver = StreamingMediaTagResolver()
+
         def _delta(delta: str) -> None:
             if delta:
-                _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
+                safe_text = _delta_media_resolver.feed(delta)
+                if safe_text:
+                    _enqueue("assistant.delta", {"message_id": message_id, "delta": safe_text})
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
@@ -3935,6 +4040,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         else ""
                     ),
                 )
+                _delta_remainder = _delta_media_resolver.flush()
+                if _delta_remainder:
+                    await queue.put(_event_payload("assistant.delta", {
+                        "message_id": message_id, "delta": _delta_remainder,
+                    }))
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
@@ -4500,6 +4610,12 @@ class APIServerAdapter(BasePlatformAdapter):
             await response.write(_sse_frame(role_chunk))
             last_activity = time.monotonic()
 
+            # Buffers raw deltas so a MEDIA:<path> tag split across chunk
+            # boundaries (real per-token LLM streaming does this routinely)
+            # still resolves to an inline data URL instead of leaking as
+            # literal text -- see StreamingMediaTagResolver's docstring.
+            _media_resolver = StreamingMediaTagResolver()
+
             # Helper — route a queue item to the correct SSE event.
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
@@ -4514,13 +4630,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
                 else:
+                    safe_text = _media_resolver.feed(item)
+                    if safe_text:
+                        content_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"content": safe_text}, "finish_reason": None}],
+                        }
+                        await response.write(_sse_frame(content_chunk))
+                return time.monotonic()
+
+            async def _flush_media_resolver():
+                """Emit whatever the resolver is still holding back (stream end)."""
+                remainder = _media_resolver.flush()
+                if remainder:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
-                        "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
+                        "choices": [{"index": 0, "delta": {"content": remainder}, "finish_reason": None}],
                     }
                     await response.write(_sse_frame(content_chunk))
-                return time.monotonic()
 
             # Stream content chunks as they arrive from the agent. Woken
             # directly by put_threadsafe's call_soon_threadsafe — no
@@ -4550,6 +4679,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     break
 
                 last_activity = await _emit(delta)
+
+            # Stream over -- release anything the MEDIA-tag resolver is still
+            # holding back (a tag that completed right at the tail, or plain
+            # text it was conservatively waiting on).
+            await _flush_media_resolver()
 
             # Get usage from completed agent. The agent can fail two ways
             # after the content queue terminates cleanly: (1) ``agent_task``
@@ -4714,6 +4848,14 @@ class APIServerAdapter(BasePlatformAdapter):
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
+        # Buffers raw text deltas so a MEDIA:<path> tag split across chunk
+        # boundaries -- or across two separate _flush_batch() calls -- still
+        # resolves to an inline data URL instead of leaking as literal text.
+        # final_text_parts (below) accumulates whatever this releases, so the
+        # reconstructed final_response_text is resolved too, not just the
+        # individual SSE delta events. See StreamingMediaTagResolver's docstring.
+        _output_text_media_resolver = StreamingMediaTagResolver()
+
         # State accumulated during the stream
         final_text_parts: List[str] = []
         # Track open function_call items by name so we can emit a matching
@@ -4847,14 +4989,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
             async def _emit_text_delta(delta_text: str) -> None:
+                safe_text = _output_text_media_resolver.feed(delta_text)
+                if not safe_text:
+                    return
                 await _open_message_item()
-                final_text_parts.append(delta_text)
+                final_text_parts.append(safe_text)
                 await _write_event("response.output_text.delta", {
                     "type": "response.output_text.delta",
                     "item_id": message_item_id,
                     "output_index": message_output_index,
                     "content_index": 0,
-                    "delta": delta_text,
+                    "delta": safe_text,
+                    "logprobs": [],
+                })
+
+            async def _flush_text_delta_resolver() -> None:
+                """Emit whatever the resolver is still holding back (stream end)."""
+                remainder = _output_text_media_resolver.flush()
+                if not remainder:
+                    return
+                await _open_message_item()
+                final_text_parts.append(remainder)
+                await _write_event("response.output_text.delta", {
+                    "type": "response.output_text.delta",
+                    "item_id": message_item_id,
+                    "output_index": message_output_index,
+                    "content_index": 0,
+                    "delta": remainder,
                     "logprobs": [],
                 })
 
@@ -5053,6 +5214,10 @@ class APIServerAdapter(BasePlatformAdapter):
             # Flush any final batched text before processing result
             if _batch_buf:
                 await _flush_batch()
+            # Release anything the MEDIA-tag resolver is still holding back
+            # (a tag that completed right at the tail, or plain text it was
+            # conservatively waiting on) now that no more deltas are coming.
+            await _flush_text_delta_resolver()
 
             # Pick up agent result + usage from the completed task
             try:
@@ -5066,9 +5231,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 if agent_final and not final_text_parts:
                     await _emit_text_delta(agent_final)
                 if agent_final and not final_response_text:
-                    final_response_text = agent_final
+                    final_response_text = _resolve_media_to_data_urls(agent_final)
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
                     agent_error = _redact_api_error_text(result["error"])
+                # Release any holdback from the fallback _emit_text_delta call
+                # above (defense-in-depth; a complete final_response fed in one
+                # shot should resolve immediately, but this guarantees it).
+                await _flush_text_delta_resolver()
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = _redact_api_error_text(e)
@@ -6113,7 +6282,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
         # Final assistant message
-        final = result.get("final_response", "")
+        final = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final:
             final = _redact_api_error_text(result.get("error", "(No response generated)"))
 
@@ -6670,17 +6839,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 q.put_nowait(event)
 
         # Also wire stream_delta_callback so message.delta events flow through.
+        # Buffered so a MEDIA:<path> tag split across chunk boundaries still
+        # resolves to an inline data URL instead of leaking as literal text
+        # to a client subscribed to /v1/runs/{id}/events -- the confirmed
+        # 2026-07-28 incident (POST /v1/runs) hit exactly this path. See
+        # StreamingMediaTagResolver's docstring.
+        _run_delta_resolver = StreamingMediaTagResolver()
+
         def _text_cb(delta: Optional[str]) -> None:
             if delta is None:
                 return
             if run_id not in self._run_streams:
+                return
+            safe_text = _run_delta_resolver.feed(delta)
+            if not safe_text:
                 return
             try:
                 loop.call_soon_threadsafe(_put_event_if_active, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
-                    "delta": delta,
+                    "delta": safe_text,
                 })
             except Exception:
                 pass
@@ -6854,7 +7033,17 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.failed",
                     )
                 else:
-                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    _run_delta_remainder = _run_delta_resolver.flush()
+                    if _run_delta_remainder:
+                        _put_event_if_active({
+                            "event": "message.delta",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "delta": _run_delta_remainder,
+                        })
+                    final_response = _resolve_media_to_data_urls(
+                        result.get("final_response", "") if isinstance(result, dict) else ""
+                    )
                     # Undelivered steer text (accepted after the final response;
                     # see turn_finalizer) rides on the terminal event/status so
                     # the client can replay it as the next user turn.

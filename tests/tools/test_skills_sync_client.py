@@ -3,7 +3,7 @@
 Covers, against the frozen contract (~/src/specs/collective-wisdom/
 the sync wire contract):
   * content addressing (full 64-hex) + canonical JSON (§2.1, §2.5)
-  * the DEV-PHASE gate (tool_gateway_admin) making sync inert
+  * the access gate (Nous admin) making sync inert
   * the M1-D opt-in default (nothing syncs without the sync flag)
   * object building (blob/tree/commit, exec mode, size limit)
   * push (upload + CAS), pull (materialize), and the three-way merge / 409
@@ -265,7 +265,7 @@ class TestAddressing:
 
 
 # ---------------------------------------------------------------------------
-# DEV-PHASE gate (tool_gateway_admin) + M1-D opt-in
+# Access gate (Nous admin) + per-skill opt-in
 # ---------------------------------------------------------------------------
 
 class TestDevGate:
@@ -280,7 +280,7 @@ class TestDevGate:
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_identity()
-        assert ident["dev_gate_ok"] is True
+        assert ident["nous_admin"] is True
         assert ident["owner"] == "user1"
 
     def test_gate_closed_without_claim(self, monkeypatch):
@@ -289,7 +289,7 @@ class TestDevGate:
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token, "base_url": "https://x"})
         ident = ssc.resolve_identity()
-        assert ident["dev_gate_ok"] is False
+        assert ident["nous_admin"] is False
 
     def test_gate_closed_when_claim_false(self, monkeypatch):
         token = _jwt({"sub": "u", "tool_gateway_admin": False})
@@ -453,7 +453,7 @@ def synced_env(tmp_path, monkeypatch):
 
     token = _jwt({"sub": "owner1", "tool_gateway_admin": True})
     identity = {"api_key": token, "base_url": "http://x", "owner": "owner1",
-                "dev_gate_ok": True, "claims": {}}
+                "nous_admin": True, "claims": {}}
     return home, skills, identity
 
 
@@ -811,7 +811,7 @@ def _org_identity(role=None, org_id="org-1", owner="owner1"):
         claims["org_role"] = role
     token = _jwt(claims)
     return {"api_key": token, "base_url": "http://x", "owner": owner,
-            "dev_gate_ok": True, "claims": claims,
+            "nous_admin": True, "claims": claims,
             **({"org_id": org_id, "org_role": role} if role else {})}
 
 

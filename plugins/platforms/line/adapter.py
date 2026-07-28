@@ -1094,11 +1094,30 @@ class LineAdapter(BasePlatformAdapter):
         if _is_system_bypass(content):
             return await self._send_text_chunks(chat_id, content, force_push=False)
 
-        # If the chat has a PENDING postback button outstanding, route the
-        # response into the cache for the user to fetch via tap.
+        # If the chat has a PENDING postback button outstanding, keep the
+        # answer available for the button but also push it automatically.
+        # The button is only a reply-token placeholder; requiring a manual
+        # tap after the agent is done makes normal LINE conversations look
+        # stuck.
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid:
             self._cache.set_ready(pending_rid, content)
+            result = await self._send_text_chunks(chat_id, content, force_push=True)
+            if result.success:
+                self._cache.mark_delivered(pending_rid)
+                self._pending_buttons.pop(chat_id, None)
+                logger.info(
+                    "LINE: auto-pushed cached slow response for chat %s (rid=%s)",
+                    chat_id,
+                    pending_rid,
+                )
+                return result
+            logger.warning(
+                "LINE: slow response auto-push failed for chat %s (rid=%s): %s",
+                chat_id,
+                pending_rid,
+                result.error,
+            )
             return SendResult(success=True, message_id=pending_rid)
 
         return await self._send_text_chunks(chat_id, content, force_push=False)
@@ -1118,7 +1137,9 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         messages = [_text_message(c) for c in chunks][:LINE_MAX_MESSAGES_PER_CALL]
 
-        token, used_reply = self._consume_reply_token(chat_id)
+        token, used_reply = ("", False)
+        if not force_push:
+            token, used_reply = self._consume_reply_token(chat_id)
         if used_reply and not force_push:
             try:
                 await self._client.reply(token, messages)

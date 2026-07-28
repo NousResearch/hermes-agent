@@ -27,6 +27,7 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionSource
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from tools.gateway_restart_tool import _resolve_current_source
 
 # ---------------------------------------------------------------------------
 # 1. Authorization boundary tests (_is_authorized_foreground_turn)
@@ -144,6 +145,7 @@ def test_handler_error_when_runner_missing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tool_returns_failure_json_when_handoff_fails(monkeypatch, tmp_path):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
     from tools.gateway_restart_tool import _handle_request_gateway_restart
     import gateway.run as gw_run
@@ -202,3 +204,142 @@ def test_tool_is_registered_in_runtime_registry():
     assert "request_gateway_restart" in tools_map, (
         "request_gateway_restart must be registered in tools.registry"
     )
+
+
+# ---------------------------------------------------------------------------
+# /restart policy reuse tests
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_policy(*, enabled: bool, admin_ids, allowed_cmds):
+    """Build a tiny namespace object that quacks like SlashAccessPolicy."""
+    import types
+
+    admin_set = frozenset(str(x) for x in admin_ids)
+    allowed_set = frozenset(str(c).lstrip("/").lower() for c in allowed_cmds)
+
+    def is_admin(uid):
+        return enabled and (uid is not None and str(uid) in admin_set)
+
+    def can_run(uid, cmd):
+        if not enabled:
+            return True
+        if is_admin(uid):
+            return True
+        return cmd in allowed_set
+
+    return types.SimpleNamespace(
+        enabled=enabled, is_admin=is_admin, can_run=can_run,
+        admin_user_ids=admin_set, user_allowed_commands=allowed_set,
+    )
+
+
+def test_policy_admin_user_is_allowed(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    from tools.gateway_restart_tool import _check_restart_policy
+
+    runner = MagicMock()
+    runner.config = {"slash_access": {"enabled": True}}
+    src = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="admin-1",
+    )
+    fake = _make_fake_policy(
+        enabled=True, admin_ids=["admin-1"], allowed_cmds=[],
+    )
+    with patch("gateway.slash_access.policy_for_source", return_value=fake):
+        assert _check_restart_policy(runner, src) is None
+
+
+def test_policy_user_with_restart_allowance_is_allowed(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    from tools.gateway_restart_tool import _check_restart_policy
+
+    runner = MagicMock()
+    runner.config = {"slash_access": {"enabled": True}}
+    src = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="user-7",
+    )
+    fake = _make_fake_policy(
+        enabled=True, admin_ids=[], allowed_cmds=["restart"],
+    )
+    with patch("gateway.slash_access.policy_for_source", return_value=fake):
+        assert _check_restart_policy(runner, src) is None
+
+
+def test_policy_user_without_restart_allowance_is_denied(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    from tools.gateway_restart_tool import _check_restart_policy
+
+    runner = MagicMock()
+    runner.config = {"slash_access": {"enabled": True}}
+    src = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="user-9",
+    )
+    fake = _make_fake_policy(
+        enabled=True, admin_ids=[], allowed_cmds=["help", "status"],
+    )
+    with patch("gateway.slash_access.policy_for_source", return_value=fake):
+        denial = _check_restart_policy(runner, src)
+        assert denial is not None
+        assert "restart" in denial.lower()
+
+
+def test_policy_disabled_backward_compat_allows_everyone(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    from tools.gateway_restart_tool import _check_restart_policy
+
+    runner = MagicMock()
+    runner.config = {"slash_access": {"enabled": False}}
+    src = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="user-9",
+    )
+    fake = _make_fake_policy(enabled=False, admin_ids=[], allowed_cmds=[])
+    with patch("gateway.slash_access.policy_for_source", return_value=fake):
+        # When operator has not configured the gate, all users allowed.
+        assert _check_restart_policy(runner, src) is None
+
+
+def test_handler_denial_rejects_with_authorization_error(monkeypatch):
+    """End-to-end: a complete foreground session is built, but the user is
+    not allowed to run /restart. The handler must reject with an error JSON
+    that names the policy reason — proving the denial is NOT a transport
+    issue or a missing session.
+    """
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    from tools.gateway_restart_tool import _handle_request_gateway_restart
+
+    runner = MagicMock()
+    runner._running = True
+
+    # Provide a real, running event loop bound to the runner so the
+    # handler's "Gateway event loop is not available" check passes.
+    loop = asyncio.new_event_loop()
+    try:
+        runner._gateway_loop = loop
+
+        # Real contextvars so _resolve_current_source() succeeds.
+        from gateway.session_context import set_session_vars
+        set_session_vars(
+            platform="telegram",
+            chat_id="c1",
+            user_id="user-9",
+        )
+
+        source = _resolve_current_source()
+        assert source is not None
+
+        with patch("gateway.run._gateway_runner_ref", return_value=runner), patch(
+            "tools.gateway_restart_tool._is_authorized_foreground_turn", return_value=True
+        ), patch(
+            "tools.gateway_restart_tool._resolve_current_source", return_value=source
+        ), patch.object(
+            loop, "is_running", return_value=True
+        ), patch(
+            "tools.gateway_restart_tool._check_restart_policy",
+            return_value="Not allowed to run /restart on this scope.",
+        ):
+            res = json.loads(_handle_request_gateway_restart({"reason": "test"}))
+            assert res["success"] is False
+            assert "restart" in res["error"].lower()
+    finally:
+        loop.close()

@@ -143,13 +143,17 @@ def make_restart_runner(
     runner._get_cached_session_source = GatewayRunner._get_cached_session_source.__get__(
         runner, GatewayRunner
     )
-    runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
+    runner._handle_message = GatewayRunner._handle_message.__get__(
         runner, GatewayRunner
     )
     runner._await_active_work_before_restart = (
         GatewayRunner._await_active_work_before_restart.__get__(runner, GatewayRunner)
     )
-    runner.request_restart = GatewayRunner.request_restart.__get__(runner, GatewayRunner)
+    # Fail-closed default: tests must opt into the real launcher via
+    # attach_real_launcher() if they need to assert Popen arguments.
+    runner._launch_detached_restart_command = AsyncMock(return_value=True)
+    real_req = GatewayRunner.request_restart.__get__(runner, GatewayRunner)
+    runner.request_restart = MagicMock(side_effect=real_req)
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
@@ -162,4 +166,51 @@ def make_restart_runner(
     platform_adapter.set_message_handler(AsyncMock(return_value=None))
     platform_adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
     runner.adapters = {Platform.TELEGRAM: platform_adapter}
+
+    # Fail-closed safety: stop() must always be AsyncMock. Tests that
+    # need the real stop behavior must explicitly rebind runner.stop.
+    runner.stop = AsyncMock()
+
+    # Safety guard: tests must NOT use this fixture to launch real
+    # subprocesses. If a test calls runner._launch_detached_restart_command
+    # and the value is still the default AsyncMock(return_value=True), no
+    # real Popen ever runs.
+    assert isinstance(runner._launch_detached_restart_command, AsyncMock), (
+        "make_restart_runner: _launch_detached_restart_command must remain "
+        "an AsyncMock to prevent real subprocess.Popen"
+    )
+    assert isinstance(runner.stop, AsyncMock), (
+        "make_restart_runner: stop() must remain an AsyncMock"
+    )
+
     return runner, platform_adapter
+
+
+def attach_real_launcher_under_mocked_popen(runner: GatewayRunner) -> None:
+    """DANGEROUS: re-bind ``runner._launch_detached_restart_command`` to the
+    real production launcher method so a test can inspect the arguments
+    passed to ``subprocess.Popen``.
+
+    Preconditions (verified by the caller — see warning below):
+
+      1. ``subprocess.Popen`` MUST be replaced with a controlled fake via
+         ``monkeypatch.setattr(subprocess, "Popen", fake_popen)`` BEFORE this
+         helper is called. Without that, the production launcher will spawn
+         a real detached watcher subprocess and leak a watcher (see PID 5896
+         regression).
+      2. The test MUST NOT call ``dispatch_gateway_restart`` (which has its
+         own dispatch / abort / cancel state machine). Use this helper only
+         for direct unit-tests of the launcher method itself.
+
+    WARNING: this helper binds the real launcher method to the runner.
+    It does NOT mock ``subprocess.Popen``. The caller is responsible for
+    doing that BEFORE invoking the launcher-under-test. If the caller
+    forgets, ``subprocess.Popen`` will run for real and may spawn a
+    detached watcher subprocess that escapes the test process tree.
+
+    Use ONLY in dedicated launcher-argument tests (currently the 4
+    ``tests/gateway/test_restart_drain.py`` Popen-inspection tests).
+    """
+    runner._launch_detached_restart_command = (
+        GatewayRunner._launch_detached_restart_command.__get__(runner, GatewayRunner)
+    )

@@ -1119,6 +1119,13 @@ def _resolve_default_model_snapshot() -> Optional[str]:
         except Exception:
             pass
         cfg = _expand_env_vars(cfg)
+        # Mirror run_job's precedence: the explicit cron-fleet default
+        # (cron.model) beats the global chat model for unpinned cron jobs.
+        cron_cfg = cfg.get("cron") or {}
+        if isinstance(cron_cfg, dict):
+            cron_model = cron_cfg.get("model")
+            if isinstance(cron_model, str) and cron_model.strip():
+                return cron_model.strip()
         model_cfg = cfg.get("model") or {}
         if isinstance(model_cfg, str):
             return model_cfg.strip() or None

@@ -757,9 +757,21 @@ class TestVoiceReceiver:
 
         monkeypatch.delenv("FFMPEG_PATH", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        monkeypatch.setattr(ffmpeg_utils.shutil, "which", lambda _cmd: None)
+        # Discovery delegates to tools.transcription_tools; simulate "not found".
+        monkeypatch.setattr(ffmpeg_utils, "_shared_find_ffmpeg", lambda: None)
 
         assert ffmpeg_utils.resolve_ffmpeg_executable() == str(ffmpeg)
+
+    def test_ffmpeg_resolver_delegates_to_shared_helper(self, monkeypatch):
+        """PATH/local-prefix discovery is owned by tools.transcription_tools."""
+        from plugins.platforms.discord import ffmpeg_utils
+
+        monkeypatch.delenv("FFMPEG_PATH", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg"
+        )
+
+        assert ffmpeg_utils.resolve_ffmpeg_executable() == "/opt/homebrew/bin/ffmpeg"
 
     def test_pcm_to_wav_uses_resolved_ffmpeg_executable(self, monkeypatch, tmp_path):
         """Receiver conversion should use the same resolved executable as playback."""

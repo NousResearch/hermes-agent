@@ -160,6 +160,46 @@ def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_xai_base_url_applies_hermes_user_agent(mock_openai):
+    """Direct xAI chat must send Hermes-Agent/* instead of OpenAI/Python."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.x.ai/v1",
+        model="grok-4",
+        provider="xai",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.x.ai/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"].startswith("Hermes-Agent/")
+
+
+@patch("run_agent.OpenAI")
+def test_xai_oauth_base_url_applies_hermes_user_agent(mock_openai):
+    """xai-oauth uses the same api.x.ai host and must get the Hermes UA."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="oauth-token",
+        base_url="https://api.x.ai/v1",
+        model="grok-4",
+        provider="xai-oauth",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.x.ai/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"].startswith("Hermes-Agent/")
+
+
+@patch("run_agent.OpenAI")
 def test_unknown_base_url_clears_default_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

@@ -4106,8 +4106,8 @@ _LOCK_UNAVAILABLE: Any = object()  # sentinel: locking broken/unavailable
 _MCP_DISCOVERY_LOCK_PATH: Optional[str] = None  # resolved lazily
 
 # Retry constants for the bounded wait when another process holds the lock.
-_MCP_DISCOVERY_LOCK_MAX_RETRIES: int = 10
-_MCP_DISCOVERY_LOCK_RETRY_DELAY_S: float = 0.2
+_MCP_DISCOVERY_LOCK_MAX_RETRIES: int = 240
+_MCP_DISCOVERY_LOCK_RETRY_DELAY_S: float = 0.5
 
 
 class _LockCookie:

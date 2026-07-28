@@ -80,13 +80,21 @@ wake_word:
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
     model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .onnx/.tflite
-    inference_framework: onnx # "onnx" | "tflite"
+    inference_framework: ""   # "" (auto) | "onnx" | "tflite"
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
 ```
 
 `sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
 `openwakeword` and `porcupine` blocks select the actual detection model.
+
+`inference_framework` picks the openWakeWord backend. Leave it empty (the
+default) to let Hermes choose per platform: **tflite on Apple Silicon**, onnx
+everywhere else. openWakeWord's onnx backend returns near-zero scores on macOS
+ARM64 ([openWakeWord#336](https://github.com/dscripka/openWakeWord/issues/336)),
+so a listener pinned to `onnx` there will arm, show as listening, and never
+fire. The tflite backend needs `ai-edge-litert` on macOS, which Hermes installs
+on demand alongside the other wake-word deps.
 
 ### Surfaces (CLI, TUI, GUI)
 

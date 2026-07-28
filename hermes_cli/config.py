@@ -2391,7 +2391,11 @@ DEFAULT_CONFIG = {
             # ...) OR a path to a custom .onnx/.tflite model for another phrase.
             # See the wake-word docs for the custom-model training guide.
             "model": "hey_hermes",
-            "inference_framework": "onnx",  # "onnx" | "tflite"
+            # "" (auto — tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite".
+            # openWakeWord's onnx backend scores near-zero on macOS ARM64
+            # (dscripka/openWakeWord#336), so auto avoids a listener that arms
+            # but never fires. Set explicitly only to override that choice.
+            "inference_framework": "",
         },
         "sherpa": {
             # Optional path to a sherpa-onnx KWS model directory. Empty =

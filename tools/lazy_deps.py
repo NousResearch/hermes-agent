@@ -140,6 +140,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Wake word ("Hey Hermes") engines ──────────────────────────────────
     # Keep in sync with the `wake` extra in pyproject.toml. openWakeWord is the
     # free, local default (ONNX runtime); Porcupine is the premium engine.
+    # openWakeWord's ONNX embedding model returns near-zero scores on macOS
+    # ARM64 (dscripka/openWakeWord#336), so the wake word runs on the tflite
+    # backend there. Upstream declares tflite-runtime for Linux only;
+    # ai-edge-litert is the macOS equivalent, bridged in tools/wake_word.py.
+    # It lives in its own feature because lazy-dep specs cannot carry PEP 508
+    # environment markers (_spec_is_safe rejects ";"), so the platform gate is
+    # applied by the caller instead.
+    "wake.openwakeword.tflite": (
+        "ai-edge-litert==2.1.6",
+    ),
     "wake.openwakeword": (
         "openwakeword==0.6.0",
         "onnxruntime==1.27.0",

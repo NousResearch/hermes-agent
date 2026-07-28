@@ -20,6 +20,24 @@ wheels = [
 ]
 
 [[package]]
+name = "ai-edge-litert"
+version = "2.1.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "backports-strenum" },
+    { name = "flatbuffers" },
+    { name = "numpy" },
+    { name = "protobuf" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/3d/41a85023e1c6cc76d895f3ba6ac7c22b0785db7e08d0827ebeb8a403eefc/ai_edge_litert-2.1.6-cp311-cp311-macosx_12_0_arm64.whl", hash = "sha256:edf598814004e594b40c888f52cae59e950dbeffd821e83ba45d28db0a0aa3f5", size = 10031164, upload-time = "2026-07-01T21:42:50.986Z" },
+    { url = "https://files.pythonhosted.org/packages/52/d5/164aaf69f60f72b7076900ef1cc6153bf50d82cd15202bdf1239c0dbfb1c/ai_edge_litert-2.1.6-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:5adf0c9afde6151dc7f2989d039c800f3060d98d40bb5dfc95e426ad4eb3680b", size = 10033170, upload-time = "2026-07-01T21:42:53.208Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/92/578b31c4c05afa9081a664cd86afe33c304fecd70de1c2a4d3a3b9ca51c9/ai_edge_litert-2.1.6-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:2e8a3f92fa407690189533bea8b64d49bb1b8a9e96f707ba27e1a64a9c3cc8cf", size = 10032950, upload-time = "2026-07-01T21:42:55.102Z" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "24.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -470,6 +488,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
+]
+
+[[package]]
+name = "backports-strenum"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/c7/2ed54c32fed313591ffb21edbd48db71e68827d43a61938e5a0bc2b6ec91/backports_strenum-1.3.1.tar.gz", hash = "sha256:77c52407342898497714f0596e86188bb7084f89063226f4ba66863482f42414", size = 7257, upload-time = "2023-12-09T14:36:40.937Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/50/56cf20e2ee5127b603b81d5a69580a1a325083e2b921aa8f067da83927c0/backports_strenum-1.3.1-py3-none-any.whl", hash = "sha256:cdcfe36dc897e2615dc793b7d3097f54d359918fc448754a517e6f23044ccf83", size = 8304, upload-time = "2023-12-09T14:36:39.905Z" },
 ]
 
 [[package]]
@@ -1719,6 +1746,7 @@ voice = [
     { name = "sounddevice" },
 ]
 wake = [
+    { name = "ai-edge-litert", marker = "sys_platform == 'darwin'" },
     { name = "numpy" },
     { name = "onnxruntime" },
     { name = "openwakeword" },
@@ -1743,6 +1771,7 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "ai-edge-litert", marker = "sys_platform == 'darwin' and extra == 'wake'", specifier = "==2.1.6" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.14.1" },
     { name = "aiohttp", marker = "extra == 'matrix'", specifier = "==3.14.1" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.1" },
@@ -3949,7 +3978,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.12'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4004,7 +4033,7 @@ resolution-markers = [
     "python_full_version == '3.12.*'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.12'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [

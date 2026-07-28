@@ -63,11 +63,11 @@ describe('WorkspaceShowMoreButton', () => {
 })
 
 describe('WorkspaceMenu', () => {
-  it('wraps the kebab trigger in a Tip', () => {
+  it('does not wrap the kebab trigger in a Tip', () => {
     render(<WorkspaceMenu onRemove={vi.fn()} path="/repo/lane" />)
 
     const button = screen.getByRole('button', { name: 'Project actions' })
-    expect(tipTrigger(button)).toBeTruthy()
+    expect(tipTrigger(button)).toBeNull()
   })
 })
 

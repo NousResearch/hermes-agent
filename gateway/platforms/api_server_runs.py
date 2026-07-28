@@ -423,6 +423,7 @@ async def _handle_runs(
     _publish_turn_process_ownership = _api_server._publish_turn_process_ownership
     _redact_api_error_text = _api_server._redact_api_error_text
     _request_agent_overrides = _api_server._request_agent_overrides
+    StreamingMediaTagResolver = _api_server.StreamingMediaTagResolver
 
     # Long-term memory scope header (see chat_completions for details).
     gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -641,17 +642,27 @@ async def _handle_runs(
             q.put_nowait(event)
 
     # Also wire stream_delta_callback so message.delta events flow through.
+    # Buffered so a MEDIA:<path> tag split across chunk boundaries still
+    # resolves to an inline data URL instead of leaking as literal text
+    # to a client subscribed to /v1/runs/{id}/events -- the confirmed
+    # 2026-07-28 incident (POST /v1/runs) hit exactly this path. See
+    # StreamingMediaTagResolver's docstring.
+    _run_delta_resolver = StreamingMediaTagResolver()
+
     def _text_cb(delta: Optional[str]) -> None:
         if delta is None:
             return
         if run_id not in self._run_streams:
+            return
+        safe_text = _run_delta_resolver.feed(delta)
+        if not safe_text:
             return
         try:
             loop.call_soon_threadsafe(_put_event_if_active, {
                 "event": "message.delta",
                 "run_id": run_id,
                 "timestamp": time.time(),
-                "delta": delta,
+                "delta": safe_text,
             })
         except Exception:
             pass
@@ -916,6 +927,14 @@ async def _handle_runs(
                     last_event="run.failed",
                 )
             else:
+                _run_delta_remainder = _run_delta_resolver.flush()
+                if _run_delta_remainder:
+                    _put_event_if_active({
+                        "event": "message.delta",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "delta": _run_delta_remainder,
+                    })
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 # Undelivered steer text (accepted after the final response;
                 # see turn_finalizer) rides on the terminal event/status so

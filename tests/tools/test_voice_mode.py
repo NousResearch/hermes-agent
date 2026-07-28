@@ -1243,6 +1243,8 @@ class TestMacOSAudioOutputPolicy:
         popen_cmds = []
 
         class _FakeProc:
+            returncode = 0
+
             def wait(self, timeout=None):
                 return 0
 
@@ -2437,6 +2439,8 @@ class TestWSLAudioEnvironmentGate:
 
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
+            monkeypatch.delenv(_ssh_var, raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         with patch("builtins.open", side_effect=self._fake_open_wsl), \
@@ -2462,6 +2466,8 @@ class TestWSLAudioEnvironmentGate:
 
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
+        for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
+            monkeypatch.delenv(_ssh_var, raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         with patch("builtins.open", side_effect=self._fake_open_wsl), \
@@ -2481,6 +2487,8 @@ class TestWSLAudioEnvironmentGate:
         from tools import voice_mode as vm
 
         monkeypatch.setenv("PULSE_SERVER", "unix:/mnt/wslg/PulseServer")
+        for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
+            monkeypatch.delenv(_ssh_var, raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
         with patch("builtins.open", side_effect=self._fake_open_wsl), \
@@ -2488,4 +2496,8 @@ class TestWSLAudioEnvironmentGate:
             result = vm.detect_audio_environment()
 
         assert result["available"] is True
-        assert any("PulseAudio bridge" in n for n in result["notices"])
+        # Merged with #37346: any forwarded sound server (PULSE_SERVER or
+        # PIPEWIRE_REMOTE) yields the shared reachable-sound-server notice.
+        assert any(
+            "PulseAudio" in n and "WSL" in n for n in result["notices"]
+        )

@@ -2280,9 +2280,9 @@ def init_agent(
         _config_context_length
     )
     if agent._lmstudio_load_was_unverified(_lmstudio_runtime_context_length):
-        raise RuntimeError(
+        _ra().logger.warning(
             "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length; agent startup aborted"
+            "verifiable active context length; falling back to configured context"
         )
     _effective_context_length = agent._effective_lmstudio_context_length(
         _config_context_length,

@@ -84,7 +84,7 @@ def test_real_policy_notices_render_without_doubling():
     notices = (
         _emitted(uf=0.9)                          # band 90 (warn)
         + _emitted(uf=0.5)                        # band 50 (info)
-        + _emitted(uf=1.0, purchased=5_000_000)   # band 90 + grant_spent
+        + _emitted(uf=1.0, purchased=5_000_000)   # top-up at cap → no notices (empty)
         + _emitted(uf=None, paid=False)           # depleted
     )
     assert notices, "policy produced no notices to check"

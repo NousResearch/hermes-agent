@@ -1045,6 +1045,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Threads where a human outside ``thread_mention_free_users`` has
+        # participated. These become persistently mention-gated so a thread can
+        # start as a one-on-one conversation without staying ambient once
+        # another person joins the discussion.
+        self._shared_human_threads = ThreadParticipationTracker(
+            "discord-shared-human",
+            max_tracked=10_000,
+        )
+        # One persistent tracker per configured user records which participant
+        # owns the mention-free phase of a thread. This keeps multiple configured
+        # users isolated instead of treating them as one ambient cohort.
+        self._mention_free_thread_owners: Dict[str, ThreadParticipationTracker] = {}
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -1424,6 +1436,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
+        # Observe human participation before authorization drops the message.
+        # An unallowlisted human joining a one-on-one thread should still make
+        # that visible thread mention-gated for future allowed-user messages.
+        self._observe_thread_human_participant(message)
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted:
             return False
@@ -2177,10 +2193,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _in_bot_thread(self, message: Any) -> bool:
         """Thread the bot already joined skips the mention check — unless
         thread_require_mention (multi-bot threads) gates threads like channels."""
-        return (
-            isinstance(message.channel, discord.Thread)
-            and str(message.channel.id) in self._threads
-            and not self._discord_thread_require_mention()
+        if not isinstance(message.channel, discord.Thread):
+            return False
+        return self._discord_bot_thread_is_mention_free(
+            message,
+            str(message.channel.id),
         )
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
@@ -4478,6 +4495,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
             self._threads.mark(thread_id)
+            self._claim_discord_thread_owner(thread_id, getattr(interaction, "user", None))
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
@@ -4744,6 +4762,108 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Whether threads still require @mention after the bot has participated (default False).
         Set True when multiple bots share a thread to avoid bot-to-bot loops."""
         return self._extra_or_env_flag("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION", "false", truthy=True)
+
+    def _discord_thread_mention_free_users(self) -> set[str]:
+        """Return human user IDs allowed mention-free one-on-one threads.
+
+        An empty set preserves the legacy behavior where every bot-participated
+        thread is mention-free. Configuring one or more IDs enables the stricter
+        single-human policy for those users.
+        """
+        configured = self.config.extra.get("thread_mention_free_users")
+        if configured is None:
+            configured = os.getenv("DISCORD_THREAD_MENTION_FREE_USERS", "")
+        if isinstance(configured, (list, tuple, set)):
+            values = {str(value).strip() for value in configured if str(value).strip()}
+        else:
+            values = {
+                value.strip()
+                for value in str(configured or "").split(",")
+                if value.strip()
+            }
+        return {value for value in values if value.isdigit()}
+
+    def _discord_thread_owner_tracker(
+        self,
+        user_id: str,
+    ) -> ThreadParticipationTracker:
+        tracker = self._mention_free_thread_owners.get(user_id)
+        if tracker is None:
+            tracker = ThreadParticipationTracker(
+                f"discord-mention-free-owner-{user_id}",
+                max_tracked=10_000,
+            )
+            self._mention_free_thread_owners[user_id] = tracker
+        return tracker
+
+    def _discord_thread_owner(
+        self,
+        thread_id: str,
+        mention_free_users: set[str],
+    ) -> str | None:
+        for user_id in mention_free_users:
+            if thread_id in self._discord_thread_owner_tracker(user_id):
+                return user_id
+        return None
+
+    def _claim_discord_thread_owner(self, thread_id: str | None, author: Any) -> None:
+        """Persist the configured human who started a thread's ambient phase."""
+        if not thread_id or author is None or getattr(author, "bot", False):
+            return
+        author_id = str(getattr(author, "id", ""))
+        mention_free_users = self._discord_thread_mention_free_users()
+        if (
+            author_id in mention_free_users
+            and self._discord_thread_owner(thread_id, mention_free_users) is None
+        ):
+            self._discord_thread_owner_tracker(author_id).mark(thread_id)
+
+    def _observe_thread_human_participant(self, message: Any) -> None:
+        """Persistently mark a configured one-on-one thread as shared."""
+        mention_free_users = self._discord_thread_mention_free_users()
+        if (
+            not mention_free_users
+            or discord is None
+            or not isinstance(message.channel, discord.Thread)
+        ):
+            return
+        thread_id = str(message.channel.id)
+        if thread_id not in self._threads:
+            return
+        author = getattr(message, "author", None)
+        if author is None or getattr(author, "bot", False):
+            return
+        author_id = str(getattr(author, "id", ""))
+        owner_id = self._discord_thread_owner(thread_id, mention_free_users)
+        if owner_id is None and author_id in mention_free_users:
+            self._discord_thread_owner_tracker(author_id).mark(thread_id)
+        elif author_id != owner_id:
+            self._shared_human_threads.mark(thread_id)
+
+    def _discord_bot_thread_is_mention_free(
+        self,
+        message: Any,
+        thread_id: str | None,
+    ) -> bool:
+        """Return whether prior bot participation waives this message's mention."""
+        if (
+            not thread_id
+            or thread_id not in self._threads
+            or self._discord_thread_require_mention()
+        ):
+            return False
+
+        mention_free_users = self._discord_thread_mention_free_users()
+        if not mention_free_users:
+            return True
+
+        self._observe_thread_human_participant(message)
+        author_id = str(getattr(getattr(message, "author", None), "id", ""))
+        owner_id = self._discord_thread_owner(thread_id, mention_free_users)
+        return (
+            author_id == owner_id
+            and thread_id not in self._shared_human_threads
+        )
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
@@ -5710,6 +5830,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
+                    self._claim_discord_thread_owner(thread_id, message.author)
                     # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
                     # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
                     self._dedup.is_duplicate(str(thread.id))
@@ -5830,6 +5951,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             self._threads.mark(thread_id)
+            self._claim_discord_thread_owner(thread_id, message.author)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)
@@ -6974,6 +7096,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if approval_mentions_cfg is not None:
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
+    _gate("thread_mention_free_users", "DISCORD_THREAD_MENTION_FREE_USERS", from_platform_extra=False)
     for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
         if key in discord_cfg:
             _env_default(env_key, str(discord_cfg[key]).lower())

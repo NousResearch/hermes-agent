@@ -11,7 +11,7 @@ vi.mock('@/i18n', () => ({
       sidebar: {
         projects: {
           copyPath: 'Copy path',
-          menu: 'Project actions',
+          menu: 'Actions',
           removeWorktree: 'Remove worktree',
           reveal: 'Reveal in file manager',
           startWork: 'New worktree'
@@ -66,7 +66,7 @@ describe('WorkspaceMenu', () => {
   it('does not wrap the kebab trigger in a Tip', () => {
     render(<WorkspaceMenu onRemove={vi.fn()} path="/repo/lane" />)
 
-    const button = screen.getByRole('button', { name: 'Project actions' })
+    const button = screen.getByRole('button', { name: 'Actions' })
     expect(tipTrigger(button)).toBeNull()
   })
 })

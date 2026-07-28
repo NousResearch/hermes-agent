@@ -18,13 +18,13 @@ vi.mock('@/i18n', () => ({
     t: {
       sidebar: {
         row: {
-          actionsFor: (title: string) => `Actions for ${title}`,
           ageMin: 'm',
           ageNow: 'now',
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
           needsInput: 'Needs input',
+          sessionActions: 'Session actions',
           sessionRunning: 'Running',
           waitingForAnswer: 'Waiting for answer'
         }
@@ -131,7 +131,7 @@ describe('SidebarSessionRow', () => {
       />
     )
 
-    const kebab = screen.getByRole('button', { name: 'Actions for Hermes doctor health check results' })
+    const kebab = screen.getByRole('button', { name: 'Session actions' })
     expect(tipTrigger(kebab)).toBeNull()
   })
 

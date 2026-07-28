@@ -29,7 +29,7 @@ vi.mock('@/i18n', () => ({
         projects: {
           copyPath: 'Copy path',
           deleteConfirm: 'This cannot be undone.',
-          menu: 'Project actions',
+          menu: 'Actions',
           menuAddFolder: 'Add folder',
           menuAppearance: 'Appearance',
           menuDelete: 'Delete',
@@ -91,7 +91,7 @@ describe('ProjectMenu', () => {
   it('does not wrap the kebab trigger in a Tip', () => {
     render(<ProjectMenu isActive={false} project={project} />)
 
-    const button = screen.getByRole('button', { name: 'Project actions' })
+    const button = screen.getByRole('button', { name: 'Actions' })
     expect(tipTrigger(button)).toBeNull()
   })
 
@@ -101,7 +101,7 @@ describe('ProjectMenu', () => {
   it('opens the appearance popover through the kebab trigger when anchorRef is absent', async () => {
     render(<ProjectMenu isActive={false} project={project} />)
 
-    const trigger = screen.getByRole('button', { name: 'Project actions' })
+    const trigger = screen.getByRole('button', { name: 'Actions' })
 
     openTriggerMenu(trigger)
 

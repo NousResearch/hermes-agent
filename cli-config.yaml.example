@@ -1128,8 +1128,10 @@ stt:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
     # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
+  # language: ""               # GLOBAL language hint for every STT provider (per-provider language wins)
   # groq:
-  #   language: ""             # blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+  #   model: "whisper-large-v3-turbo"
+  #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
     language: ""               # auto-detect; set to "en", "es", "fr", etc. to force

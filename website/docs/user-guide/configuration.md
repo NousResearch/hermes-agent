@@ -1713,16 +1713,20 @@ stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  language: ""                 # GLOBAL language hint for every provider (ISO-639-1, e.g. "en", "he", "uk"); blank = auto-detect
   local:
     model: "base"              # tiny, base, small, medium, large-v3
-    language: ""               # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""               # per-provider override of stt.language
+    initial_prompt: ""         # optional whisper prompt to bias vocabulary/script (e.g. Simplified Chinese)
   groq:
-    language: ""               # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""               # per-provider override of stt.language
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
-    language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
+    language: ""               # per-provider override of stt.language
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
+
+Language resolution is the same for **every** STT provider (local, groq, openai, mistral, xai, elevenlabs, deepinfra, command providers, and plugins): `stt.<provider>.language` → `stt.language` → `HERMES_LOCAL_STT_LANGUAGE` env var → provider auto-detect. Setting `stt.language` once fixes the common "my voice notes get transcribed in the wrong language" problem regardless of which provider is active.
 
 Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes for the agent but must not post the raw transcript back to the chat (for example, customer-facing WhatsApp bots).
 

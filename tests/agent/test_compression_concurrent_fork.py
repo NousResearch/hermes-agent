@@ -364,6 +364,79 @@ def test_compression_heartbeat_start_republishes_after_terminal_provenance() -> 
     assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
 
+def test_compression_heartbeat_does_not_rearm_after_unknown_provenance() -> None:
+    """After a terminal stamp, UNKNOWN must not re-arm a detached heartbeat."""
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import _CompressionActivityHeartbeat
+    from agent.session_activity import ActivityProvenance
+
+    agent = SimpleNamespace(
+        _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
+        _last_activity_desc="context compression timed out",
+        touches=[],
+    )
+
+    def _touch(desc, *, provenance=None):
+        agent.touches.append((desc, provenance))
+        agent._last_activity_provenance = provenance
+        agent._last_activity_desc = desc
+
+    agent._touch_activity = _touch
+
+    hb = _CompressionActivityHeartbeat(agent, interval_seconds=60.0)
+    # First tick observes TIMEOUT and latches silent.
+    hb._touch("context compression in progress")
+    assert hb._suppressed is True
+    # Turn continues / ends and clears labels to UNKNOWN — must stay silent.
+    agent._last_activity_provenance = ActivityProvenance.UNKNOWN
+    agent._last_activity_desc = "calling model"
+    hb._touch("context compression in progress")
+    hb.stop("context compression completed")
+
+    assert agent.touches == []
+    assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
+    assert agent._last_activity_desc == "calling model"
+
+
+def test_compression_heartbeat_stops_when_commit_fence_cancelled() -> None:
+    """Host fence cancel must silence detached heartbeat refresh and late stop."""
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import (
+        CompressionCommitFence,
+        _CompressionActivityHeartbeat,
+    )
+    from agent.session_activity import ActivityProvenance
+
+    agent = SimpleNamespace(
+        _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION,
+        _last_activity_desc="context compression started",
+        touches=[],
+    )
+
+    def _touch(desc, *, provenance=None):
+        agent.touches.append((desc, provenance))
+        agent._last_activity_provenance = provenance
+        agent._last_activity_desc = desc
+
+    agent._touch_activity = _touch
+
+    fence = CompressionCommitFence()
+    assert fence.cancel_before_commit() is True
+
+    hb = _CompressionActivityHeartbeat(
+        agent, interval_seconds=60.0, commit_fence=fence
+    )
+    hb._touch("context compression in progress")
+    hb.stop("context compression completed")
+
+    assert agent.touches == []
+    assert hb._suppressed is True
+    assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
+    assert agent._last_activity_desc == "context compression started"
+
+
 def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     """Two AIAgents that share a session_id MUST NOT both rotate it.
 

@@ -7722,6 +7722,7 @@ def _define_discord_view_classes() -> None:
                 logger.error(
                     "Discord clarify resolve_gateway_clarify failed (id=%s): %s",
                     self.clarify_id, exc,
+                    exc_info=True,
                 )
 
         async def _on_other(self, interaction: "discord.Interaction") -> None:
@@ -7747,6 +7748,7 @@ def _define_discord_view_classes() -> None:
                 logger.warning(
                     "Discord clarify mark_awaiting_text failed (id=%s): %s",
                     self.clarify_id, exc,
+                    exc_info=True,
                 )
 
             self.resolved = True

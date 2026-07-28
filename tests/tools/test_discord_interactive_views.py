@@ -11,9 +11,11 @@ always tested.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import sys
 from typing import Any, Optional, Set
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -742,3 +744,146 @@ class TestLabelWrapperMigration:
             assert isinstance(child, discord.ui.Label), (
                 f"Expected Label wrapper, got {type(child).__name__}"
             )
+
+
+# ===========================================================================
+# Failure-path traceback retention (#11)
+# ===========================================================================
+
+def _async_interaction(
+    user_id: str = "123",
+    display_name: str = "Tester",
+    include_message: bool = True,
+) -> Any:
+    """Build a mock interaction with awaitable response methods."""
+    from types import SimpleNamespace
+
+    user = SimpleNamespace(
+        id=int(user_id),
+        display_name=display_name,
+        roles=[],
+    )
+    response = SimpleNamespace(
+        edit_message=AsyncMock(),
+        send_message=AsyncMock(),
+        defer=AsyncMock(),
+        send_modal=AsyncMock(),
+    )
+    if include_message:
+        embed = MagicMock()
+        embed.color = None
+        embed.set_footer = MagicMock()
+        message = SimpleNamespace(embeds=[embed])
+    else:
+        message = None
+    return SimpleNamespace(user=user, response=response, message=message)
+
+
+class TestRichButtonResolveTraceback:
+    """#11: unexpected ``resolve_gateway_clarify`` failures during button
+    resolution must log full traceback context."""
+
+    def _view(self, origin_user_id: str = "123") -> InteractivePromptView:
+        return InteractivePromptView(
+            prompt_id="test-fail-btn",
+            question="Q?",
+            options=[{"label": "Yes", "value": "yes"}],
+            allowed_user_ids=set(),
+            allowed_role_ids=set(),
+            auth_policy="session_owner_only",
+            origin_user_id=origin_user_id,
+            timeout_seconds=900,
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_failure_logs_exc_info(self, caplog):
+        view = self._view()
+        interaction = _async_interaction("123")
+
+        with patch(
+            "tools.clarify_gateway.resolve_gateway_clarify",
+            side_effect=RuntimeError("boom in button resolve"),
+        ):
+            with caplog.at_level(logging.ERROR, logger="tools.discord_interactive_views"):
+                await view._resolve_choice(
+                    interaction, 0, {"label": "Yes", "value": "yes"},
+                )
+
+        error_records = [
+            r for r in caplog.records
+            if r.levelno >= logging.ERROR and "resolve failed" in r.message.lower()
+        ]
+        assert error_records, "Expected error log for button resolve failure"
+        rec = error_records[0]
+        assert rec.exc_info is not None, (
+            "InteractivePromptView button resolve failure must log with "
+            "exc_info=True so operators can diagnose unexpected errors."
+        )
+        assert rec.exc_info[0] is RuntimeError
+
+    @pytest.mark.asyncio
+    async def test_auth_rejection_no_traceback(self, caplog):
+        """Expected auth failures must remain concise — no traceback."""
+        view = self._view(origin_user_id="123")
+        interaction = _async_interaction("999")  # not the owner
+
+        with caplog.at_level(logging.DEBUG, logger="tools.discord_interactive_views"):
+            await view._resolve_choice(
+                interaction, 0, {"label": "Yes", "value": "yes"},
+            )
+
+        interaction.response.send_message.assert_called_once()
+        noisy = [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING
+        ]
+        assert not noisy, (
+            "Auth rejection must not produce warning/error logs"
+        )
+
+
+class TestRichModalResolveTraceback:
+    """#11: unexpected ``resolve_gateway_clarify`` failures during modal
+    submission must log full traceback context."""
+
+    @pytest.mark.asyncio
+    async def test_modal_resolve_failure_logs_exc_info(self, caplog):
+        view = InteractivePromptView(
+            prompt_id="test-fail-modal",
+            question="Q?",
+            options=[{"label": "Submit", "value": "submit"}],
+            allowed_user_ids=set(),
+            allowed_role_ids=set(),
+            auth_policy="session_owner_only",
+            origin_user_id="123",
+            timeout_seconds=900,
+        )
+        modal = InteractivePromptModal(
+            prompt_id="test-fail-modal",
+            option_index=0,
+            modal_spec={
+                "title": "Form",
+                "fields": [{"key": "name", "label": "Name", "type": "text"}],
+            },
+            original_view=view,
+        )
+        interaction = _async_interaction("123")
+
+        with patch(
+            "tools.clarify_gateway.resolve_gateway_clarify",
+            side_effect=RuntimeError("boom in modal resolve"),
+        ):
+            with caplog.at_level(logging.ERROR, logger="tools.discord_interactive_views"):
+                await modal.on_submit(interaction)
+
+        error_records = [
+            r for r in caplog.records
+            if r.levelno >= logging.ERROR and "resolve_modal failed" in r.message.lower()
+        ]
+        assert error_records, "Expected error log for modal resolve failure"
+        rec = error_records[0]
+        assert rec.exc_info is not None, (
+            "InteractivePromptModal resolve failure must log with "
+            "exc_info=True so operators can diagnose unexpected errors."
+        )
+        assert rec.exc_info[0] is RuntimeError

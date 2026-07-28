@@ -18435,7 +18435,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         result = fut.result(timeout=15)
                         send_ok = bool(getattr(result, "success", False))
                     except Exception as exc:
-                        logger.warning("Clarify send failed: %s", exc)
+                        logger.warning("Clarify send failed: %s", exc, exc_info=True)
                         send_ok = False
 
                 if not send_ok:

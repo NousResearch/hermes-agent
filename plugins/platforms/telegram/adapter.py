@@ -5553,7 +5553,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         from tools.clarify_gateway import mark_awaiting_text
                         flipped = mark_awaiting_text(clarify_id)
                     except Exception as exc:
-                        logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
+                        logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc, exc_info=True)
 
                     if not flipped:
                         # Entry evicted (clarify_timeout) or gateway restarted
@@ -5611,7 +5611,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     from tools.clarify_gateway import resolve_gateway_clarify
                     resolved = resolve_gateway_clarify(clarify_id, resolved_text)
                 except Exception as exc:
-                    logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
+                    logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc, exc_info=True)
                     resolved = False
 
                 if resolved:

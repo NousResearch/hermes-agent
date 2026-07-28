@@ -440,6 +440,7 @@ if discord is not None:
                     "InteractivePrompt resolve failed (id=%s): %s",
                     self.prompt_id,
                     exc,
+                    exc_info=True,
                 )
 
         # ---- Timeout / disable -------------------------------------------
@@ -734,6 +735,7 @@ if discord is not None:
                     "InteractivePrompt resolve_modal failed (id=%s): %s",
                     self.prompt_id,
                     exc,
+                    exc_info=True,
                 )
 
             # Mark the original prompt as resolved and disable buttons.

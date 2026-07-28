@@ -736,3 +736,75 @@ class TestCoerceOpenEndedUnchanged:
     def test_open_ended_numeric_passed_through(self):
         assert _coerce_text_response(_open_entry(), "42") == "42"
 
+
+# ===========================================================================
+# Failure-path traceback retention (#11)
+# ===========================================================================
+
+class TestGatewayDispatchTraceback:
+    """#11: unexpected gateway dispatch failures must log traceback context.
+
+    ``_clarify_callback_sync`` is a deeply-nested closure whose runtime
+    invocation requires the full gateway runner context (event loop,
+    SessionSource, adapter instances, etc.).  Like the existing
+    ``test_clarify_callback_sync_wires_session_owner`` structural test
+    above, we assert the invariant directly via AST: the ``except`` handler
+    that catches ``fut.result()`` failures must pass ``exc_info=True`` to
+    ``logger.warning`` so operators can diagnose the failure from logs.
+
+    The Discord and Telegram resolution paths are covered by runtime tests
+    that trigger real exceptions and assert ``caplog`` records — see
+    ``test_discord_clarify_buttons.py::TestClarifyFailureTraceback`` and
+    ``test_discord_interactive_views.py::TestRich*Traceback``.
+    """
+
+    def test_dispatch_except_has_exc_info(self):
+        import ast
+        import gateway.run as grun
+
+        tree = ast.parse(_read_module_source(grun.__file__))
+        sync_defs = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_clarify_callback_sync"
+        ]
+        assert sync_defs, "_clarify_callback_sync not found in gateway/run.py"
+        sync_body = sync_defs[0]
+
+        # Find the except handler that contains a logger.warning("Clarify send failed")
+        # call and verify it passes exc_info=True.
+        found = False
+        for node in ast.walk(sync_body):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call):
+                    continue
+                if not isinstance(child.func, ast.Attribute):
+                    continue
+                if child.func.attr != "warning":
+                    continue
+                # Check the first positional arg matches "Clarify send failed"
+                if not child.args:
+                    continue
+                fmt = child.args[0]
+                if not (isinstance(fmt, ast.Constant) and
+                        isinstance(fmt.value, str) and
+                        "Clarify send failed" in fmt.value):
+                    continue
+                # Must have exc_info=True keyword
+                has_exc_info = any(
+                    kw.arg == "exc_info" for kw in child.keywords
+                )
+                assert has_exc_info, (
+                    "logger.warning('Clarify send failed: ...') in "
+                    "_clarify_callback_sync must pass exc_info=True so "
+                    "operators can diagnose unexpected dispatch failures."
+                )
+                found = True
+
+        assert found, (
+            "Could not locate the 'Clarify send failed' logger.warning call "
+            "inside _clarify_callback_sync — the dispatch error path may have "
+            "been restructured."
+        )
+

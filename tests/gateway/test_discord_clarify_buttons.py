@@ -14,7 +14,7 @@ dispatcher like Telegram — the auth + resolution path is the same:
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -705,3 +705,119 @@ class TestDiscordSendClarify:
 
         assert result.success is True
         assert captured.get("origin_user_id") is None
+
+
+# ===========================================================================
+# Failure-path traceback retention (#11)
+# ===========================================================================
+
+class TestClarifyFailureTraceback:
+    """#11: unexpected failures must retain traceback context in logs while
+    keeping user-facing messages safe and graceful.
+
+    Covers two simple-path failure sites:
+      * ``ClarifyChoiceView._resolve_choice`` — ``resolve_gateway_clarify`` raises
+      * ``ClarifyChoiceView._on_other`` — ``mark_awaiting_text`` raises
+
+    And confirms expected auth/validation rejections do NOT produce noisy
+    traceback logs.
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_button_resolve_failure_logs_traceback(self, caplog):
+        """When resolve_gateway_clarify raises unexpectedly, the error log
+        must carry the full traceback (exc_info), not just the message."""
+        import logging as _logging
+        from tools import clarify_gateway as cm
+
+        cm.register("cid-fail-resolve", "sk-fail", "Pick", ["red", "blue"])
+
+        view = ClarifyChoiceView(
+            choices=["red", "blue"],
+            clarify_id="cid-fail-resolve",
+            allowed_user_ids={"42"},
+        )
+
+        with patch(
+            "tools.clarify_gateway.resolve_gateway_clarify",
+            side_effect=RuntimeError("boom in resolve"),
+        ):
+            with caplog.at_level(_logging.ERROR, logger="plugins.platforms.discord.adapter"):
+                interaction = _make_interaction(user_id="42")
+                await view._resolve_choice(interaction, index=0, choice="red")
+
+        error_records = [
+            r for r in caplog.records
+            if r.levelno >= _logging.ERROR and "resolve_gateway_clarify failed" in r.message
+        ]
+        assert error_records, "Expected an error log for resolve failure"
+        rec = error_records[0]
+        assert rec.exc_info is not None, (
+            "resolve_gateway_clarify failure must log with exc_info=True "
+            "so operators can diagnose unexpected button-resolution errors."
+        )
+        assert rec.exc_info[0] is RuntimeError
+
+    @pytest.mark.asyncio
+    async def test_mark_awaiting_text_failure_logs_traceback(self, caplog):
+        """When mark_awaiting_text raises unexpectedly, the warning log
+        must carry the full traceback."""
+        import logging as _logging
+        from tools import clarify_gateway as cm
+
+        cm.register("cid-fail-mark", "sk-fail-mark", "Pick", ["x"])
+
+        view = ClarifyChoiceView(
+            choices=["x"],
+            clarify_id="cid-fail-mark",
+            allowed_user_ids={"42"},
+        )
+
+        with patch(
+            "tools.clarify_gateway.mark_awaiting_text",
+            side_effect=RuntimeError("boom in mark"),
+        ):
+            with caplog.at_level(_logging.WARNING, logger="plugins.platforms.discord.adapter"):
+                interaction = _make_interaction(user_id="42")
+                await view._on_other(interaction)
+
+        warn_records = [
+            r for r in caplog.records
+            if r.levelno >= _logging.WARNING and "mark_awaiting_text failed" in r.message
+        ]
+        assert warn_records, "Expected a warning log for mark_awaiting_text failure"
+        rec = warn_records[0]
+        assert rec.exc_info is not None, (
+            "mark_awaiting_text failure must log with exc_info=True."
+        )
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_rejection_produces_no_traceback(self, caplog):
+        """Expected auth failures must remain concise — no traceback in logs."""
+        import logging as _logging
+        from tools import clarify_gateway as cm
+
+        cm.register("cid-auth", "sk-auth", "Pick", ["x"])
+
+        view = ClarifyChoiceView(
+            choices=["x"],
+            clarify_id="cid-auth",
+            allowed_user_ids={"99999"},  # user 42 not in allowlist
+        )
+
+        with caplog.at_level(_logging.DEBUG, logger="plugins.platforms.discord.adapter"):
+            interaction = _make_interaction(user_id="42")
+            await view._resolve_choice(interaction, index=0, choice="x")
+
+        # Auth rejection sends ephemeral message, does NOT log an error/warning
+        interaction.response.send_message.assert_called_once()
+        error_records = [
+            r for r in caplog.records
+            if r.levelno >= _logging.WARNING
+        ]
+        assert not error_records, (
+            "Expected auth rejection to produce no warning/error logs"
+        )

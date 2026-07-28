@@ -178,7 +178,7 @@ describe('ModelMenuPanel provider collapse', () => {
     })
   })
 
-  it('auto-expands the active provider even when collapsed', async () => {
+  it('collapses the active provider too (no forced auto-expand)', async () => {
     $currentProvider.set('deepseek')
     $currentModel.set('deepseek-v4-pro')
     const { content } = renderPanel()
@@ -186,8 +186,11 @@ describe('ModelMenuPanel provider collapse', () => {
     const header = await content.findByText('DeepSeek')
     fireEvent.click(header)
 
-    // Should still show models because it's the active provider
-    expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+    // The current provider is collapsible like any other — clicking its header
+    // hides its models rather than forcing them to stay open.
+    await vi.waitFor(() => {
+      expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    })
   })
 
   it('bypasses collapse when search is active', async () => {

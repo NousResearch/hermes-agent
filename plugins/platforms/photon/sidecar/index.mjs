@@ -66,6 +66,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
+import { chooseSendFormat } from "./send-format.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
@@ -894,10 +895,10 @@ const server = http.createServer(async (req, res) => {
       // iMessage API, which can 500 on messages containing raw URLs.
       // Plain-text URLs are auto-linked by iMessage, so route markdown
       // messages that contain URLs through spectrumText while preserving
-      // spectrumMarkdown for URL-free markdown.
-      const hasUrl = /https?:\/\/[^\s)'"<>]+/i.test(text);
+      // spectrumMarkdown for URL-free markdown. The decision lives in
+      // send-format.mjs so tests can exercise it directly.
       const builder =
-        format === "markdown" && !hasUrl
+        chooseSendFormat(format, text) === "markdown"
           ? spectrumMarkdown(text)
           : spectrumText(text);
       const result = await space.send(builder);

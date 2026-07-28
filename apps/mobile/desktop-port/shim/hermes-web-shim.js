@@ -73,11 +73,58 @@
     }
   }
 
-  // A usable connection needs BOTH a URL and a token; otherwise boot must fail
-  // with NO_CONFIG_MESSAGE rather than dial a half-configured / default target.
+  const SSH_STORAGE_KEY = 'hermes.iosSsh'
+  let nativeTunnelStart = null
+
+  function readStoredSsh() {
+    try {
+      const raw = window.localStorage.getItem(SSH_STORAGE_KEY)
+      const parsed = raw ? JSON.parse(raw) : null
+      if (!parsed || typeof parsed !== 'object' || !parsed.host || !parsed.username || !parsed.hostKey) {
+        return null
+      }
+      return {
+        account: typeof parsed.account === 'string' ? parsed.account : 'default',
+        host: String(parsed.host),
+        port: Number(parsed.port) || 22,
+        username: String(parsed.username),
+        hostKey: String(parsed.hostKey),
+        remotePort: Number(parsed.remotePort) || 9119
+      }
+    } catch {
+      return null
+    }
+  }
+
+  function writeStoredSsh(config) {
+    window.localStorage.setItem(SSH_STORAGE_KEY, JSON.stringify(config))
+  }
+
+  function nativeSshPlugin() {
+    return window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.SshTunnel
+  }
+
+  async function ensureNativeTunnel() {
+    const config = readStoredSsh()
+    if (!config) return null
+    const plugin = nativeSshPlugin()
+    if (!plugin) throw new Error('The native iOS SSH tunnel is unavailable.')
+    if (!nativeTunnelStart) {
+      nativeTunnelStart = plugin.status().then(status => {
+        if (status && status.running) return null
+        return plugin.start(config)
+      }).finally(() => {
+        nativeTunnelStart = null
+      })
+    }
+    return nativeTunnelStart
+  }
+
+  // A usable connection needs a URL. Token authentication is optional for
+  // loopback/headless gateways started with auth_required=false.
   function requireConnection() {
     const stored = readStoredRaw()
-    if (!stored || !stored.url || !stored.token) {
+    if (!stored || !stored.url) {
       throw new Error(NO_CONFIG_MESSAGE)
     }
     return stored
@@ -108,11 +155,13 @@
 
   // Mirrors connection-config.cjs:65-71 buildGatewayWsUrl(baseUrl, token):
   //   `${ws|wss}://${host}${prefix}/api/ws?token=${encodeURIComponent(token)}`
+  // The query is omitted when the gateway does not require authentication.
   function buildWsUrl(baseUrl, token) {
     const parsed = new URL(baseUrl)
     const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
     const prefix = parsed.pathname.replace(/\/+$/, '')
-    return wsScheme + '://' + parsed.host + prefix + '/api/ws?token=' + encodeURIComponent(token)
+    const url = wsScheme + '://' + parsed.host + prefix + '/api/ws'
+    return token ? url + '?token=' + encodeURIComponent(token) : url
   }
 
   // Mirrors connection-config.cjs:202-210 tokenPreview: masked, never the token.
@@ -164,7 +213,7 @@
   //     No separate `query` field (hermes.ts:204-208). A non-primary `profile`
   //     throws (single-profile client — see assertPrimaryProfile above); the
   //     primary/absent profile resolves to the one remote backend.
-  //   - headers: Content-Type + X-Hermes-Session-Token ALWAYS sent.
+  //   - headers: Content-Type plus X-Hermes-Session-Token when configured.
   //   - success: empty body → null; HTML body → throw diagnostic; else JSON.parse.
   //   - failure (status >= 400): throw Error(`${status}: ${body}`).
   // v3 change: the connection source is the STORED remote config (was:
@@ -172,6 +221,7 @@
   // it surfaces as `${status}: ${body}` so the renderer's recovery UI takes over.
   async function api(request) {
     assertPrimaryProfile(request && request.profile)
+    const tunnel = await ensureNativeTunnel()
     const conn = requireConnection()
     const path = String((request && request.path) || '')
     const method = (request && request.method) || 'GET'
@@ -180,12 +230,13 @@
 
     let res
     try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (conn.token) {
+        headers['X-Hermes-Session-Token'] = conn.token
+      }
       res = await fetch(conn.url + path, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Hermes-Session-Token': conn.token
-        },
+        headers,
         body: hasBody ? JSON.stringify(request.body) : undefined,
         signal: AbortSignal.timeout(timeoutMs)
       })
@@ -233,16 +284,17 @@
   // (use-gateway-boot.ts:336,400-407; §6).
   async function getConnection(profile) {
     assertPrimaryProfile(profile)
+    const tunnel = await ensureNativeTunnel()
     const conn = requireConnection()
     return {
-      baseUrl: conn.url,
+      baseUrl: (tunnel && tunnel.url) || conn.url,
       isFullscreen: false,
       mode: 'remote',
-      authMode: 'token',
+      authMode: conn.token ? 'token' : 'none',
       nativeOverlayWidth: 0,
       source: 'settings',
       token: conn.token,
-      wsUrl: buildWsUrl(conn.url, conn.token),
+      wsUrl: buildWsUrl((tunnel && tunnel.url) || conn.url, conn.token),
       logs: [],
       windowButtonPosition: null,
       // Primary profile: this client is bound to one remote gateway, so the
@@ -295,9 +347,6 @@
     const url = normalizeBaseUrl(rawUrl)
     const incoming = typeof payload.remoteToken === 'string' ? payload.remoteToken.trim() : ''
     const token = incoming || (stored ? stored.token : '')
-    if (!token) {
-      throw new Error('Remote gateway session token is required.')
-    }
     return { url, token }
   }
 
@@ -409,8 +458,9 @@
     // and falls back to conn.wsUrl; both resolve to the same token WS URL here.
     getGatewayWsUrl: async profile => {
       assertPrimaryProfile(profile)
+      const tunnel = await ensureNativeTunnel()
       const conn = requireConnection()
-      return buildWsUrl(conn.url, conn.token)
+      return buildWsUrl((tunnel && tunnel.url) || conn.url, conn.token)
     },
     // { ok, rebuilt } per global.d.ts:23. Nothing to "rebuild" for a stateless
     // remote; ok reflects whether a usable stored config is present.
@@ -672,6 +722,18 @@
       'border-color:rgba(255,230,203,0.22);box-shadow:0 20px 60px rgba(0,0,0,0.5);}}' +
       '.hermes-shim-title{margin:0;font-size:1.125rem;font-weight:600;letter-spacing:-0.01em;}' +
       '.hermes-shim-subtitle{margin:0 0 0.2rem;font-size:0.8125rem;opacity:0.72;}' +
+      '.hermes-shim-section-label{font-size:0.75rem;font-weight:600;margin-top:0.25rem;}' +
+      '.hermes-shim-modes{display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;}' +
+      '.hermes-shim-mode{position:relative;display:flex;flex-direction:column;gap:0.2rem;' +
+      'padding:0.75rem;border:1px solid rgba(0,83,253,0.2);border-radius:0.65rem;' +
+      'background:rgba(0,83,253,0.035);cursor:pointer;}' +
+      '.hermes-shim-mode:has(input:checked){border:2px solid #0053FD;padding:calc(0.75rem - 1px);' +
+      'background:rgba(0,83,253,0.1);}' +
+      '.hermes-shim-mode input{position:absolute;opacity:0;pointer-events:none;}' +
+      '.hermes-shim-mode-title{font-size:0.875rem;font-weight:600;}' +
+      '.hermes-shim-mode-copy{font-size:0.7rem;line-height:1.35;opacity:0.72;}' +
+      '.hermes-shim-fields{display:flex;flex-direction:column;gap:0.7rem;}' +
+      '.hermes-shim-fields[hidden]{display:none;}' +
       '.hermes-shim-label{font-size:0.75rem;font-weight:500;opacity:0.8;}' +
       '.hermes-shim-input{width:100%;font:inherit;font-size:0.9375rem;padding:0.5rem 0.65rem;' +
       'border-radius:0.5rem;border:1px solid rgba(23,23,26,0.22);background:#ffffff;color:#17171A;}' +
@@ -690,16 +752,16 @@
       '.hermes-shim-btn--primary{background:#0053FD;color:#ffffff;}' +
       '.hermes-shim-btn--primary:disabled{opacity:0.6;cursor:default;}' +
       '.hermes-shim-btn--ghost{background:transparent;color:inherit;opacity:0.7;}' +
-      '.hermes-shim-btn--ghost:hover{opacity:1;}'
+      '.hermes-shim-btn--ghost:hover{opacity:1;}' +
+      '@media (max-width:22rem){.hermes-shim-modes{grid-template-columns:1fr;}}'
     document.head.appendChild(style)
   }
 
-  // True first run only: no stored config at all, or a partial one (URL with
-  // no token, or vice versa) — the same condition requireConnection() uses to
-  // decide boot must fail. Mirrors that check rather than re-deriving it.
+  // True first run only: no stored gateway URL at all. SSH connections may
+  // intentionally have an empty Hermes token when auth_required=false.
   function isFirstRunNoConfig() {
     const stored = readStoredRaw()
-    return !(stored && stored.url && stored.token)
+    return !(stored && stored.url)
   }
 
   function setConnectStatus(el, text, kind) {
@@ -758,14 +820,39 @@
     overlay.innerHTML =
       '<form class="hermes-shim-card" novalidate>' +
       '<h1 class="hermes-shim-title">Connect to Hermes</h1>' +
-      '<p class="hermes-shim-subtitle">Enter your gateway URL and session token.</p>' +
+      '<p class="hermes-shim-subtitle">Choose one connection mode. The other mode stays inactive.</p>' +
+      '<div class="hermes-shim-section-label">Connection mode</div>' +
+      '<div class="hermes-shim-modes" role="radiogroup" aria-label="Connection mode">' +
+      '<label class="hermes-shim-mode"><input type="radio" name="hermes-shim-mode" value="direct" checked />' +
+      '<span class="hermes-shim-mode-title">Direct gateway</span>' +
+      '<span class="hermes-shim-mode-copy">Connect to an HTTPS gateway URL.</span></label>' +
+      '<label class="hermes-shim-mode"><input type="radio" name="hermes-shim-mode" value="ssh" />' +
+      '<span class="hermes-shim-mode-title">Connect via SSH</span>' +
+      '<span class="hermes-shim-mode-copy">Use the native iOS tunnel to the remote Hermes host.</span></label>' +
+      '</div>' +
+      '<div class="hermes-shim-fields" id="hermes-shim-direct-fields">' +
       '<label class="hermes-shim-label" for="hermes-shim-url">Gateway URL</label>' +
       '<input class="hermes-shim-input" id="hermes-shim-url" type="text" inputmode="url" ' +
       'autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" ' +
       'placeholder="https://your-gateway…" />' +
-      '<label class="hermes-shim-label" for="hermes-shim-token">Token</label>' +
+      '<label class="hermes-shim-label" for="hermes-shim-token">Session token</label>' +
       '<input class="hermes-shim-input" id="hermes-shim-token" type="password" autocomplete="off" ' +
       'autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Session token" />' +
+      '</div>' +
+      '<div class="hermes-shim-fields" id="hermes-shim-ssh-fields" hidden>' +
+      '<label class="hermes-shim-label" for="hermes-shim-ssh-host">SSH host</label>' +
+      '<input class="hermes-shim-input" id="hermes-shim-ssh-host" type="text" autocomplete="off" autocapitalize="off" placeholder="pi.local or address" />' +
+      '<label class="hermes-shim-label" for="hermes-shim-ssh-port">SSH port</label>' +
+      '<input class="hermes-shim-input" id="hermes-shim-ssh-port" type="number" inputmode="numeric" value="22" />' +
+      '<label class="hermes-shim-label" for="hermes-shim-ssh-user">SSH username</label>' +
+      '<input class="hermes-shim-input" id="hermes-shim-ssh-user" type="text" autocomplete="username" autocapitalize="none" />' +
+      '<label class="hermes-shim-label" for="hermes-shim-ssh-key">Ed25519 private key</label>' +
+      '<textarea class="hermes-shim-input" id="hermes-shim-ssh-key" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Stored only in iOS Keychain"></textarea>' +
+      '<label class="hermes-shim-label" for="hermes-shim-ssh-host-key">Pinned host public key</label>' +
+      '<textarea class="hermes-shim-input" id="hermes-shim-ssh-host-key" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ssh-ed25519 AAAA…"></textarea>' +
+      '<label class="hermes-shim-label" for="hermes-shim-ssh-remote-port">Hermes port on remote host</label>' +
+      '<input class="hermes-shim-input" id="hermes-shim-ssh-remote-port" type="number" inputmode="numeric" value="9119" />' +
+      '</div>' +
       '<div class="hermes-shim-status" id="hermes-shim-status" aria-live="polite"></div>' +
       '<div class="hermes-shim-actions">' +
       (dismissible
@@ -778,14 +865,43 @@
     document.body.appendChild(overlay)
 
     const form = overlay.querySelector('form')
+    const modeInputs = overlay.querySelectorAll('input[name="hermes-shim-mode"]')
+    const directFields = overlay.querySelector('#hermes-shim-direct-fields')
+    const sshFields = overlay.querySelector('#hermes-shim-ssh-fields')
     const urlInput = overlay.querySelector('#hermes-shim-url')
     const tokenInput = overlay.querySelector('#hermes-shim-token')
+    const sshHostInput = overlay.querySelector('#hermes-shim-ssh-host')
+    const sshPortInput = overlay.querySelector('#hermes-shim-ssh-port')
+    const sshUserInput = overlay.querySelector('#hermes-shim-ssh-user')
+    const sshKeyInput = overlay.querySelector('#hermes-shim-ssh-key')
+    const sshHostKeyInput = overlay.querySelector('#hermes-shim-ssh-host-key')
+    const sshRemotePortInput = overlay.querySelector('#hermes-shim-ssh-remote-port')
     const statusEl = overlay.querySelector('#hermes-shim-status')
     const connectBtn = overlay.querySelector('#hermes-shim-connect')
     const cancelBtn = overlay.querySelector('#hermes-shim-cancel')
 
     urlInput.value = prefillUrl
     tokenInput.value = ''
+    const storedSsh = readStoredSsh()
+    const initialMode = storedSsh ? 'ssh' : 'direct'
+    modeInputs.forEach(input => {
+      input.checked = input.value === initialMode
+    })
+    function updateMode() {
+      const selected = overlay.querySelector('input[name="hermes-shim-mode"]:checked')
+      const mode = selected ? selected.value : 'direct'
+      directFields.hidden = mode !== 'direct'
+      sshFields.hidden = mode !== 'ssh'
+    }
+    modeInputs.forEach(input => input.addEventListener('change', updateMode))
+    updateMode()
+    if (storedSsh) {
+      sshHostInput.value = storedSsh.host
+      sshPortInput.value = String(storedSsh.port)
+      sshUserInput.value = storedSsh.username
+      sshHostKeyInput.value = storedSsh.hostKey
+      sshRemotePortInput.value = String(storedSsh.remotePort)
+    }
 
     if (cancelBtn) {
       cancelBtn.addEventListener('click', () => closeConnectOverlay())
@@ -800,22 +916,46 @@
 
     form.addEventListener('submit', e => {
       e.preventDefault()
+      const selectedMode = overlay.querySelector('input[name="hermes-shim-mode"]:checked')
+      const mode = selectedMode ? selectedMode.value : 'direct'
       const urlValue = urlInput.value
       const tokenValue = tokenInput.value
+      const sshHost = sshHostInput.value.trim()
 
       setConnectStatus(statusEl, 'Verbinde…', 'pending')
       connectBtn.disabled = true
-      urlInput.disabled = true
-      tokenInput.disabled = true
+      modeInputs.forEach(input => { input.disabled = true })
+      directFields.querySelectorAll('input,textarea').forEach(input => { input.disabled = true })
+      sshFields.querySelectorAll('input,textarea').forEach(input => { input.disabled = true })
       if (cancelBtn) cancelBtn.disabled = true
 
-      window.hermesDesktop
-        .testConnectionConfig({
+      ;(async () => {
+        let tunnel = null
+        if (mode === 'ssh') {
+          const plugin = nativeSshPlugin()
+          if (!plugin) throw new Error('Native SSH is unavailable')
+          const sshConfig = {
+            account: 'default',
+            host: sshHost,
+            port: Number(sshPortInput.value) || 22,
+            username: sshUserInput.value.trim(),
+            hostKey: sshHostKeyInput.value.trim(),
+            remotePort: Number(sshRemotePortInput.value) || 9119
+          }
+          if (!sshConfig.username || !sshConfig.hostKey || !sshKeyInput.value.trim()) {
+            throw new Error('SSH configuration is incomplete')
+          }
+          await plugin.storePrivateKey({ account: sshConfig.account, privateKey: sshKeyInput.value.trim() })
+          tunnel = await plugin.start(sshConfig)
+          writeStoredSsh(sshConfig)
+        }
+        return window.hermesDesktop.testConnectionConfig({
           mode: 'remote',
           remoteAuthMode: 'token',
-          remoteUrl: urlValue,
+          remoteUrl: (tunnel && tunnel.url) || urlValue,
           remoteToken: tokenValue
         })
+      })()
         .then(result => {
           // Persist exactly what was just validated: the normalized baseUrl
           // testConnectionConfig() returns, and the EFFECTIVE token it
@@ -830,7 +970,7 @@
           const trimmedToken = String(tokenValue || '').trim()
           const stored = readStoredRaw()
           const effectiveToken = trimmedToken || (stored ? stored.token : '')
-          if (!effectiveToken) {
+          if (mode === 'direct' && !effectiveToken) {
             // Defense in depth: coerceRemote() already throws "Remote
             // gateway session token is required." when neither the field
             // nor storage has a token, so testConnectionConfig() should
@@ -839,8 +979,9 @@
             // failed attempt instead.
             setConnectStatus(statusEl, CONNECT_FAILURE_MESSAGE, 'error')
             connectBtn.disabled = false
-            urlInput.disabled = false
-            tokenInput.disabled = false
+            modeInputs.forEach(input => { input.disabled = false })
+            directFields.querySelectorAll('input,textarea').forEach(input => { input.disabled = false })
+            sshFields.querySelectorAll('input,textarea').forEach(input => { input.disabled = false })
             if (cancelBtn) cancelBtn.disabled = false
             return
           }
@@ -863,8 +1004,9 @@
           // written to storage on this path; the overlay stays open.
           setConnectStatus(statusEl, CONNECT_FAILURE_MESSAGE, 'error')
           connectBtn.disabled = false
-          urlInput.disabled = false
-          tokenInput.disabled = false
+          modeInputs.forEach(input => { input.disabled = false })
+          directFields.querySelectorAll('input,textarea').forEach(input => { input.disabled = false })
+          sshFields.querySelectorAll('input,textarea').forEach(input => { input.disabled = false })
           if (cancelBtn) cancelBtn.disabled = false
         })
     })

@@ -16,6 +16,9 @@
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
 		A084ECDBA7D38E1E42DFC39D /* Pods_App.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AF277DCFFFF123FFC6DF26C7 /* Pods_App.framework */; };
 		B335AA123DCD612EF4DF5116 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 893E5E318276F2101B7F2AAE /* SceneDelegate.swift */; };
+		C7A7D4D10000000000000002 /* HermesBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A7D4D00000000000000002 /* HermesBridgeViewController.swift */; };
+		C7A7D4D10000000000000001 /* SshTunnel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A7D4D00000000000000001 /* SshTunnel.swift */; };
+		C7A7D4D10000000000000003 /* SshTunnelPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A7D4D00000000000000003 /* SshTunnelPlugin.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +33,9 @@
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 		893E5E318276F2101B7F2AAE /* SceneDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		AF277DCFFFF123FFC6DF26C7 /* Pods_App.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_App.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		C7A7D4D00000000000000001 /* SshTunnel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshTunnel.swift; sourceTree = "<group>"; };
+		C7A7D4D00000000000000002 /* HermesBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesBridgeViewController.swift; sourceTree = "<group>"; };
+		C7A7D4D00000000000000003 /* SshTunnelPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshTunnelPlugin.swift; sourceTree = "<group>"; };
 		AF51FD2D460BCFE21FA515B2 /* Pods-App.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-App.release.xcconfig"; path = "Pods/Target Support Files/Pods-App/Pods-App.release.xcconfig"; sourceTree = "<group>"; };
 		FC68EB0AF532CFC21C3344DD /* Pods-App.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-App.debug.xcconfig"; path = "Pods/Target Support Files/Pods-App/Pods-App.debug.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -84,6 +90,9 @@
 				2FAD9762203C412B000D30F8 /* config.xml */,
 				50B271D01FEDC1A000F3C39B /* public */,
 				893E5E318276F2101B7F2AAE /* SceneDelegate.swift */,
+				C7A7D4D00000000000000001 /* SshTunnel.swift */,
+				C7A7D4D00000000000000002 /* HermesBridgeViewController.swift */,
+				C7A7D4D00000000000000003 /* SshTunnelPlugin.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -118,6 +127,9 @@
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
 			productType = "com.apple.product-type.application";
+			packageProductDependencies = (
+				C7A7D4D20000000000000001 /* Citadel */,
+			);
 		};
 /* End PBXNativeTarget section */
 
@@ -147,6 +159,9 @@
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+				C7A7D4D30000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */,
+			);
 			targets = (
 				504EC3031FED79650016851F /* App */,
 			);
@@ -212,6 +227,9 @@
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				B335AA123DCD612EF4DF5116 /* SceneDelegate.swift in Sources */,
+				C7A7D4D10000000000000002 /* HermesBridgeViewController.swift in Sources */,
+				C7A7D4D10000000000000001 /* SshTunnel.swift in Sources */,
+				C7A7D4D10000000000000003 /* SshTunnelPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -407,6 +425,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C7A7D4D30000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/orlandos-nl/Citadel.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.11.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C7A7D4D20000000000000001 /* Citadel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C7A7D4D30000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */;
+			productName = Citadel;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 504EC2FC1FED79650016851F /* Project object */;
 }

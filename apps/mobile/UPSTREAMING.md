@@ -63,3 +63,34 @@ No signing certificate or provisioning profile is committed.
 No hardcoded ATS exception ships (see `Info.plist`'s commented template).
 Document that self-hosted HTTP gateways require an HTTPS front (e.g.
 `tailscale serve --https=443`) or a user-added ATS exception.
+
+## Future SSH tunnel support (deliberately not v1)
+
+The mobile client currently accepts a directly reachable HTTPS/token gateway.
+Do not add an SSH implementation to the browser shim: the desktop's
+`apps/desktop/electron/ssh-connection.ts` is an Electron-free OpenSSH manager,
+but iOS cannot invoke the user's `ssh` binary or safely reuse its control
+sockets. A responsible iOS implementation needs an explicitly approved native
+SSH dependency or implementation, Keychain-backed credentials, host-key
+verification, and lifecycle tests on a simulator/device. None of those can be
+validated on Linux.
+
+The smallest future integration seam should be a native, capability-scoped
+`SshTunnel` service owned by the iOS host. Its contract should be limited to:
+
+1. `open(configuration)`: authenticate and establish the SSH session, failing
+   closed on host-key changes and never prompting from the WebView.
+2. `forward(localPort, remoteHost, remotePort)`: bind only to `127.0.0.1`,
+   return the selected local endpoint, and report tunnel death.
+3. `cancelForward(...)` and `close()`: be idempotent and tear down all native
+   resources when the scene resigns active or the connection changes.
+
+The shim would remain transport-agnostic: after the native service returns a
+loopback endpoint, the existing `{url, token}` remote-gateway path would use
+that endpoint, with no private key or SSH details entering JavaScript. The
+native layer must own credential storage, known-hosts policy, reconnect/backoff,
+and logging redaction. The first implementation should add native unit tests
+for command/endpoint validation and lifecycle idempotency, plus an iOS
+integration test proving HTTP and WebSocket traffic both traverse the tunnel;
+the existing Node shim tests should continue to cover profile guards and token
+handling independently.

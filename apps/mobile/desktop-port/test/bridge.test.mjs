@@ -127,6 +127,23 @@ test('api proceeds for the primary profile and parses JSON', async () => {
   assert.equal((await d.api({ path: '/api/status' })).ok, true)
 })
 
+test('loopback connection may omit the optional session token', async () => {
+  let request
+  const d = loadBridge({
+    config: { url: 'http://127.0.0.1:39119', token: '' },
+    fetchImpl: async (_url, options) => {
+      request = options
+      return okFetch()
+    },
+  })
+  const conn = await d.getConnection()
+  assert.equal(conn.authMode, 'none')
+  assert.equal(conn.wsUrl, 'ws://127.0.0.1:39119/api/ws')
+  assert.equal((await d.api({ path: '/api/status' })).ok, true)
+  assert.equal(request.headers['Content-Type'], 'application/json')
+  assert.equal(Object.keys(request.headers).length, 1)
+})
+
 test('getConnection is scoped to the primary profile', async () => {
   const d = loadBridge({ config: CONFIG })
   const conn = await d.getConnection()

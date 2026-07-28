@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import weakref
@@ -158,6 +159,32 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
             return is_voice
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
     return True
+
+
+def build_auto_tts_output_path(platform) -> str:
+    """Return a unique temp output path for gateway auto-TTS synthesis.
+
+    Platform-awareness lives HERE (the caller knows its platform), not in the
+    TTS tool's ``HERMES_SESSION_PLATFORM`` contextvar — that contextvar is
+    cleared by ``_clear_session_env`` before the post-handler auto-TTS block
+    in ``BasePlatformAdapter`` runs, so relying on it always produced MP3
+    (#57049, #36685). Platforms whose native voice bubbles require Ogg/Opus
+    (``tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the single source of truth)
+    get an explicit ``.ogg`` path; the tool's central container repair
+    (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every
+    provider, including MP3-only backends like Edge TTS. Everything else
+    keeps the MP3 default.
+    """
+    from tools.tts_tool import OPUS_VOICE_PLATFORMS
+
+    ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
+    audio_path = os.path.join(
+        tempfile.gettempdir(),
+        "hermes_voice",
+        f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}",
+    )
+    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+    return audio_path
 
 
 def utf16_len(s: str) -> int:
@@ -5547,6 +5574,7 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
+                _tts_requested_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -5558,16 +5586,29 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            # Pass an explicit platform-aware output path: the
+                            # HERMES_SESSION_PLATFORM contextvar the tool would
+                            # otherwise consult is already cleared by the time
+                            # this post-handler block runs, which silently
+                            # produced MP3 (audio attachment, not a native
+                            # voice bubble) on Opus platforms (#57049, #36685).
+                            _tts_requested_path = build_auto_tts_output_path(
+                                self.platform
+                            )
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool,
+                                text=speech_text,
+                                output_path=_tts_requested_path,
                             )
                             tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
+                            if tts_data.get("success", True):
+                                _tts_path = tts_data.get("file_path") or _tts_requested_path
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
+                _tts_cleanup_paths = {_tts_requested_path, _tts_path} - {None}
                 if _tts_path and Path(_tts_path).exists():
                     try:
                         # Caption eligibility and payload stay on the ORIGINAL
@@ -5593,8 +5634,15 @@ class BasePlatformAdapter(ABC):
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
                     finally:
+                        for _cleanup_path in _tts_cleanup_paths:
+                            try:
+                                os.remove(_cleanup_path)
+                            except OSError:
+                                pass
+                elif _tts_cleanup_paths:
+                    for _cleanup_path in _tts_cleanup_paths:
                         try:
-                            os.remove(_tts_path)
+                            os.remove(_cleanup_path)
                         except OSError:
                             pass
 

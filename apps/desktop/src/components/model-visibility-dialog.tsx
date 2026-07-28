@@ -108,9 +108,11 @@ export function ModelVisibilityDialog({
               }
 
               const allFamilies = collapseModelFamilies(provider.models ?? [])
+
               const onCount = allFamilies.filter(family =>
                 visible.has(modelVisibilityKey(provider.slug, family.id))
               ).length
+
               const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
 
               const collapsed = collapsedProviders.includes(provider.slug) && !q
@@ -138,15 +140,16 @@ export function ModelVisibilityDialog({
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (
-                        <label
-                          className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs"
-                          key={key}
-                        >
+                        <label className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs" key={key}>
                           <span className="min-w-0 flex-1 truncate">
                             {name}
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                           </span>
-                          <Switch checked={visible.has(key)} onCheckedChange={() => toggle(provider, family.id)} size="xs" />
+                          <Switch
+                            checked={visible.has(key)}
+                            onCheckedChange={() => toggle(provider, family.id)}
+                            size="xs"
+                          />
                         </label>
                       )
                     })}

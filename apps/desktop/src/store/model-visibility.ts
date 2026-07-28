@@ -121,6 +121,7 @@ function expandProviderDefaults(provider: ModelOptionProvider, target: Set<strin
   const families = collapseModelFamilies(provider.models ?? [])
 
   const featured = provider.featured_models ?? []
+
   const defaults = featured.length
     ? families.filter(family => featured.includes(family.id))
     : families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)

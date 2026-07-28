@@ -84,7 +84,11 @@ test('the leading severity glyph is stripped from the toast message', () => {
 
 test('the trailing "· detail" is split off as a secondary meta line, not inlined', () => {
   // Detail-carrying notices split on the first ` · `.
-  const paused = noticeToToast({ key: 'credits.depleted', level: 'error', text: '✕ Credit access paused · run /topup to top up' })
+  const paused = noticeToToast({
+    key: 'credits.depleted',
+    level: 'error',
+    text: '✕ Credit access paused · run /topup to top up'
+  })
   expect(paused?.message).toBe('Credit access paused')
   expect(paused?.meta).toBe('run /topup to top up')
 
@@ -95,7 +99,10 @@ test('the trailing "· detail" is split off as a secondary meta line, not inline
 })
 
 test('splitMeta splits on the first space-middot-space only', () => {
-  expect(splitMeta('Credit access paused · run /topup to top up')).toEqual(['Credit access paused', 'run /topup to top up'])
+  expect(splitMeta('Credit access paused · run /topup to top up')).toEqual([
+    'Credit access paused',
+    'run /topup to top up'
+  ])
   expect(splitMeta('Credit access restored')).toEqual(['Credit access restored', undefined])
   // Interior middots after the first split stay in the meta.
   expect(splitMeta('a · b · c')).toEqual(['a', 'b · c'])

@@ -64,7 +64,9 @@ class TestMarkdownStripping:
         assert "Done." in result
 
     def test_strips_headers(self):
-        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary\nSome text"
+        # The shared cleaner folds a heading into the following sentence as a
+        # spoken lead-in ("Summary, Some text.") instead of a bare label.
+        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary, Some text."
 
     def test_strips_list_markers(self):
         text = "- item one\n- item two\n* item three"

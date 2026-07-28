@@ -6475,6 +6475,15 @@ def _desktop_macos_local_codesign(
 
     ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
     ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    if not (ent_main.exists() and ent_inherit.exists()):
+        # Hardened-runtime restrictions are enforced even for ad-hoc
+        # signatures. Signing with --options runtime but WITHOUT the allow-jit
+        # entitlements would leave Electron/V8 crashing on launch — strictly
+        # worse than the legacy plain ad-hoc sign. Bail out so the caller
+        # falls back to that legacy path instead.
+        raise FileNotFoundError(
+            f"desktop entitlement plists missing under {desktop_dir / 'electron'}"
+        )
 
     def sign_path(
         path: Path,

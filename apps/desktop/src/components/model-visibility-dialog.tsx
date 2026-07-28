@@ -140,7 +140,10 @@ export function ModelVisibilityDialog({
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (
-                        <label className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs" key={key}>
+                        <label
+                          className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
+                          key={key}
+                        >
                           <span className="min-w-0 flex-1 truncate">
                             {name}
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}

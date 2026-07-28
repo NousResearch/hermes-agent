@@ -145,6 +145,24 @@ Prerequisites:
 
 Use an ACP-compatible plugin and point it at `hermes acp` or `hermes-acp`.
 
+### Buzz Desktop
+
+[Buzz](https://github.com/block/buzz) ships Hermes Agent as a preset runtime.
+With Hermes installed the normal way, Buzz discovers it automatically —
+open **Settings → Runtimes** and Hermes appears under your runtimes.
+
+If discovery fails (older installs), make sure the ACP launcher resolves on a
+login-shell PATH:
+
+```bash
+command -v hermes-acp || command -v hermes
+```
+
+Recent installs write both `hermes` and `hermes-acp` launchers into
+`~/.local/bin`; running `hermes update` adds the `hermes-acp` launcher to
+older installs. As a manual fallback, configure Buzz's agent command as
+`hermes` with args `["acp"]`.
+
 ## Configuration and credentials
 
 ACP mode uses the same Hermes configuration as the CLI:

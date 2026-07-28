@@ -397,7 +397,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
-            # fall back to ps -A eww.
+            # fall back to ps -Aww.
             _found_via_proc = False
             if os.path.isdir("/proc"):
                 try:
@@ -423,7 +423,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
             if not _found_via_proc:
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    ["ps", "-Aww", "-o", "pid=,command="],
                     capture_output=True,
                     text=True,
                     timeout=10,

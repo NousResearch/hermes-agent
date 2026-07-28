@@ -109,6 +109,7 @@ class TestProcFallback:
             pids = gateway_mod._scan_gateway_pids(set(), all_profiles=True)
 
         mock_ps.assert_called_once()
+        assert mock_ps.call_args[0][0] == ["ps", "-Aww", "-o", "pid=,command="]
         assert 12345 in pids
 
     def test_proc_permission_error_skips_pid(self):

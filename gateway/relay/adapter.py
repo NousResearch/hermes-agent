@@ -311,6 +311,26 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - config shape is operator-owned
             return True
 
+    def _dm_top_level_threads_as_sessions(self) -> bool:
+        """Native-parity escape hatch: per-message DM sessions on/off.
+
+        Mirrors native SlackAdapter._dm_top_level_threads_as_sessions
+        (platforms.slack.extra.dm_top_level_threads_as_sessions). Default
+        True: in thread-per-message mode each top-level DM message keys its
+        own session (parallel turns). Set
+        platforms.relay.extra.slack.dm_top_level_threads_as_sessions: false
+        to keep threaded reply PLACEMENT but ONE rolling DM session — the
+        legacy steer/queue posture, decoupled from reply_in_thread.
+        """
+        try:
+            return bool(
+                self._relay_slack_extra().get(
+                    "dm_top_level_threads_as_sessions", True
+                )
+            )
+        except Exception:  # noqa: BLE001 - config shape is operator-owned
+            return True
+
     def _stamp_slack_session_thread(self, event) -> None:
         """Native session-keying parity for fronted Slack DMs.
 
@@ -345,6 +365,8 @@ class RelayAdapter(BasePlatformAdapter):
                 return
             if not self._effective_reply_in_thread():
                 return
+            if not self._dm_top_level_threads_as_sessions():
+                return  # opt-out: threaded replies, one rolling session
             src.thread_id = str(message_id)
         except Exception:  # noqa: BLE001 - session stamping must never break inbound
             logger.debug("slack session-thread stamp failed", exc_info=True)

@@ -736,7 +736,8 @@ Current controls (Slack):
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `reply_in_thread` | `true` | `true`: thread-per-message — each top-level DM message anchors its own thread (status, progress, prompts, final reply all carry that `metadata.thread_id`) and keys its own session, so concurrent messages run in parallel. `false`: flat rolling DM — send-lane frames carry NO thread anchor (stripped, not omitted), one shared session per DM. |
+| `reply_in_thread` | `true` | `true`: thread-per-message — each top-level DM message anchors its own thread (status, progress, prompts, final reply all carry that `metadata.thread_id`). `false`: flat rolling DM — send-lane frames carry NO thread anchor (stripped, not omitted), one shared session per DM. |
+| `dm_top_level_threads_as_sessions` | `true` | Native-parity escape hatch (mirrors `platforms.slack.extra.dm_top_level_threads_as_sessions`). `true`: in thread-per-message mode each top-level DM message keys its own session, so concurrent messages run in parallel. `false`: threaded reply placement is kept but the session stamp is skipped — one rolling DM session (legacy steer/queue posture). No effect in flat mode, which always keeps the single rolling session. |
 
 Typing/status frames always carry the triggering-ts anchor when one is known
 (liveliness is unconditional, both modes): Slack's status line is

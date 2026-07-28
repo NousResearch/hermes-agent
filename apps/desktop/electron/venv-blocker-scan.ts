@@ -7,9 +7,12 @@
  * returns a typed result for the Desktop update preflight.
  */
 
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 // ---------------------------------------------------------------------------
 // Types
@@ -106,15 +109,17 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
 }
 
 /**
- * Run the venv-blocker scan subprocess.  Accepts optional overrides for
- * testing (dependency injection).
+ * Run the venv-blocker scan subprocess.  Async so the Electron main-process
+ * event loop is never blocked by the psutil process scan (up to 15s on a
+ * loaded Windows box).  Accepts optional overrides for testing (dependency
+ * injection).
  */
-export function scanVenvBlockers(
+export async function scanVenvBlockers(
   updateRoot: string,
-  execOverride?: typeof execFileSync,
+  execOverride?: typeof execFileAsync,
   resolveOverride?: typeof resolveVenvPython,
-): ScanOutcome {
-  const execFn = execOverride || execFileSync
+): Promise<ScanOutcome> {
+  const execFn = execOverride || execFileAsync
   const resolveFn = resolveOverride || resolveVenvPython
   const venvPython = resolveFn(updateRoot)
 
@@ -125,21 +130,20 @@ export function scanVenvBlockers(
   let stdout: string
 
   try {
-    const proc = execFn(
+    const proc = await execFn(
       venvPython,
       ['-m', SCAN_MODULE],
       {
         cwd: updateRoot,
         encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
         timeout: SCAN_TIMEOUT_MS,
         windowsHide: true,
       } as any,
     )
 
-    stdout = (proc as unknown as string)
+    stdout = String((proc as any).stdout ?? '')
   } catch (err: any) {
-    const diag = [`exit code ${err.status ?? -1}`]
+    const diag = [`exit code ${err.status ?? err.code ?? -1}`]
 
     if (err.stderr) {diag.push(String(err.stderr).slice(0, 200))}
 

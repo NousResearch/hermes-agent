@@ -6,15 +6,7 @@ import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
-import { deleteProfile, getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
+import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
@@ -39,6 +31,7 @@ import {
 } from '../overlays/panel'
 
 import { CreateProfileDialog } from './create-profile-dialog'
+import { DeleteProfileDialog } from './delete-profile-dialog'
 import { RenameProfileDialog } from './rename-profile-dialog'
 
 interface ProfilesViewProps {
@@ -54,7 +47,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
-  const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -108,26 +100,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
     },
     [refresh]
   )
-
-  const handleConfirmDelete = useCallback(async () => {
-    if (!pendingDelete) {
-      return
-    }
-
-    setDeleting(true)
-
-    try {
-      await deleteProfile(pendingDelete.name)
-      notify({ kind: 'success', title: p.deleted, message: pendingDelete.name })
-      setPendingDelete(null)
-      setSelectedName(null)
-      await refresh()
-    } catch (err) {
-      notifyError(err, p.failedDelete)
-    } finally {
-      setDeleting(false)
-    }
-  }, [p, pendingDelete, refresh])
 
   return (
     <Panel closeLabel={p.close} onClose={onClose}>
@@ -201,32 +173,15 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         profiles={profiles ?? []}
       />
 
-      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{p.deleteTitle}</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? (
-                <>
-                  {p.deleteDescPrefix}
-                  <span className="font-medium text-foreground">{pendingDelete.name}</span>
-                  {p.deleteDescMid}
-                  <span className="font-mono text-xs">{pendingDelete.path}</span>
-                  {p.deleteDescSuffix}
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-              {deleting ? p.deleting : t.common.delete}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteProfileDialog
+        onClose={() => setPendingDelete(null)}
+        onDeleted={async () => {
+          setSelectedName(null)
+          await refresh()
+        }}
+        open={pendingDelete !== null}
+        profile={pendingDelete}
+      />
     </Panel>
   )
 }

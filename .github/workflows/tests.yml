@@ -101,6 +101,23 @@ jobs:
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
+      - name: Run merge-sensitive provider contracts
+        if: matrix.slice.index == 1
+        # Keep provider concurrency and client-lifecycle contracts visible
+        # outside the duration-balanced file shards.
+        run: |
+          source .venv/bin/activate
+          python -m pytest -q --tb=short \
+            tests/agent/test_relay_llm.py::test_anthropic_stream_callbacks_do_not_reenter_captured_context \
+            tests/agent/test_relay_llm.py::test_explicit_stream_close_surfaces_provider_close_failure \
+            tests/run_agent/test_streaming.py::TestAnthropicStreamCallbacks::test_anthropic_sdk_stream_runs_through_relay_managed_execution \
+            tests/run_agent/test_request_client_reuse_abort_races.py::test_relay_managed_close_failure_poisons_request_client
+        env:
+          ANTHROPIC_API_KEY: ""
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
       - name: Run tests (slice ${{ matrix.slice.index }}/${{ inputs.slice_count }})
         # Per-file isolation via scripts/run_tests.sh: each test file runs
         # in its own freshly-spawned `python -m pytest <file>` subprocess

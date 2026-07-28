@@ -114,6 +114,14 @@ class SharedMetricsStore:
         for _ in range(pending_periods):
             if self._create_package() is None:
                 break
+        return self._export_and_prune()
+
+    def create_and_export_package_if_due(self) -> list[Path]:
+        """Create pending packages at most once per UTC day, then export them."""
+        self._create_pending_packages_if_due()
+        return self._export_and_prune()
+
+    def _export_and_prune(self) -> list[Path]:
         exported = self._export_pending_packages()
         try:
             self._prune_expired_history()
@@ -280,6 +288,26 @@ class SharedMetricsStore:
                 """
             ).fetchone()
         return int(row["period_count"]) if row is not None else 0
+
+    def _create_pending_packages_if_due(self) -> None:
+        now = _utc_now()
+        with self._connection() as connection:
+            with write_txn(connection):
+                # Gate on the committed package, not its file write, so a failed
+                # outbox export can be retried without packaging deltas twice.
+                package_created_today = connection.execute(
+                    """
+                    SELECT 1
+                    FROM package_outbox
+                    WHERE substr(created_at, 1, 10) >= ?
+                    LIMIT 1
+                    """,
+                    (now.date().isoformat(),),
+                ).fetchone()
+                if package_created_today is not None:
+                    return
+                while self._create_package_in_transaction(connection, now) is not None:
+                    pass
 
     def _create_package(self) -> dict[str, Any] | None:
         now = _utc_now()

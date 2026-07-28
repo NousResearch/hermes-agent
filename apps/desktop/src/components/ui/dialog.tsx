@@ -3,7 +3,6 @@ import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -99,25 +98,19 @@ function DialogContent({
   // an input) is what most dialogs want. Dialogs with no input should pass
   // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
 
-  // `Tip` wraps `DialogPrimitive.Close asChild` (not the other way around) so
-  // Radix's `Slot` can forward `Close`'s `onClick` straight through to the
-  // `Button`. When `Tip` was the innermost wrapper, `onClick` was absorbed by
-  // `Tip`'s passthrough `...props` and forwarded to `TooltipContent` instead of
-  // the button, so clicking the close button silently did nothing.
+  // No tip on the X — the glyph is the label. Keep aria-label / sr-only for a11y.
   const closeButton = showCloseButton ? (
-    <Tip label={t.common.close}>
-      <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-        <Button
-          aria-label={t.common.close}
-          className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          size="icon-xs"
-          variant="ghost"
-        >
-          <X className="size-4" />
-          <span className="sr-only">{t.common.close}</span>
-        </Button>
-      </DialogPrimitive.Close>
-    </Tip>
+    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
+    </DialogPrimitive.Close>
   ) : null
 
   // With a banner, the border can't live on the scroll/clip box (it would draw a

@@ -81,6 +81,7 @@ import { TaskDrawer } from './drawer'
 import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
+  $newTaskLane,
   ago,
   type ArcState,
   arcState,
@@ -1077,6 +1078,21 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+
+  // A new-task request raised from outside the page (⌘⌥N, the palette row).
+  // The command navigates here and parks the lane; the page picks it up on
+  // arrival — whether it was already mounted or is mounting for the first
+  // time — then clears it so a later remount can't reopen the dialog.
+  const requestedLane = useValue($newTaskLane)
+
+  useEffect(() => {
+    if (requestedLane === null) {
+      return
+    }
+
+    setAddStatus(requestedLane)
+    $newTaskLane.set(null)
+  }, [requestedLane])
 
   const toggleSelect = (id: string) => {
     setSelected(prev => {

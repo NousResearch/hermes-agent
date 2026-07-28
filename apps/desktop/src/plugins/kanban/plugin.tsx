@@ -16,6 +16,8 @@ import {
   Codicon,
   type HermesPlugin,
   host,
+  type KeybindContribution,
+  KEYBINDS_AREA,
   PALETTE_AREA,
   type PaletteContribution,
   type RouteContribution,
@@ -31,7 +33,7 @@ import {
 import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
-import { useKanban } from './ui'
+import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
 // clicks through to the board. Shares the board query (one cache, one poll with
@@ -83,6 +85,23 @@ const plugin: HermesPlugin = {
     ctx.i18n.register(KANBAN_LOCALES)
     ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket))
 
+    // The plugin command pattern: ONE action id (`kanban.newTask`) wired into
+    // two areas — a keybind (dispatch + rebindable panel row) and a palette row
+    // whose `action` field points back at it, so ⌘K shows the live combo. The
+    // handler is route-independent: it navigates to the page and parks the
+    // request in `$newTaskLane`, so the hotkey works from anywhere, not just
+    // while the board happens to be mounted.
+    //
+    // ⌘⌥N / Ctrl+Alt+N: `mod+n` is `session.new` and `mod+shift+n` is
+    // `session.newWindow`, both core built-ins a plugin can't shadow. Adding
+    // Alt keeps the "N for new" mnemonic on a chord core leaves free — it uses
+    // `alt` only for the `mod+alt+1…9` profile slots, never with a letter. That
+    // makes ⌘⌥<letter> the natural namespace for plugin commands.
+    const newTask = () => {
+      $newTaskLane.set('triage')
+      host.navigate('/kanban')
+    }
+
     ctx.registerMany([
       {
         id: 'page',
@@ -111,6 +130,28 @@ const plugin: HermesPlugin = {
           keywords: ['kanban', 'board', 'tasks', 'agents'],
           run: () => host.navigate('/kanban')
         } satisfies PaletteContribution
+      },
+      {
+        id: 'new-task',
+        area: PALETTE_AREA,
+        data: {
+          id: 'kanban.newTask',
+          action: 'kanban.newTask',
+          label: ctx.i18n.t('newTaskCommand'),
+          keywords: ['kanban', 'task', 'new', 'create', 'triage'],
+          run: newTask
+        } satisfies PaletteContribution
+      },
+      {
+        id: 'new-task',
+        area: KEYBINDS_AREA,
+        data: {
+          id: 'kanban.newTask',
+          category: 'view',
+          defaults: ['mod+alt+n'],
+          label: ctx.i18n.t('newTaskCommand'),
+          run: newTask
+        } satisfies KeybindContribution
       }
     ])
   }

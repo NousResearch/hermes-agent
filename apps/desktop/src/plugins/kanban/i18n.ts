@@ -11,6 +11,9 @@ import { useMemo } from 'react'
 type KanbanMessages = {
     nav: string
     openBoard: string
+    /** Command label — shows in the ⌘K palette AND as the keybind panel row,
+     *  so it carries the "Kanban: " prefix the palette convention wants. */
+    newTaskCommand: string
     countTip: (running: number, ready: number) => string
     col: Record<
       'archived' | 'blocked' | 'done' | 'ready' | 'review' | 'running' | 'scheduled' | 'todo' | 'triage',
@@ -183,6 +186,7 @@ type KanbanMessages = {
 const en: KanbanMessages = {
     nav: 'Kanban',
     openBoard: 'Kanban: Open board',
+    newTaskCommand: 'Kanban: New task',
     countTip: (running, ready) => `Kanban — ${running} running, ${ready} ready`,
     col: {
       triage: { label: 'Triage', help: 'Raw ideas — a specifier fleshes out the spec.' },
@@ -369,6 +373,7 @@ const en: KanbanMessages = {
 const ja: KanbanMessages = {
     nav: 'カンバン',
     openBoard: 'カンバン: ボードを開く',
+    newTaskCommand: 'カンバン: 新しいタスク',
     countTip: (running, ready) => `カンバン — 実行中 ${running}、待機 ${ready}`,
     col: {
       triage: { label: 'トリアージ', help: '生のアイデア — スペシファイアが仕様に整えます。' },
@@ -555,6 +560,7 @@ const ja: KanbanMessages = {
 const zh: KanbanMessages = {
     nav: '看板',
     openBoard: '看板：打开面板',
+    newTaskCommand: '看板：新建任务',
     countTip: (running, ready) => `看板 — 运行中 ${running}、就绪 ${ready}`,
     col: {
       triage: { label: '分诊', help: '原始想法 — 由细化代理整理出规格。' },
@@ -738,6 +744,7 @@ const zh: KanbanMessages = {
 const zhHant: KanbanMessages = {
     nav: '看板',
     openBoard: '看板：開啟面板',
+    newTaskCommand: '看板：新增任務',
     countTip: (running, ready) => `看板 — 執行中 ${running}、就緒 ${ready}`,
     col: {
       triage: { label: '分類', help: '原始想法 — 由細化代理整理出規格。' },

@@ -893,7 +893,7 @@ describe('excludeProjectSessions', () => {
     expect(filtered.sessionCount).toBe(1)
   })
 
-  it('drops a lane the filter emptied, and matching preview rows with it', () => {
+  it('keeps a lane the filter emptied — a worktree is structure, not a row', () => {
     const pinnedRow = makeSession('/www/app/wt', { id: 'pinned' })
 
     const project = projectNode({
@@ -913,7 +913,8 @@ describe('excludeProjectSessions', () => {
 
     const filtered = excludeProjectSessions(project, session => session.id === 'pinned')
 
-    expect(filtered.repos[0].groups).toEqual([])
+    expect(filtered.repos[0].groups.map(g => g.id)).toEqual(['wt'])
+    expect(filtered.repos[0].groups[0].sessions).toEqual([])
     expect(filtered.previewSessions).toEqual([])
     expect(filtered.sessionCount).toBe(0)
   })
@@ -937,5 +938,30 @@ describe('excludeProjectSessions', () => {
     })
 
     expect(excludeProjectSessions(project, () => false)).toBe(project)
+  })
+
+  it('survives the live overlay: a lane left empty by the filter is not pruned', () => {
+    // The two run in sequence on an entered project (filter, then overlay), and
+    // the overlay drops lanes it empties — it must not take the filter's with it.
+    const pinnedRow = makeSession('/www/app/wt', { id: 'pinned' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: 'wt', label: 'wt', path: '/www/app/wt', sessions: [pinnedRow] })]
+        }
+      ],
+      sessionCount: 1
+    })
+
+    const filtered = excludeProjectSessions(project, session => session.id === 'pinned')
+    const overlaid = overlayLiveLanes(filtered, [], new Set(['someone-else']))
+
+    expect(overlaid.repos[0].groups.map(g => g.id)).toEqual(['wt'])
   })
 })

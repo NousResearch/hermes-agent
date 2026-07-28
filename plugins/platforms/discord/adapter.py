@@ -302,7 +302,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    MessageDeduplicator, convert_table_to_bullets, is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -1259,12 +1259,13 @@ def _read_discord_prompt_timeout() -> int:
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
+from plugins.platforms.discord.adapter_thread_mentions import DiscordThreadMentionsMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
-                     BasePlatformAdapter):
+class DiscordAdapter(DiscordMediaMixin, DiscordThreadMentionsMixin, DiscordThreadTitlesMixin,
+                     DiscordVoiceInfoMixin, DiscordSlashAuthMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1325,8 +1326,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         self._voice_mixers: dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: dict[str, Any] = self._load_voice_fx_config()
-        # Threads the bot participated in (no @mention needed there); persisted across restarts.
-        self._threads = ThreadParticipationTracker("discord")
+        self._init_discord_thread_mentions()
         self._semantic_thread_renames = SemanticThreadRenames()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: dict[str, asyncio.Task] = {}
@@ -1801,6 +1801,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except TimeoutError:
                 pass
+        # Observe human participation before authorization drops the message.
+        # An unallowlisted human joining a one-on-one thread should still make
+        # that visible thread mention-gated for future allowed-user messages.
+        await self._observe_thread_human_participant(message)
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted:
             return False
@@ -2594,17 +2598,10 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             await self._finish_recovery_scan(scan_id, "failed", counts, error=str(exc))
             logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
 
-    def _in_bot_thread(self, message: Any) -> bool:
-        """Thread the bot already joined skips the mention check — unless
-        thread_require_mention (multi-bot threads) gates threads like channels."""
-        return (
-            isinstance(message.channel, discord.Thread)
-            and str(message.channel.id) in self._threads
-            and not self._discord_thread_require_mention()
-        )
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
+        await self._observe_thread_human_participant(message)
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
@@ -4923,6 +4920,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
             await self._threads.mark_async(thread_id)
+            await self._claim_discord_thread_owner(
+                thread_id, getattr(interaction, "user", None)
+            )
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, result["thread"], starter)
@@ -5243,10 +5243,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             keys.add(f"#{parent_name}")
         return keys
 
-    def _discord_thread_require_mention(self) -> bool:
-        """Whether threads still require @mention after the bot has participated (default False).
-        Set True when multiple bots share a thread to avoid bot-to-bot loops."""
-        return self._extra_or_env_flag("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION", "false", truthy=True)
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
@@ -6155,6 +6151,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
+            await self._observe_thread_human_participant(message)
         is_voice_linked_channel = False
         # Save stripped text now: create_thread() can clobber message.content (breaks /command detection).
         raw_content = message.content.strip()
@@ -6232,6 +6229,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                     self._dedup.is_duplicate(str(thread.id))
                     auto_threaded_channel = thread
                     await self._threads.mark_async(thread_id)
+                    await self._claim_discord_thread_owner(thread_id, message.author)
                 else:
                     # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
                     # reply (dumps the task into a shared channel). Surface an error and skip the run.
@@ -6358,6 +6356,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             await self._threads.mark_async(thread_id)
+            await self._claim_discord_thread_owner(thread_id, message.author)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)
@@ -7367,6 +7366,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
+    _gate("thread_mention_free_users", "DISCORD_THREAD_MENTION_FREE_USERS", from_platform_extra=False)
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),

@@ -47,6 +47,12 @@ export function useDeepLinkHighlight({
 
       if (element) {
         element.scrollIntoView({ behavior: 'smooth', block })
+
+        if (!element.hasAttribute('tabindex')) {
+          element.tabIndex = -1
+        }
+
+        element.focus({ preventScroll: true })
         element.classList.add('setting-field-highlight')
         window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
 

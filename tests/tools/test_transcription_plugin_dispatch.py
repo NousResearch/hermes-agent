@@ -256,6 +256,8 @@ class TestTranscribeAudioE2E:
         from unittest.mock import patch
 
         with patch("tools.transcription_tools._validate_audio_file", return_value=None), \
+             patch("tools.transcription_tools._validate_audio_source_file", return_value=None), \
+             patch("tools.transcription_tools._validate_audio_file_size", return_value=None), \
              patch("tools.transcription_tools._load_stt_config", return_value={}), \
              patch("tools.transcription_tools.is_stt_enabled", return_value=True), \
              patch("tools.transcription_tools._get_provider", return_value="none"):

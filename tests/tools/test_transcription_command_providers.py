@@ -528,7 +528,10 @@ class TestTranscribeAudioDispatchToCommandProvider:
         with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
             result = transcribe_audio(str(audio))
         assert result["success"] is False
-        assert "No STT provider available" in result["error"]
+        # Explicitly-configured unknown providers now get a named
+        # registration error instead of the generic legacy message.
+        assert result["error_type"] == "provider_not_registered"
+        assert "unknown-cli" in result["error"]
 
 
 # ---------------------------------------------------------------------------

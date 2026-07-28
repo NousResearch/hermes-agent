@@ -810,8 +810,10 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
-  it('falls through to command.dispatch for skill commands and sends the message', async () => {
-    const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
+  it('falls through to command.dispatch for skill commands, sending the body but showing the invocation', async () => {
+    const skillMessage =
+      '[IMPORTANT: The user has invoked the "hermes-agent-dev" skill, indicating they want you to follow its instructions.\n' +
+      'The full skill content is loaded below.]\n\nUse this skill to do X.\n\n## Steps\n1. First step'
 
     const ctx = buildCtx({
       gateway: {
@@ -823,7 +825,12 @@ describe('createSlashHandler', () => {
             }
 
             if (method === 'command.dispatch') {
-              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+              return Promise.resolve({
+                type: 'skill',
+                message: skillMessage,
+                name: 'hermes-agent-dev',
+                display: '/hermes-agent-dev'
+              })
             }
 
             return Promise.resolve({})
@@ -836,9 +843,12 @@ describe('createSlashHandler', () => {
     const h = createSlashHandler(ctx)
     expect(h('/hermes-agent-dev')).toBe(true)
     await vi.waitFor(() => {
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+      expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage, true, '/hermes-agent-dev')
     })
-    expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
+    // The expanded skill body is model-facing: no transcript line may carry it.
+    for (const [line] of ctx.transcript.sys.mock.calls) {
+      expect(line).not.toContain('Use this skill to do X')
+    }
   })
 
   it('handles command.dispatch payloads returned directly by slash.exec', async () => {

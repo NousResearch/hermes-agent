@@ -22,7 +22,7 @@ interface QueuePanelProps {
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
-  entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
+  (entry.displayText ?? entry.text).trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
 export function QueuePanel({
   busy,

@@ -288,6 +288,10 @@ google = [
   "google-api-python-client==2.194.0",
   "google-auth-oauthlib==1.3.1",
   "google-auth-httplib2==0.3.1",
+  # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
+  # so fresh google-extra installs do not resolve vulnerable httplib2 0.31.2
+  # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS).
+  "httplib2==0.32.0",
 ]
 youtube = [
   # Required by skills/media/youtube-content and

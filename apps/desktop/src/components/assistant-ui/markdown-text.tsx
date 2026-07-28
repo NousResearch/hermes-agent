@@ -233,7 +233,7 @@ function MediaAttachment({ path }: { path: string }) {
   return (
     <span className="wrap-anywhere">
       <a
-        className="link-chip font-semibold wrap-anywhere"
+        className="link-chip wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()
@@ -283,7 +283,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   if (!target || !/^https?:\/\//i.test(target)) {
     return (
       <a
-        className={cn('link-chip font-semibold wrap-anywhere', className)}
+        className={cn('link-chip wrap-anywhere', className)}
         href={href}
         rel="noopener noreferrer"
         target="_blank"

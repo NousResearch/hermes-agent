@@ -556,11 +556,17 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
-/* Inline content links: a small tinted chip instead of an underline. Tint is
-   currentColor-relative (the old `decoration-current/20` idiom), so text and
-   fill share a hue on every theme from one `color` declaration. */
+/* Inline content links: color at rest, a tinted chip on hover, never an
+   underline. Tint is currentColor-relative (the old `decoration-current/20`
+   idiom), so text and fill share a hue on every theme from one `color`. */
 .link-chip {
-  --link-chip-tint: 8%;
+  /* The one knob: resting fill. 0% = color-only until hovered. */
+  --link-chip-tint: 0%;
+
+  /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
+     sets `prose a { font-weight: 500 }`, which outranks a utility class on the
+     anchor — so the override belongs here, on the shared chip. */
+  font-weight: inherit;
 
   /* `ch`/`em` so the chip tracks the text at any size. Block padding is
      asymmetric because an inline box's content area is ascent+descent — equal

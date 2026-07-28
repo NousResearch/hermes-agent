@@ -200,10 +200,10 @@ class TestReadReceiptPolicyOrdering:
 
         await adapter._poll_messages()
 
-        adapter._send_read_receipt.assert_not_awaited()
+        adapter._send_read_receipt.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_policy_accepted_message_is_marked_read_before_dispatch(self, monkeypatch):
+    async def test_policy_accepted_message_is_marked_read_fire_and_forget(self, monkeypatch):
         from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
         adapter = WhatsAppAdapter(
@@ -230,7 +230,7 @@ class TestReadReceiptPolicyOrdering:
 
         await adapter._poll_messages()
 
-        adapter._send_read_receipt.assert_awaited_once_with(raw)
+        adapter._send_read_receipt.assert_called_once_with(raw)
         adapter.handle_message.assert_awaited_once_with(event)
 
 

@@ -1271,7 +1271,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
                             if event:
-                                await self._send_read_receipt(msg_data)
+                                # Fire-and-forget: a slow bridge /read must not
+                                # delay message dispatch (matches BlueBubbles
+                                # asyncio.create_task pattern for mark_read).
+                                asyncio.create_task(self._send_read_receipt(msg_data))
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:

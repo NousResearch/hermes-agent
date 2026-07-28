@@ -2487,6 +2487,17 @@ def run_conversation(
                     _backoff_touch_counter = 0
                     while time.time() < sleep_end:
                         if agent._interrupt_requested:
+                            # A redirect uses the interrupt machinery to cancel
+                            # only the live request. Aborting the retry here
+                            # with clear_interrupt() would DESTROY the pending
+                            # correction and kill the turn with "Operation
+                            # interrupted" — the exact mid-stream steer loss
+                            # users hit when a redirect lands during provider
+                            # backoff. Rebuild from the correction instead,
+                            # mirroring the InterruptedError handler.
+                            if agent.clear_interrupt(preserve_redirect=True):
+                                _retry.restart_with_redirected_messages = True
+                                break
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             _interrupt_text = f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries})."
                             close_interrupted_tool_sequence(messages, _interrupt_text)
@@ -2508,6 +2519,8 @@ def run_conversation(
                                 f"retry backoff ({retry_count}/{max_retries}), "
                                 f"{int(sleep_end - time.time())}s remaining"
                             )
+                    if _retry.restart_with_redirected_messages:
+                        break  # rebuild this iteration from the correction
                     continue  # Retry the API call
 
                 agent._turn_received_provider_response = True
@@ -4000,6 +4013,12 @@ def run_conversation(
 
                 # Check for interrupt before deciding to retry
                 if agent._interrupt_requested:
+                    # Preserve a pending redirect (mid-stream correction): the
+                    # user is steering, not stopping. Rebuild the turn from the
+                    # correction instead of aborting with a dead-end interrupt.
+                    if agent.clear_interrupt(preserve_redirect=True):
+                        _retry.restart_with_redirected_messages = True
+                        break
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
                     _interrupt_text = f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))})."
                     close_interrupted_tool_sequence(messages, _interrupt_text)
@@ -5236,6 +5255,12 @@ def run_conversation(
                 _backoff_touch_counter = 0
                 while time.time() < sleep_end:
                     if agent._interrupt_requested:
+                        # Same preserve-redirect rule as the retry-wait above:
+                        # a steering correction must survive backoff, not die
+                        # as "Operation interrupted".
+                        if agent.clear_interrupt(preserve_redirect=True):
+                            _retry.restart_with_redirected_messages = True
+                            break
                         agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                         _interrupt_text = f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
                         close_interrupted_tool_sequence(messages, _interrupt_text)
@@ -5257,6 +5282,11 @@ def run_conversation(
                             f"error retry backoff ({retry_count}/{max_retries}), "
                             f"{int(sleep_end - time.time())}s remaining"
                         )
+                if _retry.restart_with_redirected_messages:
+                    # Leave the retry loop — the check right below rebuilds this
+                    # iteration from the correction instead of re-firing the
+                    # stale request.
+                    break
         
         if _retry.restart_with_redirected_messages:
             # The cancelled request produced no valid assistant item. Reuse the

@@ -11077,7 +11077,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "pre_gateway_dispatch",
                     event=event,
                     gateway=self,
-                    session_store=self.session_store,
+                    # getattr: bare-runner tests build GatewayRunner via
+                    # object.__new__ without __init__ (pitfall #17), and the
+                    # hook must not fail dispatch over a missing attribute.
+                    session_store=getattr(self, "session_store", None),
                 )
             except Exception as _hook_exc:
                 logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)

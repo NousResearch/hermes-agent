@@ -32673,6 +32673,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             profile_homes = _multiplex_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
+                # Per-profile adapters so each profile's cron output is
+                # delivered via its own bot/adapter instead of the default
+                # profile's.
+                cron_start_kwargs["profile_adapters"] = getattr(
+                    runner, "_profile_adapters", None
+                )
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s",
                     len(profile_homes),

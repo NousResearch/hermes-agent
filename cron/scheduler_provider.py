@@ -558,6 +558,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -585,6 +586,7 @@ class InProcessCronScheduler(CronScheduler):
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                profile_adapters=profile_adapters,
             )
             return
 
@@ -656,6 +658,7 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
+        profile_adapters=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -711,13 +714,23 @@ class InProcessCronScheduler(CronScheduler):
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for entry in _existing_profile_homes(profile_homes):
+                        _pname = entry[0] if isinstance(entry, tuple) else None
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
+                                # Deliver each profile's cron via ITS OWN bot/adapter.
+                                # Secondary profiles live in profile_adapters[name];
+                                # the default profile has no entry there and owns the
+                                # shared `adapters` set — so fall back to it. Without
+                                # this, every profile's cron output ships through the
+                                # default profile's bot (wrong-bot cross-delivery).
+                                _tick_adapters = adapters
+                                if profile_adapters and _pname and profile_adapters.get(_pname):
+                                    _tick_adapters = profile_adapters[_pname]
                                 cron_tick(
                                     verbose=False,
-                                    adapters=adapters,
+                                    adapters=_tick_adapters,
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,

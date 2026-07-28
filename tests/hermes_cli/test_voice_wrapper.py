@@ -751,3 +751,36 @@ class TestContinuousLoopSimulation:
         # The in-flight transcript was suppressed because we stopped mid-flight
         assert transcripts == []
         assert voice.is_continuous_active() is False
+
+
+class TestBeepsEnabledTruthyStrings:
+    """voice.beep_enabled quoted in YAML ("false"/"off") must disable beeps —
+    bool("false") is True, so the gate must use utils.is_truthy_value (#49883)."""
+
+    def _enabled_with(self, monkeypatch, value):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": {"beep_enabled": value}},
+        )
+        return voice._beeps_enabled()
+
+    def test_quoted_false_string_disables(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, "false") is False
+
+    def test_quoted_off_string_disables(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, "off") is False
+
+    def test_quoted_true_string_enables(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, "true") is True
+
+    def test_real_booleans_pass_through(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, True) is True
+        assert self._enabled_with(monkeypatch, False) is False
+
+    def test_missing_key_defaults_true(self, monkeypatch):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"voice": {}})
+        assert voice._beeps_enabled() is True

@@ -891,7 +891,23 @@ class AudioRecorder:
         """
         try:
             sd, _ = _import_audio()
-        except (ImportError, OSError) as e:
+        except OSError as e:
+            # sounddevice imports but PortAudio's shared library is missing —
+            # a pip install can't fix that; point at the system package
+            # instead of misreporting missing Python packages (#18432).
+            if _is_termux_environment():
+                portaudio_hint = "  Termux: pkg install portaudio"
+            else:
+                portaudio_hint = (
+                    "  Linux:  sudo apt-get install libportaudio2\n"
+                    "  macOS:  brew install portaudio"
+                )
+            raise RuntimeError(
+                "PortAudio system library not found -- install it first:\n"
+                f"{portaudio_hint}\n"
+                "Then retry /voice on."
+            ) from e
+        except ImportError as e:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
                 f"Install with: {sys.executable} -m pip install sounddevice numpy"

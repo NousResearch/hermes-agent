@@ -3011,7 +3011,7 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     )
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
+        if k in ("_anthropic_content_blocks", "reasoning_details"):
             continue
         if k == "api_content":
             # Always popped before the request is built; only counted when it

@@ -19,7 +19,7 @@ import {
   formatProbeFailedMessage,
   parseVenvBlockerScanOutput,
   resolveVenvPython,
-  scanVenvBlockers,
+  scanVenvBlockers
 } from './venv-blocker-scan'
 
 // ---------------------------------------------------------------------------
@@ -56,9 +56,7 @@ describe('formatBlockerMessage', () => {
   it('includes PID, name, cmdline, remote-client warning, and retry suggestion', () => {
     const msg = formatBlockerMessage({
       blocked: true,
-      processes: [
-        { pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1' },
-      ],
+      processes: [{ pid: 101, name: 'python.exe', cmdline: 'serve --host 10.0.0.1' }]
     })
 
     assert.ok(msg.includes('PID 101'))
@@ -91,10 +89,12 @@ describe('parseVenvBlockerScanOutput', () => {
   })
 
   it('valid blocked', () => {
-    const o = parseVenvBlockerScanOutput(ok({
-      blocked: true,
-      processes: [{ pid: 1, name: 'p', cmdline: 'c' }],
-    }))
+    const o = parseVenvBlockerScanOutput(
+      ok({
+        blocked: true,
+        processes: [{ pid: 1, name: 'p', cmdline: 'c' }]
+      })
+    )
 
     assert.equal(o.kind, 'blocked')
   })
@@ -106,49 +106,43 @@ describe('parseVenvBlockerScanOutput', () => {
   it('ok=false is rejected', () => {
     assert.equal(
       parseVenvBlockerScanOutput(JSON.stringify({ ok: false, blocked: false, processes: [] })).kind,
-      'probe-failure',
+      'probe-failure'
     )
   })
 
   it('blocked must be boolean', () => {
-    assert.equal(
-      parseVenvBlockerScanOutput(ok({ blocked: 'false' })).kind,
-      'probe-failure',
-    )
+    assert.equal(parseVenvBlockerScanOutput(ok({ blocked: 'false' })).kind, 'probe-failure')
   })
 
   it('blocked=true with empty processes rejected', () => {
-    assert.equal(
-      parseVenvBlockerScanOutput(ok({ blocked: true, processes: [] })).kind,
-      'probe-failure',
-    )
+    assert.equal(parseVenvBlockerScanOutput(ok({ blocked: true, processes: [] })).kind, 'probe-failure')
   })
 
   it('blocked=false with non-empty processes rejected', () => {
     assert.equal(
       parseVenvBlockerScanOutput(ok({ processes: [{ pid: 1, name: 'p', cmdline: 'c' }] })).kind,
-      'probe-failure',
+      'probe-failure'
     )
   })
 
   it('process pid must be positive integer', () => {
     assert.equal(
       parseVenvBlockerScanOutput(ok({ blocked: true, processes: [{ pid: 0, name: 'p', cmdline: 'c' }] })).kind,
-      'probe-failure',
+      'probe-failure'
     )
   })
 
   it('process name must be non-empty string', () => {
     assert.equal(
       parseVenvBlockerScanOutput(ok({ blocked: true, processes: [{ pid: 1, name: '', cmdline: 'c' }] })).kind,
-      'probe-failure',
+      'probe-failure'
     )
   })
 
   it('process missing cmdline is rejected', () => {
     assert.equal(
       parseVenvBlockerScanOutput(ok({ blocked: true, processes: [{ pid: 1, name: 'p' }] })).kind,
-      'probe-failure',
+      'probe-failure'
     )
   })
 })
@@ -162,7 +156,9 @@ describe('scanVenvBlockers', () => {
   const okJson = JSON.stringify({ ok: true, blocked: false, processes: [] })
 
   const blockedJson = JSON.stringify({
-    ok: true, blocked: true, processes: [{ pid: 1, name: 'p', cmdline: 'c' }],
+    ok: true,
+    blocked: true,
+    processes: [{ pid: 1, name: 'p', cmdline: 'c' }]
   })
 
   function execReturn(json: string): any {
@@ -170,7 +166,12 @@ describe('scanVenvBlockers', () => {
   }
 
   function execThrow(status: number, stderr: string): any {
-    return (async (...args: any[]) => { const e: any = new Error(); e.status = status; e.stderr = Buffer.from(stderr); throw e }) as any
+    return (async (...args: any[]) => {
+      const e: any = new Error()
+      e.status = status
+      e.stderr = Buffer.from(stderr)
+      throw e
+    }) as any
   }
 
   it('clear scan returns clear', async () => {

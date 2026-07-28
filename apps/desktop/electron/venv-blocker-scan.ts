@@ -117,7 +117,7 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
 export async function scanVenvBlockers(
   updateRoot: string,
   execOverride?: typeof execFileAsync,
-  resolveOverride?: typeof resolveVenvPython,
+  resolveOverride?: typeof resolveVenvPython
 ): Promise<ScanOutcome> {
   const execFn = execOverride || execFileAsync
   const resolveFn = resolveOverride || resolveVenvPython
@@ -130,22 +130,20 @@ export async function scanVenvBlockers(
   let stdout: string
 
   try {
-    const proc = await execFn(
-      venvPython,
-      ['-m', SCAN_MODULE],
-      {
-        cwd: updateRoot,
-        encoding: 'utf-8',
-        timeout: SCAN_TIMEOUT_MS,
-        windowsHide: true,
-      } as any,
-    )
+    const proc = await execFn(venvPython, ['-m', SCAN_MODULE], {
+      cwd: updateRoot,
+      encoding: 'utf-8',
+      timeout: SCAN_TIMEOUT_MS,
+      windowsHide: true
+    } as any)
 
     stdout = String((proc as any).stdout ?? '')
   } catch (err: any) {
     const diag = [`exit code ${err.status ?? err.code ?? -1}`]
 
-    if (err.stderr) {diag.push(String(err.stderr).slice(0, 200))}
+    if (err.stderr) {
+      diag.push(String(err.stderr).slice(0, 200))
+    }
 
     return { kind: 'probe-failure', error: diag.join('; ') }
   }
@@ -182,7 +180,7 @@ export function formatBlockerMessage(result: VenvBlockerScanResult): string {
     'Update aborted: another Hermes process is using this installation.',
     '',
     'These processes must be stopped before updating:',
-    '',
+    ''
   ]
 
   for (const proc of result.processes.slice(0, 10)) {
@@ -196,11 +194,9 @@ export function formatBlockerMessage(result: VenvBlockerScanResult): string {
   lines.push('')
   lines.push(
     'Close the terminal, app, or service owning that process.  If it is a ' +
-    'remote backend, stopping it will disconnect remote clients.',
+      'remote backend, stopping it will disconnect remote clients.'
   )
-  lines.push(
-    'Then retry the update.',
-  )
+  lines.push('Then retry the update.')
 
   return lines.join('\n')
 }

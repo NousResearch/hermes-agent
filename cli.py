@@ -12278,6 +12278,134 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "Use your best judgement to make the choice and proceed."
         )
 
+    def _handle_clarify_enter(self, event) -> bool:
+        """Resolve Enter while the clarify choice list is on screen.
+
+        Returns ``True`` when the keypress was consumed so the caller stops
+        routing it, ``False`` when no clarify choice prompt is active (freetext
+        mode is handled by its own branch before this one).
+
+        The input buffer stays editable while the choice list is displayed, so a
+        user can type a custom answer without first selecting "Other". Reading
+        that buffer *before* falling back to the highlighted choice is what stops
+        the answer from being silently discarded.
+        """
+        if not self._clarify_state or self._clarify_freetext:
+            return False
+
+        state = self._clarify_state
+        selected = state["selected"]
+        choices = state.get("choices") or []
+
+        # A typed answer always wins over the highlighted/checked choices.
+        typed = event.app.current_buffer.text.strip()
+        if typed:
+            if state.get("multi_select"):
+                # Match the shape the "Other"-plus-choices freetext path
+                # produces: checked real choices first, then the typed answer.
+                indices = sorted(state.get("selected_indices") or ())
+                base = [choices[i] for i in indices if i < len(choices)]
+                if base:
+                    typed = ", ".join(base) + ", " + typed
+            state["response_queue"].put(typed)
+            self._clarify_state = None
+            self._clarify_freetext = False
+            self._clarify_multi_base = None
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return True
+
+        # multi-select support: submit comma-joined list of checked choices
+        if state.get("multi_select"):
+            indices = state.get("selected_indices")
+            if not indices:
+                # Nothing checked → submit empty string (parses to [])
+                state["response_queue"].put("")
+                self._clarify_state = None
+                event.app.invalidate()
+                return True
+            sorted_idx = sorted(indices)
+            selected_choices = [choices[i] for i in sorted_idx if i < len(choices)]
+            other_checked = len(choices) in sorted_idx
+            if other_checked and selected_choices:
+                # "Other" + real choices: store base choices, switch to freetext
+                # so the user can type a custom answer that gets appended
+                self._clarify_multi_base = selected_choices
+                self._clarify_freetext = True
+                event.app.invalidate()
+                return True
+            if selected_choices:
+                state["response_queue"].put(", ".join(selected_choices))
+                self._clarify_state = None
+                event.app.invalidate()
+                return True
+            # Only "Other" was checked → switch to freetext
+            self._clarify_freetext = True
+            event.app.invalidate()
+            return True
+
+        # Original single-select behavior: submit the highlighted choice
+        if selected < len(choices):
+            state["response_queue"].put(choices[selected])
+            self._clarify_state = None
+            event.app.invalidate()
+        else:
+            # "Other" selected → switch to freetext
+            self._clarify_freetext = True
+            event.app.invalidate()
+        return True
+
+    def _make_clarify_number_handler(self, idx, char):
+        """Build the key handler for one clarify quick-select digit.
+
+        ``idx`` is the choice index the digit maps to; ``char`` is the literal
+        key that was pressed. ``char`` cannot be derived from ``idx`` because
+        "0" maps to index 9, so the caller passes both.
+
+        A digit is only a shortcut while the draft is empty. Once the user has
+        started typing an answer, the digit belongs to that answer — insert it
+        rather than resolving the prompt out from under them.
+        """
+
+        def handler(event):
+            if self._clarify_state and not self._clarify_freetext:
+                if event.app.current_buffer.text:
+                    event.app.current_buffer.insert_text(char)
+                    return
+                choices = self._clarify_state.get("choices") or []
+                # multi-select support: number keys toggle checkboxes instead of submitting
+                if self._clarify_state.get("multi_select"):
+                    if idx < len(choices):
+                        indices = self._clarify_state.get("selected_indices", set())
+                        if idx in indices:
+                            indices.discard(idx)
+                        else:
+                            indices.add(idx)
+                        event.app.invalidate()
+                    elif idx == len(choices):
+                        # Toggle "Other" in multi-select mode
+                        indices = self._clarify_state.get("selected_indices", set())
+                        if idx in indices:
+                            indices.discard(idx)
+                        else:
+                            indices.add(idx)
+                        event.app.invalidate()
+                    return
+                # Original single-select: number keys submit directly
+                # Map index to choice (treating "Other" as the last option)
+                if idx < len(choices):
+                    # Select a numbered choice
+                    self._clarify_state["response_queue"].put(choices[idx])
+                    self._clarify_state = None
+                    self._clarify_freetext = False
+                    event.app.invalidate()
+                elif idx == len(choices):
+                    # Select "Other" option
+                    self._clarify_freetext = True
+                    event.app.invalidate()
+
+        return handler
+
     def _sudo_password_callback(self) -> str:
         """
         Prompt for sudo password through the prompt_toolkit UI.
@@ -14264,48 +14392,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     event.app.invalidate()
                 return
 
-            # --- Clarify choice mode: confirm the highlighted selection ---
-            if self._clarify_state and not self._clarify_freetext:
-                state = self._clarify_state
-                selected = state["selected"]
-                choices = state.get("choices") or []
-                # multi-select support: submit comma-joined list of checked choices
-                if state.get("multi_select"):
-                    indices = state.get("selected_indices")
-                    if not indices:
-                        # Nothing checked → submit empty string (parses to [])
-                        state["response_queue"].put("")
-                        self._clarify_state = None
-                        event.app.invalidate()
-                        return
-                    sorted_idx = sorted(indices)
-                    selected_choices = [choices[i] for i in sorted_idx if i < len(choices)]
-                    other_checked = len(choices) in sorted_idx
-                    if other_checked and selected_choices:
-                        # "Other" + real choices: store base choices, switch to freetext
-                        # so the user can type a custom answer that gets appended
-                        self._clarify_multi_base = selected_choices
-                        self._clarify_freetext = True
-                        event.app.invalidate()
-                        return
-                    if selected_choices:
-                        state["response_queue"].put(", ".join(selected_choices))
-                        self._clarify_state = None
-                        event.app.invalidate()
-                        return
-                    # Only "Other" was checked → switch to freetext
-                    self._clarify_freetext = True
-                    event.app.invalidate()
-                    return
-                # Original single-select behavior: submit the highlighted choice
-                if selected < len(choices):
-                    state["response_queue"].put(choices[selected])
-                    self._clarify_state = None
-                    event.app.invalidate()
-                else:
-                    # "Other" selected → switch to freetext
-                    self._clarify_freetext = True
-                    event.app.invalidate()
+            # --- Clarify choice mode: typed answer, else highlighted selection ---
+            if self._handle_clarify_enter(event):
                 return
 
             # --- Normal input routing ---
@@ -14545,46 +14633,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
 
         # Number keys for quick clarify selection (1-9, 0 for 10th item)
-        def _make_clarify_number_handler(idx):
-            def handler(event):
-                if self._clarify_state and not self._clarify_freetext:
-                    choices = self._clarify_state.get("choices") or []
-                    # multi-select support: number keys toggle checkboxes instead of submitting
-                    if self._clarify_state.get("multi_select"):
-                        if idx < len(choices):
-                            indices = self._clarify_state.get("selected_indices", set())
-                            if idx in indices:
-                                indices.discard(idx)
-                            else:
-                                indices.add(idx)
-                            event.app.invalidate()
-                        elif idx == len(choices):
-                            # Toggle "Other" in multi-select mode
-                            indices = self._clarify_state.get("selected_indices", set())
-                            if idx in indices:
-                                indices.discard(idx)
-                            else:
-                                indices.add(idx)
-                            event.app.invalidate()
-                        return
-                    # Original single-select: number keys submit directly
-                    # Map index to choice (treating "Other" as the last option)
-                    if idx < len(choices):
-                        # Select a numbered choice
-                        self._clarify_state["response_queue"].put(choices[idx])
-                        self._clarify_state = None
-                        self._clarify_freetext = False
-                        event.app.invalidate()
-                    elif idx == len(choices):
-                        # Select "Other" option
-                        self._clarify_freetext = True
-                        event.app.invalidate()
-            return handler
-
         for _num in range(10):
             # 1-9 select items 0-8, 0 selects item 9 (10thitem)
             _idx = 9 if _num == 0 else _num - 1
-            kb.add(str(_num), filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))(_make_clarify_number_handler(_idx))
+            kb.add(str(_num), filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))(self._make_clarify_number_handler(_idx, str(_num)))
 
         # --- Dangerous command approval: arrow-key navigation ---
 

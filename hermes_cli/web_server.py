@@ -3671,6 +3671,10 @@ _ACTION_IDEMPOTENCY_KEYS: Dict[str, str] = {}
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
 
 
+class _ActionConflict(RuntimeError):
+    """A service-lifecycle mutation conflicts with an in-flight action."""
+
+
 def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:
     """Record a non-spawned action result and write it to the action log."""
     log_file_name = _ACTION_LOG_FILES[name]
@@ -3873,6 +3877,9 @@ def _spawn_gateway_restart(
 
     Returns ``(proc, reused)``.
     """
+    update = _ACTION_PROCS.get("hermes-update")
+    if update is not None and update.poll() is None:
+        raise _ActionConflict("Hermes update is already in progress")
     subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
@@ -3880,9 +3887,9 @@ def _spawn_gateway_restart(
         if existing_command is None or existing_command == tuple(subcommand):
             existing_key = _ACTION_IDEMPOTENCY_KEYS.get("gateway-restart")
             if idempotency_key and existing_key and idempotency_key != existing_key:
-                raise RuntimeError("another gateway restart is already in progress")
+                raise _ActionConflict("another gateway restart is already in progress")
             return existing, True
-        raise RuntimeError("gateway restart already in progress for another profile")
+        raise _ActionConflict("gateway restart already in progress for another profile")
     proc = _spawn_hermes_action(subcommand, "gateway-restart")
     if idempotency_key:
         _ACTION_IDEMPOTENCY_KEYS["gateway-restart"] = idempotency_key
@@ -3890,11 +3897,14 @@ def _spawn_gateway_restart(
 
 
 def _spawn_hermes_update(idempotency_key: str | None) -> Tuple[subprocess.Popen, bool]:
+    restart = _ACTION_PROCS.get("gateway-restart")
+    if restart is not None and restart.poll() is None:
+        raise _ActionConflict("gateway restart is already in progress")
     existing = _ACTION_PROCS.get("hermes-update")
     if existing is not None and existing.poll() is None:
         existing_key = _ACTION_IDEMPOTENCY_KEYS.get("hermes-update")
         if idempotency_key and existing_key and idempotency_key != existing_key:
-            raise RuntimeError("another Hermes update is already in progress")
+            raise _ActionConflict("another Hermes update is already in progress")
         return existing, True
     proc = _spawn_hermes_action(["update"], "hermes-update")
     if idempotency_key:
@@ -3902,14 +3912,20 @@ def _spawn_hermes_update(idempotency_key: str | None) -> Tuple[subprocess.Popen,
     return proc, False
 
 
-async def _service_mutation_request(request: Request, action: str):
+async def _service_mutation_request(request: Request, action: str, target: str):
     try:
         body = await request.json()
     except Exception:
         body = {}
     try:
-        return validate_mutation_request(action, body)
+        return validate_mutation_request(action, body, require_confirmation=True)
     except MutationRequestError as exc:
+        _audit_service_mutation(
+            request,
+            action=action,
+            target=target,
+            result="rejected",
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -3966,9 +3982,18 @@ def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict
 @app.post("/api/gateway/restart")
 async def restart_gateway(request: Request, profile: Optional[str] = None):
     """Kick off a ``hermes gateway restart`` in the background."""
-    mutation = await _service_mutation_request(request, "gateway-restart")
+    target = profile or "default"
+    mutation = await _service_mutation_request(request, "gateway-restart", target)
     try:
         proc, reused = _spawn_gateway_restart(profile, mutation.idempotency_key)
+    except _ActionConflict as exc:
+        _audit_service_mutation(
+            request,
+            action="gateway-restart",
+            target=target,
+            result="conflict",
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -3976,14 +4001,14 @@ async def restart_gateway(request: Request, profile: Optional[str] = None):
         _audit_service_mutation(
             request,
             action="gateway-restart",
-            target=profile or "default",
+            target=target,
             result="failed",
         )
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
     _audit_service_mutation(
         request,
         action="gateway-restart",
-        target=profile or "default",
+        target=target,
         result="reused" if reused else "started",
     )
     return {
@@ -4069,7 +4094,11 @@ async def gateway_drain(request: Request):
 @app.post("/api/hermes/update")
 async def update_hermes(request: Request):
     """Kick off ``hermes update`` in the background."""
-    mutation = await _service_mutation_request(request, "hermes-update")
+    mutation = await _service_mutation_request(
+        request,
+        "hermes-update",
+        "installation",
+    )
     if _dashboard_local_update_managed_externally():
         message = (
             "Hermes updates are managed outside this dashboard in "
@@ -4077,6 +4106,12 @@ async def update_hermes(request: Request):
             "disabled here."
         )
         _record_completed_action("hermes-update", message, exit_code=1)
+        _audit_service_mutation(
+            request,
+            action="hermes-update",
+            target="installation",
+            result="unsupported",
+        )
         return {
             "ok": False,
             "pid": None,
@@ -4090,6 +4125,12 @@ async def update_hermes(request: Request):
     if install_method == "docker":
         message = format_docker_update_message()
         _record_completed_action("hermes-update", message, exit_code=1)
+        _audit_service_mutation(
+            request,
+            action="hermes-update",
+            target="installation",
+            result="unsupported",
+        )
         return {
             "ok": False,
             "pid": None,
@@ -4102,6 +4143,12 @@ async def update_hermes(request: Request):
     if install_method in {"nix", "nixos"}:
         message = recommended_update_command_for_method(install_method)
         _record_completed_action("hermes-update", message, exit_code=1)
+        _audit_service_mutation(
+            request,
+            action="hermes-update",
+            target="installation",
+            result="unsupported",
+        )
         return {
             "ok": False,
             "pid": None,
@@ -4113,6 +4160,14 @@ async def update_hermes(request: Request):
 
     try:
         proc, reused = _spawn_hermes_update(mutation.idempotency_key)
+    except _ActionConflict as exc:
+        _audit_service_mutation(
+            request,
+            action="hermes-update",
+            target="installation",
+            result="conflict",
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         _log.exception("Failed to spawn hermes update")
         _audit_service_mutation(

@@ -1,8 +1,8 @@
 """Tests for the memory/skill write-approval gate (tools/write_approval.py)
 and the shared slash-command handlers (hermes_cli/write_approval_commands.py).
 
-Covers the boolean write_approval gate (off by default = write freely; on =
-require approval) for both subsystems, the foreground-vs-background staging
+Covers the boolean write_approval gate (memory off by default; skills on by
+default after #70128) for both subsystems, the foreground-vs-background staging
 split, pending store CRUD, and the list/approve/reject/diff/approval
 subcommand dispatch.
 """
@@ -36,11 +36,13 @@ def _set_approval(subsystem, enabled):
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def test_default_gate_is_off(hermes_home):
+def test_default_gates(hermes_home):
     from tools import write_approval as wa
-    # Default: gate off → writes flow freely.
+    # Memory still defaults to gate-off (pre-existing behaviour).
     assert wa.write_approval_enabled("memory") is False
-    assert wa.write_approval_enabled("skills") is False
+    # Skills default on so unattended background skill review stages writes
+    # for approval instead of rewriting SKILL.md on a stock install (#70128).
+    assert wa.write_approval_enabled("skills") is True
 
 
 def test_invalid_subsystem_is_off(hermes_home):

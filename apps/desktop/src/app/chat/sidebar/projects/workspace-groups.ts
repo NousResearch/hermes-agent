@@ -497,6 +497,10 @@ export function overlayRepoLanes(
 ): SidebarWorkspaceTree {
   const repoRootKey = pathKey(repo.path)
   let changed = false
+  // Lanes that arrived with no rows are not eviction casualties — they're real
+  // structure (a `git worktree list` lane, or one whose sessions are pinned
+  // away). The prune below is only allowed to drop lanes IT emptied.
+  const emptyOnInput = new Set(repo.groups.filter(g => !g.sessions.length).map(g => g.id))
 
   // Snapshot lanes minus anything the user just deleted/archived.
   const lanes = repo.groups.map(g => {
@@ -577,7 +581,7 @@ export function overlayRepoLanes(
 
   // Drop lanes emptied by eviction (the server only emits non-empty lanes; the
   // git-worktree enhancer re-adds any still-real worktree as an empty lane).
-  const groups = sortWorktreeGroups(lanes.filter(g => g.sessions.length > 0))
+  const groups = sortWorktreeGroups(lanes.filter(g => g.sessions.length > 0 || emptyOnInput.has(g.id)))
 
   return { ...repo, groups, sessionCount: groups.reduce((n, g) => n + g.sessions.length, 0) }
 }
@@ -607,6 +611,65 @@ function overlayHomeLane(
     ...project,
     repos: [{ id: NO_PROJECT_ID, label: project.label, path: null, groups: [nextLane], sessionCount: sessions.length }],
     sessionCount: sessions.length
+  }
+}
+
+/**
+ * Drop matching sessions from every lane (and the overview preview) of a
+ * project subtree, recounting as lanes shrink. Used to keep pinned sessions out
+ * of the project lists: a pin belongs to the Pinned section, not to both. The
+ * predicate — rather than an id set — lets the caller match a pin on its
+ * durable lineage-root id as well as the live one.
+ *
+ * Lanes SURVIVE being emptied. A worktree is structure (it exists on disk, you
+ * can still start work in it); pinning its last chat must not delete the branch
+ * from the tree — same reason the `git worktree list` enhancer injects lanes
+ * that never had a session. Only the rows move. Memo-stable: returns the same
+ * ref when nothing matched.
+ */
+export function excludeProjectSessions(
+  project: SidebarProjectTree,
+  isExcluded: (session: SessionInfo) => boolean
+): SidebarProjectTree {
+  let changed = false
+
+  const repos = project.repos.map(repo => {
+    let repoChanged = false
+
+    const groups = repo.groups.map(group => {
+      const sessions = group.sessions.filter(session => !isExcluded(session))
+
+      if (sessions.length === group.sessions.length) {
+        return group
+      }
+
+      repoChanged = true
+
+      return { ...group, sessions }
+    })
+
+    if (!repoChanged) {
+      return repo
+    }
+
+    changed = true
+
+    return { ...repo, groups, sessionCount: groups.reduce((n, group) => n + group.sessions.length, 0) }
+  })
+
+  const previewSessions = project.previewSessions?.filter(session => !isExcluded(session))
+
+  changed ||= previewSessions?.length !== project.previewSessions?.length
+
+  if (!changed) {
+    return project
+  }
+
+  return {
+    ...project,
+    previewSessions,
+    repos,
+    sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0)
   }
 }
 

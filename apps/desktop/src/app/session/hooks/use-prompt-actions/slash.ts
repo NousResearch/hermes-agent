@@ -124,7 +124,7 @@ interface SlashCommandDeps {
     text: string,
     storedSessionId?: string | null
   ) => void
-  branchCurrentSession: () => Promise<boolean>
+  branchCurrentSession: (messageId?: string, targetSessionId?: string) => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
@@ -475,8 +475,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         new: async () => {
           startFreshSessionDraft()
         },
-        branch: async () => {
-          await branchCurrentSession()
+        branch: async ({ sessionHint }) => {
+          await branchCurrentSession(undefined, sessionHint)
         },
         // /compress (alias /compact) runs the gateway's dedicated
         // session.compress RPC — the TUI's path

@@ -1708,6 +1708,9 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     mi_config = tts_config.get("mistral") or {}
     model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
     voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
+    # Class-level base_url parity: every cloud TTS provider section supports
+    # base_url. The Mistral SDK calls it server_url.
+    base_url = mi_config.get("base_url")
 
     if output_path.endswith(".ogg"):
         response_format = "opus"
@@ -1719,8 +1722,11 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
         response_format = "mp3"
 
     Mistral = _import_mistral_client()
+    client_kwargs: Dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        client_kwargs["server_url"] = base_url
     try:
-        with Mistral(api_key=api_key) as client:
+        with Mistral(**client_kwargs) as client:
             response = client.audio.speech.complete(
                 model=model,
                 input=text,

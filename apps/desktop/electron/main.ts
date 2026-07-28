@@ -4927,6 +4927,45 @@ function closePreviewWatchers() {
   }
 }
 
+/** Watch a DIRECTORY for entry churn (folders appearing/vanishing) — the
+ *  disk-plugin door's "new plugin folder" signal, replacing the renderer's 5s
+ *  readdir poll. Same registry + change channel as the preview file watchers
+ *  (the renderer reconciles on any tick; per-file edits stay on their own
+ *  watches), so stopPreviewFileWatch/closePreviewWatchers manage these too. */
+function watchDirectory(rawDir) {
+  const watchDir = path.resolve(String(rawDir || ''))
+
+  if (!fs.existsSync(watchDir) || !fs.statSync(watchDir).isDirectory()) {
+    throw new Error(`Not a directory: ${watchDir}`)
+  }
+
+  const id = crypto.randomBytes(12).toString('base64url')
+  let timer = null
+
+  const watcher = fs.watch(watchDir, () => {
+    if (timer) {
+      clearTimeout(timer)
+    }
+
+    timer = setTimeout(() => {
+      timer = null
+      sendPreviewFileChanged({ id, path: watchDir, url: pathToFileURL(watchDir).toString() })
+    }, PREVIEW_WATCH_DEBOUNCE_MS)
+  })
+
+  previewWatchers.set(id, {
+    close: () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      watcher.close()
+    }
+  })
+
+  return { id, path: watchDir }
+}
+
 // Best-effort read of a gateway's advertised auth providers, cached per base
 // URL for the life of the process. Used by the oauth pre-flight guard to tell
 // a password-provider gateway (which cannot satisfy the bearer/cookie checks
@@ -10272,6 +10311,8 @@ ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
 )
 
 ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(String(url || '')))
+
+ipcMain.handle('hermes:watchDirectory', (_event, dir) => watchDirectory(String(dir || '')))
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 

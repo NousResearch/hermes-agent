@@ -2482,3 +2482,63 @@ class TestTranscribeCredentialReadGuard:
         # The error is the shared read-guard message, not an audio-validation
         # or provider error — proving the guard fired before dispatch.
         assert result["error"] == expected
+
+
+class TestRunCommandSttIdleTimeout:
+    """_run_command_stt uses a progress-based idle timeout (mirrors TTS runner)."""
+
+    @staticmethod
+    def _shell_command(*args):
+        import shlex
+        if os.name == "nt":
+            return subprocess.list2cmdline(list(args))
+        return " ".join(shlex.quote(str(arg)) for arg in args)
+
+    def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
+        """A slow-but-alive command that keeps emitting output survives an
+        idle timeout shorter than its total runtime."""
+        from tools.transcription_tools import _run_command_stt
+
+        script = tmp_path / "progress_then_exit.py"
+        script.write_text(
+            "\n".join([
+                "import sys, time",
+                "for idx in range(4):",
+                "    print(f'tick {idx}', file=sys.stderr, flush=True)",
+                "    time.sleep(0.15)",
+                "print('done', flush=True)",
+            ]),
+            encoding="utf-8",
+        )
+
+        result = _run_command_stt(
+            self._shell_command(sys.executable, "-u", str(script)),
+            timeout=0.25,
+        )
+
+        assert result.returncode == 0
+        assert "tick 3" in result.stderr
+        assert "done" in result.stdout
+
+    def test_silent_stall_still_times_out(self, tmp_path):
+        """A silently stalled command is killed once the idle window elapses,
+        and pre-stall output is preserved on the TimeoutExpired."""
+        from tools.transcription_tools import _run_command_stt
+
+        script = tmp_path / "progress_then_hang.py"
+        script.write_text(
+            "\n".join([
+                "import sys, time",
+                "print('starting pass 1', file=sys.stderr, flush=True)",
+                "time.sleep(1.0)",
+            ]),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            _run_command_stt(
+                self._shell_command(sys.executable, "-u", str(script)),
+                timeout=0.2,
+            )
+
+        assert "starting pass 1" in (excinfo.value.stderr or "")

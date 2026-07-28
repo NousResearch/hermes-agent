@@ -23,6 +23,7 @@ unchanged.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 import urllib.request
@@ -123,6 +124,27 @@ def _get_proxy_from_env() -> Optional[str]:
     return None
 
 
+def _no_proxy_cidr_bypasses(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+
+    for key in ("NO_PROXY", "no_proxy"):
+        for entry in os.environ.get(key, "").split(","):
+            entry = entry.strip()
+            if "/" not in entry:
+                continue
+            if entry.startswith("[") and "]" in entry:
+                entry = entry.replace("[", "", 1).replace("]", "", 1)
+            try:
+                if address in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     """Return an env-configured proxy unless NO_PROXY excludes this base URL."""
     proxy = _get_proxy_from_env()
@@ -134,7 +156,7 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
         return proxy
 
     try:
-        if urllib.request.proxy_bypass_environment(host):
+        if _no_proxy_cidr_bypasses(host) or urllib.request.proxy_bypass_environment(host):
             return None
     except Exception:
         pass

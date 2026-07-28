@@ -178,6 +178,7 @@ def test_get_proxy_for_base_url_returns_none_when_host_bypassed(monkeypatch):
     # Local endpoint — must bypass the proxy.
     assert _get_proxy_for_base_url("http://127.0.0.1:11434/v1") is None
     assert _get_proxy_for_base_url("http://localhost:1234/v1") is None
+    assert _get_proxy_for_base_url("http://192.168.12.34:11434/v1") is None
 
     # Non-local endpoint — proxy still applies.
     assert _get_proxy_for_base_url("https://api.openai.com/v1") == "http://127.0.0.1:7897"

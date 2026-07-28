@@ -159,6 +159,27 @@ command -v hermes-acp || command -v hermes
 运行 `hermes update` 会为较旧的安装补上 `hermes-acp` 启动器。作为手动兜底方案，
 可以将 Buzz 的 agent 命令配置为 `hermes`，参数为 `["acp"]`。
 
+#### 将 Buzz agent 保持为 owner-only
+
+Buzz 创建的每个 agent 默认都将 **Who can talk to this agent** 设为 `Owner only`。
+当运行时为 Hermes 时，请保持该设置。
+
+这条路径上有两种行为叠加。`hermes-acp` 工具集包含 `terminal` 和 `execute_code`，
+而 Buzz 的 ACP 桥接层会自行以 `allow_once` 回应 Hermes 的权限请求，不会转交给你确认。
+因此 Buzz 中的 Hermes agent 会在不提示的情况下在宿主机上执行 shell 命令。
+让它对一个临时目录执行 `rm -rf`，该目录会被直接删除，全程没有任何提示。
+
+将该设置改为 `Anyone`，等于把同样的 shell 访问权限交给频道中的每一位发言者。
+Buzz 在你选择该选项时不会给出任何警告。
+
+目前两种看起来可行的缓解手段都无效：
+
+- `approvals.mode: manual` 确实会让 Hermes 发出权限请求，但 Buzz 仍会自动批准，
+  命令照样执行。
+- `platform_toolsets.acp` 不会收窄 ACP 工具集，因此无法用它去掉 `terminal`。
+
+来自 owner 的 `!shutdown` 在任何模式下都能停止 agent，而 Buzz 会忽略其他人发出的同一命令。
+
 ## 配置与凭据
 
 ACP 模式使用与 CLI 相同的 Hermes 配置：
@@ -195,6 +216,10 @@ ACP 会话将编辑器的 cwd 绑定到 Hermes 任务 ID，使文件和终端工
 - 允许一次
 - 始终允许
 - 拒绝
+
+你是否真的会看到提示取决于宿主端。宿主可以用程序方式直接回应该请求而不展示给你，
+此时这些选项只存在于协议层面，永远不会到达人类手中。Buzz Desktop 就是这样做的，
+因此无论你的 `approvals` 如何设置，都应把该路径视为无人值守执行。
 
 超时或出错时，审批桥接会拒绝请求。
 

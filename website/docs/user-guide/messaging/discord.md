@@ -361,6 +361,7 @@ discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
+  thread_mention_free_users: []   # User IDs allowed one-on-one mention-free threads
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
@@ -407,6 +408,29 @@ In **multi-bot threads** where users address one bot per turn, this default beco
 discord:
   require_mention: true
   thread_require_mention: true    # multi-bot setup
+```
+
+#### `discord.thread_mention_free_users`
+
+**Type:** string or list — **Default:** `[]`
+
+Limits the bot-participated thread shortcut to selected users. The first
+configured user to start or continue a thread owns its mention-free phase. Even
+when several IDs are configured, each thread has only one mention-free human
+owner. When any other human posts in that thread, Hermes persistently records
+the thread as shared and requires an explicit `@mention` from everyone from
+then on. Bot-authored messages do not make a thread shared.
+
+This policy is based on observed messages, not Discord's public-thread member
+list. Merely viewing or joining a public thread does not change its mode; the
+first message from another human does, and that first unmentioned message is
+ignored.
+
+```yaml
+discord:
+  require_mention: true
+  thread_mention_free_users:
+    - "284102345871466496"
 ```
 
 #### `discord.free_response_channels`

@@ -2,6 +2,7 @@ import { Tooltip as TooltipPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { useI18n } from '@/i18n'
+import { type InputModality, lastInputModality } from '@/lib/input-modality'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 
@@ -47,17 +48,25 @@ function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root
 // covers clicks on the trigger itself). Menus and dialogs return focus to
 // their trigger when they close, so "open the model menu, pick a model" left
 // the trigger's tip stuck open over the fresh selection. Gate focus-opens to
-// KEYBOARD focus (:focus-visible): Chromium keeps modality, so a mouse pick's
-// focus restore is suppressed while Tab-focus still shows the tip for a11y.
-// preventDefault doesn't cancel the focus itself — Radix's composed handler
-// just skips its onOpen when the event is defaultPrevented.
-export function suppressNonKeyboardFocusOpen(event: React.FocusEvent<HTMLElement>): void {
-  let keyboardFocus = true
+// KEYBOARD focus so a mouse pick's focus restore is suppressed while Tab-focus
+// still shows the tip for a11y. preventDefault doesn't cancel the focus itself
+// — Radix's composed handler just skips its onOpen when defaultPrevented.
+//
+// `:focus-visible` ALONE is not that gate. Radix menus autofocus their content
+// and keyboard-navigate their items, so Chromium is in keyboard modality by the
+// time a mouse pick restores focus and matches `:focus-visible` — the model
+// pill's tip reopened over every selection. Qualify it with the device behind
+// the last real interaction, which a mouse pick reports as `pointer`.
+export function suppressNonKeyboardFocusOpen(
+  event: React.FocusEvent<HTMLElement>,
+  modality: InputModality = lastInputModality()
+): void {
+  let keyboardFocus = modality === 'keyboard'
 
   try {
-    keyboardFocus = event.currentTarget.matches(':focus-visible')
+    keyboardFocus &&= event.currentTarget.matches(':focus-visible')
   } catch {
-    // Selector unsupported (older jsdom) — keep Radix's default focus-open.
+    // Selector unsupported (older jsdom) — fall back to the modality alone.
   }
 
   if (!keyboardFocus) {

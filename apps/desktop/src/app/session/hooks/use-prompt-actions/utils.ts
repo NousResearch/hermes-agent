@@ -168,7 +168,7 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
 }
 
 // The readFileDataUrl IPC base64-loads the whole file into memory and is
-// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.ts, which
+// hard-capped in the main process (default 16 MB; Settings → Chat), which
 // rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
 // remote mode every attachment's bytes go through that read, so a big file
 // surfaces that internal message verbatim in the failure toast. Translate it
@@ -393,6 +393,11 @@ export interface SubmitTextOptions {
    *  (queue drain, steer, external submit requests): the check is a no-op
    *  without it. */
   composerScope?: string | null
+  /** What the transcript shows for this send, when it differs from the text
+   *  the agent receives. A `/skill` invocation expands into the whole skill
+   *  body — model-facing scaffolding the UI must never render — so the slash
+   *  dispatcher passes the invocation (`/work fix the leak`) here. */
+  displayText?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

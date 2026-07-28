@@ -1714,6 +1714,155 @@ def test_history_to_messages_hides_gateway_system_markers():
     ]
 
 
+def test_history_to_messages_drops_display_hidden_scaffolding():
+    # A mid-stream steer persists an interrupted-turn checkpoint. When nothing
+    # reached the screen the row carries only model-facing scaffolding and is
+    # marked display_kind="hidden"; the scaffolded bytes live in the server-only
+    # api_content sidecar for provider replay. This projection -- the single
+    # display source every client reads -- must drop the row by its declared
+    # display_kind, not just the "[System:" string convention, or the raw
+    # "[This response was interrupted by a user correction.]" paints as an
+    # assistant bubble (and api_content must never ship to a client).
+    history = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "[This response was interrupted by a user correction.]",
+            "api_content": "[This response was interrupted by a user correction.]",
+            "display_kind": "hidden",
+        },
+        {"role": "user", "content": "i love you"},
+        {
+            "role": "assistant",
+            "content": "Love you too",
+            "api_content": (
+                "[This response was interrupted by a user correction.]\n\n"
+                "Visible response before the interruption:\n\nLove you too"
+            ),
+        },
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [
+        {"role": "user", "text": "go"},
+        {"role": "user", "text": "i love you"},
+        {"role": "assistant", "text": "Love you too"},
+    ]
+    # Server-only sidecar never crosses the wire.
+    assert all("api_content" not in m for m in projected)
+
+
+def test_history_to_messages_projects_a_skill_turn_to_its_invocation():
+    # A /skill invocation is persisted EXPANDED: the activation note plus the
+    # entire skill body. That payload is model-facing scaffolding -- this
+    # projection is the single display source every client reads, so it must
+    # hand back the invocation the user typed and never the body. Without it a
+    # chat bubble renders the whole skill as if the user had written it.
+    scaffolded = (
+        '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+        "want you to follow its instructions. The full skill content is "
+        "loaded below.]\n\n"
+        "# /work\n\nSPIN UP A WORKTREE, never the primary checkout.\n\n"
+        "The user has provided the following instruction alongside the skill "
+        "invocation: fix the title leak"
+    )
+
+    history = [
+        {"role": "user", "content": scaffolded},
+        {"role": "assistant", "content": "on it"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {
+            "role": "user",
+            "text": "/work fix the title leak",
+            "display_kind": "skill_invocation",
+        },
+        {"role": "assistant", "text": "on it"},
+    ]
+
+
+def test_history_to_messages_projects_a_bare_skill_turn_to_the_command():
+    scaffolded = (
+        '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+        "want you to follow its instructions. The full skill content is "
+        "loaded below.]\n\n# /work\n\nSPIN UP A WORKTREE."
+    )
+
+    assert server._history_to_messages([{"role": "user", "content": scaffolded}]) == [
+        {"role": "user", "text": "/work", "display_kind": "skill_invocation"}
+    ]
+
+
+def test_expand_skill_invocation_for_replay_round_trips_the_projection(
+    tmp_path, monkeypatch
+):
+    # Rewind/regenerate replays a turn from what the transcript SHOWS, and a
+    # skill turn shows its invocation. Re-running that verbatim would send the
+    # agent the literal "/work fix it" instead of the skill, so the server
+    # re-expands it — the exact inverse of _skill_scaffold_projection, with the
+    # body never leaving the server.
+    import agent.skill_commands as skill_commands
+    import agent.skill_utils as skill_utils
+    import tools.skills_tool as skills_tool
+
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "worktree-kickoff").mkdir(parents=True)
+    (skills_dir / "worktree-kickoff" / "SKILL.md").write_text(
+        "---\nname: worktree-kickoff\ndescription: Spin up a worktree\n---\n\n"
+        "# kickoff\n\nSPIN UP A WORKTREE, never the primary checkout.\n"
+    )
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    skill_commands.scan_skill_commands()
+
+    expanded = server._expand_skill_invocation_for_replay(
+        "/worktree-kickoff fix it", "task-1"
+    )
+
+    assert "SPIN UP A WORKTREE" in expanded
+    assert server._skill_scaffold_projection(expanded) == "/worktree-kickoff fix it"
+
+
+def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypatch):
+    import agent.skill_commands as skill_commands
+    import agent.skill_utils as skill_utils
+
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+
+    assert server._expand_skill_invocation_for_replay("just words", "t") == "just words"
+    # A core slash command is not a skill — nothing to expand.
+    assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
+
+
+def test_history_to_messages_types_a_legacy_auto_continue_row():
+    # A crash-interrupted turn used to be typed only AFTER it finished, so a
+    # turn killed a second time (or any row written before turn-start typing
+    # landed) sits in the DB untyped and painted the raw recovery note as a
+    # user bubble. The projection recognizes the synthetic note's fixed
+    # prefix so those rows still read as a timeline event.
+    history = [
+        {"role": "user", "content": "keep going"},
+        {"role": "user", "content": server._auto_continue_note("keep going")},
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [
+        {"role": "user", "text": "keep going"},
+        {
+            "role": "user",
+            "text": server._auto_continue_note("keep going"),
+            "display_kind": "auto_continue",
+        },
+    ]
+
+
 def test_history_to_messages_keeps_real_user_bracket_text():
     # Only role=user rows whose text OPENS with the [System: marker sentinel are
     # bookkeeping notices. A genuine user turn that merely mentions the token is
@@ -7435,6 +7584,54 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert calls["args"][2] == "src/app.tsx"
 
 
+def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
+    """rollback.restore must truncate from the last *real* user turn,
+    not a display_kind timeline marker (same bug class as /undo).
+    """
+    from pathlib import Path as _Path
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "abc123"}]
+
+        def restore(self, cwd, target, file_path=None):
+            return {"success": True, "message": "restored"}
+
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {
+            "role": "user",
+            "content": "background agent finished",
+            "display_kind": "async_delegation_complete",
+        },
+    ]
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
+        history=list(history),
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "rollback.restore",
+                "params": {"session_id": "sid", "hash": "abc123"},
+            }
+        )
+
+        assert resp["result"]["success"] is True
+        assert resp["result"]["history_removed"] == 3  # q2 + a2 + marker
+        # Only first exchange remains
+        remaining = server._sessions["sid"]["history"]
+        assert [m["content"] for m in remaining] == ["first question", "first answer"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ── session.steer ────────────────────────────────────────────────────
 
 
@@ -7968,6 +8165,105 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         ]
         assert server._sessions["sid"]["history_version"] == 2
         assert stub_db.replaced == [("session-key", original_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+# ---------------------------------------------------------------------------
+# session.interrupt must only cancel pending prompts owned by the calling
+# session — it must not blast-resolve clarify/sudo/secret prompts on
+# unrelated sessions sharing the same tui_gateway process.  Without
+# session scoping the other sessions' prompts silently resolve to empty
+# strings, unblocking their agent threads as if the user cancelled.
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
+    """truncate_before_user_ordinal must count only real user turns.
+
+    display_kind timeline rows (model_switch, async_delegation_complete, …)
+    are role=user but no client counts them as user turns. Without the
+    filter, a trailing marker shifts the ordinal so the wrong message is
+    targeted for truncation.
+    """
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    original_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+        {
+            "role": "user",
+            "content": "background agent finished",
+            "display_kind": "async_delegation_complete",
+        },
+    ]
+    server._sessions["sid"] = _session(agent=_Agent(), history=original_history)
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        # ordinal=1 means "truncate before the 2nd-from-last real user turn"
+        # which is "first". The display_kind marker must NOT shift the ordinal.
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited first",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        # With display_kind filter: user_indices = [0, 2] (indices of "first" and "second").
+        # ordinal=1 → user_indices[1] = 2, truncated = history[:2] = [first, first reply].
+        # Without the filter: user_indices = [0, 2, 4] (includes the marker),
+        # ordinal=1 → user_indices[1] = 2, same result by luck — but ordinal=0
+        # would truncate to history[:0] vs history[:0], and higher ordinals shift.
+        assert seen["history"] == original_history[:2], (
+            f"Expected truncation to first 2 messages, got {seen['history']}"
+        )
+        assert stub_db.replaced == [("session-key", original_history[:2])], (
+            f"Expected DB replace with first 2 messages, got {stub_db.replaced}"
+        )
     finally:
         server._sessions.pop("sid", None)
 

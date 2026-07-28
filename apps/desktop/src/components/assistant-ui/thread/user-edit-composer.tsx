@@ -30,6 +30,7 @@ import {
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from '@/app/chat/composer/inline-refs'
+import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
   composerPlainText,
   insertComposerContentsAtCaret,
@@ -543,7 +544,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     recordUndoPoint()
 
     // Links land as `@url:` chips, same as the main composer.
-    insertComposerContentsAtCaret(event.currentTarget, linkifyUrls(pastedText))
+    insertComposerContentsAtCaret(event.currentTarget, pathifyRefs(linkifyUrls(pastedText)))
     syncDraftFromEditor(event.currentTarget)
   }
 
@@ -678,6 +679,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     // A typed link finished with a space chips like a pasted one.
     if (withUndoPoint(() => chipTypedUrlOnSpace(event))) {
+      event.preventDefault()
+      rememberInitialDraft()
+      syncDraftFromEditor(event.currentTarget)
+
+      return
+    }
+
+    // Same for a bare `@path`.
+    if (withUndoPoint(() => chipTypedPathOnSpace(event))) {
       event.preventDefault()
       rememberInitialDraft()
       syncDraftFromEditor(event.currentTarget)

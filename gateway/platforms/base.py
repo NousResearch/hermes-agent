@@ -6073,6 +6073,12 @@ class BasePlatformAdapter(ABC):
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._session_tasks.clear()
+        # Flush pending messages to disk before clearing (#72680).
+        try:
+            from gateway.shutdown_flush import flush_pending_to_file
+            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+        except Exception:
+            pass
         self._pending_messages.clear()
         self._active_sessions.clear()
         for state in list(self._text_debounce_store().values()):

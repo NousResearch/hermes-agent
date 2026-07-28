@@ -1592,6 +1592,8 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
         "type": "send",
         "message": fake_msg,
         "notice": "⚡ Loading bundle: analysis-pack (2 skills)",
+        # UIs render this invocation; `message` stays model-facing scaffolding.
+        "display": "/analysis-pack",
     }
     assert worker.calls == []
 
@@ -1906,6 +1908,45 @@ def test_command_dispatch_retry_finds_last_user_message(server):
     assert server._sessions[sid]["history_version"] == 1
 
 
+def test_command_dispatch_retry_skips_display_kind_timeline_rows(server):
+    """/retry must resend the last real user turn, not a display_kind marker."""
+    sid = "test-session-retry-timeline"
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {
+            "role": "user",
+            "content": "background agent work finished",
+            "display_kind": "async_delegation_complete",
+        },
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r4b",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "second question"
+    # Truncated through the real last user turn (and the trailing marker).
+    assert [m["content"] for m in server._sessions[sid]["history"]] == [
+        "first question",
+        "first answer",
+    ]
+
+
 def test_command_dispatch_retry_empty_history(server):
     """command.dispatch /retry with empty history returns error."""
     sid = "test-session"
@@ -2018,6 +2059,8 @@ def test_command_dispatch_returns_custom_bundle_payload(server):
         "type": "send",
         "message": fake_msg,
         "notice": "⚡ Loading bundle: review-suite (3 skills)",
+        # UIs render this invocation; `message` stays model-facing scaffolding.
+        "display": "/review-suite",
     }
     build_bundle.assert_called_once_with(
         "/review-suite",

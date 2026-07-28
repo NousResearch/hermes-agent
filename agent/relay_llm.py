@@ -344,6 +344,11 @@ class ManagedLlmStream(Iterator[Any]):
         self.output_modified = False
         callback_context = contextvars.copy_context()
 
+        def run_callback(callback: Callable[..., Any], *args: Any) -> Any:
+            # Relay can invoke stream surfaces while another callback still
+            # owns the captured Context. A fresh copy is safe to enter.
+            return callback_context.copy().run(callback, *args)
+
         runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
         if (
             runtime is None
@@ -378,7 +383,7 @@ class ManagedLlmStream(Iterator[Any]):
         async def provider_stream(next_request: Any):
             raw_stream = None
             try:
-                raw_stream = callback_context.run(
+                raw_stream = run_callback(
                     stream_factory,
                     _provider_request(
                         request,
@@ -390,7 +395,7 @@ class ManagedLlmStream(Iterator[Any]):
                 )
                 if (
                     completed_response_predicate is not None
-                    and callback_context.run(
+                    and run_callback(
                         completed_response_predicate,
                         raw_stream,
                     )
@@ -399,14 +404,14 @@ class ManagedLlmStream(Iterator[Any]):
                     self._provider_completed = True
                     return
                 if on_stream_created is not None:
-                    callback_context.run(on_stream_created, raw_stream)
-                raw_iterator = callback_context.run(iter, raw_stream)
+                    run_callback(on_stream_created, raw_stream)
+                raw_iterator = run_callback(iter, raw_stream)
                 while True:
                     try:
-                        chunk = callback_context.run(next, raw_iterator)
+                        chunk = run_callback(next, raw_iterator)
                     except StopIteration:
                         break
-                    if self._accept_chunk is not None and not callback_context.run(
+                    if self._accept_chunk is not None and not run_callback(
                         self._accept_chunk,
                         chunk,
                     ):
@@ -421,17 +426,17 @@ class ManagedLlmStream(Iterator[Any]):
             finally:
                 close = getattr(raw_stream, "close", None)
                 if callable(close):
-                    callback_context.run(close)
+                    run_callback(close)
 
         def observe_chunk(chunk: Any) -> None:
             if self._on_chunk is not None:
-                callback_context.run(self._on_chunk, _jsonable(chunk))
+                run_callback(self._on_chunk, _jsonable(chunk))
 
         def relay_finalizer() -> Any:
             try:
                 if self.final_response is not None:
                     return _jsonable(self.final_response)
-                return _jsonable(callback_context.run(finalizer))
+                return _jsonable(run_callback(finalizer))
             except BaseException as exc:
                 self._callback_error = exc
                 raise

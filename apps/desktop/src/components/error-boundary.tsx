@@ -23,11 +23,11 @@ interface ErrorBoundaryState {
 // Some assistant-ui lookup races escape the message-local boundary and reach
 // the root. Retry only that exact transient error class, never arbitrary render
 // failures, and cap retries so a persistent failure still exposes the fallback.
-const TAP_CLIENT_LOOKUP_ERROR = /^tapClientLookup: Index \d+\s+out of bounds \(length:\s*\d+\)$/i
+const ASSISTANT_UI_LOOKUP_ERROR = /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/i
 const MAX_AUTO_RECOVERIES = 3
 const AUTO_RECOVERY_WINDOW_MS = 5_000
 
-const isTransientTapClientLookupError = (error: Error): boolean => TAP_CLIENT_LOOKUP_ERROR.test(error.message)
+const isTransientAssistantUiLookupError = (error: Error): boolean => ASSISTANT_UI_LOOKUP_ERROR.test(error.message)
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null }
@@ -44,8 +44,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     console.error(tag, error, info.componentStack)
     this.props.onError?.(error, info)
 
-    if (this.props.label === 'root' && isTransientTapClientLookupError(error) && this.takeAutoRecoveryAttempt()) {
-      console.warn(`${tag} auto-recovering from tapClientLookup render race`, error.message)
+    if (this.props.label === 'root' && isTransientAssistantUiLookupError(error) && this.takeAutoRecoveryAttempt()) {
+      console.warn(`${tag} auto-recovering from assistant-ui lookup render race`, error.message)
       this.scheduleAutoRecovery()
     }
   }

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ErrorBoundary } from './error-boundary'
 
-const TAP_LOOKUP_ERROR = new Error('tapClientLookup: Index 6 out of bounds (length: 2)')
+const CURRENT_LOOKUP_ERROR = new Error('useClientLookup: Index 6 out of bounds (length: 2)')
 const RELOAD_WINDOW = { name: 'Reload window', role: 'button' } as const
 
 function makeBomb(box: { error: Error | null }) {
@@ -17,9 +17,9 @@ function makeBomb(box: { error: Error | null }) {
 }
 
 const recoveryWarningCount = (calls: unknown[][]) =>
-  calls.filter(call => call.some(value => String(value).includes('auto-recovering from tapClientLookup'))).length
+  calls.filter(call => call.some(value => String(value).includes('auto-recovering from assistant-ui lookup'))).length
 
-describe('ErrorBoundary tapClientLookup recovery', () => {
+describe('ErrorBoundary assistant-ui lookup recovery', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -31,9 +31,13 @@ describe('ErrorBoundary tapClientLookup recovery', () => {
     vi.restoreAllMocks()
   })
 
-  it('recovers the root boundary after a transient lookup race clears', () => {
+  it.each([
+    ['the current useClientLookup error', CURRENT_LOOKUP_ERROR],
+    ['the legacy tapClientLookup error', new Error('tapClientLookup: Index 6 out of bounds (length: 2)')],
+    ['the legacy tapClientResource error', new Error('tapClientResource: Index 6 out of bounds (length: 2)')]
+  ])('recovers the root boundary after %s clears', (_label, error) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const box: { error: Error | null } = { error: TAP_LOOKUP_ERROR }
+    const box: { error: Error | null } = { error }
     const Bomb = makeBomb(box)
 
     render(
@@ -52,7 +56,7 @@ describe('ErrorBoundary tapClientLookup recovery', () => {
 
   it('stops retrying a persistent lookup error after the recovery budget is exhausted', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const box: { error: Error | null } = { error: TAP_LOOKUP_ERROR }
+    const box: { error: Error | null } = { error: CURRENT_LOOKUP_ERROR }
     const Bomb = makeBomb(box)
 
     render(
@@ -72,7 +76,7 @@ describe('ErrorBoundary tapClientLookup recovery', () => {
 
   it('does not auto-recover the same error in a scoped boundary', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const Bomb = makeBomb({ error: TAP_LOOKUP_ERROR })
+    const Bomb = makeBomb({ error: CURRENT_LOOKUP_ERROR })
 
     render(
       <ErrorBoundary fallback={() => <div>scoped fallback</div>} label="thread">
@@ -87,7 +91,7 @@ describe('ErrorBoundary tapClientLookup recovery', () => {
   })
 
   it.each([
-    ['a renamed lookup error', new Error('useClientLookup: Index 6 out of bounds (length: 2)')],
+    ['a non-bounds lookup error', new Error('useClientLookup: Key "missing" not found')],
     ['an unrelated render error', new Error('some unrelated application error')]
   ])('does not auto-recover %s at root', (_label, error) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

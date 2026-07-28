@@ -1068,6 +1068,68 @@ def _resolve_redirect_uri(cfg: dict, port: int) -> str:
     return f"http://{host}:{port}/callback"
 
 
+# Figma's remote MCP (https://mcp.figma.com/mcp) implement RFC 7591 DCR as a
+# *name allowlist*, not open registration. POST /v1/oauth/mcp/register returns
+# 403 Forbidden for any client_name outside a short fixed set. Empirically (as
+# of 2026-07, verified by live call against api.figma.com):
+#   "Claude Code" → 200
+#   "Codex"       → 200
+#   "Hermes Agent" / "Hermes" / "Cursor" / "VS Code" / … → 403
+# pi-figma-remote-auth and similar tools work around this the same way — register
+# under an allowlisted name so the browser flow can start. User can still pin a
+# different name via oauth.client_name if Figma ever admits one.
+_FIGMA_DCR_CLIENT_NAME = "Claude Code"
+_FIGMA_DEFAULT_SCOPE = "mcp:connect"
+
+
+def _is_figma_remote_mcp(
+    server_name: str | None = None,
+    server_url: str | None = None,
+) -> bool:
+    """True when this MCP server is Figma's hosted remote endpoint."""
+    url = (server_url or "").lower()
+    name = (server_name or "").lower()
+    if "mcp.figma.com" in url or "figma.com/mcp" in url:
+        return True
+    # Name-only match only when the URL isn't some other host called figma-*.
+    if "figma" in name and (not url or "figma" in url):
+        return True
+    return False
+
+
+def apply_oauth_provider_defaults(
+    cfg: dict,
+    *,
+    server_name: str = "",
+    server_url: str | None = None,
+) -> dict:
+    """Mutate *cfg* with provider-specific OAuth workarounds. Returns *cfg*.
+
+    Call this before :func:`_build_client_metadata` /
+    :func:`_maybe_preregister_client`. Only fills keys the user left unset —
+    an explicit ``oauth.client_name`` / ``oauth.scope`` always wins.
+    """
+    if _is_figma_remote_mcp(server_name, server_url):
+        if not cfg.get("client_name"):
+            cfg["client_name"] = _FIGMA_DCR_CLIENT_NAME
+            logger.info(
+                "MCP OAuth '%s': Figma DCR allowlist — registering as "
+                "client_name=%r (override via oauth.client_name)",
+                server_name or server_url,
+                _FIGMA_DCR_CLIENT_NAME,
+            )
+        if not cfg.get("scope"):
+            cfg["scope"] = _FIGMA_DEFAULT_SCOPE
+        # Figma's register response advertises token_endpoint_auth_method=none
+        # *and* returns a client_secret — then the token endpoint rejects the
+        # exchange with "Client secret is required". Request confidential-
+        # client registration so the SDK includes client_secret on the token
+        # POST (auth method client_secret_post).
+        if not cfg.get("token_endpoint_auth_method"):
+            cfg["token_endpoint_auth_method"] = "client_secret_post"
+    return cfg
+
+
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     """Build OAuthClientMetadata from the oauth config dict.
 
@@ -1083,17 +1145,21 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     scope = cfg.get("scope")
     redirect_uri = _resolve_redirect_uri(cfg, port)
 
+    # Default public client; confidential only when a secret is already known
+    # or the provider (e.g. Figma) needs confidential-style token posts.
+    auth_method = cfg.get("token_endpoint_auth_method")
+    if not auth_method:
+        auth_method = "client_secret_post" if cfg.get("client_secret") else "none"
+
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
         "redirect_uris": [AnyUrl(redirect_uri)],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "token_endpoint_auth_method": "none",
+        "token_endpoint_auth_method": auth_method,
     }
     if scope:
         metadata_kwargs["scope"] = scope
-    if cfg.get("client_secret"):
-        metadata_kwargs["token_endpoint_auth_method"] = "client_secret_post"
 
     return OAuthClientMetadata.model_validate(metadata_kwargs)
 
@@ -1129,6 +1195,56 @@ def _maybe_preregister_client(
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 
+def humanize_oauth_registration_error(
+    server_name: str,
+    exc: BaseException | str,
+    *,
+    server_url: str | None = None,
+) -> str | None:
+    """Turn a Dynamic Client Registration refusal into a useful next step.
+
+    Returns a humanized message when the error is a registration 403/Forbidden,
+    else ``None`` so the caller keeps the original exception text.
+
+    Figma's remote MCP gates DCR on exact ``client_name``. Hermes auto-sets
+    ``Claude Code`` (known-good); this message fires when the user overrode
+    that with something Figma still rejects, or an older Hermes is running.
+    """
+    msg = str(exc)
+    lowered = msg.lower()
+    if "403" not in msg and "forbidden" not in lowered:
+        return None
+    looks_like_registration = (
+        "regist" in lowered
+        or "client registration" in lowered
+        or "dcr" in lowered
+        or "dynamic client" in lowered
+        or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}
+        or ("403" in msg and "forbidden" in lowered)
+    )
+    if not looks_like_registration:
+        return None
+
+    if _is_figma_remote_mcp(server_name, server_url):
+        return (
+            f"'{server_name}' is Figma's remote MCP — DCR is allowlisted by "
+            f"exact client_name (\"{_FIGMA_DCR_CLIENT_NAME}\" and \"Codex\" "
+            "work; most other names 403). Hermes defaults to "
+            f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you "
+            "set oauth.client_name yourself, change it to one of those, or "
+            "clear it and re-run:\n"
+            f"  hermes mcp login {server_name}"
+        )
+
+    return (
+        f"'{server_name}' only allows pre-approved OAuth clients — it rejected "
+        "client registration (403), so no browser flow can start. Options: "
+        "set oauth.client_name to a name the provider allowlists, add a "
+        "pre-registered client (oauth: {client_id: ..., client_secret: ...}), "
+        "or use the provider's stdio / API-key / local server instead."
+    )
+
+
 def build_oauth_auth(
     server_name: str,
     server_url: str,
@@ -1158,6 +1274,9 @@ def build_oauth_auth(
         return None
 
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
+    apply_oauth_provider_defaults(
+        cfg, server_name=server_name, server_url=server_url
+    )
     storage = HermesTokenStorage(server_name)
 
     if not _is_interactive() and not storage.has_cached_tokens():

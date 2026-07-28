@@ -28,7 +28,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
-import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
+import { clearsEnabledToolsets, enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
@@ -183,6 +183,15 @@ export function ConfigSettings({
   }, [config, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
+    // Guard the single most destructive config edit: clearing the entire
+    // "Enabled Toolsets" list silently disables memory, terminal, web search,
+    // delegation, and most tools, and a stray select-all + Backspace can do it.
+    // Auto-save is debounced with no undo, so confirm a non-empty → empty
+    // transition before applying it. Every other edit passes through untouched.
+    if (config && clearsEnabledToolsets(config, next) && !window.confirm(c.toolsetsWipeConfirm)) {
+      return
+    }
+
     saveVersionRef.current += 1
     setConfig(next)
     setSaveVersion(saveVersionRef.current)

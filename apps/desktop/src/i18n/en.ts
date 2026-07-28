@@ -584,6 +584,8 @@ export const en: Translations = {
       autosaveFailed: 'Autosave failed',
       imported: 'Config imported',
       invalidJson: 'Invalid config JSON',
+      toolsetsWipeConfirm:
+        'Remove all enabled toolsets? This disables memory, terminal, web search, delegation, and most other tools until you re-enable them.',
       keepAwakeTitle: 'Keep computer awake',
       keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
       attachmentSizeTitle: 'Max preview / image load size',

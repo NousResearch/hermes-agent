@@ -2917,6 +2917,13 @@ class BasePlatformAdapter(ABC):
         else:
             store.pop(str(chat_id), None)
 
+    # Whether ``send_image`` consumes an HTTP(S) URL through a native
+    # fetch/upload path without ever presenting that URL as message text.
+    # Signed remote URLs may retain credential-bearing query parameters only
+    # for adapters that explicitly declare this transport-only capability.
+    # The conservative default covers this class's plaintext URL fallback.
+    supports_native_remote_images: bool = False
+
     # Whether this adapter can deliver an ASYNC notification back to the agent
     # AFTER a turn ends — i.e. wake a fresh turn to surface a background
     # process completion (terminal notify_on_complete / watch_patterns) or a
@@ -4268,6 +4275,22 @@ class BasePlatformAdapter(ABC):
         from urllib.parse import unquote as _unquote
 
         for image_url, alt_text in images:
+            delivery_image_url = image_url
+            if (
+                urlsplit(image_url).scheme.lower() in {"http", "https"}
+                and getattr(
+                    self,
+                    "supports_native_remote_images",
+                    False,
+                )
+                is not True
+            ):
+                # Base ``send_image`` is a plaintext URL fallback. Only
+                # transports that explicitly promise native remote-image
+                # handling may retain signed query credentials.
+                from agent.redact import sanitize_terminal_secret_url
+
+                delivery_image_url = sanitize_terminal_secret_url(image_url)
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
@@ -4277,24 +4300,24 @@ class BasePlatformAdapter(ABC):
                     safe_url_for_log(image_url),
                     alt_text[:30] if alt_text else "",
                 )
-                if image_url.startswith("file://"):
+                if delivery_image_url.startswith("file://"):
                     img_result = await self.send_image_file(
                         chat_id=chat_id,
-                        image_path=_unquote(image_url[7:]),
+                        image_path=_unquote(delivery_image_url[7:]),
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
-                elif self._is_animation_url(image_url):
+                elif self._is_animation_url(delivery_image_url):
                     img_result = await self.send_animation(
                         chat_id=chat_id,
-                        animation_url=image_url,
+                        animation_url=delivery_image_url,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
                 else:
                     img_result = await self.send_image(
                         chat_id=chat_id,
-                        image_url=image_url,
+                        image_url=delivery_image_url,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )

@@ -20362,10 +20362,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Send extracted images
                 for image_url, alt_text in (images or []):
                     try:
+                        from agent.redact import (
+                            sanitize_terminal_secret_text,
+                            sanitize_terminal_secret_url,
+                        )
+
+                        # Native fetch/upload adapters need the original signed
+                        # query. Adapters with a possible plaintext fallback
+                        # receive only the credential-free terminal form.
+                        if (
+                            getattr(
+                                adapter,
+                                "supports_native_remote_images",
+                                False,
+                            )
+                            is True
+                        ):
+                            delivery_image_url = image_url
+                        else:
+                            delivery_image_url = sanitize_terminal_secret_url(
+                                image_url
+                            )
                         await adapter.send_image(
                             chat_id=source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text,
+                            image_url=delivery_image_url,
+                            caption=_redact_gateway_user_facing_secrets(
+                                sanitize_terminal_secret_text(alt_text or "")
+                            ),
                             metadata=_thread_metadata,
                         )
                     except Exception:

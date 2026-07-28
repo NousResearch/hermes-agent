@@ -7024,9 +7024,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session_ids = self._session_lineage_root_to_tip(session_id)
 
         active_clause = "" if include_inactive else " AND active = 1"
-        with self._lock:
+        with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
-            rows = self._conn.execute(
+            rows = conn.execute(
                 f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
@@ -7205,9 +7205,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         output (see test_get_resume_conversations_matches_separate_reads).
         """
         session_ids = self._session_lineage_root_to_tip(session_id)
-        with self._lock:
+        with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
-            rows = self._conn.execute(
+            rows = conn.execute(
                 f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
                 f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
                 # ORDER BY id (insertion order) — see get_messages_as_conversation
@@ -7259,9 +7259,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_ids = self._session_lineage_root_to_tip(session_id)
         if len(session_ids) <= 1:
             return []
-        with self._lock:
+        with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
-            rows = self._conn.execute(
+            rows = conn.execute(
                 f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
                 f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
                 "ORDER BY id",
@@ -7298,13 +7298,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         chain = []
         current = session_id
         seen = set()
-        with self._lock:
+        with self._read_ctx() as conn:
             for _ in range(100):
                 if not current or current in seen:
                     break
                 seen.add(current)
                 chain.append(current)
-                row = self._conn.execute(
+                row = conn.execute(
                     "SELECT parent_session_id FROM sessions WHERE id = ?",
                     (current,),
                 ).fetchone()

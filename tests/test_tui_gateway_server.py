@@ -13944,9 +13944,9 @@ def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch
         "agent:\n"
         "  system_prompt: keepme\n"
     )
-    # save_config_value() resolves the config path from cli._hermes_home, which
-    # is captured at import time — patch it directly (set_hermes_home_override
-    # does NOT affect this snapshot).
+    # save_config_value() resolves the config path from get_hermes_home() (live
+    # env var), always targeting HERMES_HOME/config.yaml — point it at tmp_path.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(cli, "_hermes_home", tmp_path)
 
     result = types.SimpleNamespace(
@@ -13979,6 +13979,7 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
         "  provider: custom:mylocal\n"
         "  base_url: http://localhost:1234/v1\n"
     )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(cli, "_hermes_home", tmp_path)
 
     # Switch to a native provider with no base_url.

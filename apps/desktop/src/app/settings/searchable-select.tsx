@@ -1,10 +1,32 @@
 import { useCallback, useRef, useState } from 'react'
 
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Codicon } from '@/components/ui/codicon'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { controlVariants } from '@/components/ui/control'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
+
+/**
+ * cmdk filter score for one option. Case-insensitive substring match, with
+ * the final path segment (after the last "/") ranked above matches anywhere
+ * else so "york" ranks "America/New_York" over "America/New_York/Special".
+ * Exported for tests.
+ */
+export function rankSearchOption(option: string, search: string): number {
+  const lower = search.toLowerCase()
+  const itemLower = option.toLowerCase()
+  const slash = itemLower.lastIndexOf('/')
+
+  if (slash !== -1 && itemLower.slice(slash + 1).includes(lower)) {
+    return 2
+  }
+
+  if (itemLower.includes(lower)) {
+    return 1
+  }
+
+  return 0
+}
 
 /**
  * Searchable select for large option lists (e.g. ~590 IANA timezones).
@@ -50,6 +72,7 @@ export function SearchableSelect({
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <button
+          aria-expanded={open}
           aria-haspopup="listbox"
           className={cn(
             controlVariants(),
@@ -60,57 +83,26 @@ export function SearchableSelect({
           ref={triggerRef}
           role="combobox"
           type="button"
-          aria-expanded={open}
         >
           <span className="truncate">{displayValue}</span>
           <Codicon className="shrink-0 opacity-60" name={open ? 'chevron-up' : 'chevron-down'} size="1rem" />
         </button>
       </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-[var(--radix-popover-trigger-width)] p-0"
-      >
-        <Command
-          filter={(value, search) => {
-            // cmdk's default filter is case-insensitive substring match on
-            // the item's value. For timezone-like values we also want to
-            // match segments after "/" so "york" matches "America/New_York".
-            const lower = search.toLowerCase()
-            const itemLower = value.toLowerCase()
-            // Prioritize city/region segment (after last "/") so "york" ranks
-            // "America/New_York" above "America/New_York/Special".
-            const slash = itemLower.lastIndexOf('/')
-            if (slash !== -1 && itemLower.slice(slash + 1).includes(lower)) return 2
-            if (itemLower.includes(lower)) return 1
-            return 0
-          }}
-        >
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+        <Command filter={rankSearchOption}>
           <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
             <CommandGroup>
               {clearLabel && (
-                <CommandItem
-                  onSelect={() => handleSelect('')}
-                  value={clearLabel}
-                >
-                  <Codicon
-                    className={cn('mr-2 size-4', value === '' ? 'opacity-100' : 'opacity-0')}
-                    name="check"
-                  />
+                <CommandItem onSelect={() => handleSelect('')} value={clearLabel}>
+                  <Codicon className={cn('mr-2 size-4', value === '' ? 'opacity-100' : 'opacity-0')} name="check" />
                   {clearLabel}
                 </CommandItem>
               )}
               {options.map(option => (
-                <CommandItem
-                  key={option}
-                  onSelect={() => handleSelect(option)}
-                  value={option}
-                >
-                  <Codicon
-                    className={cn('mr-2 size-4', option === value ? 'opacity-100' : 'opacity-0')}
-                    name="check"
-                  />
+                <CommandItem key={option} onSelect={() => handleSelect(option)} value={option}>
+                  <Codicon className={cn('mr-2 size-4', option === value ? 'opacity-100' : 'opacity-0')} name="check" />
                   {option}
                 </CommandItem>
               ))}

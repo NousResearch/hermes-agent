@@ -297,7 +297,7 @@ describe('ToolsetConfigPanel', () => {
     fireEvent.click(elevenlabs)
 
     // Open the credential actions menu (Radix opens on pointerdown), then "Set".
-    const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+    const trigger = await screen.findByRole('button', { name: /^Actions$/ })
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
 
@@ -655,7 +655,7 @@ describe('ToolsetConfigPanel', () => {
 
       // Save a key: the pill must go Ready from the local envState patch even
       // though the (now stale) server status still says needs_keys.
-      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      const trigger = await screen.findByRole('button', { name: /^Actions$/ })
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
       fireEvent.change(await screen.findByPlaceholderText('ElevenLabs API key'), { target: { value: 'sk-live' } })
@@ -929,7 +929,7 @@ describe('ToolsetConfigPanel', () => {
       const { ToolsetConfigPanel } = await import('./toolset-config-panel')
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
-      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      const trigger = await screen.findByRole('button', { name: /^Actions$/ })
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Manage in API Keys' }))
 
@@ -949,7 +949,7 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(elevenLabs)
       await waitFor(() => expect(elevenLabs.getAttribute('aria-pressed')).toBe('true'))
 
-      const trigger = await screen.findByRole('button', { name: /Actions for ELEVENLABS_API_KEY/ })
+      const trigger = await screen.findByRole('button', { name: /^Actions$/ })
       fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
 
       await screen.findByRole('menuitem', { name: 'Set' })

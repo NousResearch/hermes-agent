@@ -23,7 +23,6 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/tooltip'
 
 // One place to define a set of actions and get BOTH a kebab dropdown and a
 // matching right-click context menu — so a row's ⋯ menu and its right-click menu
@@ -108,15 +107,14 @@ interface ActionsMenuProps extends Pick<
   items: (kit: MenuKit) => React.ReactNode
   ariaLabel?: string
   contentClassName?: string
-  /** Optional tooltip on the trigger (composed INSIDE the asChild chain). */
-  tooltip?: React.ReactNode
   open?: boolean
   onOpenChange?: (open: boolean) => void
 }
 
 /**
  * A kebab dropdown menu. Pair it with `ActionsContextMenu` using the same
- * `items` render function so the two menus stay identical.
+ * `items` render function so the two menus stay identical. No tip on the
+ * trigger — `aria-label` on the button is enough (see DESIGN.md).
  */
 export function ActionsMenu({
   align = 'end',
@@ -127,17 +125,11 @@ export function ActionsMenu({
   onOpenChange,
   open,
   side,
-  sideOffset = 6,
-  tooltip
+  sideOffset = 6
 }: ActionsMenuProps) {
-  // Tip wraps the trigger, not the reverse: Tip doesn't forward the ref/props an
-  // `asChild` clone injects, so a Tip placed as the trigger's child silently
-  // drops onClick/aria-haspopup and the menu stops opening (#67500).
-  const trigger = <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-
   return (
     <DropdownMenu onOpenChange={onOpenChange} open={open}>
-      {tooltip ? <Tip label={tooltip}>{trigger}</Tip> : trigger}
+      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent
         align={align}
         aria-label={ariaLabel}

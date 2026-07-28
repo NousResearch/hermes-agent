@@ -22,7 +22,6 @@ import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle
@@ -388,13 +387,10 @@ function useSessionActions({
 interface SessionActionsMenuProps
   extends SessionActions, Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'> {
   children: React.ReactNode
-  /** Tooltip label for the trigger. */
-  tooltip?: React.ReactNode
 }
 
 export function SessionActionsMenu({
   children,
-  tooltip,
   align = 'end',
   sideOffset = 6,
   ...actions
@@ -406,11 +402,10 @@ export function SessionActionsMenu({
     <>
       <ActionsMenu
         align={align}
-        ariaLabel={t.sidebar.row.actionsFor(actions.title)}
+        ariaLabel={t.sidebar.row.sessionActions}
         contentClassName="w-40"
         items={renderItems}
         sideOffset={sideOffset}
-        tooltip={tooltip}
       >
         {children}
       </ActionsMenu>
@@ -430,7 +425,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
   return (
     <>
       <ActionsContextMenu
-        ariaLabel={t.sidebar.row.actionsFor(actions.title)}
+        ariaLabel={t.sidebar.row.sessionActions}
         contentClassName="w-40"
         items={renderItems}
       >
@@ -496,7 +491,6 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{r.renameTitle}</DialogTitle>
-          <DialogDescription>{r.renameDesc}</DialogDescription>
         </DialogHeader>
         <Input
           autoFocus

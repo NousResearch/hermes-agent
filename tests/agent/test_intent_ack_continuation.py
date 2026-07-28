@@ -116,6 +116,56 @@ def test_all_path_drops_workspace_requirement():
     )
 
 
+def test_delegate_final_gate_can_check_after_tools():
+    """Delegation finalization must detect a future-intent non-answer even
+    after the child already called tools; the conversation-loop retry keeps
+    the historical no-prior-tools guard by default.
+    """
+    a = _agent(True, "chat_completions")
+    messages = [
+        {"role": "user", "content": "audit the repository"},
+        {"role": "assistant", "tool_calls": [{"id": "t1", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "file contents"},
+    ]
+    final_ack = "I will now analyze the files and write the final report."
+
+    assert not looks_like_codex_intermediate_ack(
+        a,
+        "audit the repository",
+        final_ack,
+        messages,
+        require_workspace=False,
+    )
+    assert looks_like_codex_intermediate_ack(
+        a,
+        "audit the repository",
+        final_ack,
+        messages,
+        require_workspace=False,
+        require_no_tools=False,
+    )
+
+
+def test_delegate_final_gate_does_not_reject_report_quoting_future_intent():
+    a = _agent(True, "chat_completions")
+    messages = [
+        {"role": "tool", "tool_call_id": "t1", "content": "file contents"},
+    ]
+    report = (
+        "The child replied 'I will inspect the repository' instead of acting. "
+        "That trace confirms the completion gate accepted an unfinished turn."
+    )
+
+    assert not looks_like_codex_intermediate_ack(
+        a,
+        "audit the repository",
+        report,
+        messages,
+        require_workspace=False,
+        require_no_tools=False,
+    )
+
+
 # ── detector: guardrails that hold regardless of workspace ───────────────────
 
 

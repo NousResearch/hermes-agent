@@ -502,6 +502,37 @@ def _build_engine(cfg: Dict[str, Any]) -> _Engine:
 # Requirements probe (for /wake status + enable path)
 # ---------------------------------------------------------------------------
 
+def _stt_ready() -> bool:
+    """Is a speech-to-text provider configured and enabled?
+
+    A wake without STT arms the mic but every captured utterance dies at
+    transcription — a useless (and confusing) experience. Same standard as
+    voice mode's ``check_voice_requirements``: enabled + a real provider.
+    """
+    try:
+        from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
+
+        stt_config = _load_stt_config()
+        return is_stt_enabled(stt_config) and _get_provider(stt_config) != "none"
+    except Exception:
+        return False
+
+
+def _tts_ready() -> bool:
+    """Can the configured text-to-speech provider actually run?
+
+    The wake flow is fully hands-free (wake → speak → hear the reply); without
+    TTS the reply is silent and the loop is pointless. Mirrors /voice's use of
+    ``check_tts_requirements``.
+    """
+    try:
+        from tools.tts_tool import check_tts_requirements
+
+        return bool(check_tts_requirements())
+    except Exception:
+        return False
+
+
 def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Report whether wake-word detection can run, with a remediation hint."""
     cfg = cfg if cfg is not None else load_wake_word_config()
@@ -525,6 +556,11 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     # path unreachable (the probe always failed before ensure() could run).
     audio_ok = _audio_available() if deps_ok else False
     key_ok = True
+    # The full wake loop is wake → record → STT → agent → TTS. Arming without
+    # either end configured gives a mic that hears you and then does nothing
+    # the user can perceive — refuse with a pointer instead.
+    stt_ok = _stt_ready()
+    tts_ok = _tts_ready()
     hint = ""
 
     if provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
@@ -534,13 +570,22 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
         hint = lazy_deps.feature_install_command(feature) or ""
     elif deps_ok and not audio_ok:
         hint = "Microphone capture needs sounddevice + numpy and a working audio device."
+    elif not stt_ok or not tts_ok:
+        missing = " and ".join(
+            name for name, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok
+        )
+        hint = (f"Wake word needs {missing} configured — run `hermes tools` "
+                f"(Voice section) or see the voice-mode docs.")
 
     return {
-        "available": key_ok and ((deps_ok and audio_ok) or (not deps_ok and lazy_ok)),
+        "available": key_ok and stt_ok and tts_ok
+        and ((deps_ok and audio_ok) or (not deps_ok and lazy_ok)),
         "provider": provider,
         "deps_available": deps_ok,
         "audio_available": audio_ok,
         "access_key_set": key_ok,
+        "stt_available": stt_ok,
+        "tts_available": tts_ok,
         "phrase": wake_phrase(cfg),
         "hint": hint,
     }

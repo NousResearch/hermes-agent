@@ -83,7 +83,15 @@ def test_build_engine_dispatch(monkeypatch):
 # ── Requirements probe ───────────────────────────────────────────────────
 
 
+def _voice_loop_ready(monkeypatch, stt=True, tts=True):
+    """Pin the STT/TTS probes so requirements tests don't depend on the
+    test venv's installed voice stack."""
+    monkeypatch.setattr(ww, "_stt_ready", lambda: stt)
+    monkeypatch.setattr(ww, "_tts_ready", lambda: tts)
+
+
 def test_requirements_openwakeword_available(monkeypatch):
+    _voice_loop_ready(monkeypatch)
     monkeypatch.setattr(ww, "_audio_available", lambda: True)
     monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
     r = ww.check_wake_word_requirements(
@@ -92,6 +100,30 @@ def test_requirements_openwakeword_available(monkeypatch):
     assert r["available"] is True
     assert r["provider"] == "openwakeword"
     assert r["phrase"] == "hey hermes"
+
+
+def test_requirements_need_stt_and_tts(monkeypatch):
+    """No STT/TTS → wake refuses to arm (mic would hear you, then nothing)."""
+    monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
+
+    _voice_loop_ready(monkeypatch, stt=False, tts=True)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    assert r["available"] is False
+    assert r["stt_available"] is False
+    assert "speech-to-text" in r["hint"]
+    assert "text-to-speech" not in r["hint"]
+
+    _voice_loop_ready(monkeypatch, stt=True, tts=False)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    assert r["available"] is False
+    assert r["tts_available"] is False
+    assert "text-to-speech" in r["hint"]
+
+    _voice_loop_ready(monkeypatch, stt=False, tts=False)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
+    assert r["available"] is False
+    assert "speech-to-text and text-to-speech" in r["hint"]
 
 
 def test_requirements_porcupine_needs_access_key(monkeypatch):
@@ -124,6 +156,7 @@ def test_requirements_fresh_install_lazy_allowed(monkeypatch):
     def _boom():
         raise AssertionError("audio probe must not run while deps are missing")
 
+    _voice_loop_ready(monkeypatch)
     monkeypatch.setattr(ww, "_audio_available", _boom)
     monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: False)
     monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)

@@ -151,6 +151,15 @@ def spawn_background_process(
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty,
         )
+        # Capture the UI owner for every background process, not only those
+        # requesting a completion notification. Delegated children use their
+        # own internal session_key, but their live output still belongs to the
+        # TUI/Desktop window that started the parent turn.
+        try:
+            from gateway.session_context import get_session_env
+            proc_session.origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or ""
+        except Exception:
+            pass  # best effort; routing retains the session_key fallback
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if approval_note:

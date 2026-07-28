@@ -441,3 +441,53 @@ def test_non_ci_background_command_does_not_emit_homebrew_hint(monkeypatch, tmp_
     assert "hint" not in result, (
         f"Non-CI command using awk must not be flagged as homebrew CI poller, got: {result.get('hint')!r}"
     )
+
+
+def test_background_spawn_captures_ui_origin_without_notify(monkeypatch, tmp_path):
+    """#61719 residual: live `agent.terminal.output` chunks are emitted for
+    EVERY background process, but the spawn-time UI owner was only captured
+    when notify_on_complete/watch_patterns were set — a plain background=true
+    spawn (a delegated child's, in particular) had no positive owner and its
+    live output was dropped by the desktop router."""
+    import gateway.session_context as session_context
+
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    from types import SimpleNamespace
+    from tools import process_registry as process_registry_module
+
+    spawned = {}
+
+    def capturing_spawn_local(**kwargs):
+        proc = SimpleNamespace(
+            id="proc_ui_origin_test",
+            pid=4243,
+            notify_on_complete=False,
+            watcher_platform="",
+            watcher_chat_id="",
+            watcher_user_id="",
+            watcher_user_name="",
+            watcher_thread_id="",
+            watcher_message_id="",
+            watcher_interval=0,
+        )
+        spawned["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(
+        process_registry_module.process_registry, "spawn_local", capturing_spawn_local
+    )
+    monkeypatch.setattr(
+        session_context,
+        "get_session_env",
+        lambda key, default="": "sid_ui_1" if key == "HERMES_UI_SESSION_ID" else default,
+    )
+    try:
+        tt.terminal_tool(command="sleep 60", background=True)
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert getattr(spawned["proc"], "origin_ui_session_id", "") == "sid_ui_1", (
+        "plain background spawn (no notify/watch) must record the spawn-time "
+        "UI owner so live output chunks can be positively routed"
+    )

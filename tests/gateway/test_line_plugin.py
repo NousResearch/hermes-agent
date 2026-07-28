@@ -33,6 +33,9 @@ verify_line_signature = _line.verify_line_signature
 strip_markdown_preserving_urls = _line.strip_markdown_preserving_urls
 split_for_line = _line.split_for_line
 build_postback_button_message = _line.build_postback_button_message
+_line_truncate_utf16 = _line._line_truncate_utf16
+_text_message = _line._text_message
+utf16_len = _line.utf16_len
 _resolve_chat = _line._resolve_chat
 _allowed_for_source = _line._allowed_for_source
 _is_system_bypass = _line._is_system_bypass
@@ -295,6 +298,18 @@ class TestMarkdownAndChunking:
         chunks = split_for_line(text)
         assert len(chunks) <= 5
 
+    def test_line_truncate_respects_utf16_budget(self):
+        text = ("a" * 19) + "😀" + "tail"
+        out = _line_truncate_utf16(text, 20)
+        assert utf16_len(out) <= 20
+        assert out == "a" * 19
+
+    def test_split_final_chunk_respects_utf16_budget_with_emoji(self):
+        text = "\n".join(("x" * 9) + "😀" for _ in range(20))
+        chunks = split_for_line(text, max_chars=10)
+        assert len(chunks) <= 5
+        assert all(utf16_len(chunk) <= 10 for chunk in chunks)
+
 
 # ---------------------------------------------------------------------------
 # 7. Send routing (reply -> push fallback, batching, system-bypass)
@@ -555,6 +570,21 @@ class TestPostbackButtonShape:
         long = "x" * 500
         msg = build_postback_button_message(long, "Tap", "rid")
         assert len(msg["altText"]) <= 400
+
+    def test_template_fields_respect_utf16_limits(self):
+        text = ("a" * 158) + "😀" + "x"
+        button_label = ("b" * 19) + "😀" + "x"
+        msg = build_postback_button_message(text, button_label, "rid")
+        action = msg["template"]["actions"][0]
+
+        assert utf16_len(msg["template"]["text"]) <= 160
+        assert utf16_len(msg["altText"]) <= 400
+        assert utf16_len(action["label"]) <= 20
+        assert utf16_len(action["displayText"]) <= 300
+
+    def test_text_message_respects_utf16_limit(self):
+        msg = _text_message(("x" * 4999) + "😀")
+        assert utf16_len(msg["text"]) <= 5000
 
 
 class TestCheckRequirements:

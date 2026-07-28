@@ -67,6 +67,29 @@ def test_upsert_env_updates_existing_values(tmp_path: Path):
     assert "OTHER=keep" in env_text
 
 
+def test_json_request_wraps_malformed_success_body(monkeypatch):
+    mod = load_module()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"<html>not json"
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    try:
+        mod._json_request("GET", "https://api.example.invalid/test")
+    except mod.TelephonyError as exc:
+        assert "Invalid JSON response from https://api.example.invalid/test" in str(exc)
+    else:
+        raise AssertionError("malformed JSON response should raise TelephonyError")
+
+
 def test_messages_after_checkpoint_returns_only_newer_items():
     mod = load_module()
     messages = [

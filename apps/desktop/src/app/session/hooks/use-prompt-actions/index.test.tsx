@@ -1555,6 +1555,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'queued message'
       },
@@ -1590,6 +1591,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: 'rt-session-a',
         text: 'queued for background session'
       },
@@ -1646,6 +1648,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: 'rt-session-a-rebound',
         text: 'queued for background session'
       },
@@ -1696,6 +1699,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: RUNTIME_SESSION_ID,
         text: 'please send me'
       },
@@ -2473,11 +2477,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[0]?.params).toEqual({
+      queued: true,
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
     })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
+      queued: true,
       session_id: RECOVERED_SESSION_ID,
       text: 'queued background message after wake'
     })

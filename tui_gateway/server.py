@@ -17638,14 +17638,61 @@ def _release_gateway_wake_owner() -> bool:
     return owner is not None and _release_wake_for_transport(owner)
 
 
-def _wake_resume_if_owner(owner: "Transport") -> bool:
-    try:
-        from tools.wake_word import resume_listening
+_wake_resume_retry_lock = threading.Lock()
+_wake_resume_retry_active = False
 
+
+def _wake_resume_if_owner(owner: "Transport", *, retry_seconds: float = 15.0,
+                          retry_interval: float = 1.0) -> bool:
+    """Resume the wake detector for ``owner``; self-heal a busy microphone.
+
+    Reopening the mic right after a voice turn can fail while the capture
+    device is still being released (browser WebRTC tracks release async).
+    The CLI covers this with its idle watchdog; the gateway had nothing, so
+    one failed resume left the listener silently dead until the user toggled
+    it by hand — despite ``wake_word.enabled: true``. On an exception (mic
+    open failure) we retry in a background thread until it sticks, the lease
+    changes hands, or ``retry_seconds`` elapses. ``False`` from
+    ``resume_listening`` (lease gone / different owner) is final — never
+    retried, so this can't steal another surface's mic.
+    """
+    from tools.wake_word import resume_listening
+
+    try:
         return resume_listening(owner=owner)
     except Exception as e:
-        logger.debug("wake resume failed: %s", e)
-        return False
+        logger.debug("wake resume failed (will retry): %s", e)
+
+    global _wake_resume_retry_active
+    with _wake_resume_retry_lock:
+        if _wake_resume_retry_active:
+            return False
+        _wake_resume_retry_active = True
+
+    def _retry() -> None:
+        global _wake_resume_retry_active
+        deadline = time.monotonic() + retry_seconds
+        try:
+            while time.monotonic() < deadline:
+                time.sleep(retry_interval)
+                try:
+                    if resume_listening(owner=owner):
+                        logger.info("wake: detector resumed after retry")
+                        return
+                except Exception:
+                    continue
+                # False — detector gone or lease moved: stop, don't fight it.
+                return
+            logger.warning(
+                "wake: could not resume detector after voice turn "
+                "(microphone still busy?) — toggle the wake word to re-arm"
+            )
+        finally:
+            with _wake_resume_retry_lock:
+                _wake_resume_retry_active = False
+
+    threading.Thread(target=_retry, daemon=True, name="wake-resume-retry").start()
+    return False
 
 
 def _persist_wake_enabled(enabled: bool) -> bool:
@@ -17866,6 +17913,9 @@ def _(rid, params: dict) -> dict:
             "provider": reqs["provider"],
             "available": reqs["available"],
             "hint": reqs.get("hint", ""),
+            # Config truth: clients use this to re-arm after a voice turn
+            # ("permanent on") without guessing from runtime listener state.
+            "enabled": bool(cfg.get("enabled")),
         })
     except Exception as e:
         return _err(rid, 5026, str(e))

@@ -1601,3 +1601,94 @@ def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
     assert "54321" in msg
     assert "already in use" in msg
     assert "timed out" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Figma remote MCP DCR allowlist workarounds
+# ---------------------------------------------------------------------------
+
+
+def test_figma_provider_defaults_set_allowlisted_client_name():
+    from tools.mcp_oauth import (
+        apply_oauth_provider_defaults,
+        _FIGMA_DCR_CLIENT_NAME,
+        _FIGMA_DEFAULT_SCOPE,
+    )
+
+    cfg = apply_oauth_provider_defaults(
+        {},
+        server_name="figma",
+        server_url="https://mcp.figma.com/mcp",
+    )
+    assert cfg["client_name"] == _FIGMA_DCR_CLIENT_NAME
+    assert cfg["scope"] == _FIGMA_DEFAULT_SCOPE
+
+
+def test_figma_provider_defaults_respect_explicit_overrides():
+    from tools.mcp_oauth import apply_oauth_provider_defaults
+
+    cfg = apply_oauth_provider_defaults(
+        {"client_name": "Codex", "scope": "mcp:connect openid"},
+        server_name="figma",
+        server_url="https://mcp.figma.com/mcp",
+    )
+    assert cfg["client_name"] == "Codex"
+    assert cfg["scope"] == "mcp:connect openid"
+
+
+def test_figma_defaults_not_applied_to_unrelated_servers():
+    from tools.mcp_oauth import apply_oauth_provider_defaults
+
+    cfg = apply_oauth_provider_defaults(
+        {},
+        server_name="linear",
+        server_url="https://mcp.linear.app/mcp",
+    )
+    assert "client_name" not in cfg
+    assert "scope" not in cfg
+
+
+def test_build_client_metadata_figma_path_uses_claude_code(monkeypatch):
+    """End-to-end: empty oauth cfg + figma URL → metadata client_name allowlisted."""
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import (
+        apply_oauth_provider_defaults,
+        _build_client_metadata,
+        _configure_callback_port,
+        _FIGMA_DCR_CLIENT_NAME,
+    )
+
+    cfg = {}
+    apply_oauth_provider_defaults(
+        cfg, server_name="figma", server_url="https://mcp.figma.com/mcp"
+    )
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+    assert md.client_name == _FIGMA_DCR_CLIENT_NAME
+    assert md.scope == "mcp:connect"
+
+
+def test_humanize_figma_registration_error_mentions_client_name():
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    msg = humanize_oauth_registration_error(
+        "figma",
+        RuntimeError("HTTP 403: Forbidden"),
+        server_url="https://mcp.figma.com/mcp",
+    )
+    assert msg is not None
+    assert "Claude Code" in msg
+    assert "client_name" in msg
+
+
+def test_humanize_non_registration_403_passthrough():
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    assert (
+        humanize_oauth_registration_error(
+            "linear",
+            RuntimeError("HTTP 403: insufficient_scope"),
+            server_url="https://mcp.linear.app/mcp",
+        )
+        is None
+    )

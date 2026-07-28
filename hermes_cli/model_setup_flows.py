@@ -2010,11 +2010,13 @@ def _model_flow_copilot_acp(config, current_model=""):
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 def _model_flow_acp_agent(config, current_model="", provider_id=""):
-    """Generic ACP-agent flow (claude-acp, codex-acp, gemini-acp, qwen-acp).
+    """Generic ACP-agent flow for any external_process ``acp://`` provider.
 
-    Mirrors _model_flow_copilot_acp minus the GitHub model catalog: these
-    agents pick their own underlying model, so the saved model name is only
-    a hint forwarded to the ACP session.
+    Covers every ACP agent except copilot-acp (own flow, GitHub model
+    catalog) — the plugin-shipped claude-acp/codex-acp, and any agent a
+    third-party plugin registers. These agents pick their own underlying
+    model, so the saved model name is only a hint forwarded to the ACP
+    session.
     """
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,

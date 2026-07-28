@@ -49,6 +49,9 @@ anthropic = AnthropicProfile(
     base_url="https://api.anthropic.com",
     auth_type="api_key",
     default_aux_model="claude-haiku-4-5-20251001",
+    # Folds under one "Anthropic" picker row alongside claude-acp when the
+    # https://github.com/mvdbastos/hermes-acp-agents plugin is installed.
+    picker_group="anthropic",
 )
 
 register_provider(anthropic)

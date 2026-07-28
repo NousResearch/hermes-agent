@@ -6,13 +6,22 @@ official ACP adapter published by the agent's vendor or by Zed Industries —
 Hermes never drives vendor CLIs through undocumented interfaces (see
 issue #5257 and the compliance discussion in #3660).
 
+Only the ``copilot`` agent ships built into core (its ACP path predates this
+registry and existing installs depend on it). Every other agent — Claude
+Code, Codex CLI, Gemini CLI, Qwen Code, and anything the community adds —
+registers itself from a ``plugins/model-providers/<name>-acp/`` plugin via
+:func:`register_acp_agent`, the same discovery mechanism
+:mod:`providers` uses for model-provider profiles. See
+https://github.com/mvdbastos/hermes-acp-agents for the reference plugin set.
+
 Resolution order for a given agent name:
   1. ``HERMES_ACP_{NAME}_COMMAND`` env var (name uppercased, ``-`` → ``_``).
      The value is a full command line, split with :func:`shlex.split`.
   2. Legacy per-agent env vars declared on the entry (command path only —
      preserves the historical Copilot contract of
      ``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``).
-  3. The built-in registry below.
+  3. The registry below (built-in ``copilot`` plus anything a plugin
+     registered via :func:`register_acp_agent`).
 
 Arguments can be overridden separately with ``HERMES_ACP_{NAME}_ARGS`` (or
 the entry's legacy args env var), also shlex-split. No shell is ever
@@ -78,49 +87,41 @@ ACP_AGENT_REGISTRY: dict[str, ACPAgentEntry] = {
         legacy_command_env_vars=("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
         legacy_args_env_var="HERMES_COPILOT_ACP_ARGS",
     ),
-    "claude": ACPAgentEntry(
-        command="claude-agent-acp",
-        command_fallbacks=("claude-code-acp",),
-        # The Claude Code bridge refuses to launch when it detects it is
-        # running inside another Claude Code session (guard keyed off these
-        # markers); strip them so Hermes can drive it from any environment.
-        env_unset=("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"),
-        display_name="Claude Code",
-        install_hint=(
-            "Install the maintained adapter: "
-            "npm install -g @agentclientprotocol/claude-agent-acp "
-            "(the older @zed-industries/claude-code-acp bin also works). "
-            "Requires Claude Code CLI credentials or ANTHROPIC_API_KEY."
-        ),
-    ),
-    "codex": ACPAgentEntry(
-        command="codex-acp",
-        display_name="Codex CLI",
-        install_hint=(
-            "Install the official adapter: "
-            "npm install -g @zed-industries/codex-acp "
-            "(requires Codex CLI login or OPENAI_API_KEY)."
-        ),
-    ),
-    "gemini": ACPAgentEntry(
-        command="gemini",
-        args=("--experimental-acp",),
-        display_name="Gemini CLI",
-        install_hint=(
-            "Install Gemini CLI: npm install -g @google/gemini-cli "
-            "(requires Google login or GEMINI_API_KEY)."
-        ),
-    ),
-    "qwen": ACPAgentEntry(
-        command="qwen",
-        args=("--experimental-acp",),
-        display_name="Qwen Code",
-        install_hint=(
-            "Install Qwen Code: npm install -g @qwen-code/qwen-code "
-            "(requires Qwen login or an API key)."
-        ),
-    ),
 }
+
+
+def register_acp_agent(agent_name: str, entry: ACPAgentEntry) -> None:
+    """Register an ACP agent from a ``plugins/model-providers/<name>-acp/`` plugin.
+
+    Later registrations with the same name replace earlier ones — so a user
+    plugin under ``$HERMES_HOME/plugins/model-providers/`` can override a
+    bundled agent entry without editing this file.
+    """
+    ACP_AGENT_REGISTRY[normalize_agent_name(agent_name)] = entry
+
+
+_agents_discovered = False
+
+
+def _discover_agents() -> None:
+    """Import every ``providers/`` plugin once so it can call :func:`register_acp_agent`.
+
+    A ``model-provider`` plugin for an ACP agent (e.g. ``claude-acp``) is
+    expected to register both a :class:`providers.base.ProviderProfile` *and*
+    an :class:`ACPAgentEntry` from the same ``__init__.py`` — importing one
+    triggers the other, so piggybacking on :func:`providers.list_providers`
+    is sufficient and avoids a second plugin-discovery mechanism.
+    """
+    global _agents_discovered
+    if _agents_discovered:
+        return
+    _agents_discovered = True
+    try:
+        from providers import list_providers
+
+        list_providers()
+    except Exception:
+        pass
 
 
 def normalize_agent_name(agent_name: str) -> str:
@@ -128,10 +129,12 @@ def normalize_agent_name(agent_name: str) -> str:
 
 
 def known_agents() -> tuple[str, ...]:
+    _discover_agents()
     return tuple(sorted(ACP_AGENT_REGISTRY))
 
 
 def get_agent_entry(agent_name: str) -> ACPAgentEntry | None:
+    _discover_agents()
     return ACP_AGENT_REGISTRY.get(normalize_agent_name(agent_name))
 
 
@@ -186,6 +189,7 @@ def is_acp_agent_available(agent_name: str) -> bool:
         return False
     if os.getenv(_command_env_key(name), "").strip():
         return True
+    _discover_agents()
     return name in ACP_AGENT_REGISTRY
 
 
@@ -195,6 +199,7 @@ def resolve_agent_launch(agent_name: str) -> tuple[str, list[str]]:
     Raises :class:`ValueError` for unknown agents with no env override.
     """
     name = normalize_agent_name(agent_name)
+    _discover_agents()
     entry = ACP_AGENT_REGISTRY.get(name)
 
     command = ""

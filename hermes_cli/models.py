@@ -291,18 +291,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
-    "claude-acp": [
-        "claude-acp",
-    ],
-    "codex-acp": [
-        "codex-acp",
-    ],
-    "gemini-acp": [
-        "gemini-acp",
-    ],
-    "qwen-acp": [
-        "qwen-acp",
-    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1132,10 +1120,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
-    ProviderEntry("claude-acp",     "Claude Code ACP",          "Claude Code ACP (Spawns claude-code-acp; reuses Claude Code login)"),
-    ProviderEntry("codex-acp",      "Codex CLI ACP",            "Codex CLI ACP (Spawns codex-acp; reuses Codex CLI login)"),
-    ProviderEntry("gemini-acp",     "Gemini CLI ACP",           "Gemini CLI ACP (Spawns gemini --experimental-acp)"),
-    ProviderEntry("qwen-acp",       "Qwen Code ACP",            "Qwen Code ACP (Spawns qwen --experimental-acp)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -1170,8 +1154,10 @@ try:
     for _pp in _list_providers_for_canonical():
         if _pp.name in _canonical_slugs:
             continue
-        if _pp.auth_type in {"oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex"}:
+        if _pp.auth_type in {"oauth_device_code", "oauth_external", "aws_sdk", "copilot", "vertex"}:
             continue  # non-api-key flows need bespoke picker UX; skip auto-inject
+        if _pp.auth_type == "external_process" and not str(_pp.base_url or "").startswith("acp://"):
+            continue  # non-ACP external-process flows need bespoke picker UX
         _label = _pp.display_name or _pp.name
         _desc = _pp.description or f"{_label} (direct API)"
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _desc))
@@ -1210,18 +1196,40 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   "Google AI Studio API key or Gemini CLI ACP",      ["gemini", "gemini-acp"]),
-    "openai":   ("OpenAI",          "Codex CLI, direct OpenAI API, or Codex ACP",      ["openai-codex", "openai-api", "codex-acp"]),
-    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Qwen CLI OAuth, or Qwen ACP", ["alibaba", "alibaba-coding-plan", "qwen-oauth", "qwen-acp"]),
+    "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
+    "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
+    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan & Qwen CLI OAuth", ["alibaba", "alibaba-coding-plan", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
-    "anthropic": ("Anthropic",      "Claude API/subscription or Claude Code ACP",      ["anthropic", "claude-acp"]),
 }
 
 # Reverse index: member slug -> group_id. Built once at import.
 _SLUG_TO_GROUP: dict[str, str] = {
     slug: gid for gid, (_label, _desc, members) in PROVIDER_GROUPS.items() for slug in members
 }
+
+# Auto-extend PROVIDER_GROUPS + _SLUG_TO_GROUP from any provider plugin that
+# declares ``picker_group`` (e.g. a claude-acp plugin folding under
+# "anthropic" alongside the built-in anthropic row). A picker_group matching
+# an existing group above gains the slug as a member; a picker_group with no
+# existing entry is created on the fly from that profile's display metadata.
+# Display only — see the DISPLAY ONLY note above.
+try:
+    for _pp in _list_providers_for_canonical():
+        _gid = getattr(_pp, "picker_group", "") or ""
+        if not _gid or _pp.name not in _canonical_slugs:
+            continue
+        if _gid in PROVIDER_GROUPS:
+            _members = PROVIDER_GROUPS[_gid][2]
+            if _pp.name not in _members:
+                _members.append(_pp.name)
+        else:
+            _glabel = _pp.display_name or _gid.title()
+            _gdesc = _pp.description or f"{_glabel} providers"
+            PROVIDER_GROUPS[_gid] = (_glabel, _gdesc, [_pp.name])
+        _SLUG_TO_GROUP[_pp.name] = _gid
+except Exception:
+    pass
 
 
 def provider_group_for_slug(slug: str) -> str:
@@ -2969,6 +2977,25 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 return ids
         except Exception:
             pass
+
+    # ── ACP subprocess providers (external_process, acp:// base_url) ──
+    # No live model catalog to fetch — the ACP agent picks its own
+    # underlying model, so the saved model name is only a hint forwarded
+    # to the session. copilot-acp is special-cased above (GitHub model
+    # catalog); every other ACP agent (claude-acp, codex-acp, community
+    # plugins) uses its profile's fallback_models, or the slug itself.
+    try:
+        from providers import get_provider_profile as _get_acp_profile
+
+        _acp_p = _get_acp_profile(normalized)
+        if (
+            _acp_p
+            and _acp_p.auth_type == "external_process"
+            and str(_acp_p.base_url or "").startswith("acp://")
+        ):
+            return list(_acp_p.fallback_models) or [normalized]
+    except Exception:
+        pass
 
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".

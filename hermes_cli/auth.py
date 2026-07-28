@@ -232,34 +232,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
-    "claude-acp": ProviderConfig(
-        id="claude-acp",
-        name="Claude Code ACP",
-        auth_type="external_process",
-        inference_base_url="acp://claude",
-        base_url_env_var="CLAUDE_ACP_BASE_URL",
-    ),
-    "codex-acp": ProviderConfig(
-        id="codex-acp",
-        name="Codex CLI ACP",
-        auth_type="external_process",
-        inference_base_url="acp://codex",
-        base_url_env_var="CODEX_ACP_BASE_URL",
-    ),
-    "gemini-acp": ProviderConfig(
-        id="gemini-acp",
-        name="Gemini CLI ACP",
-        auth_type="external_process",
-        inference_base_url="acp://gemini",
-        base_url_env_var="GEMINI_ACP_BASE_URL",
-    ),
-    "qwen-acp": ProviderConfig(
-        id="qwen-acp",
-        name="Qwen Code ACP",
-        auth_type="external_process",
-        inference_base_url="acp://qwen",
-        base_url_env_var="QWEN_ACP_BASE_URL",
-    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -498,6 +470,21 @@ try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
+            continue
+        if _pp.auth_type == "external_process" and str(_pp.base_url or "").startswith("acp://"):
+            # ACP subprocess providers (claude-acp, codex-acp, community
+            # plugins) — no API key, credentials mean "the adapter command
+            # resolves on PATH" (see get_external_process_provider_status).
+            _base_url_var = next(
+                (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), ""
+            )
+            PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+                id=_pp.name,
+                name=_pp.display_name or _pp.name,
+                auth_type="external_process",
+                inference_base_url=_pp.base_url,
+                base_url_env_var=_base_url_var,
+            )
             continue
         if _pp.auth_type != "api_key" or not _pp.env_vars:
             continue
@@ -6816,6 +6803,21 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         "base_url": base_url,
         "logged_in": bool(api_key),  # compat with OAuth status shape
     }
+
+
+def is_acp_agent_provider(provider_id: str) -> bool:
+    """True for generic ACP-agent providers (claude-acp, codex-acp, ...).
+
+    Excludes ``copilot-acp``, which predates this registry and has its own
+    setup flow with a GitHub model catalog (``_model_flow_copilot_acp``).
+    """
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    return bool(
+        pconfig
+        and provider_id != "copilot-acp"
+        and pconfig.auth_type == "external_process"
+        and str(pconfig.inference_base_url or "").startswith("acp://")
+    )
 
 
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:

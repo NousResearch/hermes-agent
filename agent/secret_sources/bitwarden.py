@@ -663,21 +663,46 @@ def _summarize_bws_stderr(raw: str) -> str:
     return "; ".join(causes) if causes else text
 
 
+# Env vars the `bws` child actually needs.  We build a minimal allowlisted env
+# rather than copying all of os.environ (which, post-dotenv, holds every
+# provider credential) into the child — tighter blast radius if `bws` or
+# anything it execs ever misbehaves.  BWS_ACCESS_TOKEN and BWS_SERVER_URL are
+# added dynamically below.
+_BWS_ENV_ALLOWLIST = frozenset({
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "XDG_CONFIG_HOME",
+    "XDG_RUNTIME_DIR",
+    "NO_COLOR",
+})
+
+
+def _bws_child_env(access_token: str, server_url: str = "") -> Dict[str, str]:
+    """Build a minimal allowlisted environment for the ``bws`` child process."""
+    env: Dict[str, str] = {}
+    for key in _BWS_ENV_ALLOWLIST:
+        val = os.environ.get(key)
+        if val is not None:
+            env[key] = val
+    env["BWS_ACCESS_TOKEN"] = access_token
+    # Region / self-hosted support.
+    if server_url:
+        env["BWS_SERVER_URL"] = server_url
+    return env
+
+
 def _run_bws_list(
     bws: Path, access_token: str, project_id: str, server_url: str = ""
 ) -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
-    env = os.environ.copy()
-    env["BWS_ACCESS_TOKEN"] = access_token
-    # Make sure we're not echoing telemetry / colour codes into json.
-    env.setdefault("NO_COLOR", "1")
-    # Region / self-hosted support.  bws defaults to https://vault.bitwarden.com
-    # (US Cloud); EU Cloud users need https://vault.bitwarden.eu, and
-    # self-hosted users need their own URL.  When unset, fall back to whatever
-    # BWS_SERVER_URL the caller already had in their shell env (preserved by
-    # the copy above) so manual overrides keep working too.
-    if server_url:
-        env["BWS_SERVER_URL"] = server_url
+    env = _bws_child_env(access_token, server_url=server_url)
 
     try:
         proc = subprocess.run(  # noqa: S603 — bws path is trusted

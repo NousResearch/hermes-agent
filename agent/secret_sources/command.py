@@ -158,6 +158,44 @@ def parse_secret_output(stdout: str, wanted_key: str) -> Optional[str]:
     return value
 
 
+# Env vars the helper child process actually needs.  We build a minimal
+# allowlisted env rather than copying all of os.environ (which, post-dotenv,
+# holds every provider credential) into the child — tighter blast radius if
+# the helper or anything it execs misbehaves.  HERMES_SECRET_KEY is added
+# dynamically below.
+_HELPER_ENV_ALLOWLIST = frozenset({
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_MESSAGES",
+    "LC_CTYPE",
+    "XDG_CONFIG_HOME",
+    "XDG_RUNTIME_DIR",
+    "TERM",
+})
+
+
+def _helper_child_env(secret_key: str) -> Dict[str, str]:
+    """Build a minimal allowlisted environment for the helper child process."""
+    env: Dict[str, str] = {}
+    for key in _HELPER_ENV_ALLOWLIST:
+        val = os.environ.get(key)
+        if val is not None:
+            env[key] = val
+    if secret_key:
+        env["HERMES_SECRET_KEY"] = secret_key
+    return env
+
+
 def _run_helper(
     command: str,
     secret_key: str,
@@ -179,8 +217,7 @@ def _run_helper(
         )
         return None
 
-    env = os.environ.copy()
-    env["HERMES_SECRET_KEY"] = secret_key
+    env = _helper_child_env(secret_key)
 
     try:
         proc = subprocess.Popen(  # noqa: S602 — command is the user's own config

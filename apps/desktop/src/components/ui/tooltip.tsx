@@ -16,6 +16,11 @@ const HasTooltipProvider = React.createContext(false)
 
 function TooltipProvider({
   delayDuration = 0,
+  // Radix's "skip" grace: after one tip opens, every trigger touched within
+  // this window opens INSTANTLY, delay bypassed. Its 300ms default meant a
+  // cursor sweeping the chrome still flashed a trail of tips despite the
+  // hover delay. Zero it so each tip independently honors `delayDuration`.
+  skipDelayDuration = 0,
   // Tips are labels, not interactive surfaces. Hoverable content + Radix's
   // pointer-grace bridge is what leaves tips stuck open — especially over
   // Electron `-webkit-app-region: drag` chrome where pointermove never fires
@@ -28,6 +33,7 @@ function TooltipProvider({
       data-slot="tooltip-provider"
       delayDuration={delayDuration}
       disableHoverableContent={disableHoverableContent}
+      skipDelayDuration={skipDelayDuration}
       {...props}
     />
   )

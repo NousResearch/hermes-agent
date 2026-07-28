@@ -2093,6 +2093,18 @@ def _strip_media_tag_directives(text: str) -> str:
     return cleaned
 
 
+# Shared bare-local-path recognizer. History redisplay uses this exact grammar
+# to keep restored text readable without accidentally turning it back into an
+# attachment instruction.
+LOCAL_FILE_PATH_RE = re.compile(
+    r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])'
+    r'(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:'
+    + _MEDIA_EXT_ALTERNATION
+    + r')\b',
+    re.IGNORECASE,
+)
+
+
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
     d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
@@ -4939,18 +4951,6 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = MEDIA_DELIVERY_EXTS
-        ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
-
-        # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
-        #             and relative paths (./foo.png)
-        # (?:~/|/)    anchors to absolute or home-relative Unix paths
-        # (?:[A-Za-z]:[/\\]) anchors to Windows drive-letter paths (#34632)
-        path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
-            re.IGNORECASE,
-        )
-
         # Build spans covered by fenced code blocks and inline code
         code_spans: list = []
         for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
@@ -4962,7 +4962,7 @@ class BasePlatformAdapter(ABC):
             return any(s <= pos < e for s, e in code_spans)
 
         found: list = []  # (raw_match_text, expanded_path)
-        for match in path_re.finditer(content):
+        for match in LOCAL_FILE_PATH_RE.finditer(content):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)

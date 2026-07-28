@@ -44,6 +44,8 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# Photon DM chat GUID (mirrors _DM_CHAT_GUID_RE in the photon adapter).
+_PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")
 # WhatsApp JIDs: group chats (<digits>@g.us), individual users
 # (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
 # newsletter chats. These are explicit native targets the bridge accepts
@@ -602,6 +604,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
+            return target_ref.strip(), None, True
+    if platform_name == "photon":
+        # Photon DM chat GUIDs ('any;-;+1555...') are platform-native ids the
+        # adapter resolves itself — pass through verbatim instead of bouncing
+        # them off the channel directory (mirrors the react handler).
+        if _PHOTON_DM_GUID_RE.fullmatch(target_ref.strip()):
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True

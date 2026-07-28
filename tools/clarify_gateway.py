@@ -294,6 +294,21 @@ def has_pending(session_key: str) -> bool:
         return any(_entries.get(cid) is not None for cid in ids)
 
 
+def get_owner_user_id(clarify_id: str) -> Optional[str]:
+    """Return the platform user id of the session initiator for a clarify.
+
+    Adapters that gate interactive components on ``session_owner_only`` read
+    this so the user who started the turn is admitted even without a static
+    user allowlist.  Returns ``None`` when the entry doesn't exist or the
+    owner was never captured (anonymous-admin platform / legacy caller).
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+    if entry is None:
+        return None
+    return entry.session_owner_user_id
+
+
 def clear_session(session_key: str) -> int:
     """Resolve and drop every pending clarify for a session.
 

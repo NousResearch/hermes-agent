@@ -285,6 +285,49 @@ class TestInteractivePromptViewConstruction:
         assert ":7" in modal.custom_id
 
 
+class TestInteractivePromptViewSessionOwnerAuth:
+    """View-level auth delegation for ``session_owner_only`` (T2).
+
+    Confirms ``InteractivePromptView._check_auth`` delegates the
+    ``session_owner_only`` policy to ``_session_owner_check_auth`` and that
+    the union semantics hold end-to-end on the view object.  Runs only when
+    the real discord.py is installed (the module is skipped otherwise).
+    """
+
+    def _view(
+        self,
+        *,
+        origin_user_id: Optional[str] = None,
+        allowed_user_ids: Optional[Set[str]] = None,
+    ) -> "InteractivePromptView":
+        return InteractivePromptView(
+            prompt_id="test",
+            question="Q?",
+            options=_make_options(1),
+            allowed_user_ids=allowed_user_ids or set(),
+            allowed_role_ids=set(),
+            auth_policy="session_owner_only",
+            origin_user_id=origin_user_id,
+            timeout_seconds=900,
+        )
+
+    def test_owner_admitted_no_allowlist(self):
+        view = self._view(origin_user_id="42", allowed_user_ids=set())
+        assert view._check_auth(_make_interaction("42")) is True
+        assert view._check_auth(_make_interaction("99")) is False
+
+    def test_fail_closed_when_no_owner_and_no_allowlist(self):
+        view = self._view(origin_user_id=None, allowed_user_ids=set())
+        assert view._check_auth(_make_interaction("42")) is False
+
+    def test_allowlist_independence_union(self):
+        """Owner OR allowlist both admit; neither → reject."""
+        view = self._view(origin_user_id="7", allowed_user_ids={"42"})
+        assert view._check_auth(_make_interaction("42")) is True   # via allowlist
+        assert view._check_auth(_make_interaction("7")) is True    # via owner
+        assert view._check_auth(_make_interaction("99")) is False  # neither
+
+
 class TestInteractivePromptModalFieldTypes:
     """Test modal construction with select, radio, and checkbox field types."""
 

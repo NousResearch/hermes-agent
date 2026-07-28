@@ -5770,6 +5770,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     build_prompt_embed,
                 )
 
+                # Read the session initiator from the clarify entry so the
+                # ``session_owner_only`` policy admits the user who started
+                # the turn.  The gateway registers the entry (with the owner)
+                # before this send runs.  When the owner is absent the value
+                # stays None — and on a no-allowlist deployment that fail-
+                # closes against everyone (by design: ``origin_user_id`` must
+                # not be None when there's no allowlist, otherwise not even
+                # the initiator can answer their own prompt).
+                from tools.clarify_gateway import get_owner_user_id
+                origin_user_id: Optional[str] = get_owner_user_id(clarify_id)
+
                 embed = build_prompt_embed(question, status="pending")
                 view = InteractivePromptView(
                     prompt_id=clarify_id,
@@ -5778,7 +5789,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                     auth_policy=auth_policy or "session_owner_only",
-                    origin_user_id=None,  # falls back to allowlist auth
+                    origin_user_id=origin_user_id,
                     timeout_seconds=timeout_seconds or 900,
                 )
                 msg = await channel.send(embed=embed, view=view)

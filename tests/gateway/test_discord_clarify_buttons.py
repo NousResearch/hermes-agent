@@ -592,3 +592,116 @@ class TestDiscordSendClarify:
         for label in choice_labels:
             assert "only_name_here" not in label, f"name leaked: {label!r}"
             assert "only_value_here" not in label, f"value leaked: {label!r}"
+
+    # -- Rich-options path: thread session_owner_user_id → origin_user_id --
+
+    def _patch_interactive_views(self, monkeypatch):
+        """Stub InteractivePromptView so the rich path runs under the
+        conftest discord mock (which doesn't define discord.ui.Modal, so the
+        real view class is never created).  Returns the captured-kwargs dict.
+        """
+        import tools.discord_interactive_views as ipv
+
+        captured: dict = {}
+
+        class _FakeView:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self._message = None
+
+        monkeypatch.setattr(ipv, "InteractivePromptView", _FakeView, raising=False)
+        monkeypatch.setattr(
+            ipv, "build_prompt_embed",
+            lambda question, status="pending": object(),
+            raising=False,
+        )
+        return captured
+
+    def _make_send_adapter(self):
+        """An adapter wired to a mocked channel that records the sent message."""
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_rich_threads_session_owner_into_origin_user_id(self, monkeypatch):
+        """T2: the rich path reads ``session_owner_user_id`` from the clarify
+        entry and passes it as ``origin_user_id`` (instead of hardcoded None)."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            clarify_id="cid-rich-owner",
+            session_key="sk-rich-owner",
+            question="Approve?",
+            choices=None,
+            options=[{"label": "Yes", "value": "yes"}],
+            session_owner_user_id="42",
+        )
+
+        captured = self._patch_interactive_views(monkeypatch)
+        adapter = self._make_send_adapter()
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Approve?",
+            choices=None,
+            clarify_id="cid-rich-owner",
+            session_key="sk-rich-owner",
+            options=[{"label": "Yes", "value": "yes"}],
+            auth_policy="session_owner_only",
+        )
+
+        assert result.success is True
+        assert captured.get("origin_user_id") == "42"
+        assert captured.get("auth_policy") == "session_owner_only"
+
+    @pytest.mark.asyncio
+    async def test_rich_origin_user_id_none_when_entry_has_no_owner(self, monkeypatch):
+        """When the entry carries no owner, ``origin_user_id`` stays None and
+        the policy falls back to the allowlist (fail-closed when empty)."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            clarify_id="cid-rich-noowner",
+            session_key="sk-rich-noowner",
+            question="Approve?",
+            choices=None,
+            options=[{"label": "Yes", "value": "yes"}],
+        )
+
+        captured = self._patch_interactive_views(monkeypatch)
+        adapter = self._make_send_adapter()
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Approve?",
+            choices=None,
+            clarify_id="cid-rich-noowner",
+            session_key="sk-rich-noowner",
+            options=[{"label": "Yes", "value": "yes"}],
+        )
+
+        assert result.success is True
+        assert captured.get("origin_user_id") is None
+
+    @pytest.mark.asyncio
+    async def test_rich_origin_user_id_none_when_no_entry_registered(self, monkeypatch):
+        """A legacy caller that never registered an entry still gets None —
+        no crash, graceful fallback to allowlist auth."""
+        captured = self._patch_interactive_views(monkeypatch)
+        adapter = self._make_send_adapter()
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Approve?",
+            choices=None,
+            clarify_id="cid-never-registered",
+            session_key="sk-none",
+            options=[{"label": "Yes", "value": "yes"}],
+        )
+
+        assert result.success is True
+        assert captured.get("origin_user_id") is None

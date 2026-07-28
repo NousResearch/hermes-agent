@@ -119,10 +119,13 @@ def build_prompt_embed(
 
 
 # ---------------------------------------------------------------------------
-# Auth helper — delegates to shared utility to avoid duplication
+# Auth helpers — delegates to shared utilities to avoid duplication
 # ---------------------------------------------------------------------------
 
-from tools.discord_auth_helpers import component_check_auth as _component_check_auth
+from tools.discord_auth_helpers import (
+    component_check_auth as _component_check_auth,
+    session_owner_check_auth as _session_owner_check_auth,
+)
 
 from dataclasses import dataclass as _dataclass
 
@@ -207,34 +210,20 @@ if discord is not None:
 
             Each policy is enforced independently:
 
-              * ``session_owner_only`` — restricts to the user who originated
-                the session.
+              * ``session_owner_only`` — admits the session initiator
+                (``origin_user_id``); an existing user allowlist gates
+                independently (union).  With no owner and no allowlist the
+                policy fails closed rather than admit everyone.
               * ``any_allowed_user`` — only the user allowlist is consulted;
                 roles are ignored even if present.
               * ``any_allowed_role`` — only the role allowlist is consulted;
                 user ID matches are ignored.
               * ``any_allowed_user_or_role`` — user OR role allowlist (union).
             """
-            if (
-                self.auth_policy == "session_owner_only"
-                and self.origin_user_id is not None
-            ):
-                return str(interaction.user.id) == str(self.origin_user_id)
-
-            # session_owner_only with no origin_user_id: fall through to
-            # user allowlist (same as any_allowed_user).  If no allowlists
-            # are configured, fail CLOSED — don't silently allow everyone.
-            if (
-                self.auth_policy == "session_owner_only"
-                and self.origin_user_id is None
-            ):
-                user_set = self.allowed_user_ids or set()
-                if not user_set:
-                    return False  # fail closed: no owner + no allowlist
-                try:
-                    return str(interaction.user.id) in user_set
-                except AttributeError:
-                    return False
+            if self.auth_policy == "session_owner_only":
+                return _session_owner_check_auth(
+                    interaction, self.origin_user_id, self.allowed_user_ids,
+                )
 
             # Policy-specific checks for the remaining three policies.
             if self.auth_policy == "any_allowed_user":

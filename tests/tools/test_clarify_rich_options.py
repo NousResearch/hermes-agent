@@ -486,6 +486,27 @@ class TestSessionOwnerCapture:
         sig = entry.signature()
         assert sig["session_owner_user_id"] is None
 
+    def test_get_owner_user_id_returns_captured_owner(self):
+        """The public accessor exposes the owner without dipping into _entries."""
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "id-get-owner", "sk-owner", "Q?", None,
+            session_owner_user_id="42",
+        )
+        assert cm.get_owner_user_id("id-get-owner") == "42"
+
+    def test_get_owner_user_id_none_when_owner_absent(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("id-get-owner-none", "sk-owner", "Q?", ["A"])
+        assert cm.get_owner_user_id("id-get-owner-none") is None
+
+    def test_get_owner_user_id_none_when_entry_missing(self):
+        from tools import clarify_gateway as cm
+
+        assert cm.get_owner_user_id("never-registered") is None
+
     def test_closure_pattern_propagates_source_user_id(self):
         """Reproduce the ``_clarify_callback_sync`` closure pattern: capture a
         ``source`` with ``user_id="42"``, call ``register(...)`` exactly as the

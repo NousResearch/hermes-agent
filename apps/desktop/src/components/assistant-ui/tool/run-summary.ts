@@ -112,9 +112,9 @@ function lowerFirst(text: string): string {
 
 /**
  * Collapse a run of tool calls into the single grey line that stands in for it
- * — "Explored 3 files, ran 5 commands". The category holding the still-running
- * tool speaks in the present tense so a live run reads as work in progress
- * rather than work already done.
+ * — "Explored 3 files, ran 5 commands". While the run is live, the category
+ * holding its most recent call speaks in the present tense so the line reads as
+ * work in progress rather than work already done.
  *
  * Whether the run is `live` is the caller's to say, not something readable off
  * the calls: a call can be left without a result by a turn that ended or an
@@ -126,8 +126,12 @@ function lowerFirst(text: string): string {
  * diff to report here; each edit carries its own +N/−M on its card.
  */
 export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean): string {
-  const running = live ? tools.find(isPending) : undefined
-  const liveCategory = running ? toolCategory(running.toolName) : null
+  // Which clause narrates in the present tense: normally the outstanding call,
+  // but sequential calls leave gaps where the run is still going and nothing is
+  // pending. The most recent call covers those, and it's the one the ticker is
+  // showing anyway.
+  const narrating = live ? (tools.find(isPending) ?? tools.at(-1)) : undefined
+  const liveCategory = narrating ? toolCategory(narrating.toolName) : null
 
   const byCategory = new Map<RunCategory, ToolCallLike[]>()
 

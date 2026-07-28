@@ -316,6 +316,43 @@ function abandonedRunMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
+// The gap between one sequential call finishing and the next arriving: the
+// turn is still running, the run is still the tail, but for this instant every
+// call has a result.
+function betweenSequentialCallsMessage(): ThreadMessage {
+  return {
+    id: 'assistant-between-calls',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'term-a',
+        toolName: 'terminal',
+        args: { command: 'sleep 2; echo alpha' },
+        argsText: JSON.stringify({ command: 'sleep 2; echo alpha' }),
+        result: { exit_code: 0, stdout: 'alpha' }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'term-b',
+        toolName: 'terminal',
+        args: { command: 'sleep 2; echo bravo' },
+        argsText: JSON.stringify({ command: 'sleep 2; echo bravo' }),
+        result: { exit_code: 0, stdout: 'bravo' }
+      }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 // Still streaming, but the agent has moved past its first run and left both of
 // its calls unresolved. Only the run at the tail is still live.
 function movedOnMessage(): ThreadMessage {
@@ -455,6 +492,18 @@ describe('live tool run', () => {
       expect(container.querySelector('[data-tool-summary]')).not.toBeNull()
     })
 
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
+  })
+
+  // Liveness used to also require an unresolved call, which is false for the
+  // instant between one sequential call finishing and the next arriving — so a
+  // string of commands settled and re-opened between every one, unmounting the
+  // ticker and dropping its reel back to the first row instead of scrolling.
+  it('stays live in the gap between two sequential calls', async () => {
+    const { container } = render(<GroupHarness message={betweenSequentialCallsMessage()} />)
+
+    expect(await screen.findByText('Running 2 commands')).toBeTruthy()
+    expect(container.querySelector('[data-tool-ticker]')).not.toBeNull()
     expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
   })
 })

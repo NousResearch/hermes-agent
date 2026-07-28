@@ -1150,11 +1150,8 @@ def repair_vulnerable_runtime(
             "  ✓ Managed Python runtime repaired "
             f"(SQLite {current.sqlite_version_string} → {final_version})"
         )
-        if backup is not None:
-            print(
-                f"  ℹ Previous venv parked at {backup.name}; "
-                "keep it until all older Hermes processes have exited."
-            )
+        if backup is not None and backup.exists():
+            _remove_tree(backup, boundary=root)
         return RuntimeRepairResult(
             "repaired",
             sqlite_before=current.sqlite_version_string,

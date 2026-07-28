@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  MESSAGING_SESSION_SOURCE_IDS,
   isMessagingSource,
+  MESSAGING_SESSION_SOURCE_IDS,
   sessionSourceSearchTerms
 } from './session-source'
 

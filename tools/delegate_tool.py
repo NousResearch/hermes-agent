@@ -2979,7 +2979,7 @@ def delegate_task(
             child._live_transcript_path = str(_writer.path)
         children.append((i, t, child))
 
-    def _execute_and_aggregate() -> dict:
+    def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
@@ -3028,7 +3028,10 @@ def delegate_task(
 
                 pending = set(futures.keys())
                 while pending:
-                    if getattr(parent_agent, "_interrupt_requested", False) is True:
+                    if (
+                        honor_parent_interrupt
+                        and getattr(parent_agent, "_interrupt_requested", False) is True
+                    ):
                         # Parent interrupted — collect whatever finished and
                         # abandon the rest.  Children already received the
                         # interrupt signal; we just can't wait forever.
@@ -3270,7 +3273,9 @@ def delegate_task(
                     pass
 
         def _batch_runner():
-            return _execute_and_aggregate()
+            # This batch is detached from the foreground turn. Its lifecycle is
+            # owned by the async registry and cancelled only via _batch_interrupt.
+            return _execute_and_aggregate(honor_parent_interrupt=False)
 
         def _batch_interrupt():
             for _c in _child_agents:

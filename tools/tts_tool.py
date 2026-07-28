@@ -1001,7 +1001,25 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProcess:
+def _command_provider_env_passthrough(config: Dict[str, Any]) -> list:
+    """Return the provider's ``env_passthrough`` allowlist (opt-out of scrub).
+
+    Command providers legitimately reference their own API keys in the shell
+    template (curl one-liners). The child env is scrubbed of Hermes secrets by
+    default; ``env_passthrough: [MY_API_KEY, ...]`` copies the named variables
+    back from the parent environment so a trusted template keeps working.
+    """
+    raw = config.get("env_passthrough")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _run_command_tts(
+    command: str,
+    timeout: float,
+    env_passthrough: Optional[list] = None,
+) -> subprocess.CompletedProcess:
     """Run a command-provider shell command with process-tree idle cleanup.
 
     Child env is scrubbed of Hermes secrets (salvage of #56332) while still
@@ -1011,6 +1029,10 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
     from tools.environments.local import hermes_subprocess_env
 
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
+    for key in env_passthrough or []:
+        value = os.environ.get(key)
+        if value is not None:
+            scrubbed[key] = value
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
@@ -1172,7 +1194,11 @@ def _generate_command_tts(
         command = _render_command_tts_template(command_template, placeholders)
 
         try:
-            _run_command_tts(command, timeout)
+            _run_command_tts(
+                command,
+                timeout,
+                env_passthrough=_command_provider_env_passthrough(config),
+            )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
                 f"TTS provider '{provider_name}' timed out after {timeout:g}s"

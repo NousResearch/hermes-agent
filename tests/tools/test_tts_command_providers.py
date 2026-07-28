@@ -663,3 +663,49 @@ class TestCheckTtsRequirements:
         }
         with patch("tools.tts_tool._load_tts_config", return_value=cfg):
             assert check_tts_requirements() is True
+
+
+class TestCommandTtsEnvPassthrough:
+    def test_env_passthrough_restores_named_keys(self, monkeypatch):
+        """A provider's env_passthrough allowlist re-adds its own API key
+        without unscrubbing everything else."""
+        monkeypatch.setenv("MY_TTS_API_KEY", "sk-provider")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+
+        result = _run_command_tts(
+            "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
+        )
+
+        assert result.returncode == 0
+        env = captured["env"]
+        assert env["MY_TTS_API_KEY"] == "sk-provider"
+        assert "OPENAI_API_KEY" not in env
+
+    def test_allowlist_parsed_from_provider_config(self):
+        from tools.tts_tool import _command_provider_env_passthrough
+
+        assert _command_provider_env_passthrough(
+            {"env_passthrough": ["A_KEY", " B_KEY ", ""]}
+        ) == ["A_KEY", "B_KEY"]
+        assert _command_provider_env_passthrough({}) == []
+        assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []

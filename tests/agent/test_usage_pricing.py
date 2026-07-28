@@ -636,3 +636,173 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_cache_write_falls_back_to_input_rate_when_no_premium_published(monkeypatch):
+    """A provider that publishes no separate cache-write rate must still price
+    the turn. Cache-write tokens are prompt tokens billed as ordinary input
+    when there is no write premium, so a missing rate means "no premium", not
+    "unpriceable". Contract: the turn costs exactly the same as one where those
+    tokens had arrived as plain input tokens."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "no-write-premium-model": {
+                "pricing": {
+                    "prompt": "0.000005",
+                    "completion": "0.00003",
+                    "input_cache_read": "0.0000005",
+                    # no cache_write / input_cache_write key — the real-world gap
+                }
+            }
+        },
+    )
+    kwargs = dict(provider="openrouter", base_url="https://openrouter.ai/api/v1")
+
+    with_cache_write = estimate_usage_cost(
+        "no-write-premium-model",
+        CanonicalUsage(
+            input_tokens=6,
+            output_tokens=3104,
+            cache_read_tokens=206366,
+            cache_write_tokens=114435,
+        ),
+        **kwargs,
+    )
+    # Same prompt-token budget, but the cache-write tokens arrive as plain input.
+    as_plain_input = estimate_usage_cost(
+        "no-write-premium-model",
+        CanonicalUsage(
+            input_tokens=6 + 114435,
+            output_tokens=3104,
+            cache_read_tokens=206366,
+            cache_write_tokens=0,
+        ),
+        **kwargs,
+    )
+
+    assert as_plain_input.status == "estimated"  # control: this always worked
+    assert with_cache_write.status == "estimated"
+    assert with_cache_write.amount_usd == as_plain_input.amount_usd
+    assert any("input rate" in note for note in with_cache_write.notes)
+
+
+def test_published_cache_write_premium_is_never_replaced_by_the_input_rate(monkeypatch):
+    """The fallback may only fill a gap. When a cache-write rate IS published
+    it must be used verbatim — including a $0 rate, which is a real published
+    value and must not be mistaken for "missing" and inflated to input."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "premium-model": {
+                "pricing": {
+                    "prompt": "0.000005",
+                    "completion": "0.00003",
+                    "input_cache_write": "0.00000625",  # 1.25x input, Anthropic-style
+                }
+            },
+            "free-write-model": {
+                "pricing": {
+                    "prompt": "0.000005",
+                    "completion": "0.00003",
+                    "input_cache_write": "0",  # published as free
+                }
+            },
+        },
+    )
+    kwargs = dict(provider="openrouter", base_url="https://openrouter.ai/api/v1")
+    usage = CanonicalUsage(input_tokens=0, output_tokens=0, cache_write_tokens=1_000_000)
+
+    premium = estimate_usage_cost("premium-model", usage, **kwargs)
+    free = estimate_usage_cost("free-write-model", usage, **kwargs)
+    premium_entry = get_pricing_entry("premium-model", **kwargs)
+    input_rate = premium_entry.input_cost_per_million
+
+    # Published premium honoured, and it is strictly above the input rate —
+    # so it demonstrably was not overwritten by the fallback.
+    assert premium.amount_usd == premium_entry.cache_write_cost_per_million
+    assert premium.amount_usd > input_rate
+    # A published zero stays zero rather than being read as "missing".
+    assert free.amount_usd == 0
+    # Neither annotates the fallback.
+    assert not any("input rate" in n for n in premium.notes)
+    assert not any("input rate" in n for n in free.notes)
+
+
+def test_cache_write_still_unknown_when_input_rate_is_also_missing(monkeypatch):
+    """Guard on the bail-out: with neither a cache-write nor an input rate the
+    route is genuinely unpriceable and must stay unknown. The fallback must not
+    paper over a truly absent price."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {"output-only-model": {"pricing": {"completion": "0.00001"}}},
+    )
+
+    result = estimate_usage_cost(
+        "output-only-model",
+        CanonicalUsage(input_tokens=0, output_tokens=10, cache_write_tokens=5000),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "unknown"
+    assert result.amount_usd is None
+
+
+def test_cache_read_does_not_fall_back_to_the_input_rate(monkeypatch):
+    """The cache-read/cache-write asymmetry is deliberate and must hold: a
+    cache READ is discounted, so substituting the input rate would over-bill
+    rather than fill a gap. A missing cache-read rate stays unknown even
+    though the input rate is known."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "no-read-rate-model": {
+                "pricing": {"prompt": "0.000005", "completion": "0.00003"}
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "no-read-rate-model",
+        CanonicalUsage(input_tokens=10, output_tokens=10, cache_read_tokens=5000),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "unknown"
+
+
+def test_no_shipped_route_is_unpriceable_solely_because_of_cache_write():
+    """Invariant over the shipped pricing snapshot: for every entry that can
+    price a plain input+output turn, adding cache-write tokens must not turn
+    the turn unpriceable. This is the bug class — on the pre-fix code every
+    snapshot entry lacking a cache-write premium (OpenAI, DeepSeek, Google,
+    Bedrock Nova, ...) dropped the whole turn to status=unknown."""
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    regressed = []
+    for (provider, model), entry in _OFFICIAL_DOCS_PRICING.items():
+        if entry.input_cost_per_million is None or entry.output_cost_per_million is None:
+            continue
+        baseline = estimate_usage_cost(
+            model,
+            CanonicalUsage(input_tokens=1000, output_tokens=500),
+            provider=provider,
+        )
+        if baseline.status != "estimated":
+            continue  # not priceable for unrelated reasons; not our contract
+        with_write = estimate_usage_cost(
+            model,
+            CanonicalUsage(input_tokens=1000, output_tokens=500, cache_write_tokens=50_000),
+            provider=provider,
+        )
+        if with_write.status != "estimated" or with_write.amount_usd is None:
+            regressed.append(f"{provider}/{model}")
+        elif with_write.amount_usd <= baseline.amount_usd:
+            regressed.append(f"{provider}/{model} (cache-write billed as free)")
+
+    assert not regressed, (
+        "shipped routes made unpriceable by cache-write tokens alone: "
+        f"{sorted(regressed)}"
+    )

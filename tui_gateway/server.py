@@ -33,6 +33,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
+from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
     clear_turn_marker,
@@ -10748,6 +10749,14 @@ def _(rid, params: dict) -> dict:
         accepted = agent.steer(text)
     except Exception as exc:
         return _err(rid, 5000, f"steer failed: {exc}")
+    if accepted:
+        # Record the correction on the live turn exactly like session.redirect
+        # does. Without this, a resume/reconnect while the turn is running
+        # rebuilds the transcript from the inflight snapshot and the steered
+        # text has no user bubble — the "my message vanished on reload" loss.
+        with session["history_lock"]:
+            _record_inflight_correction(session, text)
+            session["last_active"] = time.time()
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
 
 
@@ -11682,6 +11691,7 @@ def _run_prompt_submit(
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         secret_token = None
         goal_followup = None  # set by the post-turn goal hook below
+        result = None  # turn outcome; read after the finally for leftover /steer
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         one_turn_restore = session.pop("one_turn_model_restore", None)
         # True once a failed turn's snapshot was retained for resume replay —
@@ -12001,6 +12011,15 @@ def _run_prompt_submit(
                     result.get("failed") or result.get("partial")
                 ):
                     raw = f"Error: {result.get('error')}"
+                # "Operation interrupted: waiting for model response (…)" is
+                # cancellation metadata, not assistant prose. gateway/run.py
+                # and the ACP adapter already suppress this sentinel; without
+                # this the desktop paints it as the agent's reply whenever a
+                # stop/steer lands mid-request (#7921).
+                if status == "interrupted" and isinstance(raw, str) and raw.strip().startswith(
+                    INTERRUPT_WAITING_FOR_MODEL_PREFIX
+                ):
+                    raw = ""
                 lr = result.get("last_reasoning")
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
@@ -12257,6 +12276,16 @@ def _run_prompt_submit(
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
         # the goal judge / notifications re-evaluate at the end of that turn.
+        # Leftover /steer: the steer arrived after the last tool batch (e.g.
+        # during the final API call), so the agent couldn't inject it and
+        # returned it in result["pending_steer"]. Requeue it as the next turn
+        # so it isn't silently dropped — same rule as cli.py and gateway/run.py.
+        # A real queued prompt still wins: the merge in _enqueue_prompt keeps
+        # both texts.
+        _leftover_steer = result.get("pending_steer") if isinstance(result, dict) else None
+        if isinstance(_leftover_steer, str) and _leftover_steer.strip():
+            with session["history_lock"]:
+                _enqueue_prompt(session, _leftover_steer, session.get("transport"))
         if _drain_queued_prompt(rid, sid, session):
             return
 

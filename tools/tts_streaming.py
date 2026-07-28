@@ -28,7 +28,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
-from tools.tts_tool import _get_provider, get_env_value
+from tools.tts_tool import _get_provider, _load_tts_config, get_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +195,15 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         )
 
 
+def _openai_config_api_key() -> str:
+    """Return ``tts.openai.api_key`` from config.yaml, or empty string."""
+    try:
+        openai_cfg = (_load_tts_config().get("openai") or {})
+    except Exception:
+        return ""
+    return openai_cfg.get("api_key") or ""
+
+
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
     """OpenAI speech with ``response_format=pcm`` (24 kHz mono int16)."""
@@ -203,13 +212,13 @@ class OpenAIStreamer(StreamingTTSProvider):
 
     @staticmethod
     def available() -> bool:
-        return bool(resolve_openai_audio_api_key())
+        return bool(_openai_config_api_key() or resolve_openai_audio_api_key())
 
     def stream(self, text: str) -> Iterator[bytes]:
         from openai import OpenAI
 
         client = OpenAI(
-            api_key=resolve_openai_audio_api_key(),
+            api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
             base_url=(
                 self.section.get("base_url")
                 or get_env_value("OPENAI_BASE_URL")

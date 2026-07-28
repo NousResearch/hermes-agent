@@ -302,15 +302,15 @@ CLI：
 
 ```bash
 # 查看当前规则和 pairing 状态
-python -m gateway.platforms.feishu_comment_rules status
+python -m plugins.platforms.feishu.feishu_comment_rules status
 
 # 模拟特定文档 + 用户的访问检查
-python -m gateway.platforms.feishu_comment_rules check <fileType:fileToken> <user_open_id>
+python -m plugins.platforms.feishu.feishu_comment_rules check <fileType:fileToken> <user_open_id>
 
 # 运行时管理 pairing 授权
-python -m gateway.platforms.feishu_comment_rules pairing list
-python -m gateway.platforms.feishu_comment_rules pairing add <user_open_id>
-python -m gateway.platforms.feishu_comment_rules pairing remove <user_open_id>
+python -m plugins.platforms.feishu.feishu_comment_rules pairing list
+python -m plugins.platforms.feishu.feishu_comment_rules pairing add <user_open_id>
+python -m plugins.platforms.feishu.feishu_comment_rules pairing remove <user_open_id>
 ```
 
 ### 飞书应用所需配置

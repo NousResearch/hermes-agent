@@ -64,7 +64,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `feishu_doc` 工具集
 
-仅限飞书文档评论智能回复处理器（`gateway/platforms/feishu_comment.py`）使用。不在 `hermes-cli` 或常规飞书聊天适配器中暴露。
+仅限飞书文档评论智能回复处理器（`plugins/platforms/feishu/feishu_comment.py`）使用。不在 `hermes-cli` 或常规飞书聊天适配器中暴露。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|

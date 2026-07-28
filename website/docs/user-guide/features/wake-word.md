@@ -76,7 +76,7 @@ wake_word:
   surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
   provider: openwakeword      # "openwakeword" (free, local) | "porcupine"
   phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
-  sensitivity: 0.5            # 0.0-1.0 — raise to reduce false triggers
+  sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
@@ -101,10 +101,18 @@ threshold and fire the wake word unintentionally. Two knobs control this:
   just one. Raise it (e.g. `4`–`5`) if you still get false triggers in a noisy
   room; the cost is a few tens of milliseconds of extra latency. `1` restores
   the old fire-on-first-frame behavior.
-- **`sensitivity`** — raise toward `1.0` to demand a higher score per frame.
+- **`sensitivity`** (default `0.6`) — the detection threshold, `0.0`–`1.0`.
+  Higher is stricter (fewer false triggers). This direction is consistent across
+  **all** engines — for openWakeWord it's the raw per-frame score threshold, for
+  sherpa it maps onto the keyword threshold, and for Porcupine it's inverted
+  internally so "higher = stricter" holds there too. The `0.6` default sits
+  above openWakeWord's permissive `0.5` baseline, which let near-misses like
+  "hey hor" through; raise toward `0.8` if you still get false fires, lower it
+  if real "hey hermes" utterances are missed.
 
 The `sherpa` and `porcupine` engines decode the whole phrase internally, so they
-don't have the single-frame-spike problem and ignore `confirmation_frames`.
+don't have the single-frame-spike problem and ignore `confirmation_frames`
+(but they still honor `sensitivity`).
 
 `inference_framework` picks the openWakeWord backend. Leave it empty (the
 default) to let Hermes choose per platform: **tflite on Apple Silicon**, onnx

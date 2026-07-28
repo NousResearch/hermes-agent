@@ -9968,6 +9968,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running_agents_ts.clear()
             if hasattr(self, "_active_session_leases"):
                 self._active_session_leases.clear()
+            # Flush pending messages to disk before clearing (#72680).
+            # When FTS5 corruption prevents message persistence, the
+            # in-memory _pending_messages dict holds the only surviving
+            # copy.  Clearing without flushing causes permanent data loss.
+            try:
+                from gateway.shutdown_flush import flush_pending_to_file
+                flush_pending_to_file(self._pending_messages, reason="shutdown")
+            except Exception:
+                pass
             self._pending_messages.clear()
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
@@ -24490,6 +24499,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     success = await runner.start()
     if not success:
         return False
+    # Recover any pending messages flushed during a previous shutdown (#72680).
+    try:
+        from gateway.shutdown_flush import recover_pending_to_db
+        recovered = recover_pending_to_db()
+        if recovered:
+            logger.info(
+                "Recovered %d pending message(s) from shutdown flush", recovered,
+            )
+    except Exception:
+        pass
     if runner.should_exit_cleanly:
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)

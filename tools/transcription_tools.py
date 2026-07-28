@@ -1399,7 +1399,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        local_cfg = _load_stt_config().get("local", {})
+        local_cfg = _load_stt_config().get("local") or {}
         # Lazy-load the model (downloads on first use, ~150 MB for 'base').
         # Double-checked lock: concurrent voice messages must not both
         # download/load the model (#24767).

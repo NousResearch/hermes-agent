@@ -438,6 +438,11 @@ class ManagedLlmStream(Iterator[Any]):
                 run_callback(self._on_chunk, _jsonable(chunk))
 
         def relay_finalizer() -> Any:
+            # Relay can invoke the finalizer while unwinding a provider-stream
+            # failure. Preserve that original callback error instead of
+            # replacing it with a secondary "missing terminal response" error.
+            if self._callback_error is not None:
+                return None
             try:
                 if self.final_response is not None:
                     return _jsonable(self.final_response)

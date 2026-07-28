@@ -610,6 +610,61 @@ function overlayHomeLane(
   }
 }
 
+/**
+ * Drop matching sessions from every lane (and the overview preview) of a
+ * project subtree, recounting as lanes shrink. Used to keep pinned sessions out
+ * of the project lists: a pin belongs to the Pinned section, not to both. The
+ * predicate — rather than an id set — lets the caller match a pin on its
+ * durable lineage-root id as well as the live one. Memo-stable: returns the
+ * same ref when nothing matched.
+ */
+export function excludeProjectSessions(
+  project: SidebarProjectTree,
+  isExcluded: (session: SessionInfo) => boolean
+): SidebarProjectTree {
+  let changed = false
+
+  const repos = project.repos.map(repo => {
+    let repoChanged = false
+
+    const groups = repo.groups.flatMap(group => {
+      const sessions = group.sessions.filter(session => !isExcluded(session))
+
+      if (sessions.length === group.sessions.length) {
+        return [group]
+      }
+
+      repoChanged = true
+
+      // A lane emptied by the filter has nothing left to show.
+      return sessions.length ? [{ ...group, sessions }] : []
+    })
+
+    if (!repoChanged) {
+      return repo
+    }
+
+    changed = true
+
+    return { ...repo, groups, sessionCount: groups.reduce((n, group) => n + group.sessions.length, 0) }
+  })
+
+  const previewSessions = project.previewSessions?.filter(session => !isExcluded(session))
+
+  changed ||= previewSessions?.length !== project.previewSessions?.length
+
+  if (!changed) {
+    return project
+  }
+
+  return {
+    ...project,
+    previewSessions,
+    repos,
+    sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0)
+  }
+}
+
 /** Project-level overlay: {@link overlayRepoLanes} across every repo subtree. */
 export function overlayLiveLanes(
   project: SidebarProjectTree,

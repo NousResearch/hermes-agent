@@ -1525,6 +1525,91 @@ def test_turn_cleanup_drains_logical_calls_after_turn_scope_start_failure(
     assert turn.logical_llm_calls == {}
 
 
+def test_turn_cleanup_drains_logical_calls_in_lifo_order(direct_runtime):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="session-lifo",
+        platform="cli",
+    )
+    assert lease.session is not None
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="turn-lifo",
+        task_id="task-lifo",
+    )
+    assert turn.handle is not None
+    runtime = lease.host
+
+    handles = []
+    for request_id in ("request-1", "request-2"):
+        handle = runtime.run_in_session(
+            lease.session,
+            runtime.relay.scope.push,
+            relay_runtime.LOGICAL_LLM_SCOPE,
+            runtime.relay.ScopeType.Function,
+            handle=turn.handle,
+            input={},
+        )
+        turn.logical_llm_calls[request_id] = handle
+        handles.append(handle)
+
+    coordinator.end_turn(turn, outcome="failed")
+    coordinator.release_conversation(lease)
+
+    logical_closes = [
+        event[1]
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] in handles
+    ]
+    assert logical_closes == list(reversed(handles))
+    assert turn.logical_llm_calls == {}
+
+
+def test_real_binding_drains_multiple_logical_calls_before_turn_close(
+    real_binding_runtime,
+    caplog,
+):
+    coordinator = relay_runtime.SESSION_COORDINATOR
+    profile_key = relay_runtime.current_profile_key()
+    lease = coordinator.acquire_conversation(
+        profile_key=profile_key,
+        session_id="session-native-lifo",
+        platform="cli",
+    )
+    assert lease.session is not None
+    turn = coordinator.begin_turn(
+        lease,
+        turn_id="turn-native-lifo",
+        task_id="task-native-lifo",
+    )
+    assert turn.handle is not None
+    runtime = lease.host
+
+    for request_id in ("request-1", "request-2"):
+        handle = runtime.run_in_session(
+            lease.session,
+            runtime.relay.scope.push,
+            relay_runtime.LOGICAL_LLM_SCOPE,
+            runtime.relay.ScopeType.Function,
+            handle=turn.handle,
+            input={},
+        )
+        turn.logical_llm_calls[request_id] = handle
+
+    coordinator.end_turn(turn, outcome="failed")
+    coordinator.release_conversation(lease)
+    coordinator.finalize_conversation(
+        profile_key=profile_key,
+        session_id=lease.session_id,
+    )
+
+    assert turn.logical_llm_calls == {}
+    assert "finalization failed" not in caplog.text
+    assert "closed with errors" not in caplog.text
+
+
 def test_shared_metrics_creates_one_task_under_concurrent_access(direct_runtime):
     runtime = relay_shared_metrics._get_runtime()
     assert runtime is not None

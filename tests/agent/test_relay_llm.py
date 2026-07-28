@@ -181,6 +181,49 @@ def test_deferred_stream_preserves_provider_error_and_logical_scope_for_retry(
     assert "request-2" in turn.logical_llm_calls
 
 
+def test_stream_provider_error_is_not_replaced_by_finalizer_error(relay_turn):
+    _relay, turn = relay_turn
+
+    class ProviderError(Exception):
+        pass
+
+    provider_error = ProviderError("provider failed before first chunk")
+    finalizer_called = False
+
+    def failing_stream(_request):
+        def generate():
+            raise provider_error
+            yield  # pragma: no cover
+
+        return generate()
+
+    def failing_finalizer():
+        nonlocal finalizer_called
+        finalizer_called = True
+        raise RuntimeError("missing terminal response")
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "input": "hi"},
+        failing_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=failing_finalizer,
+        metadata={
+            "api_mode": "codex_responses",
+            "api_request_id": "request-provider-before-finalizer",
+        },
+        defer_logical_completion=True,
+    )
+
+    with pytest.raises(ProviderError) as caught:
+        list(stream)
+
+    assert caught.value is provider_error
+    assert finalizer_called is False
+    assert "request-provider-before-finalizer" in turn.logical_llm_calls
+
+
 def test_non_deferred_partial_stream_close_cancels_logical_call(
     relay_turn,
     monkeypatch,

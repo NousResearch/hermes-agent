@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'rea
 import { useNavigate } from 'react-router-dom'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
-import { clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from '@/app/chat/surface-vars'
+import { chatSurfaceRoot, clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from '@/app/chat/surface-vars'
 import { AGENTS_ROUTE } from '@/app/routes'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
@@ -220,11 +220,16 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     const el = stackRef.current
 
     if (!visible || !el) {
-      clearSurfaceVar(el, STATUS_STACK_VAR)
-
       return
     }
 
+    // Resolve the owning surface NOW, while the node is attached. The cleanup
+    // below runs after the stack collapsed and React removed the div, so
+    // closest() from the detached node misses [data-chat-surface] and would
+    // clear the document root instead — leaving the stale height on the
+    // surface, which keeps inflating the thread's bottom clearance until the
+    // next publish.
+    const root = chatSurfaceRoot(el)
     let last = -1
 
     const sync = () => {
@@ -242,7 +247,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
     return () => {
       observer.disconnect()
-      clearSurfaceVar(el, STATUS_STACK_VAR)
+      clearSurfaceVar(root, STATUS_STACK_VAR)
     }
   }, [visible])
 

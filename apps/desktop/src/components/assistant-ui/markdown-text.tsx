@@ -373,14 +373,18 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
     return <span className="my-2 block text-sm text-muted-foreground">Loading {name}...</span>
   }
 
+  // The width cap belongs on the container, not the <img>: a percentage
+  // max-width resolves to none while the container measures its fit-content
+  // width, so the box overshoots the rendered image and strands the download
+  // button — which anchors to the container — out in the margin.
   return (
     <ZoomableImage
       alt={alt}
       className={cn(
-        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-[min(100%,var(--image-preview-max-width))] rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
         className
       )}
-      containerClassName="my-2 block w-fit max-w-full"
+      containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
       slot="aui_markdown-image"
       src={resolvedSrc}
       {...props}

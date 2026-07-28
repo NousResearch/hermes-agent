@@ -5,6 +5,11 @@ import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 
+/** Default hover-open delay for `Tip`. Non-zero so a cursor sweeping across the
+ *  chrome doesn't flash a trail of tips — they only appear on a deliberate,
+ *  settled hover. Call sites that need an instant tip pass `delayDuration={0}`. */
+const TIP_DELAY_MS = 200
+
 /** True inside `RootTooltipProvider`. `Tip` uses this to decide whether it
  *  needs to supply its own provider — see the note on `Tip`. */
 const HasTooltipProvider = React.createContext(false)
@@ -79,7 +84,8 @@ function TooltipContent({
         // Transparent, width-capped wrapper. The visible chip is the inner inline
         // span so `box-decoration-break: clone` gives a marker-style background
         // that hugs EACH wrapped line (bg only on the text, ragged right — no
-        // rectangular dead space). Instant, no transition (delayDuration=0).
+        // rectangular dead space). No fade transition — once the hover delay
+        // elapses the chip appears at once.
         // pointer-events-none: the tip must never steal hover/clicks from the
         // chrome underneath (titlebar tools, adjacent tabs, etc.).
         className={cn('pointer-events-none z-(--z-over-modal) w-fit max-w-64 select-none', className)}
@@ -127,7 +133,7 @@ interface TipProps extends Omit<React.ComponentProps<typeof TooltipPrimitive.Con
 // tried and reverted. `asChild` puts `data-slot="tooltip-trigger"` on the
 // child element itself, so arming REPLACES that node — which broke 18 tests
 // encoding that contract, and risks focus/ref identity at every call site.
-function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
+function Tip({ label, children, delayDuration = TIP_DELAY_MS, ...props }: TipProps) {
   // A component rendered in isolation (every unit test, and any surface
   // mounted outside the app root) has no provider above it, and Radix throws
   // "`Tooltip` must be used within `TooltipProvider`". Fall back to a local

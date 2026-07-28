@@ -958,12 +958,6 @@ def init_agent(
     agent._stream_writer_tls = threading.local()
     agent._stream_writer_dropped = 0
 
-    # Displayed reasoning text streamed during the current model response,
-    # captured only when a surface consumed it via a reasoning callback. Used
-    # by active-turn redirect to checkpoint what the user actually saw without
-    # ever persisting hidden provider reasoning.
-    agent._current_streamed_reasoning_text = ""
-
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
     # (e.g. CLI voice mode adds a temporary prefix for the live call only).

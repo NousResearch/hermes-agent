@@ -1,6 +1,7 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
 import { speakText } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $voicePlayback,
   setVoicePlaybackState,
@@ -76,7 +77,7 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
   try {
     // Mint a fresh credential (single-use ticket in OAuth mode), then swap the
     // gateway endpoint for the PCM one — auth is shared across WS routes.
-    const wsUrl = await resolveGatewayWsUrl(desktop, await desktop.getConnection())
+    const wsUrl = await resolveGatewayWsUrl(desktop, await desktop.getConnection($activeGatewayProfile.get()))
     const url = new URL(wsUrl)
 
     if (!url.pathname.endsWith('/api/ws')) {

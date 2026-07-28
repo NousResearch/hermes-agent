@@ -407,15 +407,19 @@ export function PetOverlayApp() {
     }
   }, [active, petW, petH])
 
+  // Stable callbacks so the roam loop doesn't re-init every render.
+  const isInteracting = useCallback(() => dragDir !== 0 || dragRef.current !== null, [dragDir])
+  const commitRoam = useCallback((point: Point) => setRoamPos(point), [])
+
   usePetRoam({
     enabled: roamEnabled && active && atRest,
     containerRef: petRef,
-    isInteracting: () => dragDir !== 0 || dragRef.current !== null,
+    isInteracting,
     petW,
     petH,
     loopMs: info.loopMs ?? 1100,
     overlayOpen: false,
-    commit: point => setRoamPos(point)
+    commit: commitRoam
   })
 
   // ── render ────────────────────────────────────────────────────────────

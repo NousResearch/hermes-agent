@@ -1331,6 +1331,14 @@ text-* variant utilities. */ .btn-arc {
   max-width: 100%;
 }
 
+/* A delegation is a list of short rows — goal, model, timer — not prose, so it
+   reads better narrow than stretched across the full reading column. Scoped
+   here rather than as a utility on the element: the rule above sets width on
+   every tool block and would win over it. */
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-delegate-card] {
+  max-width: 75%;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md [data-streamdown='code-block'] code {
   max-width: none;
   font-family: inherit;

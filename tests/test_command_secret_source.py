@@ -275,6 +275,67 @@ def test_apply_empty_command_sets_error(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# _helper_child_env — allowlist-based subprocess env builder
+# ---------------------------------------------------------------------------
+
+
+class TestHelperChildEnv:
+    """Verify that ``_helper_child_env`` builds a minimal, allowlisted
+    environment for the command helper — it must carry only the explicitly
+    allowed env vars plus ``HERMES_SECRET_KEY`` and NOT leak any
+    credential-bearing vars from the host process."""
+
+    def test_includes_allowlisted_keys(self):
+        from agent.secret_sources.command import (
+            _HELPER_ENV_ALLOWLIST, _helper_child_env,
+        )
+        allowed = sorted(_HELPER_ENV_ALLOWLIST)
+        env = _helper_child_env(secret_key="")
+        for key in allowed:
+            if key in os.environ:
+                assert key in env, (
+                    f"_helper_child_env dropped allowlisted var {key!r} "
+                    f"even though it's set in os.environ"
+                )
+
+    def test_sets_secret_key_when_provided(self):
+        from agent.secret_sources.command import _helper_child_env
+        env = _helper_child_env(secret_key="MY_SECRET_KEY")
+        assert env["HERMES_SECRET_KEY"] == "MY_SECRET_KEY"
+
+    def test_omits_secret_key_when_empty(self):
+        from agent.secret_sources.command import _helper_child_env
+        env = _helper_child_env(secret_key="")
+        assert "HERMES_SECRET_KEY" not in env
+
+    def test_does_not_leak_credential_vars(self, monkeypatch):
+        from agent.secret_sources.command import _helper_child_env
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-leak-check")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("HOME", "/home/test")
+        env = _helper_child_env(secret_key="")
+        assert "OPENAI_API_KEY" not in env
+
+    def test_missing_allowlisted_var_is_omitted(self, monkeypatch):
+        from agent.secret_sources.command import _helper_child_env
+        monkeypatch.delenv("TMPDIR", raising=False)
+        env = _helper_child_env(secret_key="")
+        assert "TMPDIR" not in env
+
+    def test_non_allowlisted_harmless_var_is_omitted(self, monkeypatch):
+        from agent.secret_sources.command import _helper_child_env
+        monkeypatch.setenv("MY_CUSTOM_VAR", "hello")
+        env = _helper_child_env(secret_key="")
+        assert "MY_CUSTOM_VAR" not in env
+
+    def test_hostile_key_name_is_inert_data_in_helper_child_env(self):
+        from agent.secret_sources.command import _helper_child_env
+        hostile = '"; rm -rf /; echo "'
+        env = _helper_child_env(secret_key=hostile)
+        assert env["HERMES_SECRET_KEY"] == hostile
+
+
 @pytest.fixture(autouse=True)
 def _clean_registry():
     from agent.secret_sources import registry

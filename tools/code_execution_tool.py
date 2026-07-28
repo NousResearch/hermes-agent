@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import shlex
 import socket
@@ -155,7 +156,7 @@ _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                       # CREDS (CREDENTIALS abbreviated), BEARER
                       # (Authorization: Bearer tokens), APIKEY (written
                       # without an underscore).
-                      "CREDS", "BEARER", "APIKEY", "PASS")
+                      "CREDS", "BEARER", "APIKEY", "_PASS")
 
 # Connection-string regex matching credential-bearing values like
 # ``postgresql://user:password@host/db`` or ``redis://:token@host``.

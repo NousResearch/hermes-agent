@@ -21,6 +21,7 @@ bytes.  The child then fails to import with a SyntaxError:
 """
 
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -267,16 +268,25 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
                           "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
                           "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
     _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                          "PASSWD", "AUTH", "DSN", "WEBHOOK")
+                          "PASSWD", "AUTH", "DSN", "WEBHOOK",
+                          "CREDS", "BEARER", "APIKEY", "_PASS")
     _HERMES_CHILD_ALLOWED = frozenset({
         "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+        "HERMES_DELEGATED_CHILD_CONTEXT",
     })
+    # Connection-string credential regex matching _SCRUB_CONNSTR_RE.
+    _SCRUB_CONNSTR_RE = re.compile(
+        r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
+        re.IGNORECASE,
+    )
     out = {}
     for k, v in source_env.items():
         if is_passthrough(k):
             out[k] = v
             continue
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
+            continue
+        if v and _SCRUB_CONNSTR_RE.search(v):
             continue
         if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             out[k] = v
@@ -707,3 +717,138 @@ class TestChildStdioIsUtf8:
             )
         # Otherwise: crash OR garbled output — both count as proving the
         # bug is real on this system.
+
+
+# ---------------------------------------------------------------------------
+# _PASS substring blocking + value-level connection-string scrubbing
+# ---------------------------------------------------------------------------
+
+
+class TestUnderscorePassSubstring:
+    """Verify that ``_PASS`` in _SECRET_SUBSTRINGS blocks credential-bearing
+    env vars whose names contain a ``_PASS`` suffix (like ``DB_PASS``) while
+    the substring check does NOT false-positive on harmless substrings
+    like ``PASS`` in ``PASSENGER_HOST`` or ``SS_PASS`` in ``BYPASS_CACHE``.
+
+    The ``_PASS`` substring requires the leading underscore so bare ``PASS``
+    (e.g. ``PASSENGER_HOST``) or ``SS_PASS`` (e.g. ``BYPASS_CACHE``) are
+    not misclassified."""
+
+    def test_blocks_db_pass(self):
+        scrubbed = _scrub_child_env(
+            {"DB_PASS": "secret123", "PATH": "/bin"},
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "DB_PASS" not in scrubbed
+
+    def test_blocks_redis_pass(self):
+        scrubbed = _scrub_child_env(
+            {"REDIS_PASS": "hunter2", "PATH": "/bin"},
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "REDIS_PASS" not in scrubbed
+
+    def test_blocks_host_pass(self):
+        scrubbed = _scrub_child_env(
+            {"HOST_PASS": "p@ss", "PATH": "/bin"},
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "HOST_PASS" not in scrubbed
+
+    def test_blocks_user_pass(self):
+        scrubbed = _scrub_child_env(
+            {"USER_PASS": "secret", "PATH": "/bin"},
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "USER_PASS" not in scrubbed
+
+    def test_does_not_block_passenger_host_on_pass_substring(self):
+        scrubbed = _scrub_child_env(
+            {"PASSENGER_HOST": "localhost", "PATH": "/bin"},
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "PASSENGER_HOST" not in scrubbed
+
+    def test_substring_rejects_bypass_cache_as_false_positive(self):
+        """BYPASS_CACHE does NOT contain ``_PASS`` — it contains ``SS_PASS``.
+        Verify the substring match returns False for this case."""
+        assert "_PASS" not in "BYPASS_CACHE"
+
+    def test_substring_rejects_compass_dir_as_false_positive(self):
+        assert "_PASS" not in "COMPASS_DIR"
+
+    def test_substring_rejects_passenger_host_as_false_positive(self):
+        """PASSENGER_HOST contains ``PASS`` but not ``_PASS`` — the
+        leading underscore ensures credential-pattern vars like ``DB_PASS``
+        are caught while ``PASSENGER_HOST`` is not."""
+        assert "_PASS" not in "PASSENGER_HOST"
+
+    def test_substring_matches_db_pass(self):
+        assert "_PASS" in "DB_PASS"
+
+    def test_substring_matches_redis_pass(self):
+        assert "_PASS" in "REDIS_PASS"
+
+    def test_substring_matches_host_pass(self):
+        assert "_PASS" in "HOST_PASS"
+
+    def test_substring_matches_user_pass(self):
+        assert "_PASS" in "USER_PASS"
+
+    def test_substring_matches_mariadb_pass(self):
+        assert "_PASS" in "MARIADB_PASS"
+
+
+class TestValueLevelConnectionStringScrubbing:
+    """Verify that env vars with embedded credentials in their VALUES are
+    blocked even when the env var NAME doesn't contain a secret substring."""
+
+    def test_blocks_postgres_url(self):
+        scrubbed = _scrub_child_env(
+            {
+                "TMP_DATABASE_URL": "postgresql://user:secret@localhost:5432/db",
+                "PATH": "/bin",
+            },
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "TMP_DATABASE_URL" not in scrubbed
+
+    def test_blocks_mongodb_url(self):
+        scrubbed = _scrub_child_env(
+            {
+                "XDG_MONGO_URI": "mongodb://admin:supersecret@cluster0.mongo.net",
+                "PATH": "/bin",
+            },
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "XDG_MONGO_URI" not in scrubbed
+
+    def test_blocks_redis_url(self):
+        scrubbed = _scrub_child_env(
+            {
+                "TMP_REDIS_URL": "redis://user:secret@redis-12345.cache.amazonaws.com:6379",
+                "PATH": "/bin",
+            },
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "TMP_REDIS_URL" not in scrubbed
+
+    def test_does_not_block_normal_url(self):
+        scrubbed = _scrub_child_env(
+            {
+                "XDG_SERVICE_URL": "https://api.example.com/v1",
+                "PATH": "/bin",
+            },
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "XDG_SERVICE_URL" in scrubbed
+
+    def test_does_not_block_empty_value(self):
+        scrubbed = _scrub_child_env(
+            {
+                "TMP_DATABASE_URL": "",
+                "PATH": "/bin",
+            },
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "TMP_DATABASE_URL" in scrubbed

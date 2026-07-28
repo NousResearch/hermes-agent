@@ -4,24 +4,18 @@ import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
 import { type ComponentProps, type FC, lazy, Suspense, useMemo } from 'react'
 import type ShikiHighlighter from 'react-shiki'
 
-import {
-  CodeCard,
-  CodeCardBody,
-  CodeCardHeader,
-  CodeCardIcon,
-  CodeCardSubtitle,
-  CodeCardTitle
-} from '@/components/chat/code-card'
+import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
-import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
+import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
 
 /**
  * Streamdown's code adapter renders header + body as inline siblings, so we
  * own the wrapping `<CodeCard>` here and neutralize the upstream
- * `data-streamdown="code-block"` chrome from styles.css. Anything that wants
- * a card-shaped code surface should compose `CodeCard*` directly.
+ * `data-streamdown="code-block"` chrome from styles.css. The card is
+ * background-only — no header row, no language label — so a fence reads as a
+ * tinted slab of the reply; copy is a hover-reveal control in the corner.
  *
  * `react-shiki` full bundle so all `bundledLanguages` work; theme switches
  * follow the document `color-scheme` via `defaultColor="light-dark()"`.
@@ -148,28 +142,19 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
     return <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground">{trimmed}</div>
   }
 
-  const cleanLanguage = sanitizeLanguageTag(language || '')
-  const label = cleanLanguage && cleanLanguage !== 'unknown' ? cleanLanguage : ''
   const plain = defer || exceedsHighlightBudget(trimmed)
 
   return (
     <CodeCard data-streaming={defer ? 'true' : undefined}>
-      <CodeCardHeader>
-        <CodeCardTitle>
-          <CodeCardIcon name={codiconForLanguage(label)} />
-          {t.assistant.tool.code}
-          {label && <CodeCardSubtitle> · {label}</CodeCardSubtitle>}
-        </CodeCardTitle>
-        <CopyButton
-          appearance="inline"
-          className="-my-1 -mr-1 h-5 px-1 opacity-55 hover:opacity-100"
-          iconClassName="size-2.5"
-          label={t.assistant.tool.copyCode}
-          showLabel={false}
-          text={trimmed}
-        />
-      </CodeCardHeader>
-      <CodeCardBody>
+      <CopyButton
+        appearance="inline"
+        className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
+        iconClassName="size-2.5"
+        label={t.assistant.tool.copyCode}
+        showLabel={false}
+        text={trimmed}
+      />
+      <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
             {plain ? (

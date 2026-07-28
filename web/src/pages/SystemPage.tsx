@@ -60,6 +60,10 @@ import type {
   PortalStatus,
   DebugShareResponse,
 } from "@/lib/api";
+import {
+  restartGatewayFromSystemPage,
+  updateHermesFromSystemPage,
+} from "./service-mutation-callers";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -295,7 +299,7 @@ export default function SystemPage() {
         await api.stopGateway();
         setActiveAction("gateway-stop");
       } else {
-        await api.restartGateway();
+        await restartGatewayFromSystemPage();
         setActiveAction("gateway-restart");
       }
       showToast(`Gateway ${verb} started`, "success");
@@ -552,7 +556,7 @@ export default function SystemPage() {
       return;
     }
     try {
-      const resp = await api.updateHermes();
+      const resp = await updateHermesFromSystemPage();
       if (!resp.ok) {
         showToast(
           resp.message ??

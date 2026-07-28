@@ -278,6 +278,7 @@ class TestStopWithoutStart:
         assert voice.stop_and_transcribe() is None
 
 
+@pytest.mark.real_audio_playback
 class TestSpeakTextGuards:
     @pytest.mark.parametrize("text", ["", "   ", "\n\t  "])
     def test_empty_text_is_noop(self, text):

@@ -518,6 +518,9 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
+    responses_transport: str = "sse",
+    responses_ws_url: str = None,
+    responses_transport_provider: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -612,6 +615,21 @@ def init_agent(
         if isinstance(requested_provider, str) and requested_provider.strip()
         else agent.provider
     )
+    from agent.codex_responses_ws_transport import normalize_responses_transport
+
+    agent.responses_transport = normalize_responses_transport(responses_transport)
+    agent.responses_ws_url = (
+        responses_ws_url.strip()
+        if isinstance(responses_ws_url, str) and responses_ws_url.strip()
+        else None
+    )
+    agent.responses_transport_provider = (
+        responses_transport_provider.strip().lower()
+        if isinstance(responses_transport_provider, str)
+        and responses_transport_provider.strip()
+        else None
+    )
+    agent._generic_ws_auto_disabled_for = None
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])

@@ -111,6 +111,11 @@ def test_cli_fallback_sanitizes_env_and_hides_console_on_windows(monkeypatch):
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, cua_backend)
+    # Hermetic CI has no cua-driver binary; pin the resolver so the test
+    # exercises the spawn-env path instead of the install-hint early exit.
+    monkeypatch.setattr(
+        cua_backend, "resolve_cua_driver_cmd", lambda override=None: "cua-driver"
+    )
     monkeypatch.setattr(
         cua_backend.subprocess,
         "run",

@@ -191,6 +191,25 @@ class TestSendWithRetryNetworkRetry:
         assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio
+    async def test_partial_delivery_is_not_retried_or_fallen_back(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="ConnectionError: second chunk failed",
+                partial_delivery=True,
+            ),
+        ]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2)
+
+        assert not result.success
+        assert result.partial_delivery
+        mock_sleep.assert_not_called()
+        assert adapter._send_calls == [("chat1", "hello")]
+
+    @pytest.mark.asyncio
     async def test_network_to_nonnetwork_transition_falls_back_to_plaintext(self):
         """If error switches from network to formatting mid-retry, fall through to plain-text fallback."""
         adapter = _StubAdapter()

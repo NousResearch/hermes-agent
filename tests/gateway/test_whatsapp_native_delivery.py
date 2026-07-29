@@ -92,6 +92,36 @@ async def test_send_tracks_text_chunk_message_ids_in_snake_case_raw_response():
 
 
 @pytest.mark.asyncio
+async def test_send_retry_does_not_repeat_completed_whatsapp_chunks(monkeypatch):
+    adapter = _make_adapter()
+    adapter.truncate_message = MagicMock(return_value=["chunk-1", "chunk-2"])
+    monkeypatch.setattr("plugins.platforms.whatsapp.adapter.asyncio.sleep", AsyncMock())
+
+    first = MagicMock(status=200)
+    first.json = AsyncMock(return_value={"success": True, "messageId": "msg-1"})
+    second = MagicMock(status=503)
+    second.text = AsyncMock(return_value="Network is unreachable")
+    adapter._http_session.post = MagicMock(side_effect=[_AsyncCM(first), _AsyncCM(second)])
+
+    result = await adapter._send_with_retry(
+        "15551234567",
+        "long response",
+        max_retries=2,
+        base_delay=0,
+    )
+
+    assert not result.success
+    assert result.partial_delivery
+    assert result.raw_response == {
+        "delivered_chunks": 1,
+        "total_chunks": 2,
+        "message_ids": ["msg-1"],
+    }
+    sent_chunks = [call.kwargs["json"]["message"] for call in adapter._http_session.post.call_args_list]
+    assert sent_chunks == ["chunk-1", "chunk-2"]
+
+
+@pytest.mark.asyncio
 async def test_whatsapp_reply_context_is_structured_not_prerendered():
     adapter = WhatsAppAdapter(
         PlatformConfig(

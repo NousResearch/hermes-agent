@@ -560,10 +560,14 @@ def _copy_dist_payload(
     """
     target.mkdir(parents=True, exist_ok=True)
 
+    owned = set(manifest.owned_paths())
+
     for entry in staged.iterdir():
         name = entry.name
 
         if name in USER_OWNED_EXCLUDE:
+            continue
+        if name not in owned:
             continue
         if name == ENV_TEMPLATE_FILENAME:
             shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)

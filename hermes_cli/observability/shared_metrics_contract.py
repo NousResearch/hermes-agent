@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from functools import lru_cache
 from typing import Any
 
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
@@ -11,12 +9,20 @@ from agent.relay_runtime import RUNTIME_INSTANCE_KEY
 SCHEMA_KEY = "hermes.metrics.schema_version"
 SCHEMA_VERSION = "hermes.metrics.event.v1"
 MODEL_CALL_SCOPE = "hermes.model_call"
+MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
-PRIMARY_MODEL_CALL_ROLE = "primary"
 MODEL_CALL_METRIC = "hermes.model_call.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
+MODEL_IDENTIFIER_MAX_LENGTH = 256
+PROVIDER_IDENTIFIER_MAX_LENGTH = 64
+_METRIC_IDENTIFIER_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789._:/@+-"
+)
+_METRIC_IDENTIFIER_START_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789"
+)
 
 EXECUTION_SURFACES: frozenset[str] = frozenset({
     "api",
@@ -30,15 +36,6 @@ EXECUTION_SURFACES: frozenset[str] = frozenset({
     "other",
     "unknown",
 })
-PROVIDER_FAMILIES: frozenset[str] = frozenset({
-    "aggregator",
-    "custom",
-    "direct",
-    "local",
-    "unknown",
-})
-MODEL_LOCALITIES: frozenset[str] = frozenset({"local", "remote", "unknown"})
-MODEL_OUTCOMES: frozenset[str] = frozenset({"cancelled", "failed", "success"})
 TASK_OUTCOMES: frozenset[str] = frozenset({
     "cancelled",
     "failed",
@@ -93,41 +90,7 @@ COUNT_BUCKETS: frozenset[str] = frozenset({
     "gte_11",
 })
 
-# Shared metrics use an explicit family allowlist rather than raw model IDs or
-# dynamically sourced catalog values. The latter would make the exported schema
-# drift independently of this contract.
-MODEL_FAMILIES: frozenset[str] = frozenset({
-    "claude",
-    "deepseek",
-    "gemini",
-    "gemma",
-    "glm",
-    "gpt",
-    "grok",
-    "kimi",
-    "llama",
-    "minimax",
-    "mimo",
-    "mistral",
-    "nemotron",
-    "nova",
-    "qwen",
-    "step",
-    "trinity",
-    "o1",
-    "o3",
-    "o4",
-    "unknown",
-})
-
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
-    MODEL_CALL_METRIC: {
-        "call_role": frozenset({PRIMARY_MODEL_CALL_ROLE}),
-        "locality": MODEL_LOCALITIES,
-        "model_family": MODEL_FAMILIES,
-        "outcome": MODEL_OUTCOMES,
-        "provider_family": PROVIDER_FAMILIES,
-    },
     TASK_STARTED_METRIC: {
         "entrypoint": TASK_ENTRYPOINTS,
         "execution_surface": EXECUTION_SURFACES,
@@ -144,34 +107,9 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "tool_call_count_bucket": COUNT_BUCKETS,
     },
 }
-COUNTER_METRICS: frozenset[str] = frozenset(_COUNTER_DIMENSION_VALUES)
-
-_MODEL_FAMILY_PATTERN = re.compile(
-    r"(?:^|[/_.:-])("
-    + "|".join(
-        re.escape(family)
-        for family in sorted(
-            MODEL_FAMILIES - {"unknown"},
-            key=lambda value: len(value),
-            reverse=True,
-        )
-    )
-    + r")(?=$|[/_.:-]|\d)"
+COUNTER_METRICS: frozenset[str] = frozenset(
+    {*_COUNTER_DIMENSION_VALUES, MODEL_CALL_METRIC}
 )
-
-# These providers route across model families but are not marked as aggregators
-# in Hermes's execution metadata because that flag has narrower routing/catalog
-# semantics there.
-_TELEMETRY_AGGREGATOR_OVERRIDES = frozenset({
-    "copilot-acp",
-    "github-copilot",
-    "moa",
-    "nous",
-})
-
-# Hermes intentionally resolves these local runtimes through the generic custom
-# provider path, so canonical provider metadata cannot distinguish them alone.
-_LOCAL_CUSTOM_PROVIDER_ALIASES = frozenset({"mlx", "ollama"})
 
 
 def counter_dimensions_are_valid(
@@ -179,6 +117,20 @@ def counter_dimensions_are_valid(
     dimensions: dict[str, Any],
 ) -> bool:
     """Return whether dimensions match one closed shared-metric contract."""
+    if metric_name == MODEL_CALL_METRIC:
+        return (
+            set(dimensions) == {"model", "provider"}
+            and dimensions["model"]
+            == _metric_identifier(
+                dimensions["model"],
+                max_length=MODEL_IDENTIFIER_MAX_LENGTH,
+            )
+            and dimensions["provider"]
+            == _metric_identifier(
+                dimensions["provider"],
+                max_length=PROVIDER_IDENTIFIER_MAX_LENGTH,
+            )
+        )
     contract = _COUNTER_DIMENSION_VALUES.get(metric_name)
     if contract is None or set(dimensions) != set(contract):
         return False
@@ -211,26 +163,15 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
         "model_name"
     }:
         return None
-    event_model_family = category_profile.get("model_name")
-    if event_model_family not in MODEL_FAMILIES:
+    # The synthetic scope can span provider fallback. The accepted terminal
+    # route is carried in the validated payload rather than this start profile.
+    if category_profile.get("model_name") != MODEL_CALL_PROFILE_MODEL:
         return None
     data = getattr(event, "data", None)
-    expected_fields = {
-        "call_role",
-        "locality",
-        "model_family",
-        "outcome",
-        "provider_family",
-    }
+    expected_fields = {"model", "provider"}
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
-    dimensions = {
-        "call_role": data.get("call_role"),
-        "locality": data.get("locality"),
-        "model_family": data.get("model_family"),
-        "outcome": data.get("outcome"),
-        "provider_family": data.get("provider_family"),
-    }
+    dimensions = {field: data.get(field) for field in sorted(expected_fields)}
     if not counter_dimensions_are_valid(MODEL_CALL_METRIC, dimensions):
         return None
     return dimensions
@@ -420,97 +361,39 @@ def count_bucket(count: int) -> str:
     return "gte_11"
 
 
-def provider_family(kwargs: dict[str, Any]) -> str:
-    """Map a Hermes provider to a bounded product category."""
-    raw_provider = str(kwargs.get("provider") or "").strip().lower().replace("_", "-")
-    if not raw_provider:
-        return "unknown"
-    if raw_provider in _LOCAL_CUSTOM_PROVIDER_ALIASES:
-        return "local"
-    if raw_provider == "custom" or raw_provider.startswith(("custom-", "custom:")):
-        return "custom"
-    provider, is_aggregator, is_known = _provider_metadata(raw_provider)
-    if provider in {"lmstudio", "local"}:
-        return "local"
-    if is_aggregator or provider in _TELEMETRY_AGGREGATOR_OVERRIDES:
-        return "aggregator"
-    if provider == "custom":
-        return "custom"
-    return "direct" if is_known else "unknown"
-
-
-def _provider_metadata(provider: str) -> tuple[str, bool, bool]:
-    """Resolve provider identity without refreshing remote provider metadata."""
-    try:
-        from hermes_cli.models import normalize_provider as normalize_model_provider
-        from hermes_cli.providers import HERMES_OVERLAYS, normalize_provider
-
-        canonical = normalize_provider(normalize_model_provider(provider))
-        overlay = HERMES_OVERLAYS.get(canonical)
-        return (
-            canonical,
-            bool(overlay and overlay.is_aggregator),
-            canonical in _known_provider_ids(),
-        )
-    except Exception:
-        return provider, False, False
-
-
-@lru_cache(maxsize=1)
-def _known_provider_ids() -> frozenset[str]:
-    """Cache Hermes's static provider catalog for the process lifetime."""
-    try:
-        from hermes_cli.provider_catalog import provider_catalog_by_slug
-
-        return frozenset(provider_catalog_by_slug())
-    except Exception:
-        return frozenset()
-
-
-def model_locality(kwargs: dict[str, Any]) -> str:
-    """Classify local endpoints without exporting their URL."""
-    return _model_locality(kwargs, provider_family(kwargs))
-
-
-def _model_locality(kwargs: dict[str, Any], provider_category: str) -> str:
-    base_url = kwargs.get("base_url")
-    if isinstance(base_url, str) and base_url:
-        try:
-            from agent.model_metadata import is_local_endpoint
-
-            if is_local_endpoint(base_url):
-                return "local"
-        except Exception:
-            pass
-    if provider_category == "local":
-        return "local"
-    if provider_category in {"aggregator", "direct"}:
-        return "remote"
-    return "unknown"
-
-
 def model_call_fields(kwargs: dict[str, Any]) -> dict[str, str]:
-    """Build the bounded producer fields for one logical model call."""
-    provider_category = provider_family(kwargs)
+    """Return the terminal model identity and provider route known to Hermes."""
+    response_model = kwargs.get("response_model")
+    model = (
+        response_model
+        if isinstance(response_model, str) and response_model.strip()
+        else kwargs.get("model")
+    )
     return {
-        "call_role": PRIMARY_MODEL_CALL_ROLE,
-        "locality": _model_locality(kwargs, provider_category),
-        "model_family": model_family(kwargs),
-        "provider_family": provider_category,
+        "model": _metric_identifier(
+            model,
+            max_length=MODEL_IDENTIFIER_MAX_LENGTH,
+        ),
+        "provider": _metric_identifier(
+            kwargs.get("provider"),
+            max_length=PROVIDER_IDENTIFIER_MAX_LENGTH,
+        ),
     }
 
 
-def model_family(kwargs: dict[str, Any]) -> str:
-    """Map a raw model identifier to an allowlisted family."""
-    declared_family = str(kwargs.get("model_family") or "").strip().lower()
-    if declared_family in MODEL_FAMILIES - {"unknown"}:
-        return declared_family
-    model = str(kwargs.get("response_model") or kwargs.get("model") or "").lower()
-    match = _MODEL_FAMILY_PATTERN.search(model)
-    return match.group(1) if match is not None else "unknown"
-
-
-def model_call_outcome(kwargs: dict[str, Any]) -> str:
-    """Fail closed when a terminal model-call outcome is not recognized."""
-    value = str(kwargs.get("outcome") or "").lower()
-    return value if value in MODEL_OUTCOMES else "failed"
+def _metric_identifier(value: Any, *, max_length: int) -> str:
+    """Normalize one structurally safe identifier without a product catalog."""
+    if not isinstance(value, str):
+        return "unknown"
+    identifier = value.strip().lower()
+    if (
+        not identifier
+        or len(identifier) > max_length
+        or identifier[0] not in _METRIC_IDENTIFIER_START_CHARACTERS
+        or any(
+            character not in _METRIC_IDENTIFIER_CHARACTERS
+            for character in identifier
+        )
+    ):
+        return "unknown"
+    return identifier

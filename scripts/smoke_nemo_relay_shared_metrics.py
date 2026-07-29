@@ -232,11 +232,8 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     expected_model = {
         "name": "hermes.model_call.count",
         "dimensions": {
-            "call_role": "primary",
-            "locality": "local",
-            "model_family": "gpt",
-            "outcome": "success",
-            "provider_family": "custom",
+            "model": MODEL_CANARY,
+            "provider": "custom",
         },
         "value": 1,
         "packaged_value": 1,
@@ -295,7 +292,7 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
     jsonschema.validate(package, schema)
 
     serialized = json.dumps(package)
-    for prohibited in (PROMPT_CANARY, MODEL_CANARY, RESPONSE_CANARY):
+    for prohibited in (PROMPT_CANARY, RESPONSE_CANARY):
         if prohibited in serialized:
             raise AssertionError(
                 f"Exported package leaked prohibited value: {prohibited!r}"
@@ -309,12 +306,10 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(package.get('metrics'), indent=2)}"
         )
-    if metrics["hermes.model_call.count"]["dimensions"] != {
-        "call_role": "primary",
-        "locality": "local",
-        "model_family": "gpt",
-        "outcome": "success",
-        "provider_family": "custom",
+    model_dimensions = metrics["hermes.model_call.count"]["dimensions"]
+    if model_dimensions != {
+        "model": MODEL_CANARY,
+        "provider": "custom",
     }:
         raise AssertionError(
             f"Unexpected model metric: {metrics['hermes.model_call.count']}"

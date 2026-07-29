@@ -94,63 +94,21 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "call_role",
-            "locality",
-            "model_family",
-            "outcome",
-            "provider_family"
+            "model",
+            "provider"
           ],
           "properties": {
-            "call_role": {
-              "const": "primary"
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
             },
-            "locality": {
-              "enum": [
-                "local",
-                "remote",
-                "unknown"
-              ]
-            },
-            "model_family": {
-              "enum": [
-                "claude",
-                "deepseek",
-                "gemini",
-                "gemma",
-                "glm",
-                "gpt",
-                "grok",
-                "kimi",
-                "llama",
-                "minimax",
-                "mimo",
-                "mistral",
-                "nemotron",
-                "nova",
-                "o1",
-                "o3",
-                "o4",
-                "qwen",
-                "step",
-                "trinity",
-                "unknown"
-              ]
-            },
-            "outcome": {
-              "enum": [
-                "cancelled",
-                "failed",
-                "success"
-              ]
-            },
-            "provider_family": {
-              "enum": [
-                "aggregator",
-                "custom",
-                "direct",
-                "local",
-                "unknown"
-              ]
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
             }
           }
         },

@@ -273,6 +273,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     if (frame.type === 'start') {
       streamRate = frame.sample_rate || 24_000
       context = new AudioContext()
+
       // Autoplay policy can hand back a suspended context when playback wasn't
       // started by a user gesture (e.g. a wake-word-started voice turn). Resume
       // it so the first reply is audible instead of silently buffering. Electron
@@ -281,6 +282,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       if (context.state === 'suspended') {
         void context.resume().catch(() => undefined)
       }
+
       nextStartAt = 0
     } else if (frame.type === 'end') {
       finishWhenDrained()

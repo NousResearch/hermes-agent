@@ -63,6 +63,7 @@ describe('playWakeSound', () => {
     expect(oscillators).toHaveLength(2)
     expect(oscillators[0].frequency.setValueAtTime).toHaveBeenCalledWith(783.99, expect.any(Number))
     expect(oscillators[1].frequency.setValueAtTime).toHaveBeenCalledWith(1046.5, expect.any(Number))
+
     for (const osc of oscillators) {
       expect(osc.start).toHaveBeenCalled()
       expect(osc.stop).toHaveBeenCalled()

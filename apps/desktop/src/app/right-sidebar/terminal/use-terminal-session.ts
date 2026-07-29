@@ -832,7 +832,6 @@ export function useTerminalSession({
 
         return false
       }
-
       void (async () => {
         const text = (await window.hermesDesktop?.readClipboard?.()) ?? ''
 

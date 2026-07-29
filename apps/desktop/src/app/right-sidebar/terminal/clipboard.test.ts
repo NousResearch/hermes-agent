@@ -29,7 +29,9 @@ describe('terminalClipboardIntent', () => {
   })
 
   it('claims paste regardless of selection, since paste has nothing to do with one', () => {
-    expect(terminalClipboardIntent(key({ key: 'v', metaKey: true }), { hasSelection: false, isMac: true })).toBe('paste')
+    expect(terminalClipboardIntent(key({ key: 'v', metaKey: true }), { hasSelection: false, isMac: true })).toBe(
+      'paste'
+    )
     expect(
       terminalClipboardIntent(key({ ctrlKey: true, key: 'v', shiftKey: true }), { hasSelection: false, isMac: false })
     ).toBe('paste')

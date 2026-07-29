@@ -95,7 +95,7 @@ except Exception:
     tea_util_models = None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -458,29 +458,13 @@ class DingTalkAdapter(BasePlatformAdapter):
                         loaded = [part.strip() for part in raw.split(",") if part.strip()]
                 patterns = loaded
 
-        if patterns is None:
-            return []
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        if not isinstance(patterns, list):
-            logger.warning(
-                "[%s] dingtalk mention_patterns must be a list or string; got %s",
-                self.name,
-                type(patterns).__name__,
-            )
-            return []
-
-        compiled: List[re.Pattern] = []
-        for pattern in patterns:
-            if not isinstance(pattern, str) or not pattern.strip():
-                continue
-            try:
-                compiled.append(re.compile(pattern, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[%s] Invalid DingTalk mention pattern %r: %s", self.name, pattern, exc)
-        if compiled:
-            logger.info("[%s] Loaded %d DingTalk mention pattern(s)", self.name, len(compiled))
-        return compiled
+        return compile_mention_patterns(
+            patterns,
+            log_prefix=self.name,
+            platform_label="dingtalk",
+            display_label="DingTalk",
+            logger_=logger,
+        )
 
     def _load_allowed_users(self) -> Set[str]:
         """Load allowed-users list from config.extra or env var.

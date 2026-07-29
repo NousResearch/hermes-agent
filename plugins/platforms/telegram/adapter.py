@@ -490,6 +490,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE,
+    compile_mention_patterns,
     convert_table_to_bullets as _wrap_markdown_tables,
 )
 
@@ -7821,29 +7822,13 @@ class TelegramAdapter(BasePlatformAdapter):
                         loaded = [part.strip() for part in raw.split(",") if part.strip()]
                 patterns = loaded
 
-        if patterns is None:
-            return []
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        if not isinstance(patterns, list):
-            logger.warning(
-                "[%s] telegram mention_patterns must be a list or string; got %s",
-                self.name,
-                type(patterns).__name__,
-            )
-            return []
-
-        compiled: List[re.Pattern] = []
-        for pattern in patterns:
-            if not isinstance(pattern, str) or not pattern.strip():
-                continue
-            try:
-                compiled.append(re.compile(pattern, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[%s] Invalid Telegram mention pattern %r: %s", self.name, pattern, exc)
-        if compiled:
-            logger.info("[%s] Loaded %d Telegram mention pattern(s)", self.name, len(compiled))
-        return compiled
+        return compile_mention_patterns(
+            patterns,
+            log_prefix=self.name,
+            platform_label="telegram",
+            display_label="Telegram",
+            logger_=logger,
+        )
 
     def _is_group_chat(self, message: Message) -> bool:
         chat = getattr(message, "chat", None)

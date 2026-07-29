@@ -559,8 +559,17 @@ class CLICommandsMixin:
             return
 
         try:
+            from hermes_cli.clipboard import write_clipboard_text
+            if write_clipboard_text(text):
+                _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+                return
+            # Native tools unavailable/failed — fall back to OSC 52 so
+            # SSH/tmux sessions can still copy via the terminal emulator.
             self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            _cprint(
+                f"  Copied assistant response #{idx + 1} via OSC 52 "
+                "(terminal support required)"
+            )
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
 

@@ -2439,7 +2439,9 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
+_STREAM_PAD = ""  # No indent for streamed response text — leading whitespace pollutes
+# terminal copy/paste (every selected line carried 4 spaces).  Matches the
+# response Panel's flush-left padding.
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -2851,12 +2853,13 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
 def _terminal_width_for_streaming() -> int:
     """Display cells available inside the streamed response box.
 
-    The streaming path indents every line by ``_STREAM_PAD`` (4 cells)
-    inside an open response panel.  The realigner uses this number as
-    its budget when deciding whether to keep a horizontal table or
-    fall back to vertical key-value rendering.  We subtract a small
-    safety margin so terminal-resize races don't push a borderline
-    table into mid-cell soft-wrap.
+    The streaming path prefixes every line with ``_STREAM_PAD`` (now
+    empty — flush-left so copy/paste stays clean) inside an open
+    response panel.  The realigner uses this number as its budget when
+    deciding whether to keep a horizontal table or fall back to
+    vertical key-value rendering.  We subtract a small safety margin
+    so terminal-resize races don't push a borderline table into
+    mid-cell soft-wrap.
     """
 
     try:
@@ -2871,16 +2874,16 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     from rich.markdown import Markdown
 
     # Estimate the cells available to the rendered table.  The Panel
-    # used by the background-task / final-response path has 4 cells of
-    # left+right padding plus 1 cell of border on each side, plus the
-    # _STREAM_PAD indent that streamed content uses.  Subtract a small
-    # safety margin so resize races don't push a borderline table into
-    # soft-wrap.
+    # used by the background-task / final-response path renders
+    # flush-left (no horizontal padding — leading spaces pollute
+    # terminal copy/paste) with 1 cell of border on each side.
+    # Subtract a small safety margin so resize races don't push a
+    # borderline table into soft-wrap.
     try:
         cols = shutil.get_terminal_size((80, 24)).columns
     except Exception:
         cols = 80
-    panel_width = max(20, cols - 12)
+    panel_width = max(20, cols - 4)
 
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
@@ -13759,7 +13762,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
+                        padding=(1, 0),
                         width=self._scrollback_box_width(),
                     ))
 

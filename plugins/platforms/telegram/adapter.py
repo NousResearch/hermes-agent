@@ -5318,6 +5318,16 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, _redact_telegram_error_text(e))
             return SendResult(success=False, error=_redact_telegram_error_text(e))
 
+    # Template attrs for the shared _format_exec_approval core (HTML mode).
+    _EA_HEADER = "⚠️ <b>Command Approval Required</b>\n\n"
+    _EA_CODE_OPEN = "<pre>"
+    _EA_CODE_CLOSE = "</pre>\n\n"
+    _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+    _EA_CMD_BUDGET = 3800
+
+    def _ea_escape(self, text: str) -> str:
+        return _html.escape(text)
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -5335,14 +5345,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
-            if smart_denied:
-                text += "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+            text = self._format_exec_approval(command, description, smart_denied)
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
@@ -5410,7 +5413,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
+            preview = self.format_message(self._truncate_preview(message, 3800))
 
             keyboard = InlineKeyboardMarkup([
                 [
@@ -5774,14 +5777,11 @@ class TelegramAdapter(BasePlatformAdapter):
             for p in providers:
                 buttons.append(_provider_button(p))
 
-        page_size = self._PROVIDER_PAGE_SIZE
-        total = len(buttons)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
-
-        start = page * page_size
-        end = min(start + page_size, total)
-        page_buttons = buttons[start:end]
+        page_buttons, page_meta = self._format_choice_page(
+            buttons, page, self._PROVIDER_PAGE_SIZE
+        )
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
 
         rows = [page_buttons[i : i + 2] for i in range(0, len(page_buttons), 2)]
 
@@ -5796,19 +5796,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
 
-        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-        return InlineKeyboardMarkup(rows), page_info
+        return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
-        page_size = self._MODEL_PAGE_SIZE
-        total = len(models)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
-
-        start = page * page_size
-        end = min(start + page_size, total)
-        page_models = models[start:end]
+        page_models, page_meta = self._format_choice_page(
+            models, page, self._MODEL_PAGE_SIZE
+        )
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
+        start = page_meta["start"]
 
         buttons: list = []
         for i, model_id in enumerate(page_models):
@@ -5837,8 +5834,7 @@ class TelegramAdapter(BasePlatformAdapter):
             InlineKeyboardButton("✗ Cancel", callback_data="mx"),
         ])
 
-        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-        return InlineKeyboardMarkup(rows), page_info
+        return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str

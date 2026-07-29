@@ -1,4 +1,4 @@
-"""Slack relay: interactive prompts follow the turn's thread stamp (QA-5).
+"""Slack relay: interactive prompts follow the turn's thread stamp.
 
 The threading MODE (flat DM vs thread-per-message) is decided in exactly ONE
 place: run.py's ``_resolve_progress_thread_id``, which reads
@@ -213,7 +213,7 @@ async def test_non_slack_dm_approval_keeps_thread_id():
 
 
 # ---------------------------------------------------------------------------
-# QA-1 rich status: the relay advertises Slack's text status line and carries
+# Rich status: the relay advertises Slack's text status line and carries
 # the live per-tool phrase on the typing frame (native set_status_text parity).
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
@@ -251,7 +251,7 @@ async def test_typing_carries_live_status_phrase():
 
 
 # ---------------------------------------------------------------------------
-# QA-1 status thread anchor: typing frames synthesize the per-message thread
+# Status thread anchor: typing frames synthesize the per-message thread
 # root in thread-per-message mode (the status line is thread-only on Slack).
 # ---------------------------------------------------------------------------
 def _wire_with_ts(chat_id, chat_type, message_id, **kw):
@@ -282,7 +282,7 @@ async def test_typing_synthesizes_thread_anchor_in_thread_mode():
 async def test_typing_flat_mode_status_anchors_to_trigger_ts_by_default():
     """Flat-DM liveliness: the STATUS still anchors to the triggering ts
     (renders in the footer space, no message artifact) while replies stay
-    flat — QA-6/7 strip send anchors, so placement cannot inherit this."""
+    flat — the send lane strips its anchors, so placement cannot inherit this."""
     adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
     adapter.config.extra = {"reply_in_thread": False}
     await adapter.send_typing("D1", metadata=None)
@@ -294,7 +294,7 @@ async def test_typing_flat_mode_status_anchors_to_trigger_ts_by_default():
 async def test_typing_anchors_unconditionally_in_both_modes():
     """Liveliness is not a preference: the status anchors whenever an inbound
     ts exists, regardless of reply_in_thread. Placement safety comes from the
-    QA-6/7 send-side anchor strip, not from suppressing the status."""
+    send-side anchor strip, not from suppressing the status."""
     for extra in ({}, {"slack": {"reply_in_thread": False}}):
         adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
         adapter.config.extra = extra
@@ -306,7 +306,7 @@ async def test_typing_anchors_unconditionally_in_both_modes():
 @pytest.mark.asyncio
 async def test_flat_mode_sends_stay_flat_with_status_anchor_active():
     """The liveliness anchor must NOT leak into reply placement: sends in
-    flat mode still strip the synthetic anchor (QA-6/7 contract)."""
+    flat mode still strip the synthetic anchor (send-lane contract)."""
     adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
     adapter.config.extra = {"reply_in_thread": False}
     await adapter.send_typing("D1", metadata=None)
@@ -339,7 +339,7 @@ async def test_stop_typing_clear_targets_same_synthesized_thread():
 
 
 # ---------------------------------------------------------------------------
-# QA-3 session keying: a top-level Slack DM message gets its own ts stamped as
+# Session keying: a top-level Slack DM message gets its own ts stamped as
 # source.thread_id (native inbound parity) so each message keys a FRESH
 # session in thread-per-message mode; flat mode and real threads untouched.
 # ---------------------------------------------------------------------------
@@ -370,7 +370,7 @@ def test_two_top_level_messages_key_distinct_sessions():
     adapter._stamp_slack_session_thread(e2)
     k1 = build_session_key(e1.source)
     k2 = build_session_key(e2.source)
-    assert k1 != k2, "each top-level message must be its own session (QA-3)"
+    assert k1 != k2, "each top-level message must be its own session"
 
 
 def test_real_thread_reply_keeps_its_thread_session():

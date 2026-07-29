@@ -17,7 +17,8 @@ def _make_agent(api_max_retries=None):
         cfg["agent"]["api_max_retries"] = api_max_retries
 
     with patch("run_agent.OpenAI"), \
-         patch("hermes_cli.config.load_config", return_value=cfg):
+         patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         return AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",

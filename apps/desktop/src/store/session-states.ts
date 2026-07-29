@@ -43,6 +43,7 @@ import {
   setActiveSessionStoredIdRotation,
   setSessions
 } from './session'
+import { markSessionUnreadFinished } from './session-unread'
 import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -185,11 +186,9 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // FOCUSED, not selected: a session finishing in the tile the user is
     // watching is already seen, and a tile is never the primary selection.
     if (storedId !== $focusedStoredSessionId.get()) {
-      const cur = $unreadFinishedSessionIds.get()
-
-      if (!cur.includes(storedId)) {
-        $unreadFinishedSessionIds.set([...cur, storedId])
-      }
+      // Flags the transient atom AND persists a marker, so the green dot
+      // survives an app restart (see session-unread.ts).
+      markSessionUnreadFinished(storedId)
     }
   }
 }

@@ -677,8 +677,13 @@ export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($
 export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>
   updateAtom($activeSessionStoredIdRotation, next)
 
-// Transient: a background session finished and the user hasn't opened it since.
-// Written by session-states.ts (handleTransition), cleared here on session open.
+// A background session finished and the user hasn't opened it since. This atom
+// is the transient PAINT layer (what the dots subscribe to); durability lives
+// in session-unread.ts, which persists explicit finish markers + per-session
+// "seen message_count" watermarks and rebuilds this atom from them on every
+// list refresh — so the green dot survives an app restart, and a session that
+// finished while the app was CLOSED still comes up unread. Written by
+// session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
 export const markAllSessionsRead = () => {

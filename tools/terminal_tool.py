@@ -2347,6 +2347,36 @@ def terminal_tool(
                 "error": "Terminal environment unavailable (creation raced cleanup)",
             }, ensure_ascii=False)
 
+        # Resolve the exact directory that will be supplied to execution before
+        # scanning any literal helper files. Explicit ``workdir`` and the live
+        # per-session cwd must not let the guard inspect one directory and run
+        # the command in another.
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning(
+                    "Blocked dangerous workdir: %s (command: %s)",
+                    workdir[:200],
+                    _safe_command_preview(command),
+                )
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
+        # get_current_session_key()'s contextvar doesn't cross tool-worker
+        # threads, so fall back to the raw task_id (the top-level session key).
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
+        effective_command_cwd = _resolve_command_cwd(
+            workdir=workdir,
+            default_cwd=cwd,
+            session_key=session_key,
+        )
+
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
         # gateway process itself. The restart would SIGTERM the gateway, which
@@ -2354,21 +2384,36 @@ def terminal_tool(
         # never restart. This mirrors the `hermes gateway restart` guard in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
-        if os.environ.get("_HERMES_GATEWAY") == "1":
-            from hermes_cli.cron import _contains_gateway_lifecycle_command
-            if _contains_gateway_lifecycle_command(command):
-                return json.dumps({
-                    "output": "",
-                    "exit_code": 1,
-                    "error": (
-                        "Blocked: cannot restart or stop the gateway from inside the "
-                        "gateway process. The gateway would kill this command before "
-                        "it could complete (SIGTERM propagates to child processes). "
-                        "Run `hermes gateway restart` from a separate shell outside "
-                        "the running gateway."
-                    ),
-                    "status": "error",
-                }, ensure_ascii=False)
+        def _gateway_lifecycle_block_response() -> Optional[str]:
+            """Revalidate lifecycle safety against the execution-time backend/cwd."""
+            if os.environ.get("_HERMES_GATEWAY") != "1":
+                return None
+
+            from hermes_cli.cron import _contains_gateway_lifecycle_invocation
+
+            if not _contains_gateway_lifecycle_invocation(
+                command,
+                cwd=effective_command_cwd,
+                inspect_helpers=env_type == "local",
+            ):
+                return None
+
+            return json.dumps({
+                "output": "",
+                "exit_code": 1,
+                "error": (
+                    "Blocked: cannot restart or stop the gateway from inside the "
+                    "gateway process. The gateway would kill this command before "
+                    "it could complete (SIGTERM propagates to child processes). "
+                    "Run `hermes gateway restart` from a separate shell outside "
+                    "the running gateway."
+                ),
+                "status": "error",
+            }, ensure_ascii=False)
+
+        blocked_response = _gateway_lifecycle_block_response()
+        if blocked_response is not None:
+            return blocked_response
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
@@ -2419,19 +2464,6 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
-        # Validate workdir against shell injection
-        if workdir:
-            workdir_error = _validate_workdir(workdir)
-            if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
-
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
@@ -2444,25 +2476,16 @@ def terminal_tool(
                 "EOF."
             )
 
-        # The session key that drives cwd records: get_current_session_key()'s
-        # contextvar doesn't cross tool-worker threads, so fall back to the raw
-        # task_id (which IS the session_key for the top-level agent) — a
-        # stable, thread-safe anchor.
-        from tools.approval import get_current_session_key
-
-        session_key = get_current_session_key(default="") or (task_id or "")
-
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
             from tools.process_registry import process_registry
 
-            effective_cwd = _resolve_command_cwd(
-                workdir=workdir,
-                default_cwd=cwd,
-                session_key=session_key,
-            )
+            effective_cwd = effective_command_cwd
+            blocked_response = _gateway_lifecycle_block_response()
+            if blocked_response is not None:
+                return blocked_response
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -2718,11 +2741,7 @@ def terminal_tool(
 
             while retry_count <= max_retries:
                 try:
-                    command_cwd = _resolve_command_cwd(
-                        workdir=workdir,
-                        default_cwd=cwd,
-                        session_key=session_key,
-                    )
+                    command_cwd = effective_command_cwd
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": command_cwd,
@@ -2733,6 +2752,9 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
+                    blocked_response = _gateway_lifecycle_block_response()
+                    if blocked_response is not None:
+                        return blocked_response
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

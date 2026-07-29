@@ -23,6 +23,7 @@ from hermes_cli.colors import Colors, color
 # commands at execution time when ``_HERMES_GATEWAY=1``.
 from cron.lifecycle_guard import (  # noqa: F401  (re-exported for terminal_tool)
     contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command,
+    contains_gateway_lifecycle_invocation as _contains_gateway_lifecycle_invocation,
 )
 
 

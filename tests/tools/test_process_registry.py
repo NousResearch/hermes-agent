@@ -773,6 +773,33 @@ class TestSpawnEnvSanitization:
         args, kwargs = env.commands[0]
         assert kwargs.get("rewrite_compound_background") is False
 
+    def test_spawn_via_env_propagates_effective_cwd_to_backend(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "4321\n", "returncode": 0}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(
+                env,
+                "./helper",
+                cwd="/workspace/effective",
+            )
+
+        _, kwargs = env.commands[0]
+        assert session.cwd == "/workspace/effective"
+        assert kwargs["cwd"] == "/workspace/effective"
+
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False

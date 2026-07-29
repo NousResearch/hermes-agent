@@ -1363,7 +1363,11 @@ def create_job(
     # `cronjob` model tool — which calls create_job directly — is also
     # covered, not just `hermes cron create`.
     from cron.lifecycle_guard import check_gateway_lifecycle
-    check_gateway_lifecycle(prompt_text, normalized_script)
+    check_gateway_lifecycle(
+        prompt_text,
+        normalized_script,
+        cwd=normalized_workdir,
+    )
 
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
 
@@ -1598,6 +1602,20 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                         f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled."
                     )
                 updated["next_run_at"] = next_run
+
+            # Validate the complete effective definition before persisting any
+            # active update. This closes the create-only bypass and also makes
+            # resume/trigger fail closed after a script was changed on disk.
+            # Pausing remains possible so operators can disable an unsafe
+            # legacy or hand-edited job without first making it executable.
+            if updated.get("enabled", True) and updated.get("state") != "paused":
+                from cron.lifecycle_guard import check_gateway_lifecycle
+
+                check_gateway_lifecycle(
+                    _coerce_job_text(updated.get("prompt")),
+                    updated.get("script"),
+                    cwd=updated.get("workdir"),
+                )
 
             jobs[i] = updated
             save_jobs(jobs)

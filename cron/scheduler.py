@@ -2255,6 +2255,17 @@ def _run_job_script(
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
+    # Revalidate the bytes and any bounded literal helpers immediately before
+    # every scheduler execution. Creation/update validation is not sufficient:
+    # scripts can be replaced or jobs can be hand-edited while persisted.
+    _script_cwd = workdir or str(path.parent)
+    from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+
+    try:
+        check_gateway_lifecycle(None, str(path), cwd=_script_cwd)
+    except GatewayLifecycleBlocked as exc:
+        return False, str(exc)
+
     script_timeout = _get_script_timeout()
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
@@ -2295,11 +2306,17 @@ def _run_job_script(
             }
         env = build_subprocess_env()
         env.update(env_overlay)
+        # Environment/interpreter preparation can be separated from execution
+        # by hooks or monkeypatchable seams. Re-read the script/helper graph at
+        # the final subprocess boundary to minimize scan/execute mutation races.
+        try:
+            check_gateway_lifecycle(None, str(path), cwd=_script_cwd)
+        except GatewayLifecycleBlocked as exc:
+            return False, str(exc)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
-        _script_cwd = workdir or str(path.parent)
         result = subprocess.run(
             argv,
             capture_output=True,
@@ -2772,6 +2789,34 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
+    # Resolve workdir once so scheduler validation and every script execution
+    # share the same effective cwd. Missing workdirs preserve existing fallback
+    # behavior while still scanning from the path that will actually execute.
+    _job_workdir = str(job.get("workdir") or "").strip() or None
+    if _job_workdir and not Path(_job_workdir).is_dir():
+        logger.warning(
+            "Job '%s': configured workdir %r no longer exists — running without it",
+            job_id,
+            _job_workdir,
+        )
+        _job_workdir = None
+
+    # Persisted definitions are not trusted solely because they passed create
+    # or update. Revalidate prompt, top-level script, and bounded literal helper
+    # graph immediately before dispatch so hand-edited or replaced jobs cannot
+    # bypass the lifecycle guard through the scheduler.
+    from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+
+    try:
+        check_gateway_lifecycle(
+            str(job.get("prompt") or ""),
+            job.get("script"),
+            cwd=_job_workdir,
+        )
+    except GatewayLifecycleBlocked as exc:
+        logger.error("Job '%s' blocked before dispatch: %s", job_id, exc)
+        return False, "", "", str(exc)
+
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
     # ---------------------------------------------------------------
@@ -2797,18 +2842,8 @@ def run_job(
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
-        # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is passed as the subprocess cwd so the
-        # Python process cwd is NEVER mutated — avoiding the global-side-effect
-        # bug where os.chdir() leaks into concurrent gateway sessions (#69396).
-        _job_workdir = (job.get("workdir") or "").strip() or None
-        if _job_workdir and not Path(_job_workdir).is_dir():
-            logger.warning(
-                "Job '%s': configured workdir %r no longer exists — running without it",
-                job_id, _job_workdir,
-            )
-            _job_workdir = None
-
+        # The effective workdir was resolved before lifecycle revalidation and
+        # is passed through without mutating the gateway process cwd.
         try:
             ok, output = _run_job_script_with_claim_heartbeat(
                 job, script_path, workdir=_job_workdir,
@@ -2958,7 +2993,11 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path)
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job,
+            script_path,
+            workdir=_job_workdir,
+        )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

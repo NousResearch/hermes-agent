@@ -5556,7 +5556,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         thread_id: Optional[str] = None,
         parent_id: Optional[str] = None,
     ) -> str:
-        """Resolve model for this channel: channel_overrides else global default."""
+        """Resolve model for this channel: channel_overrides else global default.
+
+        Delegates the precedence rule to
+        :func:`hermes_cli.model_switch.resolve_effective_model` (session
+        override > channel override > global default) — the single owner
+        shared with the API server, so the two surfaces cannot diverge
+        again (see 7dd00bb47d).  This call site has no session tier: session
+        /model overrides are applied later by
+        ``_apply_session_model_override`` on the resolved runtime.
+        """
+        from hermes_cli.model_switch import resolve_effective_model
+
+        override = None
         config = getattr(self, "config", None)
         if config:
             override = _get_channel_override(
@@ -5566,9 +5578,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 thread_id=thread_id,
                 parent_id=parent_id,
             )
-            if override and override.model:
-                return override.model
-        return _resolve_gateway_model(user_config)
+        return resolve_effective_model(
+            None,  # session tier applied downstream (_apply_session_model_override)
+            override,
+            _resolve_gateway_model(user_config),
+        )
 
     def _get_system_prompt_for_channel(
         self,

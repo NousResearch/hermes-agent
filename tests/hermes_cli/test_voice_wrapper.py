@@ -785,3 +785,93 @@ class TestBeepsEnabledTruthyStrings:
 
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"voice": {}})
         assert voice._beeps_enabled() is True
+
+
+@pytest.mark.real_audio_playback
+class TestSpeakTextStreamingDispatch:
+    """speak_text routes through the generic streaming dispatcher (#58930)
+    when a chunked streaming provider resolves — one dispatcher, zero
+    parallel streaming implementations."""
+
+    def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
+        import hermes_cli.voice as voice
+        import tools.tts_streaming as ts
+        from tools import tts_tool
+
+        streamed = []
+
+        def fake_stream(text_queue, stop_event, done_event, *a, **k):
+            while True:
+                item = text_queue.get()
+                if item is None:
+                    break
+                streamed.append(item)
+            done_event.set()
+
+        monkeypatch.setattr(
+            ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()
+        )
+        monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", fake_stream)
+
+        synced = []
+        monkeypatch.setattr(
+            tts_tool, "text_to_speech_tool", lambda **kw: synced.append(kw) or "{}"
+        )
+
+        assert voice.speak_text("Hello streaming world") is None
+        assert streamed == ["Hello streaming world"]
+        assert synced == [], "sync whole-file path must be skipped when streaming"
+
+    def test_no_streamer_falls_back_to_sync_path(self, monkeypatch):
+        import hermes_cli.voice as voice
+        import tools.tts_streaming as ts
+        from tools import tts_tool
+
+        monkeypatch.setattr(
+            ts, "resolve_streaming_provider", lambda cfg, preferred=None: None
+        )
+        played = []
+        returned_path = "/tmp/hermes_voice/fallback.mp3"
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda **_kw: f'{{"success": true, "file_path": "{returned_path}"}}',
+        )
+        monkeypatch.setattr(voice.os, "makedirs", lambda *a, **k: None)
+        monkeypatch.setattr(voice.os.path, "isfile", lambda p: p == returned_path)
+        monkeypatch.setattr(voice.os.path, "getsize", lambda _p: 1000)
+        monkeypatch.setattr(voice.os, "unlink", lambda _p: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda p: played.append(p))
+
+        assert voice.speak_text("Hello sync world") is None
+        assert played == [returned_path]
+
+    def test_streaming_failure_falls_back_to_sync_path(self, monkeypatch):
+        import hermes_cli.voice as voice
+        import tools.tts_streaming as ts
+        from tools import tts_tool
+
+        monkeypatch.setattr(
+            ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()
+        )
+
+        def broken_stream(text_queue, stop_event, done_event, *a, **k):
+            raise RuntimeError("audio device exploded")
+
+        monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", broken_stream)
+
+        played = []
+        returned_path = "/tmp/hermes_voice/recovered.mp3"
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda **_kw: f'{{"success": true, "file_path": "{returned_path}"}}',
+        )
+        monkeypatch.setattr(voice.os, "makedirs", lambda *a, **k: None)
+        monkeypatch.setattr(voice.os.path, "isfile", lambda p: p == returned_path)
+        monkeypatch.setattr(voice.os.path, "getsize", lambda _p: 1000)
+        monkeypatch.setattr(voice.os, "unlink", lambda _p: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda p: played.append(p))
+
+        assert voice.speak_text("Recover me") is None
+        assert played == [returned_path]

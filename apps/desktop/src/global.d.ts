@@ -373,6 +373,8 @@ export interface DesktopUpdateStatus {
   error?: string
   behind?: number
   currentSha?: string
+  /** Backend only: the version string the backend reports for itself. */
+  currentVersion?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

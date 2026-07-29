@@ -889,9 +889,7 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { text: 'stop the docker container' }, type: 'voice.transcript' } as any)
 
-    await vi.waitFor(() =>
-      expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('stop the docker container')
-    )
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('stop the docker container'))
     expect(ctx.voice.setVoiceEnabled).not.toHaveBeenCalled()
   })
 

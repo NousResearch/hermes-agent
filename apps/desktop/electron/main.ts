@@ -8039,9 +8039,7 @@ async function spawnPoolBackend(profile, entry) {
       onWaitTick: reason => {
         if (!poolAnnounced) {
           poolAnnounced = true
-          rememberLog(
-            `[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`
-          )
+          rememberLog(`[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`)
         }
       },
       pollMs: UPDATE_WAIT_POLL_MS,

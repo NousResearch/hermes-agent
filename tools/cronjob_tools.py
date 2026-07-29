@@ -293,7 +293,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
                 "Cron origin captured thread_id=%s for %s:%s",
                 thread_id, origin_platform, origin_chat_id,
             )
-        return {
+        origin = {
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
@@ -305,6 +305,19 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
+        # Parent channel of a thread origin (Discord/Matrix). Stored only when
+        # present so that if the origin thread is later deleted, delivery can
+        # fall back to the parent channel instead of being silently dropped
+        # (see cron.delivery_fallback). Omitted for non-threaded origins.
+        parent_chat_id = get_session_env("HERMES_SESSION_PARENT_CHAT_ID") or None
+        if parent_chat_id:
+            origin["parent_chat_id"] = parent_chat_id
+        # Chat kind, so stale-target fallback can avoid escalating a private 1:1
+        # DM to a shared home channel. Stored only when known.
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE") or None
+        if chat_type:
+            origin["chat_type"] = chat_type
+        return origin
     return None
 
 

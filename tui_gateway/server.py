@@ -3991,14 +3991,16 @@ def _apply_model_switch(
     persist_override: bool | None = None,
 ) -> dict:
     from hermes_cli.model_switch import (
-        parse_model_flags_detailed,
+        parse_model_switch_args,
         resolve_persist_behavior,
         switch_model,
+        MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL,
+        MODEL_SWITCH_ERROR_TEXT,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     if parsed_flags is None:
-        parsed_flags = parse_model_flags_detailed(raw_input)
+        parsed_flags = parse_model_switch_args(raw_input)
     if hasattr(parsed_flags, "model_input"):
         model_input = parsed_flags.model_input
         explicit_provider = parsed_flags.explicit_provider
@@ -4008,8 +4010,11 @@ def _apply_model_switch(
     else:
         model_input, explicit_provider, is_global_flag, _force_refresh, is_session = parsed_flags
         one_turn = False
+    # Conflict validation delegates to the shared single-owner parser; the
+    # TUI surfaces it as a raised ValueError (its historical behavior)
+    # using the canonical error copy.
     if is_global_flag and one_turn:
-        raise ValueError("/model --once cannot be combined with --global")
+        raise ValueError(MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL])
     persist_global = (
         persist_override
         if persist_override is not None
@@ -13656,9 +13661,9 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
-                from hermes_cli.model_switch import parse_model_flags_detailed
+                from hermes_cli.model_switch import parse_model_switch_args
 
-                parsed_flags = parse_model_flags_detailed(value)
+                parsed_flags = parse_model_switch_args(value)
                 explicit_provider = parsed_flags.explicit_provider
                 if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")

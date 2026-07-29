@@ -2258,7 +2258,10 @@ def _launch_tui(
 
     import tempfile
 
-    env = os.environ.copy()
+    # TUI child is a hermes process: propagate the profile-home contract via
+    # the single factory; keep secrets (the TUI/agent needs provider creds).
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
@@ -2352,7 +2355,8 @@ def _launch_tui(
         _tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
     env["NODE_OPTIONS"] = " ".join(_tokens)
     # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
-    # Ink app.  Because we start from os.environ.copy(), an exported/stale value
+    # Ink app.  Because we start from a full os.environ snapshot (via
+    # build_subprocess_env), an exported/stale value
     # in the user's shell would otherwise make a plain `hermes --tui` try to
     # resume a non-existent session and leave the UI at "error: session not
     # found" with no live session.  Only forward a resume id that argparse
@@ -15144,7 +15148,10 @@ def cmd_dashboard(args):
             reexec_argv.append("--insecure")
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
-        env = os.environ.copy()
+        from tools.environments.local import build_subprocess_env
+        # Exact env preservation: HERMES_HOME is explicitly pinned to the
+        # machine root below — the factory must not re-inject a profile home.
+        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
         # Pin the child to the machine ROOT, not the launching profile's
         # HERMES_HOME.  We must resolve the root explicitly instead of just
         # dropping HERMES_HOME: in the Docker layout the machine root is

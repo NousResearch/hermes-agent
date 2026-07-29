@@ -342,12 +342,18 @@ class _SlashWorker:
 
         # slash_worker runs the Hermes agent → needs provider credentials.
         # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
-        env = hermes_subprocess_env(inherit_credentials=True)
-        if profile_home:
-            # Global-remote / multi-profile sessions: the worker must resolve
-            # config/skills/state against the session's profile home, not the
-            # gateway's launch HERMES_HOME (#40677).
-            env["HERMES_HOME"] = str(profile_home)
+        # Global-remote / multi-profile sessions: the worker must resolve
+        # config/skills/state against the session's profile home, not the
+        # gateway's launch HERMES_HOME (#40677). The override goes through the
+        # build_subprocess_env factory's `extra` (applied last, always wins)
+        # instead of a hand-rolled env["HERMES_HOME"] assignment.
+        from tools.environments.local import build_subprocess_env
+        env = build_subprocess_env(
+            hermes_subprocess_env(inherit_credentials=True),
+            scrub_secrets=False,
+            inherit_profile_home=False,  # base already carries the HOME contract
+            extra={"HERMES_HOME": str(profile_home)} if profile_home else None,
+        )
 
         # start_new_session=True detaches the slash worker into its own
         # process group / session. Without this, the worker inherits the
@@ -15752,8 +15758,8 @@ def _(rid, params: dict) -> dict:
             # Sanitize env to prevent credential leakage —
             # quick commands run in the TUI server process which
             # has all API keys in os.environ.
-            from tools.environments.local import _sanitize_subprocess_env
-            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+            from tools.environments.local import build_subprocess_env
+            sanitized_env = build_subprocess_env()
             from hermes_cli._subprocess_compat import windows_hide_flags
 
             r = subprocess.run(

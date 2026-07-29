@@ -830,17 +830,253 @@ class TestTeamsAttachmentClassification:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.anyio
+    async def test_bot_framework_download_adds_sdk_bearer_token(self, monkeypatch):
+        adapter = self._make_adapter()
+        adapter._app._get_bot_token = AsyncMock(return_value="bot-token")
+        async def chunks():
+            yield b"protected image"
+
+        response = SimpleNamespace(
+            headers={},
+            aiter_bytes=chunks,
+            raise_for_status=MagicMock(),
+        )
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return response
+
+            async def __aexit__(self, *_args):
+                return False
+
+        client = SimpleNamespace(stream=MagicMock(return_value=ResponseContext()))
+
+        class ClientContext:
+            async def __aenter__(self):
+                return client
+
+            async def __aexit__(self, *_args):
+                return False
+
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_async_client",
+            lambda **_kwargs: ClientContext(),
+        )
+
+        data = await adapter._fetch_attachment_bytes(
+            "https://smba.trafficmanager.net/amer/tenant/v3/attachments/1/views/original"
+        )
+
+        assert data == b"protected image"
+        request_headers = client.stream.call_args.kwargs["headers"]
+        assert request_headers["Authorization"] == "Bearer bot-token"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://smba.trafficmanager.net/amer/tenant/v3/attachments/1/views/original",
+            "https://smba.trafficmanager.net:444/amer/tenant/v3/attachments/1/views/original",
+        ],
+    )
+    async def test_bot_framework_token_requires_https_default_port(
+        self,
+        monkeypatch,
+        url,
+    ):
+        adapter = self._make_adapter()
+        adapter._app._get_bot_token = AsyncMock(return_value="bot-token")
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+
+        with pytest.raises(ValueError, match="HTTPS on port 443 is required"):
+            await adapter._fetch_attachment_bytes(url)
+
+        adapter._app._get_bot_token.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_non_bot_framework_download_never_receives_bot_token(self, monkeypatch):
+        adapter = self._make_adapter()
+        adapter._app._get_bot_token = AsyncMock(return_value="bot-token")
+        async def chunks():
+            yield b"file"
+
+        response = SimpleNamespace(
+            headers={},
+            aiter_bytes=chunks,
+            raise_for_status=MagicMock(),
+        )
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return response
+
+            async def __aexit__(self, *_args):
+                return False
+
+        client = SimpleNamespace(stream=MagicMock(return_value=ResponseContext()))
+
+        class ClientContext:
+            async def __aenter__(self):
+                return client
+
+            async def __aexit__(self, *_args):
+                return False
+
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_async_client",
+            lambda **_kwargs: ClientContext(),
+        )
+
+        await adapter._fetch_attachment_bytes(
+            "https://contoso.sharepoint.com/download/image.png"
+        )
+
+        adapter._app._get_bot_token.assert_not_awaited()
+        request_headers = client.stream.call_args.kwargs["headers"]
+        assert "Authorization" not in request_headers
+
+    @pytest.mark.anyio
+    async def test_attachment_download_enforces_inbound_media_cap(self, monkeypatch):
+        adapter = self._make_adapter()
+        response = SimpleNamespace(
+            headers={"content-length": "5"},
+            raise_for_status=MagicMock(),
+        )
+
+        class ResponseContext:
+            async def __aenter__(self):
+                return response
+
+            async def __aexit__(self, *_args):
+                return False
+
+        client = SimpleNamespace(stream=MagicMock(return_value=ResponseContext()))
+
+        class ClientContext:
+            async def __aenter__(self):
+                return client
+
+            async def __aexit__(self, *_args):
+                return False
+
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_async_client",
+            lambda **_kwargs: ClientContext(),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base.get_inbound_media_max_bytes",
+            lambda: 4,
+        )
+
+        with pytest.raises(ValueError, match="Inbound attachment payload is too large"):
+            await adapter._fetch_attachment_bytes(
+                "https://contoso.sharepoint.com/download/oversized.png"
+            )
+
+    @pytest.mark.anyio
+    async def test_attachment_download_retries_transient_http_status(self, monkeypatch):
+        adapter = self._make_adapter()
+        request = httpx.Request(
+            "GET",
+            "https://contoso.sharepoint.com/download/image.png",
+        )
+        retry_response = httpx.Response(429, request=request)
+        retry_error = httpx.HTTPStatusError(
+            "rate limited",
+            request=request,
+            response=retry_response,
+        )
+        first_response = SimpleNamespace(
+            headers={},
+            raise_for_status=MagicMock(side_effect=retry_error),
+        )
+
+        async def chunks():
+            yield b"image bytes"
+
+        second_response = SimpleNamespace(
+            headers={},
+            aiter_bytes=chunks,
+            raise_for_status=MagicMock(),
+        )
+
+        class ResponseContext:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self.response
+
+            async def __aexit__(self, *_args):
+                return False
+
+        client = SimpleNamespace(
+            stream=MagicMock(
+                side_effect=[
+                    ResponseContext(first_response),
+                    ResponseContext(second_response),
+                ]
+            )
+        )
+
+        class ClientContext:
+            async def __aenter__(self):
+                return client
+
+            async def __aexit__(self, *_args):
+                return False
+
+        sleep = AsyncMock()
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_async_client",
+            lambda **_kwargs: ClientContext(),
+        )
+        monkeypatch.setattr(_teams_mod.asyncio, "sleep", sleep)
+
+        data = await adapter._fetch_attachment_bytes(str(request.url))
+
+        assert data == b"image bytes"
+        assert client.stream.call_count == 2
+        sleep.assert_awaited_once_with(1.5)
+
+    @pytest.mark.anyio
+    async def test_protected_image_uses_authenticated_attachment_download(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG fake")
+        cache_image_bytes = MagicMock(return_value="/tmp/protected-image.png")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_teams_mod, "cache_image_from_bytes", cache_image_bytes, raising=False)
+            activity = self._make_activity([self._image_attachment()])
+            await adapter._on_message(self._make_ctx(activity))
+
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(
+            "https://smba.example.com/img.png"
+        )
+        cache_image_bytes.assert_called_once_with(b"\x89PNG fake", ext=".png")
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/protected-image.png"]
+        assert event.media_types == ["image/png"]
+
+    @pytest.mark.anyio
     async def test_mixed_image_and_document_prefers_document(self):
         from gateway.platforms.base import MessageType
 
         adapter = self._make_adapter()
         adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
 
-        async def fake_cache_image(url, *a, **kw):
+        def fake_cache_image(data, *a, **kw):
             return "/tmp/img.png"
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
+            mp.setattr(_teams_mod, "cache_image_from_bytes", fake_cache_image)
             activity = self._make_activity([
                 self._image_attachment(),
                 self._file_download_attachment(),
@@ -868,12 +1104,13 @@ class TestTeamsAttachmentClassification:
         from gateway.platforms.base import MessageType
 
         adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG fake")
 
-        async def fake_cache_image(url, *a, **kw):
+        def fake_cache_image(data, *a, **kw):
             return "/tmp/img.png"
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
+            mp.setattr(_teams_mod, "cache_image_from_bytes", fake_cache_image)
             activity = self._make_activity([self._image_attachment()])
             await adapter._on_message(self._make_ctx(activity))
 

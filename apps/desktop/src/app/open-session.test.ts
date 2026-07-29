@@ -23,7 +23,30 @@ vi.mock('./routes', () => ({
   sessionRoute: (id: string) => `/c/${encodeURIComponent(id)}`
 }))
 
-import { openSession, openSessionIntentFromModifiers } from './open-session'
+import { openSession, openSessionIntentFromModifiers, mainChatOccupied } from './open-session'
+
+/**
+ * The question behind both the sidebar "+" and a palette open: is there a
+ * conversation on main that must not be discarded? A create affordance stacks a
+ * tab rather than replacing a chat that may still be mid-turn.
+ */
+describe('mainChatOccupied', () => {
+  it('is occupied once a conversation is on screen', () => {
+    expect(mainChatOccupied('runtime-a', 'stored-a')).toBe(true)
+  })
+
+  it('is occupied by a live runtime whose stored id has not landed yet', () => {
+    expect(mainChatOccupied('runtime-a', null)).toBe(true)
+  })
+
+  it('is occupied by a selected session still resuming into a runtime', () => {
+    expect(mainChatOccupied(null, 'stored-a')).toBe(true)
+  })
+
+  it('is free when nothing is open', () => {
+    expect(mainChatOccupied(null, null)).toBe(false)
+  })
+})
 
 describe('openSessionIntentFromModifiers', () => {
   it('defaults to in-place', () => {

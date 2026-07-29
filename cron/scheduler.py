@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -2190,6 +2191,22 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
+def _kill_process_tree_windows(pid: int) -> None:
+    """Kill a process and all its descendants on Windows using taskkill /T.
+
+    Falls back to terminating just the given PID if taskkill fails (e.g.
+    the process already exited between the timeout and the kill attempt).
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:
+        pass  # best-effort; the process may already be gone
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -2300,17 +2317,35 @@ def _run_job_script(
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
         _script_cwd = workdir or str(path.parent)
-        result = subprocess.run(
+
+        # Use start_new_session so the child and all its descendants
+        # form a single process group. On timeout we kill the whole
+        # group with killpg() instead of leaving orphan descendants
+        # running indefinitely (#71148).
+        if sys.platform != "win32":
+            popen_kwargs.setdefault("start_new_session", True)
+
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            stdout, stderr = proc.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired:
+            if sys.platform == "win32":
+                _kill_process_tree_windows(proc.pid)
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+            stdout, stderr = proc.communicate()
+            return False, f"Script timed out after {script_timeout}s: {path}"
+
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2322,8 +2357,8 @@ def _run_job_script(
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if proc.returncode != 0:
+            parts = [f'Script exited with code {proc.returncode}']
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:

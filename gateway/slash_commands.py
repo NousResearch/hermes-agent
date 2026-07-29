@@ -2919,6 +2919,11 @@ class GatewaySlashCommandsMixin:
                 if getattr(source, "scope_id", None)
                 else None
             ),
+            chat_type=(
+                str(source.chat_type)
+                if getattr(source, "chat_type", None)
+                else None
+            ),
         )
 
         # config.yaml is canonical because it can persist the authenticated

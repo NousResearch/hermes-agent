@@ -241,6 +241,37 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_sethome_captures_source_chat_type(tmp_path, monkeypatch):
+    """/sethome must persist the source's chat_type onto the HomeChannel.
+
+    build_session_key() keys DMs on a wholly different shape from
+    group/thread, so a consumer that later wakes a session against this home
+    channel (the kanban dashboard's home-subscribe endpoint) needs to know
+    whether /sethome ran in a DM to route to the SAME session, instead of
+    defaulting to "group" and building the wrong key (#56580).
+    """
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+    monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
+
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source(chat_id="dm-home-1", chat_type="dm")
+    source.chat_name = "Ops DM"
+    event = MessageEvent(
+        text="/sethome",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m-home-dm",
+    )
+
+    await runner._handle_set_home_command(event)
+
+    home = runner.config.get_home_channel(Platform.TELEGRAM)
+    assert home is not None
+    assert home.chat_type == "dm"
+
+
+@pytest.mark.asyncio
 async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path, monkeypatch):
     """/sethome from a topic/thread stores the thread-aware home target."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

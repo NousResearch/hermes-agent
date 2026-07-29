@@ -936,8 +936,8 @@ _cron_cadence_cache: Dict[str, Optional[float]] = {}
 def _log_missed_job(job: dict, scheduled_at: str, grace: int, new_next: str) -> None:
     """Append a missed-job event to the audit log for trend analysis.
 
-    Writes one JSON line to ``missed_jobs.jsonl`` in the active store's cron
-    directory (resolved via ``_current_cron_store()``).
+    Writes one JSON line to ``missed_jobs.jsonl`` in the active store's
+    cron directory (resolved via ``_current_cron_store()``).
     Used by the daily health report to surface patterns of scheduler gaps.
     """
     try:

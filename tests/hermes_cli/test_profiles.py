@@ -273,6 +273,77 @@ class TestDeleteProfile:
         assert profile_dir.is_dir()
         assert get_active_profile() == "default"
 
+    def test_chflags_attempted_before_chmod_on_permission_error(self, profile_env):
+        """macOS immutable-flag recovery: `os.chflags(path, 0)` must run
+        before the chmod/retry path so uchg-flagged files (`.env`) can be
+        unlinked. Regression for #43340 + sweeper review 2026-07-14."""
+        profile_dir = create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+        env_file = profile_dir / ".env"
+        env_file.write_text("KEY=value")
+
+        chflags_calls = []
+        chmod_calls = []
+
+        def fake_chflags(path, flags):
+            chflags_calls.append((str(path), flags))
+
+        def fake_chmod(path, mode):
+            chmod_calls.append(str(path))
+
+        def fake_rmtree(path, **kwargs):
+            handler = kwargs.get("onexc") or kwargs.get("onerror")
+            if handler:
+                # Simulate rmtree hitting the immutable .env: invoke the
+                # error handler exactly as rmtree would, then fail.
+                handler(os.unlink, str(env_file), PermissionError("Operation not permitted"))
+            raise PermissionError("Operation not permitted")
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.time.sleep"), \
+             patch("hermes_cli.profiles.shutil.rmtree", side_effect=fake_rmtree), \
+             patch("hermes_cli.profiles.os.chflags", side_effect=fake_chflags), \
+             patch("hermes_cli.profiles.os.chmod", side_effect=fake_chmod):
+            with pytest.raises(RuntimeError, match="Could not remove profile directory"):
+                delete_profile("coder", yes=True)
+
+        assert chflags_calls, "os.chflags must be attempted on PermissionError"
+        assert chflags_calls[0][0] == str(env_file)
+        assert chflags_calls[0][1] == 0
+        # chflags precedes the chmod recovery attempt
+        first_chflags = chflags_calls[0][0]
+        assert first_chflags in chmod_calls
+
+    def test_chflags_unavailable_is_tolerated(self, profile_env):
+        """Linux/Windows lack os.chflags — AttributeError inside the guard
+        must be swallowed so the chmod/retry path still runs."""
+        profile_dir = create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+        env_file = profile_dir / ".env"
+        env_file.write_text("KEY=value")
+
+        chmod_calls = []
+
+        def fake_chmod(path, mode):
+            chmod_calls.append(str(path))
+
+        def fake_rmtree(path, **kwargs):
+            handler = kwargs.get("onexc") or kwargs.get("onerror")
+            if handler:
+                handler(os.unlink, str(env_file), PermissionError("Operation not permitted"))
+            raise PermissionError("Operation not permitted")
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.time.sleep"), \
+             patch("hermes_cli.profiles.shutil.rmtree", side_effect=fake_rmtree), \
+             patch("hermes_cli.profiles.os.chflags", side_effect=AttributeError("no chflags")), \
+             patch("hermes_cli.profiles.os.chmod", side_effect=fake_chmod):
+            with pytest.raises(RuntimeError, match="Could not remove profile directory"):
+                delete_profile("coder", yes=True)
+
+        assert chmod_calls, "chmod recovery must still run when chflags is unavailable"
+        assert str(env_file) in chmod_calls
+
 
 
     def test_backend_scan_only_matches_this_profile(self, profile_env, monkeypatch):

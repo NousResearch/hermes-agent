@@ -40,4 +40,5 @@ from tools.computer_use.tool import (  # noqa: F401
     set_approval_callback,
     check_computer_use_requirements,
     get_computer_use_schema,
+    release_computer_use_session,
 )

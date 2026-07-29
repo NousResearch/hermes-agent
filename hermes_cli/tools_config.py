@@ -881,7 +881,11 @@ def _cua_install_target_writable() -> bool:
         return True
 
 
-def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = False) -> bool:
+def install_cua_driver(
+    upgrade: bool = False,
+    require_confirmed_update: bool = False,
+    show_installer_progress: bool = True,
+) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
 
     The upstream installer always pulls the latest release tag, so re-running
@@ -906,6 +910,10 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
     a further ~600s wait on Windows). ``hermes computer-use install
     --upgrade`` leaves it False — an explicit upgrade request should still
     reinstall when the check is indeterminate.
+
+    ``show_installer_progress`` controls the installer's own progress line.
+    ``hermes update`` already prints a contextual line before its update
+    check, so it disables this to avoid printing the refresh twice.
 
     Returns True iff cua-driver is installed (or successfully refreshed)
     when the function returns. Supported on macOS, Windows, and Linux
@@ -1054,7 +1062,10 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
         before = ""
 
     ok = _run_cua_driver_installer(
-        label="Refreshing", verbose=False, pin_version=confirmed_version
+        label="Refreshing",
+        verbose=False,
+        pin_version=confirmed_version,
+        show_progress=show_installer_progress,
     )
     if ok and before:
         try:
@@ -1331,6 +1342,7 @@ def _run_cua_driver_installer(
     label: str = "Installing",
     verbose: bool = True,
     pin_version: Optional[str] = None,
+    show_progress: bool = True,
 ) -> bool:
     """Run the upstream cua-driver installer for this platform.
 
@@ -1412,10 +1424,11 @@ def _run_cua_driver_installer(
         install_cmd = ["/bin/bash", script_path]
     use_shell = False
 
-    if verbose:
-        _print_info(f"    {label} cua-driver (background computer-use)...")
-    else:
-        _print_info(f"    {label} cua-driver...")
+    if show_progress:
+        if verbose:
+            _print_info(f"    {label} cua-driver (background computer-use)...")
+        else:
+            _print_info(f"→ {label} cua-driver (Computer Use)...")
     driver_cmd = _cua_driver_cmd()
 
     installer_env = _cua_driver_env()

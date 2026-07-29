@@ -55,6 +55,18 @@ class TestAtexitTeardown:
             cu_tool._shutdown_backend_atexit()  # must not raise
             assert cu_tool._backend is None
 
+    def test_shutdown_stops_every_session_backend(self):
+        """Session-scoped caches are all drained, not only the legacy slot."""
+        first = MagicMock()
+        second = MagicMock()
+        with patch.object(cu_tool, "_backend", None), \
+             patch.object(cu_tool, "_backends", {"one": first, "two": second}), \
+             patch.object(cu_tool, "_backend_call_locks", {}):
+            cu_tool._shutdown_backend_atexit()
+            first.stop.assert_called_once()
+            second.stop.assert_called_once()
+            assert cu_tool._backends == {}
+
     def test_hook_is_registered_with_atexit(self):
         """Importing the tool module registers the teardown hook.
 

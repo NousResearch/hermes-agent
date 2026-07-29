@@ -17803,9 +17803,16 @@ def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -
             result = transcribe_recording(wav_path)
             text = (result.get("transcript") or "").strip() if result.get("success") else ""
             if text:
-                from tools.voice_mode import is_voice_stop_phrase
+                # Stop-check must never break transcript delivery — if the
+                # helper is unavailable (stubbed voice_mode in tests, partial
+                # installs), treat as not-a-stop-phrase.
+                try:
+                    from tools.voice_mode import is_voice_stop_phrase
+                    _is_stop = is_voice_stop_phrase(text)
+                except Exception:
+                    _is_stop = False
 
-                if is_voice_stop_phrase(text):
+                if _is_stop:
                     # Barge-in with a bare stop phrase — the user talked over
                     # the agent's speech to END the voice chat. Same explicit
                     # stop signal as the continuous loop: flip mode off, halt

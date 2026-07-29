@@ -304,6 +304,12 @@ _tts_playing.set()  # initially "not playing"
 _continuous_on_transcript: Optional[Callable[[str], None]] = None
 _continuous_on_status: Optional[Callable[[str], None]] = None
 _continuous_on_silent_limit: Optional[Callable[[], None]] = None
+# Explicit user-intent stop signal: fired when the user SAYS a bare stop
+# phrase ("stop"). Distinct from on_silent_limit (a timeout) so consumers
+# (TUI, desktop) can end the conversation like a manual stop instead of
+# reporting "no speech detected". When unset, on_silent_limit fires as a
+# fallback so older callers still turn voice off.
+_continuous_on_stop_phrase: Optional[Callable[[str], None]] = None
 _continuous_no_speech_count = 0
 _CONTINUOUS_NO_SPEECH_LIMIT = 3
 
@@ -379,6 +385,7 @@ def start_continuous(
     silence_duration: float = 3.0,
     auto_restart: bool = True,
     max_recording_seconds: float = 0.0,
+    on_stop_phrase: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Start a VAD-driven continuous recording loop.
 
@@ -400,9 +407,16 @@ def start_continuous(
     ``max_recording_seconds`` is the hard cap on a single recording's length
     (``voice.max_recording_seconds``); any non-positive or non-numeric value
     disables the cap, preserving the previous unbounded behaviour.
+
+    ``on_stop_phrase`` is called with the (stripped) transcript when the user
+    utters a bare voice stop phrase (``voice.stop_phrases``, default "stop").
+    The loop halts first, so the consumer only needs to reflect "voice off" —
+    exactly like the user pressing the manual stop control. When omitted,
+    ``on_silent_limit`` fires instead so legacy callers still turn voice off.
     """
     global _continuous_active, _continuous_recorder, _continuous_auto_restart
     global _continuous_on_transcript, _continuous_on_status, _continuous_on_silent_limit
+    global _continuous_on_stop_phrase
     global _continuous_no_speech_count
 
     with _continuous_lock:
@@ -417,6 +431,7 @@ def start_continuous(
         _continuous_on_transcript = on_transcript
         _continuous_on_status = on_status
         _continuous_on_silent_limit = on_silent_limit
+        _continuous_on_stop_phrase = on_stop_phrase
         if auto_restart:
             _continuous_no_speech_count = 0
 
@@ -473,6 +488,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
     """
     global _continuous_active, _continuous_on_transcript, _continuous_stopping
     global _continuous_on_status, _continuous_on_silent_limit
+    global _continuous_on_stop_phrase
     global _continuous_recorder, _continuous_no_speech_count
 
     with _continuous_lock:
@@ -483,12 +499,14 @@ def stop_continuous(force_transcribe: bool = False) -> None:
         on_status = _continuous_on_status
         on_transcript = _continuous_on_transcript
         on_silent_limit = _continuous_on_silent_limit
+        on_stop_phrase = _continuous_on_stop_phrase
         auto_restart = _continuous_auto_restart
         track_no_speech = force_transcribe and not auto_restart
         _continuous_stopping = rec is not None
         _continuous_on_transcript = None
         _continuous_on_status = None
         _continuous_on_silent_limit = None
+        _continuous_on_stop_phrase = None
         if not track_no_speech:
             _continuous_no_speech_count = 0
 
@@ -530,10 +548,25 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                 finally:
                     stop_phrase = bool(transcript and is_voice_stop_phrase(transcript))
                     if stop_phrase:
-                        # Bare stop phrase — the loop is already stopping;
-                        # swallow it instead of sending "stop" to the agent.
-                        _debug("stop_continuous: stop phrase — transcript discarded")
+                        # Bare stop phrase — explicit user intent to end the
+                        # voice chat. Never sent to the agent; fire the
+                        # dedicated signal so the consumer (TUI / desktop)
+                        # ends the conversation instead of silently re-arming
+                        # the next capture (with auto_restart=False the CLIENT
+                        # drives the loop, so discarding the transcript alone
+                        # would leave the conversation running forever).
+                        _debug(
+                            f"stop_continuous: stop phrase {transcript!r} — ending voice chat"
+                        )
+                        stop_text = transcript or ""
                         transcript = None
+                        try:
+                            if on_stop_phrase is not None:
+                                on_stop_phrase(stop_text)
+                            elif on_silent_limit is not None:
+                                on_silent_limit()
+                        except Exception:
+                            pass
                     if transcript:
                         try:
                             on_transcript(transcript)
@@ -616,6 +649,7 @@ def _continuous_on_silence() -> None:
         on_transcript = _continuous_on_transcript
         on_status = _continuous_on_status
         on_silent_limit = _continuous_on_silent_limit
+        on_stop_phrase = _continuous_on_stop_phrase
 
     if rec is None:
         _debug("_continuous_on_silence: no recorder — abort")
@@ -669,10 +703,12 @@ def _continuous_on_silence() -> None:
                 pass
 
     stop_phrase = bool(transcript and is_voice_stop_phrase(transcript))
+    stop_text = (transcript or "") if stop_phrase else ""
     if stop_phrase:
         # User said a bare stop phrase ("stop") — end the voice chat.
-        # Not delivered to the agent; the loop halts exactly like the
-        # silent-cycle limit so every UI (TUI, desktop) turns voice off.
+        # Not delivered to the agent; the loop halts and the explicit
+        # on_stop_phrase signal (fallback: on_silent_limit) tells every UI
+        # (TUI, desktop) to end the conversation like a manual stop.
         _debug(f"_continuous_on_silence: stop phrase {transcript!r} — ending loop")
         transcript = None
 
@@ -704,7 +740,15 @@ def _continuous_on_silence() -> None:
         with _continuous_lock:
             _continuous_active = False
             _continuous_no_speech_count = 0
-        if on_silent_limit:
+        if stop_phrase and on_stop_phrase is not None:
+            # Explicit user-intent stop — distinct from the no-speech timeout
+            # so consumers can report "voice chat ended" instead of "no
+            # speech detected".
+            try:
+                on_stop_phrase(stop_text)
+            except Exception:
+                pass
+        elif on_silent_limit:
             try:
                 on_silent_limit()
             except Exception:

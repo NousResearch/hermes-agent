@@ -1315,6 +1315,100 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert captured["auto_restart"] is False
 
 
+def test_prompt_submit_typed_stop_phrase_ends_voice_chat(monkeypatch):
+    """Typed bare stop phrase during an active voice chat is consumed at the
+    prompt.submit choke point: voice mode flips off, a distinct
+    voice.transcript {stop_phrase, typed} event fires, and NO turn starts.
+    """
+    calls = {"stop_continuous": 0}
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, payload))
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            is_voice_stop_phrase=lambda t: t.strip().lower().strip(".!?") == "stop"
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            stop_continuous=lambda force_transcribe=False: calls.__setitem__(
+                "stop_continuous", calls["stop_continuous"] + 1
+            )
+        ),
+    )
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda user_barge=False: None)
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+
+    resp = server.dispatch(
+        {
+            "id": "typed-stop",
+            "method": "prompt.submit",
+            "params": {"session_id": "any-sid", "text": "Stop."},
+        }
+    )
+
+    assert resp["result"] == {"voice_stopped": True}
+    assert os.environ["HERMES_VOICE"] == "0"
+    assert os.environ["HERMES_VOICE_TTS"] == "0"
+    assert calls["stop_continuous"] == 1
+    assert ("voice.transcript", {"stop_phrase": True, "typed": True}) in emitted
+
+
+def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
+    """Outside a voice chat, typed "stop" is a normal message — the stop
+    matcher must not even be consulted (guard is on voice mode)."""
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            is_voice_stop_phrase=lambda t: (_ for _ in ()).throw(
+                AssertionError("stop matcher must not run when voice is off")
+            )
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "0")
+
+    resp = server.dispatch(
+        {
+            "id": "typed-stop-off",
+            "method": "prompt.submit",
+            "params": {"session_id": "missing-sid", "text": "stop"},
+        }
+    )
+
+    # The submit proceeds into normal handling (here: unknown session error),
+    # NOT the voice_stopped consumption path.
+    assert resp.get("result") != {"voice_stopped": True}
+
+
+def test_prompt_submit_longer_text_not_consumed_in_voice_mode(monkeypatch):
+    """"stop the build" while voice is on must reach the agent path."""
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            is_voice_stop_phrase=lambda t: t.strip().lower().strip(".!?") == "stop"
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    resp = server.dispatch(
+        {
+            "id": "typed-long",
+            "method": "prompt.submit",
+            "params": {"session_id": "missing-sid", "text": "stop the build"},
+        }
+    )
+
+    assert resp.get("result") != {"voice_stopped": True}
+
+
 def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatch):
     from tools import wake_word
 

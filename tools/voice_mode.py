@@ -1187,10 +1187,18 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     if not result.get("success") and "File too large" in result.get("error", ""):
         result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
 
-    # Filter out Whisper hallucinations (common on silent/near-silent audio)
-    if result.get("success") and is_whisper_hallucination(result.get("transcript", "")):
-        logger.info("Filtered Whisper hallucination: %r", result["transcript"])
-        return {"success": True, "transcript": "", "filtered": True}
+    # Filter out Whisper hallucinations (common on silent/near-silent audio).
+    # A configured voice-chat stop phrase is checked FIRST and always survives:
+    # phrases like "bye" or "okay" overlap the hallucination blocklist/repeat
+    # regex, and swallowing them here would make saying "bye" (when configured
+    # as a stop phrase) silently fail to end the voice chat.
+    if result.get("success"):
+        raw_transcript = result.get("transcript", "")
+        if is_whisper_hallucination(raw_transcript) and not is_voice_stop_phrase(
+            raw_transcript
+        ):
+            logger.info("Filtered Whisper hallucination: %r", result["transcript"])
+            return {"success": True, "transcript": "", "filtered": True}
 
     # Providers that flag no_speech (empty transcript) failed to hear words,
     # not to transcribe — treat like silence so the voice loop re-listens

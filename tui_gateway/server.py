@@ -11074,6 +11074,36 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    # Typed bare stop phrase while backend voice mode is active ends the
+    # voice chat instead of sending "stop" to the agent — the typed twin of
+    # the spoken stop phrase (PR #73106), applied at the ONE server-side
+    # choke point every TUI submit passes through. Guarded on voice mode
+    # being ON: typed "stop" outside a voice chat is a normal message.
+    # (The desktop's voice conversation is renderer-owned and never flips
+    # the backend flag, so it handles its own typed stop client-side.)
+    if isinstance(text, str) and _voice_mode_enabled():
+        try:
+            from tools.voice_mode import is_voice_stop_phrase
+
+            typed_stop = is_voice_stop_phrase(text)
+        except Exception:
+            typed_stop = False
+        if typed_stop:
+            os.environ["HERMES_VOICE"] = "0"
+            os.environ["HERMES_VOICE_TTS"] = "0"
+            try:
+                from hermes_cli.voice import stop_continuous
+
+                stop_continuous()
+            except Exception:
+                pass
+            try:
+                _tts_stream_stop(user_barge=False)
+            except Exception:
+                pass
+            _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
+            logger.info("prompt.submit: typed stop phrase — voice chat ended")
+            return _ok(rid, {"voice_stopped": True})
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     if params.get("interrupted"):
         # Client-side barge-in (desktop VAD / typing over playback) — latch it
@@ -17773,7 +17803,24 @@ def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -
             result = transcribe_recording(wav_path)
             text = (result.get("transcript") or "").strip() if result.get("success") else ""
             if text:
-                _voice_emit("voice.transcript", {"text": text})
+                from tools.voice_mode import is_voice_stop_phrase
+
+                if is_voice_stop_phrase(text):
+                    # Barge-in with a bare stop phrase — the user talked over
+                    # the agent's speech to END the voice chat. Same explicit
+                    # stop signal as the continuous loop: flip mode off, halt
+                    # any active capture, and tell clients it was user intent.
+                    os.environ["HERMES_VOICE"] = "0"
+                    os.environ["HERMES_VOICE_TTS"] = "0"
+                    try:
+                        from hermes_cli.voice import stop_continuous
+
+                        stop_continuous()
+                    except Exception:
+                        pass
+                    _voice_emit("voice.transcript", {"stop_phrase": True, "text": text})
+                else:
+                    _voice_emit("voice.transcript", {"text": text})
         finally:
             try:
                 os.unlink(wav_path)
@@ -18316,6 +18363,23 @@ def _(rid, params: dict) -> dict:
                 _voice_emit("voice.transcript", {"no_speech_limit": True})
                 _resume_voice_wake()
 
+            def _on_stop_phrase(t):
+                # Explicit user intent: the user SAID a bare stop phrase
+                # ("stop"). End the voice chat exactly like a manual
+                # /voice off — flip the mode flags and silence any live
+                # streaming TTS — and emit a distinct signal so clients
+                # (TUI, desktop) end the conversation instead of treating
+                # it as a no-speech timeout. The continuous loop has
+                # already halted before this callback fires.
+                os.environ["HERMES_VOICE"] = "0"
+                os.environ["HERMES_VOICE_TTS"] = "0"
+                try:
+                    _tts_stream_stop(user_barge=False)
+                except Exception:
+                    pass
+                _voice_emit("voice.transcript", {"stop_phrase": True, "text": t})
+                _resume_voice_wake()
+
             def _on_status(state):
                 _voice_emit("voice.status", {"state": state})
                 if state == "idle":
@@ -18339,6 +18403,7 @@ def _(rid, params: dict) -> dict:
                 silence_duration=safe_duration,
                 auto_restart=False,
                 max_recording_seconds=safe_max_rec,
+                on_stop_phrase=_on_stop_phrase,
             )
             if started is False:
                 _resume_voice_wake()

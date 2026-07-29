@@ -236,12 +236,9 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
       return
     }
 
-    // Resolve the owning surface NOW, while the node is attached. The cleanup
-    // below runs after the stack collapsed and React removed the div, so
-    // closest() from the detached node misses [data-chat-surface] and would
-    // clear the document root instead — leaving the stale height on the
-    // surface, which keeps inflating the thread's bottom clearance until the
-    // next publish.
+    // Resolve the owning surface NOW, while the node is attached: the cleanup
+    // below runs after the stack collapsed and React removed the div, and a
+    // detached node can no longer find its [data-chat-surface].
     const root = chatSurfaceRoot(el)
     let last = -1
 

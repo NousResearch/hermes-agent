@@ -47,10 +47,18 @@ CONTINUATION_PATTERNS: List[str] = [
     r"^(and|also|but|so|then|what about|how about)\b",
     r"^(can you|could you|please|can we)\b.{0,40}(also|too|as well)\b",
 ]
-_CONTINUATION_RE = re.compile(
-    "|".join(CONTINUATION_PATTERNS),
+CONTINUATION_RE = re.compile(
+    r"^(?:"
+    r"ok(?:\s+(?:thanks?|got\s+it|sounds?\s+good|cool|fine|great|perfect|sure|works?))?"
+    r"|thanks?\s*(?:you)?"
+    r"|got\s+it"
+    r"|sounds?\s+good"
+    r"|makes?\s+sense"
+    r"|(?:and|also|but|so|then|what|how|why|when|where|which)\b.{0,80}"
+    r")\s*[.!?]?\s*$",
     re.IGNORECASE,
 )
+_CONTINUATION_RE = CONTINUATION_RE
 
 # Default role definitions — override in config.yaml under `roles:`
 DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
@@ -330,7 +338,11 @@ def _classify_message(
 ) -> str:
     """Return the best role name for *message*, defaulting to current_role on any failure."""
     prompt = _build_classifier_prompt(roles, current_role, history, message)
-    raw = _call_auxiliary_llm(prompt, aux_cfg, config)
+    try:
+        raw = _call_auxiliary_llm(prompt, aux_cfg, config)
+    except Exception:
+        logger.warning("[multi-role-router] LLM call failed, keeping current role", exc_info=True)
+        return current_role
     if not raw:
         return current_role
 

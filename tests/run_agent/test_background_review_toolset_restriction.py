@@ -227,3 +227,161 @@ def test_background_review_includes_memory_when_user_profile_enabled():
         )
 
     assert "memory" in captured["whitelist"]
+
+
+def _capture_init_kwargs(captured):
+    def _init(self, *args, **kwargs):
+        captured["enabled_toolsets"] = kwargs.get("enabled_toolsets", "UNSET")
+        captured["disabled_toolsets"] = kwargs.get("disabled_toolsets", "UNSET")
+        captured["base_url"] = kwargs.get("base_url", "UNSET")
+        raise RuntimeError("stop after capturing init args")
+
+    return _init
+
+
+def test_background_review_narrows_toolset_for_local_endpoint():
+    """Local endpoints have no prefix cache to preserve, so the fork advertises
+    only memory/skills instead of the parent's full schema — a weak local model
+    otherwise imitates the snapshot history and thrashes against the dispatch
+    deny-wall.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._current_main_runtime = lambda: {
+        "model": "Qwen3-Coder-Next-4bit",
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:8149/v1",
+        "api_key": "k",
+        "api_mode": "",
+    }
+    captured = {}
+
+    with patch.object(run_agent.AIAgent, "__init__", _capture_init_kwargs(captured)), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=True,
+        )
+
+    assert captured.get("enabled_toolsets") == ["memory", "skills"], captured
+    assert captured.get("disabled_toolsets") is None, captured
+
+
+def test_background_review_keeps_parent_toolset_for_remote_endpoint():
+    """Cache-backed (remote) endpoints still mirror the parent's toolsets so
+    the ``tools[]`` payload stays byte-identical for the prefix cache.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._current_main_runtime = lambda: {
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "api_key": "k",
+        "api_mode": "",
+    }
+    captured = {}
+
+    with patch.object(run_agent.AIAgent, "__init__", _capture_init_kwargs(captured)), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=True,
+        )
+
+    assert captured.get("enabled_toolsets") == agent.enabled_toolsets, captured
+    assert captured.get("disabled_toolsets") == agent.disabled_toolsets, captured
+
+
+def test_background_review_local_narrowing_respects_memory_gate():
+    """The narrowed schema must honor the memory gate: a memory-disabled
+    profile gets only the skills toolset advertised, mirroring the runtime
+    whitelist's conditional memory grant (no schema-level re-grant).
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+    agent._current_main_runtime = lambda: {
+        "model": "Qwen3-Coder-Next-4bit",
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:8149/v1",
+        "api_key": "k",
+        "api_mode": "",
+    }
+    captured = {}
+
+    with patch.object(run_agent.AIAgent, "__init__", _capture_init_kwargs(captured)), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    assert captured.get("enabled_toolsets") == ["skills"], captured
+    assert captured.get("disabled_toolsets") is None, captured
+
+
+def test_background_review_routed_endpoint_classified_by_review_runtime():
+    """An auxiliary.background_review route must be classified by the RESOLVED
+    review runtime's endpoint, not the parent's: remote parent + local aux
+    route still narrows, and the fork is constructed on the routed base_url.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent.provider = "anthropic"
+    agent.model = "claude-sonnet-4-6"
+    agent._current_main_runtime = lambda: {
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "api_key": "k",
+        "api_mode": "",
+    }
+    captured = {}
+    routed_url = "http://127.0.0.1:8150/v1"
+
+    def _fake_load_config():
+        return {
+            "auxiliary": {
+                "background_review": {"provider": "custom", "model": "qwen-local"}
+            }
+        }
+
+    def _fake_resolve_runtime_provider(**kwargs):
+        return {
+            "provider": "custom",
+            "model": "qwen-local",
+            "api_key": "k2",
+            "base_url": routed_url,
+            "api_mode": "",
+            "credential_pool": None,
+            "request_overrides": {},
+            "max_output_tokens": None,
+            "command": None,
+            "args": [],
+        }
+
+    with patch.object(run_agent.AIAgent, "__init__", _capture_init_kwargs(captured)), \
+         patch("hermes_cli.config.load_config", _fake_load_config), \
+         patch(
+             "hermes_cli.runtime_provider.resolve_runtime_provider",
+             _fake_resolve_runtime_provider,
+         ), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=True,
+        )
+
+    assert captured.get("base_url") == routed_url, captured
+    assert captured.get("enabled_toolsets") == ["memory", "skills"], captured
+    assert captured.get("disabled_toolsets") is None, captured

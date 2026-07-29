@@ -256,25 +256,65 @@ export function noteActiveTreeGroup(groupId: null | string) {
   }
 }
 
-/** Install the active-zone tracker (call once from the tree root). Records the
+/** The zone the pointer is currently over, or null off every zone. Transient —
+ *  it only OVERRIDES the focused zone while the mouse actually sits in one, so
+ *  moving the pointer away reverts the tab verbs to real focus rather than
+ *  stranding them on whatever the mouse last brushed past. */
+export const $hoveredTreeGroup = atom<null | string>(null)
+
+/** Record the hovered zone (pointerover / pointer leaving the window). Idempotent. */
+export function noteHoveredTreeGroup(groupId: null | string) {
+  if (groupId !== $hoveredTreeGroup.get()) {
+    $hoveredTreeGroup.set(groupId)
+  }
+}
+
+/** The zone every keyboard tab verb acts on: the HOVERED zone, else the focused
+ *  one. Hover-first is what makes ⌘1…⌘9 land in the pane you're pointing at
+ *  without clicking into it first; with the pointer outside the panes it's the
+ *  plain focused-zone behavior. One resolver so the number keys, ⌃Tab, and the
+ *  ⌘W / ⌘T family can never disagree about which zone is "the" zone. */
+function tabTargetGroupId(): null | string {
+  return $hoveredTreeGroup.get() ?? $activeTreeGroup.get()
+}
+
+const treeGroupOfEvent = (event: Event): null | string => {
+  const el = event.target instanceof HTMLElement ? event.target : null
+
+  return el?.closest<HTMLElement>('[data-tree-group]')?.dataset.treeGroup ?? null
+}
+
+/** Install the zone trackers (call once from the tree root). Records the
  *  `[data-tree-group]` under each pointerdown / focusin so ⌘W knows which
- *  zone's tab to close even when nothing is DOM-focused. */
+ *  zone's tab to close even when nothing is DOM-focused, and the one under the
+ *  pointer so the tab verbs follow the mouse. */
 export function trackActiveTreeGroup(): () => void {
-  const track = (event: Event) => {
-    const el = event.target instanceof HTMLElement ? event.target : null
-    const groupId = el?.closest<HTMLElement>('[data-tree-group]')?.dataset.treeGroup
+  const trackActive = (event: Event) => {
+    const groupId = treeGroupOfEvent(event)
 
     if (groupId) {
       noteActiveTreeGroup(groupId)
     }
   }
 
-  window.addEventListener('pointerdown', track, true)
-  window.addEventListener('focusin', track, true)
+  // `pointerover` fires on every element boundary crossing (not every mouse
+  // move), so leaving the panes for the titlebar reports null and the override
+  // lifts on its own.
+  const trackHover = (event: Event) => noteHoveredTreeGroup(treeGroupOfEvent(event))
+  const clearHover = () => noteHoveredTreeGroup(null)
+
+  window.addEventListener('pointerdown', trackActive, true)
+  window.addEventListener('focusin', trackActive, true)
+  window.addEventListener('pointerover', trackHover, true)
+  document.documentElement.addEventListener('pointerleave', clearHover)
+  window.addEventListener('blur', clearHover)
 
   return () => {
-    window.removeEventListener('pointerdown', track, true)
-    window.removeEventListener('focusin', track, true)
+    window.removeEventListener('pointerdown', trackActive, true)
+    window.removeEventListener('focusin', trackActive, true)
+    window.removeEventListener('pointerover', trackHover, true)
+    document.documentElement.removeEventListener('pointerleave', clearHover)
+    window.removeEventListener('blur', clearHover)
   }
 }
 
@@ -288,11 +328,12 @@ export const isSessionStripPane = (paneId: string): boolean =>
   paneId === 'workspace' || paneId.startsWith('session-tile:')
 
 /** The zone the session-tab verbs (⌘W / ⌘T / ⌘⇧T / the strip's "+") act on:
- *  the FOCUSED zone when it hosts a chat strip, else the workspace's zone.
- *  Same source ⌘1…⌘9 indexes ($activeTreeGroup), so the number keys and the
- *  tab verbs can't disagree about which strip is "the" strip. Focus parked in
- *  the sidebar / terminal / files must NOT retarget them — those zones fall
- *  back to main rather than letting ⌘W close the file tree. */
+ *  the TARGET zone (hovered, else focused) when it hosts a chat strip, else the
+ *  workspace's zone. Same source ⌘1…⌘9 indexes (`tabTargetGroupId`), so the
+ *  number keys and the tab verbs can't disagree about which strip is "the"
+ *  strip. A target parked in the sidebar / terminal / files must NOT retarget
+ *  them — those zones fall back to main rather than letting ⌘W close the file
+ *  tree. */
 function focusedSessionGroup(): GroupNode | null {
   const tree = $layoutTree.get()
 
@@ -300,7 +341,7 @@ function focusedSessionGroup(): GroupNode | null {
     return null
   }
 
-  const groupId = $activeTreeGroup.get()
+  const groupId = tabTargetGroupId()
   const focused = groupId ? findGroup(tree, groupId) : null
 
   return focused?.panes.some(isSessionStripPane) ? focused : findGroupOfPane(tree, 'workspace')
@@ -426,12 +467,12 @@ function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   })
 }
 
-/** ⌘1…⌘9: activate the Nth *visible* tab of the FOCUSED zone (the interaction
- *  tracker's group), but only when it's a real tab strip (≥2 shown panes).
+/** ⌘1…⌘9: activate the Nth *visible* tab of the target zone (hovered, else
+ *  focused), but only when it's a real tab strip (≥2 shown panes).
  *  Returns false so the caller falls back to its default (profile switch) —
- *  the number keys mean "switch tab" only while a multi-tab zone holds focus. */
+ *  the number keys mean "switch tab" only while a multi-tab zone is targeted. */
 export function activateTreeTabSlot(slot: number): boolean {
-  const groupId = $activeTreeGroup.get()
+  const groupId = tabTargetGroupId()
   const tree = $layoutTree.get()
   const group = groupId && tree ? findGroup(tree, groupId) : null
   const panes = group ? shownPanesInGroup(group) : []
@@ -445,11 +486,11 @@ export function activateTreeTabSlot(slot: number): boolean {
   return true
 }
 
-/** ⌃Tab / ⌃⇧Tab: cycle the FOCUSED zone's *visible* tabs (wrapping) — but only a
+/** ⌃Tab / ⌃⇧Tab: cycle the target zone's *visible* tabs (wrapping) — but only a
  *  session/main strip with ≥2 shown tabs. Returns false so the caller falls
- *  back to the recent-session switcher when the focus isn't a chat tab strip. */
+ *  back to the recent-session switcher when the target isn't a chat tab strip. */
 export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
-  const groupId = $activeTreeGroup.get()
+  const groupId = tabTargetGroupId()
   const tree = $layoutTree.get()
   const group = groupId && tree ? findGroup(tree, groupId) : null
   const panes = group ? shownPanesInGroup(group) : []

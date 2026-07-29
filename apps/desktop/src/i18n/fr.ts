@@ -1046,7 +1046,7 @@ export const fr: Translations = {
       catalogEnvPrompt: name => `${name} nécessite des identifiants`,
       catalogEnvRequired: "Remplissez les valeurs requises avant d'installer.",
       capabilitySummary: (tools, prompts, resources) =>
-        `${[`${tools} tools`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} resources`] : [])].join(', ')} enabled`,
+        `${[`${tools} outils`, ...(prompts ? [`${prompts} invites`] : []), ...(resources ? [`${resources} ressources`] : [])].join(', ')} activés`,
       statusConnecting: 'Connexion…',
       statusNeedsAuth: 'Nécessite une authentification',
       statusError: 'Erreur',
@@ -1305,7 +1305,7 @@ export const fr: Translations = {
       landingHint:
         "Recherchez dans le hub pour parcourir les skills installables depuis l'index officiel, GitHub et les sources communautaires.",
       noResults: 'Aucun skill correspondant trouvé dans le hub.',
-      resultCount: (count, ms) => `${count} result${count === 1 ? '' : 's'}${ms !== null ? ` in ${ms}ms` : ''}`,
+      resultCount: (count, ms) => `${count} résultat${count === 1 ? '' : 's'}${ms !== null ? ` en ${ms} ms` : ''}`,
       timedOut: sources => `Expiration : ${sources}`,
       installed: 'Installé',
       install: 'Installer',
@@ -1801,7 +1801,7 @@ export const fr: Translations = {
     close: 'Fermer les profils',
     nameHint: 'Lettres minuscules, chiffres, tirets et underscores. Doit commencer par une lettre ou un chiffre.',
     title: 'Profils',
-    count: count => `${count} ${count === 1 ? 'profile' : 'profiles'}`,
+    count: count => `${count} ${count === 1 ? 'profil' : 'profils'}`,
     search: 'Rechercher des profils...',
     loading: 'Chargement des profils...',
     newProfile: 'Nouveau profil',
@@ -1879,7 +1879,7 @@ export const fr: Translations = {
   cron: {
     close: 'Fermer le cron',
     title: 'Tâches planifiées',
-    count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
+    count: count => `${count} ${count === 1 ? 'tâche' : 'tâches'}`,
     search: 'Rechercher des tâches cron...',
     loading: 'Chargement des tâches cron...',
     states: {
@@ -2850,7 +2850,7 @@ export const fr: Translations = {
     previewAnyway: 'Aperçu quand même',
     truncated: 'Affichage des 512 Ko premiers.',
     noInlineTitle: 'Aucun aperçu en ligne',
-    noInlineBody: mimeType => `${mimeType || 'This file type'} can still be attached as context.`,
+    noInlineBody: mimeType => `${mimeType || 'Ce type de fichier'} peut tout de même être joint en tant que contexte.`,
     edit: 'Modifier',
     editing: 'Modification',
     unsavedChanges: 'Modifications non enregistrées',
@@ -2878,7 +2878,7 @@ export const fr: Translations = {
       empty: 'Aucun message de console pour le moment.',
       promptHeader: "Console d'aperçu :",
       sentTitle: 'Envoyé à la conversation',
-      sentMessage: count => `${count} log entr${count === 1 ? 'y' : 'ies'} added to composer`
+      sentMessage: count => `Ajout au compositeur : ${count} message${count === 1 ? '' : 's'} de console`
     },
     web: {
       appFailedToBoot: "Échec du démarrage de l'application d'aperçu",

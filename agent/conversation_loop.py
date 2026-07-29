@@ -6308,6 +6308,28 @@ def run_conversation(
                 
                 # Check if response only has think block with no actual content after it
                 if not agent._has_content_after_think_block(final_response):
+                    # A kanban worker that hasn't called kanban_complete/kanban_block
+                    # yet must not take either of the two early-break shortcuts below
+                    # (partial-stream recovery and prior-turn-content fallback): both
+                    # `break` out of the turn without ever reaching the kanban-stop
+                    # guard further down that nudges the model to call a terminal
+                    # tool before a clean `stop` exit is accepted — otherwise the
+                    # dispatcher records a protocol_violation. Computed once here so
+                    # both shortcuts below share the same gate.
+                    _kanban_awaiting_terminal = False
+                    try:
+                        from agent.kanban_stop import (
+                            kanban_stop_nudge_enabled,
+                            session_called_kanban_terminal,
+                        )
+
+                        _kanban_awaiting_terminal = (
+                            kanban_stop_nudge_enabled()
+                            and not session_called_kanban_terminal(messages)
+                        )
+                    except Exception:
+                        logger.debug("kanban shortcut-gate check failed", exc_info=True)
+
                     # ── Partial stream recovery ─────────────────────
                     # If content was already streamed to the user before
                     # the connection died, use it as the final response
@@ -6316,7 +6338,10 @@ def run_conversation(
                     _partial_streamed = (
                         getattr(agent, "_current_streamed_assistant_text", "") or ""
                     )
-                    if agent._has_content_after_think_block(_partial_streamed):
+                    if (
+                        agent._has_content_after_think_block(_partial_streamed)
+                        and not _kanban_awaiting_terminal
+                    ):
                         _turn_exit_reason = "partial_stream_recovery"
                         _recovered = agent._strip_think_blocks(_partial_streamed).strip()
                         logger.info(
@@ -6347,7 +6372,11 @@ def run_conversation(
                     # the empty follow-up means the model choked — let the
                     # post-tool nudge below handle that instead of exiting early.
                     fallback = getattr(agent, '_last_content_with_tools', None)
-                    if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
+                    if (
+                        fallback
+                        and getattr(agent, '_last_content_tools_all_housekeeping', False)
+                        and not _kanban_awaiting_terminal
+                    ):
                         _turn_exit_reason = "fallback_prior_turn_content"
                         logger.info("Empty follow-up after tool calls — using prior turn content as final response")
                         agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")

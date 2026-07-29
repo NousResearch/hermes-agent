@@ -132,7 +132,7 @@ class SkillMeta:
     """Minimal metadata returned by search results."""
     name: str
     description: str
-    source: str           # "official", "github", "clawhub", "claude-marketplace", "lobehub"
+    source: str           # "official", "github", "clawhub", "lobehub"
     identifier: str       # source-specific ID (e.g. "openai/skills/skill-creator")
     trust_level: str      # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
@@ -876,7 +876,7 @@ class GitHubSource(SkillSource):
           - 403/429 with ``X-RateLimit-Remaining: 0`` — waits until the
             reset time (capped) when the header is present, else exponential
             backoff. This is the all-GitHub-tap-collapse case: a single
-            shared rate limit zeroes github + claude-marketplace + well-known
+            shared rate limit zeroes github + well-known
             at once during the index build.
           - 5xx and connection/timeout errors — exponential backoff.
 
@@ -2725,110 +2725,6 @@ class ClawHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
-# Claude Code marketplace source adapter
-# ---------------------------------------------------------------------------
-
-class ClaudeMarketplaceSource(SkillSource):
-    """
-    Discover skills from Claude Code marketplace repos.
-    Marketplace repos contain .claude-plugin/marketplace.json with plugin listings.
-    """
-
-    KNOWN_MARKETPLACES = [
-        "anthropics/skills",
-        "aiskillstore/marketplace",
-    ]
-
-    def __init__(self, auth: GitHubAuth):
-        self.auth = auth
-        # Persistent GitHubSource so rate-limit state survives across the
-        # marketplace-index fetch + per-skill inspect calls and can be
-        # surfaced to the index builder (see is_rate_limited).
-        self.github = GitHubSource(auth=auth)
-
-    def source_id(self) -> str:
-        return "claude-marketplace"
-
-    @property
-    def is_rate_limited(self) -> bool:
-        """Whether the underlying GitHub API hit a rate limit during the crawl."""
-        return self.github.is_rate_limited
-
-    def trust_level_for(self, identifier: str) -> str:
-        parts = identifier.split("/", 2)
-        if len(parts) >= 2:
-            repo = f"{parts[0]}/{parts[1]}"
-            if repo in TRUSTED_REPOS:
-                return "trusted"
-        return "community"
-
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        results: List[SkillMeta] = []
-        query_lower = query.lower()
-
-        for marketplace_repo in self.KNOWN_MARKETPLACES:
-            plugins = self._fetch_marketplace_index(marketplace_repo)
-            for plugin in plugins:
-                searchable = f"{plugin.get('name', '')} {plugin.get('description', '')}".lower()
-                if query_lower in searchable:
-                    source_path = plugin.get("source", "")
-                    if source_path.startswith("./"):
-                        identifier = f"{marketplace_repo}/{source_path[2:]}"
-                    elif "/" in source_path:
-                        identifier = source_path
-                    else:
-                        identifier = f"{marketplace_repo}/{source_path}"
-
-                    results.append(SkillMeta(
-                        name=plugin.get("name", ""),
-                        description=plugin.get("description", ""),
-                        source="claude-marketplace",
-                        identifier=identifier,
-                        trust_level=self.trust_level_for(identifier),
-                        repo=marketplace_repo,
-                    ))
-
-        return results[:limit]
-
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        # Delegate to GitHub Contents API since marketplace skills live in GitHub repos
-        bundle = self.github.fetch(identifier)
-        if bundle:
-            bundle.source = "claude-marketplace"
-        return bundle
-
-    def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        meta = self.github.inspect(identifier)
-        if meta:
-            meta.source = "claude-marketplace"
-            meta.trust_level = self.trust_level_for(identifier)
-        return meta
-
-    def _fetch_marketplace_index(self, repo: str) -> List[dict]:
-        """Fetch and parse .claude-plugin/marketplace.json from a repo."""
-        cache_key = f"claude_marketplace_{repo.replace('/', '_')}"
-        cached = _read_index_cache(cache_key)
-        if cached is not None:
-            return cached
-
-        url = f"https://api.github.com/repos/{repo}/contents/.claude-plugin/marketplace.json"
-        resp = self.github._github_get(
-            url,
-            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-        )
-        if resp is None or resp.status_code != 200:
-            return []
-        try:
-            data = json.loads(resp.text)
-        except json.JSONDecodeError:
-            return []
-
-        plugins = data.get("plugins", [])
-        _write_index_cache(cache_key, plugins)
-        return plugins
-
-
-# ---------------------------------------------------------------------------
 # LobeHub source adapter
 # ---------------------------------------------------------------------------
 
@@ -4102,7 +3998,6 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
-        ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
         BrowseShSource(),   # browse.sh: 169+ site-specific browser automation skills
     ]
@@ -4156,7 +4051,7 @@ def parallel_search_sources(
     # ~70 GitHub API calls per search for unauthenticated users.
     _index_available = False
     _api_source_ids = frozenset({"github", "skills-sh", "clawhub",
-                                  "claude-marketplace", "lobehub", "well-known"})
+                                  "lobehub", "well-known"})
     if _effective_filter == "all":
         for src in sources:
             if (src.source_id() == "hermes-index"

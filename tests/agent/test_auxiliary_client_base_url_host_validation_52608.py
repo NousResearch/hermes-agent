@@ -154,6 +154,53 @@ class TestTryAnthropicBaseUrlHostValidation:
         actual = _extract_base_url_passed_to_build(mock_build)
         assert actual == "https://api.anthropic.com"
 
+    def test_anthropic_suffix_gateway_base_url_is_applied(self, tmp_path, monkeypatch):
+        """A gateway exposing the Messages protocol under a ``/anthropic`` suffix
+        must be honored — the same convention the primary path already trusts —
+        so auxiliary/fallback calls hit the configured endpoint, not the default."""
+        import yaml
+        from agent.auxiliary_client import _try_anthropic
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "model": {
+                "provider": "anthropic",
+                "model": "claude-haiku-4-5-20251001",
+                "base_url": "https://gateway.example.com/anthropic",
+            }
+        }))
+
+        with (
+            patch(
+                "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
+            ),
+            patch(
+                "agent.anthropic_adapter.resolve_anthropic_token",
+                return_value="***",
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client"
+            ) as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            client, _model = _try_anthropic()
+
+        assert client is not None
+        actual = _extract_base_url_passed_to_build(mock_build)
+        assert actual == "https://gateway.example.com/anthropic", (
+            f"/anthropic-suffixed gateway base_url must be applied. Got: {actual!r}"
+        )
+
+    def test_anthropic_suffix_host_check_direct(self):
+        """Unit-level: the host check trusts native hosts and /anthropic gateways,
+        and still rejects a bare non-Anthropic host (the #52608 guard)."""
+        from agent.auxiliary_client import _is_anthropic_compatible_host as ok
+        assert ok("https://api.anthropic.com") is True
+        assert ok("https://gateway.example.com/anthropic") is True
+        assert ok("http://127.0.0.1:8080/anthropic/v1") is True
+        assert ok("https://openrouter.ai/api/v1") is False
+        assert ok("https://api.openai.com/v1") is False
+        assert ok("") is False
+
     def test_anthropic_host_with_path_is_preserved(self, tmp_path, monkeypatch):
         """api.anthropic.com with a path suffix must still pass the host check."""
         import yaml

@@ -2614,6 +2614,137 @@ def test_reused_tool_call_id_is_counted_for_each_provider_request(direct_runtime
     assert task_end[2]["output"]["tool_call_count_bucket"] == "2"
 
 
+def test_partial_terminal_context_reuses_the_pending_tool_span(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "api_request_id": "request-1",
+        "platform": "cli",
+        "tool_call_id": "tool-1",
+        "tool_name": "terminal",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook("pre_tool_call", **base)
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **{key: value for key, value in base.items() if key != "api_request_id"},
+        result={"output": "private"},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [tool_end] = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert tool_end[2]["outcome"] == "success"
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "1"
+
+
+def test_partial_terminal_variants_do_not_double_count_a_completed_call(
+    direct_runtime,
+):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "api_request_id": "request-1",
+        "platform": "cli",
+        "tool_call_id": "tool-1",
+        "tool_name": "terminal",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook("pre_tool_call", **base)
+    for omitted_field in ("api_request_id", "turn_id"):
+        lifecycle.invoke_hook(
+            "post_tool_call",
+            **{key: value for key, value in base.items() if key != omitted_field},
+            result={"output": "private"},
+            status="ok",
+        )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(tool_ends) == 1
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "1"
+
+
+def test_ambiguous_partial_terminal_does_not_create_a_phantom_tool_span(
+    direct_runtime,
+):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+        "tool_call_id": "provider-reused-id",
+        "tool_name": "terminal",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    for api_request_id in ("request-1", "request-2"):
+        lifecycle.invoke_hook(
+            "pre_tool_call",
+            **base,
+            api_request_id=api_request_id,
+        )
+
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **base,
+        result={"output": "ambiguous-private-result"},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="system_aborted",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    tool_ends = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert len(tool_ends) == 2
+    assert all(event[2]["outcome"] == "failed" for event in tool_ends)
+    [task_end] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1][1] == "hermes.task_run"
+    ]
+    assert task_end[2]["output"]["tool_call_count_bucket"] == "2"
+
+
 def test_reused_task_id_starts_a_new_run_for_each_turn(direct_runtime):
     for turn_id in ("turn-1", "turn-2"):
         base = {
@@ -2920,10 +3051,10 @@ def test_tool_category_comes_from_runtime_registry_metadata(
     direct_runtime,
     monkeypatch,
 ):
-    from tools.registry import registry
+    import model_tools
 
     monkeypatch.setattr(
-        registry,
+        model_tools,
         "get_toolset_for_tool",
         lambda name: "terminal" if name == "runtime_only_tool" else None,
     )

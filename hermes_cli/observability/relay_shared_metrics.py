@@ -381,12 +381,20 @@ class _Runtime:
                 identity = self._tool_call_identity(event)
                 tool_call = session.tool_calls.get((task.task_id, *identity))
                 if tool_call is None:
-                    matches = [
-                        candidate
-                        for key, candidate in session.tool_calls.items()
-                        if key[0] == task.task_id and key[-1] == tool_call_id
+                    matching_keys = [
+                        key
+                        for key in session.tool_calls
+                        if key[0] == task.task_id
+                        and self._tool_call_identities_are_compatible(
+                            key[1:],
+                            identity,
+                        )
                     ]
-                    tool_call = matches[0] if len(matches) == 1 else None
+                    tool_call = (
+                        session.tool_calls[matching_keys[0]]
+                        if len(matching_keys) == 1
+                        else None
+                    )
                 if tool_call is not None:
                     tool_call.approval_outcome = outcome
                     attribution = "tool_call"
@@ -414,15 +422,42 @@ class _Runtime:
                 return
             self._remember_turn(session, task, event)
             if tool_call_id:
-                identity = self._tool_call_identity(event)
-                if identity in task.completed_tool_call_ids:
+                observed_identity = self._tool_call_identity(event)
+                if observed_identity in task.completed_tool_call_ids:
                     return
-                task.completed_tool_call_ids.add(identity)
+                identity = observed_identity
+                tool_call = session.tool_calls.pop((task_id, *identity), None)
+                if tool_call is None:
+                    if any(
+                        self._tool_call_identities_are_compatible(
+                            completed_identity,
+                            observed_identity,
+                        )
+                        for completed_identity in task.completed_tool_call_ids
+                    ):
+                        return
+                    matching_keys = [
+                        key
+                        for key in session.tool_calls
+                        if key[0] == task_id
+                        and self._tool_call_identities_are_compatible(
+                            key[1:],
+                            observed_identity,
+                        )
+                    ]
+                    if len(matching_keys) > 1:
+                        # Partial context cannot safely choose between
+                        # concurrent calls that reused the provider-local ID.
+                        return
+                    if matching_keys:
+                        key = matching_keys[0]
+                        identity = key[1:]
+                        tool_call = session.tool_calls.pop(key)
+                task.completed_tool_call_ids.update({
+                    identity,
+                    observed_identity,
+                })
                 task.tool_call_ids.add(identity)
-                tool_call = session.tool_calls.pop(
-                    (task_id, *identity),
-                    None,
-                )
             else:
                 task.unidentified_tool_calls += 1
                 tool_call = None
@@ -657,6 +692,25 @@ class _Runtime:
             str(event.get("api_request_id") or ""),
             str(event.get("turn_id") or ""),
             str(event.get("tool_call_id") or ""),
+        )
+
+    @staticmethod
+    def _tool_call_identities_are_compatible(
+        candidate: tuple[str, str, str],
+        observed: tuple[str, str, str],
+    ) -> bool:
+        """Match partial hook context without crossing known call boundaries."""
+        if not observed[2] or candidate[2] != observed[2]:
+            return False
+        return all(
+            not candidate_value
+            or not observed_value
+            or candidate_value == observed_value
+            for candidate_value, observed_value in zip(
+                candidate[:2],
+                observed[:2],
+                strict=True,
+            )
         )
 
     @staticmethod
@@ -999,9 +1053,9 @@ def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
     if not tool_name:
         return event
     try:
-        from tools.registry import registry
+        from model_tools import get_toolset_for_tool
 
-        toolset = registry.get_toolset_for_tool(tool_name)
+        toolset = get_toolset_for_tool(tool_name)
     except Exception:
         toolset = None
     return {**event, "toolset": toolset or "other"}

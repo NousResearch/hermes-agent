@@ -601,6 +601,7 @@ class AIAgent:
             from hermes_state import SessionDB
 
             self._session_db = SessionDB()
+            self._owns_session_db = True  # agent owns this lazily-opened connection (#72782)
             return self._session_db
         except Exception:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
@@ -4043,6 +4044,21 @@ class AIAgent:
                 session_id = getattr(self, "session_id", None)
                 if session_db and session_id:
                     session_db.end_session(session_id, "agent_close")
+        except Exception:
+            pass
+
+        # 8. Close the agent-owned SQLite *connection*.  Caller-injected stores
+        # (gateway / CLI / cron scheduler) manage their own connection lifecycle
+        # and must remain open; only a SessionDB this agent created lazily via
+        # _get_session_db_for_recall() is ours to release.  Without this, an
+        # ephemeral agent (cron, one-shot, subagent) that lazily opened the
+        # state DB leaks file descriptors until EMFILE (#72782).
+        try:
+            if getattr(self, "_owns_session_db", False):
+                _db = getattr(self, "_session_db", None)
+                if _db is not None:
+                    _db.close()
+                    self._session_db = None
         except Exception:
             pass
 

@@ -1528,6 +1528,10 @@ def init_agent(
     agent._pending_cli_user_message = None
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
+    # An injected session_db is caller-owned (gateway/CLI/cron scheduler manage
+    # its connection lifecycle); only a SessionDB created lazily by the agent
+    # itself (_get_session_db_for_recall) is ours to close on teardown (#72782).
+    agent._owns_session_db = False
     # Most agents own their session row and should finalize it on close().
     # Some temporary helper agents (manual compression / session-hygiene /
     # background-review forks) rotate or share the session forward to a

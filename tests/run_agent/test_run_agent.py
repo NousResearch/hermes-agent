@@ -9139,3 +9139,68 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+# ===========================================================================
+# Bug #72782: AIAgent.close() leaks lazily-created SessionDB file descriptors
+# ===========================================================================
+
+class TestCloseReleasesLazySessionDB:
+    """_get_session_db_for_recall() lazily opens a SessionDB when an entrypoint
+    forgot to inject one. AIAgent.close() must release that agent-owned
+    connection (ephemeral cron agents otherwise leak FDs until EMFILE), while
+    preserving caller-injected stores whose lifecycle the caller manages."""
+
+    def test_close_releases_lazily_created_session_db(self, agent):
+        """A SessionDB created by _get_session_db_for_recall() must be closed
+        by AIAgent.close() (#72782)."""
+        mock_db = MagicMock()
+        # ``agent`` fixture has no injected session_db, so the lazy path runs.
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            db = agent._get_session_db_for_recall()
+        assert db is mock_db
+        assert agent._session_db is mock_db
+
+        agent.close()
+
+        mock_db.close.assert_called_once(), (
+            "AIAgent.close() must close the SessionDB it created lazily via "
+            "_get_session_db_for_recall() — otherwise ephemeral agents leak FDs"
+        )
+
+    def test_close_preserves_injected_session_db(self, agent):
+        """Caller-injected session stores (gateway/CLI) must NOT be closed by
+        AIAgent.close() — the caller owns their lifecycle (#72782)."""
+        injected = MagicMock()
+        agent._session_db = injected  # simulate caller injection
+
+        agent.close()
+
+        injected.close.assert_not_called(), (
+            "AIAgent.close() must not close a caller-injected session DB whose "
+            "lifecycle the gateway/CLI manages"
+        )
+
+    def test_lazy_recall_marks_ownership(self, agent):
+        """_get_session_db_for_recall() must flag the lazily-created DB as
+        agent-owned so close() knows to release it."""
+        mock_db = MagicMock()
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            agent._get_session_db_for_recall()
+
+        assert getattr(agent, "_owns_session_db", None) is True
+
+    def test_injected_db_is_not_owned(self, agent):
+        """An injected session_db must not be flagged as agent-owned."""
+        assert getattr(agent, "_owns_session_db", True) is False
+
+    def test_close_idempotent_with_owned_db(self, agent):
+        """Calling close() twice must not error and must not double-close."""
+        mock_db = MagicMock()
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            agent._get_session_db_for_recall()
+
+        agent.close()
+        agent.close()  # second call must be safe
+
+        mock_db.close.assert_called_once()

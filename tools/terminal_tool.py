@@ -1407,11 +1407,25 @@ def _terminal_env_snapshot() -> Dict[str, str]:
     When the bridge fails, stale TERMINAL_* values (except TERMINAL_ENV) are
     stripped and a ``_config_bridge_failed`` sentinel is set so callers can
     fail closed instead of silently downgrading an isolated backend to local.
+
+    Also probes raw config readability before bridging to detect a present-but-
+    unparseable config.yaml that ``apply_terminal_config_to_env()`` may silently
+    absorb via its last-known-good fallback.  When the config file exists but
+    cannot be parsed, ``_config_unreadable`` is set alongside
+    ``_config_bridge_failed`` so ``_get_env_config()`` can fail closed.
     """
     # Save original process-env values so explicit worker overrides
     # (e.g. kanban subprocess TERMINAL_TIMEOUT) survive the bridge.
     orig = os.environ
     env = dict(orig)
+
+    # Probe raw config readability before bridging.  ``apply_terminal_config_to_env()``
+    # calls ``read_raw_config()`` and ``load_config_readonly()``, both of which handle
+    # parse errors gracefully (return ``{}`` / fall back to last-known-good) instead of
+    # raising.  A malformed config + stale ``TERMINAL_ENV=local`` would therefore
+    # silently downgrade an isolated backend to host execution.  Detect that case here
+    # so the sentinel is set regardless of whether the bridge raises.
+    config_unreadable = _probe_config_unreadable()
 
     try:
         from hermes_cli.config import apply_terminal_config_to_env
@@ -1424,6 +1438,20 @@ def _terminal_env_snapshot() -> Dict[str, str]:
             if key.startswith("TERMINAL_") and key != "TERMINAL_ENV":
                 env.pop(key, None)
         env["_config_bridge_failed"] = "1"
+        if config_unreadable:
+            env["_config_unreadable"] = "1"
+        return env
+
+    # The bridge succeeded (returned normally), but if the underlying config is
+    # unreadable the bridge silently fell back to last-known-good or defaults —
+    # the TERMINAL_* values in ``env`` are not trustworthy.  Wipe them and flag
+    # the failure so ``_get_env_config()`` can fail closed.
+    if config_unreadable:
+        for key in list(env.keys()):
+            if key.startswith("TERMINAL_") and key != "TERMINAL_ENV":
+                env.pop(key, None)
+        env["_config_bridge_failed"] = "1"
+        env["_config_unreadable"] = "1"
         return env
 
     # Restore explicit worker overrides for timeout/lifetime so that
@@ -1434,6 +1462,27 @@ def _terminal_env_snapshot() -> Dict[str, str]:
             env[key] = orig[key]
 
     return env
+
+
+def _probe_config_unreadable() -> bool:
+    """Return True when config.yaml *exists* but cannot be parsed.
+
+    ``read_raw_config()`` returns ``{}`` for both "file absent" and "parse
+    failure".  This helper distinguishes the two: a present-but-malformed
+    config is a security risk (it may carry ``terminal.backend: docker``),
+    while an absent config is safe (just use env vars).
+    """
+    try:
+        from hermes_cli.config import get_config_path, fast_safe_load
+        config_path = get_config_path()
+        config_path.stat()
+        with open(config_path, encoding="utf-8") as f:
+            fast_safe_load(f)
+        return False
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return True
 
 
 def _resolve_backend_type(env: Optional[Dict[str, str]] = None) -> str:
@@ -1456,6 +1505,17 @@ def _get_env_config() -> Dict[str, Any]:
         # The config bridge failed — stale TERMINAL_* values were wiped.
         # Check whether config.yaml intends an isolated backend; if so, fail
         # closed instead of silently downgrading to host-local execution.
+        #
+        # When ``_config_unreadable`` is set, config.yaml exists but cannot be
+        # parsed — so we cannot confirm the intended backend at all.  Fail closed
+        # immediately; do NOT fall through to ``load_config_readonly()`` (which
+        # would silently return last-known-good/defaults and bypass the guard).
+        if terminal_env.get("_config_unreadable"):
+            raise RuntimeError(
+                "Terminal config bridge failed and config.yaml is unreadable. "
+                "Refusing to run terminal without confirmed backend. "
+                "Check hermes CLI config connectivity."
+            )
         config_readable = True
         try:
             from hermes_cli.config import load_config_readonly

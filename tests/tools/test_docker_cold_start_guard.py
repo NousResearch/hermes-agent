@@ -183,14 +183,68 @@ class TestResolveBackendType:
         """When both bridge and fallback config read fail, refuse to run."""
         monkeypatch.setenv("TERMINAL_ENV", "local")
 
+        # Simulate the config file being present but unparseable — the path
+        # that matches real production behavior (load_config_readonly absorbs
+        # parse errors via last-known-good fallback instead of raising).
+        monkeypatch.setattr(
+            _tt_mod,
+            "_probe_config_unreadable",
+            lambda: True,
+        )
         monkeypatch.setattr(
             "hermes_cli.config.apply_terminal_config_to_env",
             lambda env=None: (_ for _ in ()).throw(RuntimeError("Bridge error")),
         )
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
-            lambda: (_ for _ in ()).throw(OSError("Config unreadable")),
+
+        with pytest.raises(RuntimeError, match="config.yaml is unreadable"):
+            _tt_mod._get_env_config()
+
+    def test_malformed_config_with_stale_local_env_fails_closed(
+        self, monkeypatch, tmp_path,
+    ):
+        """Regression: malformed YAML + stale TERMINAL_ENV=local must refuse.
+
+        When config.yaml exists but cannot be parsed (e.g. mid-edit broken
+        YAML) and TERMINAL_ENV=local, the bridge silently absorbs the parse
+        error via the last-known-good fallback.  Without the
+        _probe_config_unreadable guard this would downgrade a potentially
+        isolated backend to local execution.  Assert it fails closed.
+        """
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(
+            "terminal:\n  backend: docker\n  docker_image: python:3.12\n"
+            "  !!invalid yaml syntax here ~~~",
+            encoding="utf-8",
         )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+
+        # Production functions now see the malformed config.yaml at HERMES_HOME.
+        # _probe_config_unreadable must detect it; _get_env_config must fail.
+        assert _tt_mod._probe_config_unreadable() is True
+
+        with pytest.raises(RuntimeError, match="config.yaml is unreadable"):
+            _tt_mod._get_env_config()
+
+    def test_malformed_config_absent_stale_docker_env_fails_closed(
+        self, monkeypatch, tmp_path,
+    ):
+        """Malformed config + explicit TERMINAL_ENV=docker: wipe stale vars, fail."""
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(
+            "terminal:\n  backend: docker\n  docker_image: python:3.12\n"
+            "  -- broken yaml : [",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "stale-image")
+
+        assert _tt_mod._probe_config_unreadable() is True
 
         with pytest.raises(RuntimeError, match="config.yaml is unreadable"):
             _tt_mod._get_env_config()

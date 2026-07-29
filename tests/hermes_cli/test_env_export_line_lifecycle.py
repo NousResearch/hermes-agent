@@ -123,3 +123,74 @@ def test_export_line_with_comment_untouched(hermes_home):
     env_text = hermes_home.joinpath(".env").read_text(encoding="utf-8")
     assert "# export GITHUB_TOKEN=" in env_text
     assert "OTHER_KEY=value" in env_text
+
+
+# -- whitespace around '=' (same resurrection hole, other line form) ----------
+
+
+def test_remove_token_written_with_spaces_around_equals(hermes_home):
+    """DELETE must clear a ``KEY = value`` line, not 404 on it.
+
+    ``load_env()`` splits on the first ``=`` and strips the name, so this is a
+    live assignment and every UI shows the token as set — the writers have to
+    recognise it for the same reason they recognise ``export`` (#40041).
+    """
+    _write_env_raw(hermes_home, f"GITHUB_TOKEN = {OLD_PAT}\n")
+
+    from hermes_cli.config import load_env
+
+    assert load_env()["GITHUB_TOKEN"] == OLD_PAT, "precondition: token is live"
+
+    resp = client.request(
+        "DELETE", "/api/env", json={"key": "GITHUB_TOKEN"}, headers=HEADERS
+    )
+    assert resp.status_code == 200, resp.text
+
+    env_text = hermes_home.joinpath(".env").read_text(encoding="utf-8")
+    assert OLD_PAT not in env_text
+    assert "GITHUB_TOKEN" not in load_env()
+
+
+def test_spaced_token_rotate_then_delete_does_not_resurrect(hermes_home):
+    """Rotating over a spaced line must replace it, not shadow it.
+
+    Otherwise the save appends a second line and a later delete removes only
+    that one — silently restoring the key the user rotated away from.
+    """
+    _write_env_raw(hermes_home, f"GITHUB_TOKEN = {OLD_PAT}\n")
+
+    resp = client.put(
+        "/api/env", json={"key": "GITHUB_TOKEN", "value": NEW_PAT}, headers=HEADERS
+    )
+    assert resp.status_code == 200
+    env_text = hermes_home.joinpath(".env").read_text(encoding="utf-8")
+    assert OLD_PAT not in env_text, "the rotated-away token must not survive"
+    assert env_text.count("GITHUB_TOKEN") == 1
+
+    from hermes_cli.config import load_env
+
+    assert load_env()["GITHUB_TOKEN"] == NEW_PAT
+
+    client.request("DELETE", "/api/env", json={"key": "GITHUB_TOKEN"}, headers=HEADERS)
+    assert "GITHUB_TOKEN" not in load_env(), "the old token must not resurrect"
+
+
+def test_writer_matches_exactly_what_load_env_accepts(hermes_home):
+    """Parity: the writers must recognise a line iff ``load_env()`` does."""
+    from hermes_cli.config import _env_line_defines_key, load_env
+
+    for line, expected in [
+        (f"GITHUB_TOKEN={OLD_PAT}", True),
+        (f"export GITHUB_TOKEN={OLD_PAT}", True),
+        (f"GITHUB_TOKEN = {OLD_PAT}", True),
+        (f"GITHUB_TOKEN\t=\t{OLD_PAT}", True),
+        (f"export GITHUB_TOKEN = {OLD_PAT}", True),
+        (f"# GITHUB_TOKEN={OLD_PAT}", False),
+        (f"GITHUB_TOKEN_EXTRA={OLD_PAT}", False),
+        (f"MY_GITHUB_TOKEN={OLD_PAT}", False),
+    ]:
+        _write_env_raw(hermes_home, line + "\n")
+        assert _env_line_defines_key(line, "GITHUB_TOKEN") is expected, line
+        assert ("GITHUB_TOKEN" in load_env()) is expected, (
+            f"writer and load_env disagree on: {line!r}"
+        )

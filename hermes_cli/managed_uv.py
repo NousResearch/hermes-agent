@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_DIR_NAME = ".hermes-runtime"
 _VENV_NAME = "venv"
+_ALT_VENV_NAME = ".venv"
 _REPAIR_LOCK_NAME = "runtime-repair.lock"
 
 # ---------------------------------------------------------------------------
@@ -986,6 +987,31 @@ def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
     return after != before
 
 
+def _default_live_venv(root: Path) -> Path:
+    """Return the venv that runtime repair should target for *root*.
+
+    Managed installs create ``<checkout>/venv``, but uv-default and dev
+    checkouts use ``<checkout>/.venv``.  Historically only ``venv`` was
+    probed, so a ``.venv`` install linking a vulnerable SQLite returned
+    ``not-applicable`` on every ``hermes update`` and stayed on
+    journal_mode=DELETE forever — even though the WAL fallback warning
+    promises that ``hermes update`` repairs the runtime (issue class:
+    2,600x slower ``state.db`` appends under DELETE).
+
+    ``venv`` wins when it holds an interpreter (managed layout takes
+    precedence); otherwise fall back to ``.venv`` when that one does.
+    When neither has an interpreter, return the ``venv`` path so the
+    caller's existing ``not-applicable`` handling fires unchanged.
+    """
+    primary = root / _VENV_NAME
+    if _venv_python(primary).is_file():
+        return primary
+    fallback = root / _ALT_VENV_NAME
+    if _venv_python(fallback).is_file():
+        return fallback
+    return primary
+
+
 def repair_vulnerable_runtime(
     uv_bin: str,
     *,
@@ -998,7 +1024,7 @@ def repair_vulnerable_runtime(
     post-cutover smoke failures restore the parked venv synchronously.
     """
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
-    live = Path(venv_dir) if venv_dir is not None else root / _VENV_NAME
+    live = Path(venv_dir) if venv_dir is not None else _default_live_venv(root)
     live_python = _venv_python(live)
     if not (root / "pyproject.toml").is_file() or not live_python.is_file():
         return RuntimeRepairResult("not-applicable")

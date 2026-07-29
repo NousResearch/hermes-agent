@@ -838,12 +838,12 @@ def run_doctor(
     identity = _build_identity(binary, report)
 
     # cua-driver's health model is authoritative for protocol/runtime checks.
-    # Hermes adds a small read-only Arch/session envelope because the driver
-    # cannot know which package manager installed the portal backend or whether
-    # it inherited the graphical environment correctly from a desktop launcher.
+    # Hermes adds a read-only Linux desktop envelope because the driver cannot
+    # know whether it inherited the graphical environment correctly from a
+    # desktop launcher. Arch package remediation is a separately gated layer.
     wayland_report: Optional[Dict[str, Any]] = None
-    # Keep the old driver-resolution tests and non-Linux behavior narrow: Arch
-    # probing only belongs to a real Linux invocation, not a unit test that
+    # Keep the old driver-resolution tests and non-Linux behavior narrow: Linux
+    # desktop probing only belongs to a real Linux invocation, not a unit test that
     # simulates an arbitrary driver on this host.
     if (
         sys.platform == "linux"
@@ -851,8 +851,8 @@ def run_doctor(
         and not os.environ.get("HERMES_CUA_DRIVER_CMD")
     ):
         try:
-            from tools.computer_use.linux_wayland import arch_install_hint, diagnose_arch_wayland
-            wayland_report = diagnose_arch_wayland(binary)
+            from tools.computer_use.linux_wayland import arch_install_hint, diagnose_linux_computer_use
+            wayland_report = diagnose_linux_computer_use(binary)
             hint = arch_install_hint(wayland_report)
             if not json_output:
                 session = wayland_report["session"]

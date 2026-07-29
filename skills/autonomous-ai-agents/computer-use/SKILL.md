@@ -204,11 +204,16 @@ activation adapter first; if it cannot, the result must be a structured refusal
 `foreground_unsupported`) rather than a guessed click.
 
 Run `hermes computer-use doctor` from the graphical login session. It reports
-whether the driver sees native Wayland, AT-SPI, the desktop portal, PipeWire,
-and a compositor-appropriate portal backend. On Arch, install only the matching
-portal backend (`-gnome`, `-kde`, `-hyprland`, or `-wlr`) rather than piling all
-of them together. The first portal operation may ask the user for consent; never
-accept it on their behalf.
+the session, D-Bus/AT-SPI/portal/PipeWire state, restore token, and exact driver
+claims for native Wayland, portal input, and portal capture. Do not present a
+portal path the driver did not compile: wlroots native candidates remain valid
+without portal support, while GNOME/KDE need the portal-input claim for portal
+input. Arch package checks and `pacman` remediation are emitted only on an
+Arch-like host with a resolvable `pacman`; non-Arch Linux still gets all generic
+desktop diagnostics without invented package failures. On Arch, install only the
+matching portal backend (`-gnome`, `-kde`, `-hyprland`, or `-wlr`) rather than
+piling all of them together. The first portal operation may ask the user for
+consent; never accept it on their behalf.
 
 ### Key shortcuts vary per platform
 

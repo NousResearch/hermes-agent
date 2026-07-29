@@ -1048,9 +1048,22 @@ export interface ComputerUseCheck {
 }
 
 export interface LinuxWaylandSummary {
+  distribution?: {
+    id?: string | null
+    id_like?: string[]
+    name?: string | null
+    pretty_name?: string | null
+    arch_like?: boolean
+  }
   session?: { kind?: string; desktop?: string | null }
   native_wayland_enabled?: boolean
-  driver_native_wayland_capable?: boolean
+  driver_features?: {
+    wayland_native?: boolean
+    portal_input?: boolean
+    portal_capture?: boolean
+    manifest_supported?: boolean
+  }
+  arch_packages?: { applicable?: boolean; reason?: string | null }
   selected_portal_package?: string | null
   missing_packages?: string[]
   portal_dbus_available?: boolean
@@ -1061,6 +1074,7 @@ export interface LinuxWaylandSummary {
     input_path?: string | null
     activation_path?: string | null
     consent_expected?: boolean
+    restore_token_present?: boolean
     degraded_reasons?: string[]
     hard_failures?: string[]
   }

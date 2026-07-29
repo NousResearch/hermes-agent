@@ -69,7 +69,7 @@ platform-appropriate prereqs:
 | **Linux/X11** | A reachable `DISPLAY` and the user session's AT-SPI bus. |
 | **Linux/Wayland** | A verified `WAYLAND_DISPLAY`, user D-Bus, AT-SPI bus, `xdg-desktop-portal`, PipeWire, and the portal backend for your desktop. Hermes detects this automatically; it will not inject input until the driver has a safe target activation route. |
 
-### Native Wayland on Arch Linux
+### Native Wayland on Linux
 
 Run this from the **same graphical desktop session** that will be driven:
 
@@ -78,11 +78,21 @@ hermes computer-use status
 hermes computer-use doctor
 ```
 
-`doctor` reports the detected session (`x11`, native `wayland`, or
-`wayland-xwayland`), portal and AT-SPI D-Bus availability, PipeWire, the one
-portal backend relevant to the detected desktop, the selected capture/input
-candidate, and a copyable `pacman` command if a package is missing. It never
-installs packages, opens a portal dialog, or approves a permission request.
+`doctor` reports the detected distribution and session (`x11`, native
+`wayland`, or `wayland-xwayland`), portal and AT-SPI D-Bus availability,
+PipeWire, restore-token presence, and the exact driver feature map:
+`wayland_native`, `portal_input`, and `portal_capture`. The capture/input path
+is shown precisely: PipeWire portal, portal Remote Desktop, native wlroots
+candidate, or unavailable. It never installs packages, opens a portal dialog,
+or approves a permission request.
+
+Package checks are deliberately Arch-only. On Arch and Arch-derived systems
+with a resolvable `pacman`, doctor additionally reports the one matching portal
+backend and a copyable `pacman` command for missing packages. Ubuntu, Fedora,
+NixOS, and every other non-Arch system still receive the full generic session,
+D-Bus, AT-SPI, PipeWire, portal, driver-feature, degraded-reason, and
+hard-failure diagnosis—without false missing Arch packages or invalid `pacman`
+advice.
 
 On Arch, shared requirements are `xdg-desktop-portal`, `pipewire`,
 `at-spi2-core`, `libei`, and `libxkbcommon`. Install **one** matching portal
@@ -100,6 +110,11 @@ native-Wayland feature. This avoids treating a binary that merely exists on
 `PATH` as safe. `disabled` is the emergency off switch and wins over an
 inherited shell export. `enabled` is a deliberate operator override for testing
 newer driver builds; it does not bypass portal consent or target verification.
+
+`portal_input` and `portal_capture` are independent compile-time claims. A
+GNOME or KDE artifact without `portal_input` does not claim portal input; one
+without `portal_capture` does not claim PipeWire portal capture. wlroots native
+capture and virtual-pointer candidates remain valid without either portal bit.
 
 The first portal-backed capture/input operation may ask the user for desktop
 permission. Hermes never accepts that dialog. Portal restore tokens remain

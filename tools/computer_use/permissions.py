@@ -161,8 +161,8 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
 
     if plat == "linux":
         try:
-            from tools.computer_use.linux_wayland import arch_install_hint, diagnose_arch_wayland
-            linux = diagnose_arch_wayland(binary)
+            from tools.computer_use.linux_wayland import arch_install_hint, diagnose_linux_computer_use
+            linux = diagnose_linux_computer_use(binary)
             out["linux_wayland"] = linux
             hint = arch_install_hint(linux)
             if hint:

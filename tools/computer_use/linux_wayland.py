@@ -1,9 +1,9 @@
-"""Linux session and native-Wayland capability diagnosis for Computer Use.
+"""Linux desktop and native-Wayland capability diagnosis for Computer Use.
 
-This is intentionally Hermes-side policy, not a second input implementation.
-``cua-driver`` owns compositor protocols, portals, AT-SPI and input dispatch;
-Hermes owns the user-visible decision to opt in, the graphical-session checks,
-and actionable Arch diagnostics.
+``cua-driver`` owns compositor protocol support and portal dispatch. Hermes owns
+safe backend selection, an operator-readable desktop diagnosis, and optional
+Arch package remediation. Generic Linux diagnosis must never recommend a
+package-manager command for a different distribution.
 """
 
 from __future__ import annotations
@@ -16,14 +16,10 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 
 WAYLAND_ENABLE_ENV = "CUA_DRIVER_RS_ENABLE_WAYLAND"
-# Hermes deliberately requires a machine-readable feature claim before auto
-# enabling upstream's experimental mode. A release number does *not* prove that
-# optional portal/libei features were compiled into its Linux asset.
-MIN_NATIVE_WAYLAND_DRIVER = (0, 12, 0)  # retained for diagnostic context only
 ARCH_SHARED_PACKAGES = (
     "xdg-desktop-portal", "pipewire", "at-spi2-core", "libei", "libxkbcommon",
 )
@@ -34,6 +30,45 @@ ARCH_PORTAL_PACKAGES = {
     "sway": "xdg-desktop-portal-wlr",
     "wlroots": "xdg-desktop-portal-wlr",
 }
+
+
+@dataclass(frozen=True)
+class LinuxDistribution:
+    id: Optional[str] = None
+    id_like: tuple[str, ...] = ()
+    name: Optional[str] = None
+    pretty_name: Optional[str] = None
+
+    @property
+    def is_arch_like(self) -> bool:
+        return self.id == "arch" or "arch" in self.id_like
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "id_like": list(self.id_like),
+            "name": self.name,
+            "pretty_name": self.pretty_name,
+            "arch_like": self.is_arch_like,
+        }
+
+
+@dataclass(frozen=True)
+class CuaDriverFeatures:
+    """Strictly parsed feature claims from ``cua-driver manifest``.
+
+    A missing, malformed, or non-boolean claim remains false. ``manifest_supported``
+    means the manifest command returned a JSON object, not that any capability is
+    enabled.
+    """
+
+    wayland_native: bool = False
+    portal_input: bool = False
+    portal_capture: bool = False
+    manifest_supported: bool = False
+
+    def as_dict(self) -> Dict[str, bool]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -78,10 +113,6 @@ class LinuxComputerUseCapabilities:
         return asdict(self)
 
 
-def _truthy(value: object) -> bool:
-    return str(value).strip().lower() not in {"", "0", "false", "no", "off", "none"}
-
-
 def _socket_path(env: Mapping[str, str], name: str) -> Optional[Path]:
     runtime = env.get("XDG_RUNTIME_DIR")
     if not runtime or not name:
@@ -99,12 +130,16 @@ def _dbus_socket_path(address: Optional[str]) -> Optional[Path]:
 
 def _desktop_name(env: Mapping[str, str]) -> Optional[str]:
     values = " ".join(
-        env.get(k, "") for k in ("XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION")
+        env.get(key, "")
+        for key in ("XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION")
     ).lower()
     for name, needles in {
-        "gnome": ("gnome",), "kde": ("kde", "plasma"),
-        "hyprland": ("hyprland",), "sway": ("sway",),
-        "xfce": ("xfce",), "wlroots": ("wlroots", "labwc", "river", "niri"),
+        "gnome": ("gnome",),
+        "kde": ("kde", "plasma"),
+        "hyprland": ("hyprland",),
+        "sway": ("sway",),
+        "xfce": ("xfce",),
+        "wlroots": ("wlroots", "labwc", "river", "niri"),
     }.items():
         if any(needle in values for needle in needles):
             return name
@@ -128,63 +163,107 @@ def detect_linux_session(env: Optional[Mapping[str, str]] = None) -> LinuxSessio
     if wayland:
         if not wl_ok:
             reasons.append("WAYLAND_DISPLAY is set but its runtime socket is missing or inaccessible")
-        if display:
-            kind = "wayland-xwayland"
-        else:
-            kind = "wayland" if wl_ok else "wayland-stale"
+        kind = "wayland-xwayland" if display else ("wayland" if wl_ok else "wayland-stale")
     elif declared == "wayland":
         kind = "wayland-stale"
         reasons.append("XDG_SESSION_TYPE=wayland but WAYLAND_DISPLAY is absent")
     elif display:
         kind = "x11"
-    elif declared in {"tty", "unspecified", ""}:
-        kind = "headless"
     else:
         kind = "headless"
-        reasons.append(f"XDG_SESSION_TYPE={declared!r} has no usable display socket")
+        if declared not in {"tty", "unspecified", ""}:
+            reasons.append(f"XDG_SESSION_TYPE={declared!r} has no usable display socket")
     if not dbus:
         reasons.append("DBUS_SESSION_BUS_ADDRESS is absent; AT-SPI and portals cannot be reached")
     elif not dbus_ok:
         reasons.append("DBUS_SESSION_BUS_ADDRESS does not point to an accessible session bus socket")
+    desktop = _desktop_name(e)
     return LinuxSession(
-        kind=kind, wayland_display=wayland, display=display, compositor=_desktop_name(e),
-        desktop=_desktop_name(e), runtime_dir=runtime, dbus_session_bus=dbus,
-        wayland_socket_exists=wl_ok, dbus_socket_exists=dbus_ok, reasons=tuple(reasons),
+        kind=kind,
+        wayland_display=wayland,
+        display=display,
+        compositor=desktop,
+        desktop=desktop,
+        runtime_dir=runtime,
+        dbus_session_bus=dbus,
+        wayland_socket_exists=wl_ok,
+        dbus_socket_exists=dbus_ok,
+        reasons=tuple(reasons),
     )
 
 
-def _version_tuple(value: str) -> tuple[int, int, int]:
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value or "")
-    return tuple(int(part) for part in match.groups()) if match else (0, 0, 0)
+def _unquote_os_release(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return value.replace(r"\"", '"').replace(r"\\", "\\")
+
+
+def parse_os_release(content: str) -> LinuxDistribution:
+    """Parse the small os-release subset needed for package-policy decisions."""
+    fields: Dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in {"ID", "ID_LIKE", "NAME", "PRETTY_NAME"}:
+            fields[key] = _unquote_os_release(value)
+    distro_id = fields.get("ID", "").strip().lower() or None
+    id_like = tuple(part.lower() for part in fields.get("ID_LIKE", "").split() if part.strip())
+    return LinuxDistribution(
+        id=distro_id,
+        id_like=id_like,
+        name=fields.get("NAME") or None,
+        pretty_name=fields.get("PRETTY_NAME") or None,
+    )
+
+
+def detect_linux_distribution(os_release_path: Path | str = "/etc/os-release") -> LinuxDistribution:
+    try:
+        return parse_os_release(Path(os_release_path).read_text(encoding="utf-8"))
+    except OSError:
+        return LinuxDistribution()
+
+
+def probe_driver_features(
+    driver_cmd: Optional[str], env: Optional[Mapping[str, str]] = None,
+) -> CuaDriverFeatures:
+    """Run ``manifest`` once and fail closed on every unsupported value."""
+    if not driver_cmd:
+        return CuaDriverFeatures()
+    try:
+        result = subprocess.run(
+            [driver_cmd, "manifest"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            stdin=subprocess.DEVNULL,
+            env=dict(os.environ if env is None else env),
+        )
+        if result.returncode != 0:
+            return CuaDriverFeatures()
+        payload = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return CuaDriverFeatures()
+    if not isinstance(payload, dict):
+        return CuaDriverFeatures()
+    features = payload.get("features")
+    if not isinstance(features, dict):
+        return CuaDriverFeatures(manifest_supported=True)
+    return CuaDriverFeatures(
+        wayland_native=features.get("wayland_native") if isinstance(features.get("wayland_native"), bool) else False,
+        portal_input=features.get("portal_input") if isinstance(features.get("portal_input"), bool) else False,
+        portal_capture=features.get("portal_capture") if isinstance(features.get("portal_capture"), bool) else False,
+        manifest_supported=True,
+    )
 
 
 def driver_supports_native_wayland(driver_cmd: Optional[str], env: Optional[Mapping[str, str]] = None) -> bool:
-    """Conservative, offline-safe native-Wayland driver gate.
-
-    The manifest's explicit feature bit is the compatibility contract. Current
-    release manifests do not expose compile features, so ``auto`` stays off
-    rather than assuming every Linux release contains portal/libei support.
-    Failure is deliberately a refusal: Hermes must not export the upstream
-    opt-in flag to an unknown binary.
-    """
-    if not driver_cmd:
-        return False
-    child_env = dict(os.environ if env is None else env)
-    try:
-        manifest = subprocess.run(
-            [driver_cmd, "manifest"], capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=3, stdin=subprocess.DEVNULL, env=child_env,
-        )
-        if manifest.returncode == 0:
-            data = json.loads(manifest.stdout)
-            features = data.get("features") if isinstance(data, dict) else None
-            if isinstance(features, dict) and isinstance(features.get("wayland_native"), bool):
-                return bool(features["wayland_native"])
-            if isinstance(features, list) and "wayland_native" in features:
-                return True
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        pass
-    return False
+    """Compatibility wrapper for callers that only need the native bit."""
+    return probe_driver_features(driver_cmd, env).wayland_native
 
 
 def configured_wayland_mode(config: Optional[Mapping[str, Any]] = None) -> str:
@@ -194,13 +273,15 @@ def configured_wayland_mode(config: Optional[Mapping[str, Any]] = None) -> str:
         return "enabled"
     if value is False:
         return "disabled"
-    value = str(value).strip().lower()
-    return value if value in {"auto", "enabled", "disabled"} else "auto"
+    return str(value).strip().lower() if str(value).strip().lower() in {"auto", "enabled", "disabled"} else "auto"
 
 
 def native_wayland_enabled(
-    driver_cmd: Optional[str], config: Optional[Mapping[str, Any]] = None,
+    driver_cmd: Optional[str],
+    config: Optional[Mapping[str, Any]] = None,
     env: Optional[Mapping[str, str]] = None,
+    *,
+    features: Optional[CuaDriverFeatures] = None,
 ) -> bool:
     session = detect_linux_session(env)
     mode = configured_wayland_mode(config)
@@ -208,7 +289,7 @@ def native_wayland_enabled(
         return False
     if mode == "enabled":
         return True
-    return driver_supports_native_wayland(driver_cmd, env)
+    return (features or probe_driver_features(driver_cmd, env)).wayland_native
 
 
 def native_wayland_child_env(
@@ -218,90 +299,180 @@ def native_wayland_child_env(
     out = dict(os.environ if env is None else env)
     if sys.platform == "linux" and native_wayland_enabled(driver_cmd, config, out):
         out[WAYLAND_ENABLE_ENV] = "1"
-    else:
-        # Hermes owns this upstream experimental flag. In auto mode an inherited
-        # shell export must not bypass the session + driver capability gate;
-        # explicit `enabled` is the only operator override.
-        if configured_wayland_mode(config) != "enabled":
-            out[WAYLAND_ENABLE_ENV] = "0"
+    elif configured_wayland_mode(config) != "enabled":
+        out[WAYLAND_ENABLE_ENV] = "0"
     return out
 
 
 def _run(args: Sequence[str], env: Mapping[str, str]) -> str:
     try:
-        result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, env=dict(env), stdin=subprocess.DEVNULL)
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            env=dict(env),
+            stdin=subprocess.DEVNULL,
+        )
         return result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
 
 
-def _package_installed(package: str, env: Mapping[str, str]) -> bool:
-    pacman = shutil.which("pacman", path=env.get("PATH"))
-    return bool(pacman and _run([pacman, "-Q", package], env))
+def _service_active(service: str, env: Mapping[str, str]) -> bool:
+    return _run(["systemctl", "--user", "is-active", service], env) == "active"
 
 
-def diagnose_arch_wayland(
-    driver_cmd: Optional[str], config: Optional[Mapping[str, Any]] = None,
+def _bus_name_owned(name: str, env: Mapping[str, str]) -> bool:
+    return name in _run(["busctl", "--user", "--no-pager", "--list"], env)
+
+
+def _restore_token_path(env: Mapping[str, str]) -> Path:
+    config_dir = env.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(config_dir) / "cua-driver" / "libei-persistent.token"
+
+
+def diagnose_linux_desktop(
+    driver_cmd: Optional[str],
+    config: Optional[Mapping[str, Any]] = None,
     env: Optional[Mapping[str, str]] = None,
+    *,
+    os_release_path: Path | str = "/etc/os-release",
 ) -> Dict[str, Any]:
-    """Read-only Arch/Wayland diagnosis used by doctor and Desktop status."""
+    """Distribution-neutral Linux desktop diagnosis for doctor and Desktop."""
     e = dict(os.environ if env is None else env)
     session = detect_linux_session(e)
+    distribution = detect_linux_distribution(os_release_path)
+    features = probe_driver_features(driver_cmd, e)
     mode = configured_wayland_mode(config)
-    package_state = {package: _package_installed(package, e) for package in ARCH_SHARED_PACKAGES}
-    portal_package = ARCH_PORTAL_PACKAGES.get(session.compositor or "")
-    if portal_package:
-        package_state[portal_package] = _package_installed(portal_package, e)
-    portal_owner = "org.freedesktop.portal.Desktop" in _run(["busctl", "--user", "--no-pager", "--list"], e)
-    a11y_owner = "org.a11y.Bus" in _run(["busctl", "--user", "--no-pager", "--list"], e)
+    native_enabled = native_wayland_enabled(driver_cmd, config, e, features=features)
+    portal_owner = _bus_name_owned("org.freedesktop.portal.Desktop", e)
+    atspi_owner = _bus_name_owned("org.a11y.Bus", e)
     services = {
-        name: _run(["systemctl", "--user", "is-active", name], e) == "active"
-        for name in ("xdg-desktop-portal.service", "pipewire.service", "at-spi-dbus-bus.service")
+        "portal": _service_active("xdg-desktop-portal.service", e),
+        "pipewire": _service_active("pipewire.service", e),
+        "atspi": _service_active("at-spi-dbus-bus.service", e),
     }
-    restore_token = Path(e.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "cua-driver" / "libei-persistent.token"
     caps = LinuxComputerUseCapabilities(
-        session_type=session.kind, compositor=session.compositor, desktop=session.desktop,
-        accessibility_tree=a11y_owner,
-        capture_path=("x11" if session.kind == "x11" else "native_wayland_candidate" if session.kind.startswith("wayland") else None),
-        input_path=("x11" if session.kind == "x11" else "portal_or_wlroots_candidate" if session.kind.startswith("wayland") else None),
-        consent_expected=session.kind.startswith("wayland") and portal_owner,
-        restore_token_present=restore_token.is_file(),
+        session_type=session.kind,
+        compositor=session.compositor,
+        desktop=session.desktop,
+        accessibility_tree=atspi_owner,
+        restore_token_present=_restore_token_path(e).is_file(),
     )
     if session.kind == "x11":
         caps.window_enumeration = caps.app_scoped_capture = caps.window_scoped_capture = caps.desktop_capture = True
         caps.background_element_actions = caps.background_pixel_actions = True
         caps.foreground_pointer_input = caps.foreground_keyboard_input = caps.target_activation = caps.focus_restore = True
-        caps.activation_path = "x11_ewmh"
+        caps.capture_path, caps.input_path, caps.activation_path = "x11", "x11", "x11_ewmh"
     elif session.kind in {"wayland", "wayland-xwayland"}:
-        # Do not turn protocol availability into a delivery claim. The driver
-        # health report, after native mode is launched, is the final authority.
         caps.window_enumeration = True
-        if not native_wayland_enabled(driver_cmd, config, e):
-            caps.hard_failures.append("Native Wayland is disabled or the installed driver is too old to pass Hermes' safe capability gate.")
-        if not a11y_owner:
-            caps.degraded_reasons.append("AT-SPI bus is unavailable; semantic inspection and safe element actions are unavailable.")
+        if not native_enabled:
+            caps.hard_failures.append("Native Wayland is disabled or the installed driver did not advertise native Wayland support.")
+        if not atspi_owner:
+            caps.degraded_reasons.append("AT-SPI D-Bus is unavailable; semantic inspection and safe element actions are unavailable.")
         if not portal_owner:
-            caps.degraded_reasons.append("xdg-desktop-portal is unavailable; portal capture/input cannot request user consent.")
-        if portal_package and not package_state.get(portal_package):
-            caps.degraded_reasons.append(f"Expected {portal_package} for detected {session.compositor} desktop is missing.")
+            caps.degraded_reasons.append("xdg-desktop-portal D-Bus ownership is unavailable; portal capture/input cannot request consent.")
+        if not services["pipewire"]:
+            caps.degraded_reasons.append("PipeWire user service is inactive; PipeWire portal capture is unavailable.")
+        wlroots = session.compositor in {"hyprland", "sway", "wlroots"}
+        if features.portal_capture and portal_owner and services["pipewire"]:
+            caps.desktop_capture = True
+            caps.capture_path = "pipewire_portal_capture"
+            caps.consent_expected = True
+        elif wlroots and features.wayland_native:
+            caps.capture_path = "wlroots_native_capture_candidate"
+        else:
+            caps.capture_path = "unavailable"
+        if features.portal_input and portal_owner:
+            caps.foreground_pointer_input = caps.foreground_keyboard_input = True
+            caps.input_path = "portal_remote_desktop_input"
+            caps.consent_expected = True
+        elif wlroots and features.wayland_native:
+            caps.input_path = "wlroots_virtual_pointer_candidate"
+        else:
+            caps.input_path = "unavailable"
+            if session.compositor in {"gnome", "kde"} and not features.portal_input:
+                caps.degraded_reasons.append(
+                    "The driver was built without portal_input; GNOME/KDE portal input is not available in this artifact."
+                )
+        caps.activation_path = "driver_target_activation_candidate" if features.wayland_native else "unavailable"
     else:
         caps.hard_failures.append("No graphical Linux session is reachable from this process.")
     caps.hard_failures.extend(session.reasons)
-    missing = [name for name, installed in package_state.items() if not installed]
     return {
-        "session": asdict(session), "wayland_mode": mode,
-        "native_wayland_enabled": native_wayland_enabled(driver_cmd, config, e),
-        "driver_native_wayland_capable": driver_supports_native_wayland(driver_cmd, e),
-        "packages": package_state, "missing_packages": missing,
-        "selected_portal_package": portal_package, "portal_service": services["xdg-desktop-portal.service"],
-        "pipewire_service": services["pipewire.service"], "atspi_service": services["at-spi-dbus-bus.service"],
-        "portal_dbus_available": portal_owner, "atspi_dbus_available": a11y_owner,
+        "distribution": distribution.as_dict(),
+        "session": asdict(session),
+        "wayland_mode": mode,
+        "native_wayland_enabled": native_enabled,
+        "driver_features": features.as_dict(),
+        "portal_service": services["portal"],
+        "pipewire_service": services["pipewire"],
+        "atspi_service": services["atspi"],
+        "portal_dbus_available": portal_owner,
+        "atspi_dbus_available": atspi_owner,
         "capabilities": caps.as_dict(),
     }
 
 
+def _package_installed(package: str, pacman: str, env: Mapping[str, str]) -> bool:
+    return bool(_run([pacman, "-Q", package], env))
+
+
+def diagnose_arch_packages(report: Mapping[str, Any], env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
+    """Optional Arch package layer. Never probes or recommends pacman elsewhere."""
+    e = dict(os.environ if env is None else env)
+    distro = report.get("distribution") or {}
+    arch_like = bool(distro.get("arch_like"))
+    pacman = shutil.which("pacman", path=e.get("PATH"))
+    if not arch_like or not pacman:
+        reason = "distribution is not Arch-like" if not arch_like else "pacman executable is unavailable"
+        return {"applicable": False, "reason": reason, "packages": {}, "missing_packages": [], "selected_portal_package": None}
+    compositor = ((report.get("session") or {}).get("compositor") or "")
+    portal_package = ARCH_PORTAL_PACKAGES.get(compositor)
+    packages = {package: _package_installed(package, pacman, e) for package in ARCH_SHARED_PACKAGES}
+    if portal_package:
+        packages[portal_package] = _package_installed(portal_package, pacman, e)
+    return {
+        "applicable": True,
+        "reason": None,
+        "packages": packages,
+        "missing_packages": [name for name, installed in packages.items() if not installed],
+        "selected_portal_package": portal_package,
+    }
+
+
+def diagnose_linux_computer_use(
+    driver_cmd: Optional[str],
+    config: Optional[Mapping[str, Any]] = None,
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    os_release_path: Path | str = "/etc/os-release",
+) -> Dict[str, Any]:
+    """Complete Linux diagnosis with an Arch-only package enrichment when valid."""
+    e = dict(os.environ if env is None else env)
+    report = diagnose_linux_desktop(driver_cmd, config, e, os_release_path=os_release_path)
+    packages = diagnose_arch_packages(report, e)
+    report["arch_packages"] = packages
+    # Flat fields retain desktop compatibility while indicating whether package
+    # diagnosis was applicable. On non-Arch they are empty—not synthetic misses.
+    report["packages"] = packages["packages"]
+    report["missing_packages"] = packages["missing_packages"]
+    report["selected_portal_package"] = packages["selected_portal_package"]
+    if packages["applicable"] and packages["selected_portal_package"] in packages["missing_packages"]:
+        report["capabilities"]["degraded_reasons"].append(
+            f"Expected {packages['selected_portal_package']} for the detected desktop is missing."
+        )
+    return report
+
+
 def arch_install_hint(report: Mapping[str, Any]) -> Optional[str]:
-    missing = report.get("missing_packages") or []
+    packages = report.get("arch_packages") or report
+    if not packages.get("applicable", True):
+        return None
+    missing = packages.get("missing_packages") or []
     if not missing:
         return None
-    return "Install only the missing packages for this desktop: sudo pacman -S " + " ".join(str(x) for x in missing)
+    return "Install only the missing packages for this desktop: sudo pacman -S " + " ".join(str(name) for name in missing)

@@ -223,6 +223,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
           </span>
           <span>Capture: {wayland.capabilities?.capture_path ?? 'unavailable'} · Input: {wayland.capabilities?.input_path ?? 'unavailable'}</span>
           <span>Accessibility: {wayland.atspi_dbus_available ? 'ready' : 'unavailable'} · Portal: {wayland.portal_dbus_available ? 'ready' : 'unavailable'}</span>
+          <span>Driver features: native Wayland {wayland.driver_features?.wayland_native ? 'yes' : 'no'} · portal input {wayland.driver_features?.portal_input ? 'yes' : 'no'} · portal capture {wayland.driver_features?.portal_capture ? 'yes' : 'no'}</span>
           {wayland.capabilities?.consent_expected && <span>Desktop permission may be requested before capture or input.</span>}
         </div>
       )}

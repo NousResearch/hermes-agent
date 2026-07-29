@@ -15742,13 +15742,16 @@ def _(rid, params: dict) -> dict:
 
     try:
         from hermes_cli.plugins import (
+            call_plugin_command_handler,
             get_plugin_command_handler,
             resolve_plugin_command_result,
         )
 
         handler = get_plugin_command_handler(name)
         if handler:
-            result = resolve_plugin_command_result(handler(arg))
+            result = resolve_plugin_command_result(
+                call_plugin_command_handler(handler, arg)
+            )
             return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
         pass
@@ -17602,6 +17605,7 @@ def _(rid, params: dict) -> dict:
     if _cmd_base:
         try:
             from hermes_cli.plugins import (
+                call_plugin_command_handler,
                 get_plugin_command_handler,
                 resolve_plugin_command_result,
             )
@@ -17613,7 +17617,9 @@ def _(rid, params: dict) -> dict:
 
     if plugin_handler and resolve_plugin_command_result:
         try:
-            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            result = resolve_plugin_command_result(
+                call_plugin_command_handler(plugin_handler, _cmd_arg)
+            )
             return _ok(rid, {"output": str(result or "(no output)")})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})

@@ -13,17 +13,39 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
 
-import requests
 import yaml
+
+if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
+    import requests
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
+
+# ``requests`` (with urllib3) costs ~27 ms of the `import cli` waterfall and
+# is only used inside the fetch functions below. It's resolved lazily:
+# ``_ensure_requests()`` populates the module global on the runtime path, and
+# the PEP 562 ``__getattr__`` covers external attribute access — notably
+# ``patch("agent.model_metadata.requests.get")`` in tests, which resolves the
+# attribute at patch time.
+
+
+def _ensure_requests():
+    if "requests" not in globals():
+        import requests as _requests
+        globals()["requests"] = _requests
+    return globals()["requests"]
+
+
+def __getattr__(name: str):
+    if name == "requests":
+        return _ensure_requests()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _resolve_requests_verify() -> bool | str:
@@ -995,6 +1017,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 return _model_metadata_cache
 
     try:
+        _ensure_requests()
         # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
         # retry stage through proxies that 403 CONNECT, ballooning to minutes
         # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
@@ -1051,6 +1074,7 @@ def fetch_endpoint_model_metadata(
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
+    _ensure_requests()
 
     if not force_refresh:
         cached = _endpoint_model_metadata_cache.get(normalized)
@@ -1962,6 +1986,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         }
+        _ensure_requests()
         resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             return None
@@ -2069,6 +2094,7 @@ def _fetch_codex_oauth_context_lengths_with_source(
         headers["ChatGPT-Account-Id"] = acct_id
 
     try:
+        _ensure_requests()
         resp = requests.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers=headers,

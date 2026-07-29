@@ -712,3 +712,116 @@ class TestInstallerNoShell:
 
         assert "script" in captured
         assert not os.path.exists(captured["script"])
+
+
+class TestConfirmedVersionPinning:
+    """When check-update confirms a newer release, the installer run must be
+    pinned to that exact version via CUA_DRIVER_RS_VERSION.
+
+    The upstream installer scripts on `main` carry a baked version that
+    Release Please bumps in the release PR *before* the release assets are
+    published. An unpinned install inside that window 404s (observed
+    2026-07-29: baked 0.14.0 vs latest published release 0.13.1). Pinning to
+    check-update's `latest_version` — which comes from the Releases API and
+    therefore has published assets — sidesteps the race.
+    """
+
+    def _install(self, check_state):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/x/" + n
+                          if n in {"cua-driver", "curl", "powershell"} else None), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd",
+                          return_value="/x/cua-driver.exe"), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=True), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=check_state), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="cua-driver 0.5.0", returncode=0)), \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config.install_cua_driver(
+                upgrade=True, require_confirmed_update=True
+            )
+        return ok, runner
+
+    def test_confirmed_update_pins_latest_version(self):
+        state = {"current_version": "0.12.6", "latest_version": "0.13.1",
+                 "update_available": True}
+        ok, runner = self._install(state)
+        assert ok is True
+        assert runner.call_args.kwargs.get("pin_version") == "0.13.1"
+
+    def test_v_prefixed_latest_version_is_normalized(self):
+        state = {"current_version": "0.12.6", "latest_version": "v0.13.1",
+                 "update_available": True}
+        ok, runner = self._install(state)
+        assert ok is True
+        assert runner.call_args.kwargs.get("pin_version") == "0.13.1"
+
+    def test_malformed_latest_version_falls_back_unpinned(self):
+        state = {"current_version": "0.12.6", "latest_version": "not a version",
+                 "update_available": True}
+        ok, runner = self._install(state)
+        assert ok is True
+        assert runner.call_args.kwargs.get("pin_version") is None
+
+    def test_missing_latest_version_falls_back_unpinned(self):
+        state = {"current_version": "0.12.6", "update_available": True}
+        ok, runner = self._install(state)
+        assert ok is True
+        assert runner.call_args.kwargs.get("pin_version") is None
+
+
+class TestRunInstallerPinEnv:
+    """_run_cua_driver_installer(pin_version=...) exports CUA_DRIVER_RS_VERSION
+    into the installer child env; unpinned runs leave it untouched."""
+
+    def _run(self, pin_version):
+        import subprocess
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        captured = {}
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 1
+        fake_proc.communicate.return_value = ("", None)
+
+        def fake_popen(cmd, **kw):
+            captured["env"] = kw.get("env")
+            return fake_proc
+
+        def fake_run(cmd, **kw):
+            m = MagicMock(); m.returncode = 0; m.stderr = ""
+            return m
+
+        with patch("platform.system", return_value="Linux"), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch.object(tools_config, "_cua_driver_env",
+                          return_value={"PATH": "/usr/bin"}), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False, pin_version=pin_version
+            )
+        return captured.get("env") or {}
+
+    def test_pin_version_exported_to_installer_env(self):
+        env = self._run("0.13.1")
+        assert env.get("CUA_DRIVER_RS_VERSION") == "0.13.1"
+
+    def test_no_pin_leaves_env_untouched(self):
+        env = self._run(None)
+        assert "CUA_DRIVER_RS_VERSION" not in env

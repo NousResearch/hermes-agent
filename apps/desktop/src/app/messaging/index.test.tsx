@@ -168,4 +168,39 @@ describe('MessagingView pairing', () => {
     expect((await screen.findAllByText('Microsoft Teams')).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
+
+  it('refetches pending rows on pairing.changed, not on platforms.changed', async () => {
+    // The two signals are not interchangeable: platforms.changed tracks
+    // connect/disconnect health via gateway_state.json, which a new pairing
+    // request never moves. Riding it would leave someone invisible in the
+    // pending list until an unrelated reconnect happened to fire.
+    const { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } = await import(
+      '@/store/live-sync'
+    )
+
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+    getPairing.mockResolvedValue({ approved: [], pending: [] })
+
+    await renderMessaging()
+    await act(async () => {
+      $changeEventsAvailable.set(true)
+    })
+    getPairing.mockClear()
+
+    // Someone DMs the bot: the store moves, the watcher ticks pairing.changed.
+    getPairing.mockResolvedValue({ approved: [], pending: [pendingUser] })
+    await act(async () => {
+      $pairingChangeTick.set($pairingChangeTick.get() + 1)
+    })
+
+    await waitFor(() => expect(getPairing).toHaveBeenCalled())
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeTruthy()
+
+    // A platform health tick alone must not be what fetches pairing.
+    getPairing.mockClear()
+    await act(async () => {
+      $platformsChangeTick.set($platformsChangeTick.get() + 1)
+    })
+    expect(getPairing).not.toHaveBeenCalled()
+  })
 })

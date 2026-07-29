@@ -503,6 +503,29 @@ def _validate_teams_service_url(raw: str) -> Optional[str]:
     return normalized
 
 
+def _is_bot_connector_url(raw: str) -> bool:
+    """True if ``raw`` points at the Bot Connector attachment service.
+
+    Images pasted or dragged into a Teams message do not arrive as
+    SharePoint links.  Their ``contentUrl`` is a Bot Connector endpoint
+    (``https://smba.trafficmanager.net/<region>/<tenant>/v3/attachments/
+    <id>/views/original``) which rejects unauthenticated GETs with 401.
+    Callers use this to decide whether a bearer token has to be attached.
+    """
+    if not raw:
+        return False
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname in _ALLOWED_TEAMS_SERVICE_HOSTS
+    )
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -720,6 +743,8 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        # Cached Bot Connector token for attachment downloads: (token, expiry_monotonic).
+        self._bf_token: Optional[tuple] = None
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -814,11 +839,68 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
+    async def _bot_connector_token(self, timeout: float = 15.0) -> Optional[str]:
+        """Mint (and briefly cache) a Bot Connector bearer token.
+
+        Same client-credentials grant the outbound activity path uses.  The
+        token is cached until shortly before expiry so a burst of attachments
+        on one message does not hit the STS once per file.
+        """
+        import time
+
+        if self._bf_token:
+            token, expires_at = self._bf_token
+            if time.monotonic() < expires_at:
+                return token
+
+        if not (self._client_id and self._client_secret and self._tenant_id):
+            return None
+        if not _TEAMS_CONV_ID_RE.match(self._tenant_id):
+            return None
+        if not AIOHTTP_AVAILABLE:
+            return None
+
+        import aiohttp as _aiohttp
+
+        token_url = (
+            f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token"
+        )
+        async with _aiohttp.ClientSession(trust_env=True) as session:
+            async with session.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "scope": "https://api.botframework.com/.default",
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=_aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise RuntimeError(
+                        f"Bot Connector token request failed ({resp.status}): {body[:200]}"
+                    )
+                payload = await resp.json()
+
+        token = payload.get("access_token")
+        if not token:
+            raise RuntimeError("Bot Connector token response missing access_token")
+        # Refresh a minute early rather than racing the hard expiry.
+        expires_in = float(payload.get("expires_in") or 3600)
+        self._bf_token = (token, time.monotonic() + max(expires_in - 60.0, 60.0))
+        return token
+
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection.
 
-        Teams file attachments carry pre-authenticated SharePoint download
-        URLs (no extra auth header needed). Validates the URL against the
+        Teams *file* attachments carry pre-authenticated SharePoint download
+        URLs.  Inline images (paste / drag-and-drop) instead point at the Bot
+        Connector attachment service, which answers unauthenticated GETs with
+        401 — those get a freshly minted bearer token.  The token is only ever
+        sent to hosts on ``_ALLOWED_TEAMS_SERVICE_HOSTS`` so a tampered
+        ``contentUrl`` cannot exfiltrate it.  Validates the URL against the
         SSRF guard and follows redirects through the shared redirect guard,
         matching the cache_*_from_url helpers in gateway.platforms.base.
         """
@@ -828,15 +910,18 @@ class TeamsAdapter(BasePlatformAdapter):
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
 
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
+        if _is_bot_connector_url(url):
+            token = await self._bot_connector_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
         async with create_ssrf_safe_async_client(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.content
 
@@ -898,6 +983,9 @@ class TeamsAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         media_kinds = []
+        # Attachments the user sent that never reached the agent. Surfaced in
+        # the message text so neither side silently assumes they were seen.
+        dropped_media: list = []
         for att in getattr(activity, "attachments", None) or []:
             content_url = getattr(att, "content_url", None)
             content_type = (getattr(att, "content_type", None) or "").lower()
@@ -930,22 +1018,43 @@ class TeamsAdapter(BasePlatformAdapter):
                         media_types.append(cached.media_type)
                         media_kinds.append(cached.kind)
                     else:
+                        dropped_media.append(filename)
                         logger.warning(
                             "[teams] Unsupported document type for attachment '%s', skipping",
                             filename,
                         )
                 except Exception as e:
+                    dropped_media.append(filename)
                     logger.warning("[teams] Failed to cache file attachment '%s': %s", filename, e)
                 continue
 
             if content_url and content_type.startswith("image/"):
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    if _is_bot_connector_url(content_url):
+                        # Pasted/inline image: needs a bearer token, so it
+                        # cannot go through the plain-URL cache helper.
+                        data = await self._fetch_attachment_bytes(content_url)
+                        media = cache_media_bytes(
+                            data,
+                            filename=att_name or "image",
+                            mime_type=content_type,
+                            default_kind="image",
+                        )
+                        cached = media.path if media else None
+                    else:
+                        cached = await cache_image_from_url(content_url)
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)
                         media_kinds.append("image")
+                    else:
+                        dropped_media.append(att_name or "image")
+                        logger.warning(
+                            "[teams] Image attachment '%s' could not be cached, skipping",
+                            att_name or content_url,
+                        )
                 except Exception as e:
+                    dropped_media.append(att_name or "image")
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
                 continue
 
@@ -960,7 +1069,10 @@ class TeamsAdapter(BasePlatformAdapter):
                         media_urls.append(cached.path)
                         media_types.append(cached.media_type)
                         media_kinds.append(cached.kind)
+                    else:
+                        dropped_media.append(att_name or content_type or "file")
                 except Exception as e:
+                    dropped_media.append(att_name or content_type or "file")
                     logger.warning(
                         "[teams] Failed to cache attachment '%s' (%s): %s",
                         att_name or content_url, content_type, e,
@@ -981,6 +1093,20 @@ class TeamsAdapter(BasePlatformAdapter):
             msg_type = MessageType.AUDIO
         else:
             msg_type = MessageType.TEXT
+
+        # A dropped attachment used to be a WARNING in the log and nothing
+        # else: the agent answered as though it had seen an image it never
+        # received. Tell it plainly so it can say so instead of guessing.
+        if dropped_media:
+            names = ", ".join(dropped_media[:5])
+            if len(dropped_media) > 5:
+                names += f", +{len(dropped_media) - 5} more"
+            notice = (
+                f"[system: {len(dropped_media)} attachment(s) from this message "
+                f"could not be downloaded and are NOT visible to you ({names}). "
+                f"Say so instead of guessing at their contents.]"
+            )
+            text = f"{text}\n\n{notice}" if text.strip() else notice
 
         event = MessageEvent(
             text=text,

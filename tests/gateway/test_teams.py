@@ -1125,3 +1125,175 @@ class TestTeamsMediaAttachments:
         result = await adapter.send_document("19:abc@thread.v2", "/no/such/file.pdf")
         assert not result.success
         adapter._app.send.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Inline image attachments (Bot Connector auth)
+# ---------------------------------------------------------------------------
+
+_CONNECTOR_IMAGE_URL = (
+    "https://smba.trafficmanager.net/apac/tenant-789/v3/attachments/"
+    "0-ea-d12-abcdef/views/original"
+)
+
+
+def _image_attachment(url=_CONNECTOR_IMAGE_URL, name="pasted.png"):
+    att = MagicMock()
+    att.content_url = url
+    att.content_type = "image/png"
+    att.name = name
+    return att
+
+
+class TestTeamsInlineImageAuth:
+    """Pasted images arrive on the Bot Connector, which needs a bearer token.
+
+    Fetching them unauthenticated returns 401 and the image is dropped, so the
+    agent answers about a picture it never saw.
+    """
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant-789",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _activity(self, attachments):
+        handler = TestTeamsMessageHandling()
+        return handler._make_activity(attachments=attachments), handler
+
+    def test_connector_url_is_recognized(self):
+        assert _teams_mod._is_bot_connector_url(_CONNECTOR_IMAGE_URL)
+
+    def test_sharepoint_url_is_not_a_connector_url(self):
+        assert not _teams_mod._is_bot_connector_url(
+            "https://contoso.sharepoint.com/sites/x/doc.png"
+        )
+
+    def test_attacker_host_is_not_a_connector_url(self):
+        # The bearer token must never follow a tampered contentUrl.
+        assert not _teams_mod._is_bot_connector_url(
+            "https://smba.trafficmanager.net.evil.example/v3/attachments/1/views/original"
+        )
+        assert not _teams_mod._is_bot_connector_url(
+            "http://smba.trafficmanager.net/v3/attachments/1/views/original"
+        )
+
+    @pytest.mark.anyio
+    async def test_inline_image_is_fetched_with_bearer_token(self):
+        adapter = self._make_adapter()
+        adapter._bot_connector_token = AsyncMock(return_value="tok-123")
+
+        captured = {}
+
+        class _Resp:
+            content = b"\x89PNG\r\n\x1a\n fake"
+
+            def raise_for_status(self):
+                return None
+
+        class _Client:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+            async def get(self_inner, url, headers=None):
+                captured["url"] = url
+                captured["headers"] = headers
+                return _Resp()
+
+        import tools.url_safety as _url_safety
+        orig_client = _url_safety.create_ssrf_safe_async_client
+        orig_safe = _url_safety.is_safe_url
+        _url_safety.create_ssrf_safe_async_client = lambda **kw: _Client()
+        _url_safety.is_safe_url = lambda u: True
+        try:
+            data = await adapter._fetch_attachment_bytes(_CONNECTOR_IMAGE_URL)
+        finally:
+            _url_safety.create_ssrf_safe_async_client = orig_client
+            _url_safety.is_safe_url = orig_safe
+
+        assert data == b"\x89PNG\r\n\x1a\n fake"
+        assert captured["headers"]["Authorization"] == "Bearer tok-123"
+
+    @pytest.mark.anyio
+    async def test_no_token_sent_to_non_connector_host(self):
+        adapter = self._make_adapter()
+        adapter._bot_connector_token = AsyncMock(return_value="tok-123")
+
+        captured = {}
+
+        class _Resp:
+            content = b"data"
+
+            def raise_for_status(self):
+                return None
+
+        class _Client:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *a):
+                return False
+
+            async def get(self_inner, url, headers=None):
+                captured["headers"] = headers
+                return _Resp()
+
+        import tools.url_safety as _url_safety
+        orig_client = _url_safety.create_ssrf_safe_async_client
+        orig_safe = _url_safety.is_safe_url
+        _url_safety.create_ssrf_safe_async_client = lambda **kw: _Client()
+        _url_safety.is_safe_url = lambda u: True
+        try:
+            await adapter._fetch_attachment_bytes("https://contoso.sharepoint.com/a.png")
+        finally:
+            _url_safety.create_ssrf_safe_async_client = orig_client
+            _url_safety.is_safe_url = orig_safe
+
+        assert "Authorization" not in captured["headers"]
+        adapter._bot_connector_token.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_inline_image_reaches_the_agent(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"bytes")
+
+        cached = SimpleNamespace(
+            path="/cache/pasted.png", media_type="image/png", kind="image"
+        )
+        orig = _teams_mod.cache_media_bytes
+        _teams_mod.cache_media_bytes = lambda *a, **kw: cached
+        try:
+            activity, handler = self._activity([_image_attachment()])
+            await adapter._on_message(handler._make_ctx(activity))
+        finally:
+            _teams_mod.cache_media_bytes = orig
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == ["/cache/pasted.png"]
+        assert "could not be downloaded" not in event.text
+
+    @pytest.mark.anyio
+    async def test_failed_image_is_reported_not_silently_dropped(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "401", request=MagicMock(), response=MagicMock()
+            )
+        )
+
+        activity, handler = self._activity([_image_attachment()])
+        await adapter._on_message(handler._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert "could not be downloaded" in event.text
+        assert "pasted.png" in event.text
+        # The user's own words survive alongside the notice.
+        assert "Hello" in event.text

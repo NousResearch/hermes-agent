@@ -115,6 +115,15 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_resource_key_update_of_missing_task_returns_404(client):
+    response = client.patch(
+        "/api/plugins/kanban/tasks/t_missing",
+        json={"resource_keys": ["gpu:0"]},
+    )
+    assert response.status_code == 404
+    assert "t_missing" in response.json()["detail"]
+
+
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(
     client, tmp_path
 ):

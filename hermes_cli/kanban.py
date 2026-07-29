@@ -82,6 +82,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "resource_keys": list(t.resource_keys),
     }
 
 
@@ -362,6 +363,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). The kanban lifecycle is already "
                                "injected automatically. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument(
+        "--resource", action="append", default=[], dest="resource_keys",
+        help="Cross-board exclusive resource key (repeatable, max 16).",
+    )
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -494,6 +499,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--provider", default=None,
         help="Provider the model belongs to (worker is spawned with "
              "--provider <name>). Cleared together with the model.",
+    )
+
+    # --- resources (cross-board exclusive resource keys) ---
+    p_resources = sub.add_parser(
+        "resources", help="Replace a task's cross-board exclusive resource keys"
+    )
+    p_resources.add_argument("task_id")
+    p_resources.add_argument(
+        "resource_keys", nargs="*",
+        help="Resource keys. Omit all keys to clear the lease requirement.",
     )
 
     # --- reclaim / reassign (recovery) ---
@@ -1051,6 +1066,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "show":     _cmd_show,
             "assign":   _cmd_assign,
             "set-model": _cmd_set_model,
+            "resources": _cmd_resources,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
@@ -1520,6 +1536,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            resource_keys=getattr(args, "resource_keys", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1821,6 +1838,22 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     else:
         print(f"Cleared model override on {args.task_id} "
               "(worker uses its profile default)")
+    return 0
+
+
+def _cmd_resources(args: argparse.Namespace) -> int:
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.set_resource_keys(conn, args.task_id, args.resource_keys)
+            task = kb.get_task(conn, args.task_id) if ok else None
+    except (ValueError, RuntimeError) as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if not ok or task is None:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    rendered = ", ".join(task.resource_keys) if task.resource_keys else "(none)"
+    print(f"Updated {args.task_id} resources: {rendered}")
     return 0
 
 
@@ -2500,6 +2533,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
+            "resource_conflicts": [
+                {
+                    "task_id": tid, "resource_key": key,
+                    "holder_board": holder_board,
+                    "holder_task_id": holder_task,
+                }
+                for tid, key, holder_board, holder_task in res.resource_conflicts
+            ],
             "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
         return 0
@@ -2528,6 +2569,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    for tid, key, holder_board, holder_task in res.resource_conflicts:
+        print(
+            f"Deferred (resource {key} held by "
+            f"{holder_board}/{holder_task}): {tid}"
+        )
     if res.skipped_per_profile_capped:
         for tid, who, current in res.skipped_per_profile_capped:
             print(

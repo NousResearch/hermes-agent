@@ -665,6 +665,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--max-retries N]
                                 [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
+                                [--resource <key>]...
                                 [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
         [--workflow-template-id <id>] [--current-step-key <key>]
@@ -672,6 +673,7 @@ hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived
         [--json]
 hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign
+hermes kanban resources <id> [<key>...]                # replace/clear exclusive resources
 hermes kanban reassign <id>... <profile>               # bulk re-assign tasks to a profile
 hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body / priority in place
         [--priority N]
@@ -825,7 +827,44 @@ Gateway platforms have practical message-length caps. If `/kanban list`, `/kanba
 
 ### Autocomplete
 
-In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the built-in subcommand list (`list`, `ls`, `show`, `create`, `assign`, `link`, `unlink`, `claim`, `comment`, `complete`, `block`, `unblock`, `archive`, `tail`, `dispatch`, `context`, `init`, `gc`). The remaining verbs listed in the CLI reference above (`watch`, `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-subscribe`, `notify-list`, `notify-unsubscribe`, `daemon`) also work — they're just not in the autocomplete hint list yet.
+In the interactive CLI, typing `/kanban ` and hitting Tab cycles through the built-in subcommand list (`list`, `ls`, `show`, `create`, `assign`, `resources`, `link`, `unlink`, `claim`, `comment`, `complete`, `block`, `unblock`, `archive`, `tail`, `dispatch`, `context`, `init`, `gc`). The remaining verbs listed in the CLI reference above (`watch`, `stats`, `runs`, `log`, `assignees`, `heartbeat`, `notify-subscribe`, `notify-list`, `notify-unsubscribe`, `daemon`) also work — they're just not in the autocomplete hint list yet.
+
+## Exclusive resources across boards
+
+Tasks that must not overlap on a shared real-world resource can declare up to
+16 `resource_keys`. Keys are trimmed, lower-cased, deduplicated, sorted, and
+restricted to letters, digits, `.`, `_`, `:`, `/`, and `-`. Prefer stable,
+namespaced identifiers such as `control-plane:cto`, `browser:shared`, `gpu:0`,
+or `vm:project/instance`.
+
+```bash
+hermes kanban create "Deploy" --assignee ops \
+  --resource control-plane:cto --resource vm:prod/api
+
+# Replace the complete set later (only while the task is not running):
+hermes kanban resources t_12345678 browser:shared gpu:0
+
+# Clear it:
+hermes kanban resources t_12345678
+```
+
+The `kanban_create` agent tool accepts the same field:
+
+```json
+{"title":"GPU evaluation","assignee":"researcher","resource_keys":["gpu:0"]}
+```
+
+When a task is claimed, Hermes acquires all its keys in one host-wide lease
+transaction. If any key is already held by a running task on any board, the
+contender stays `ready`; the dispatcher reports the holder board/task as a
+`resource_conflict`, does not increment failures, and does not consume an
+assignee concurrency slot. Different keys still run in parallel.
+
+Leases are fenced by task claim token and run generation, extended by worker
+heartbeats, and released on completion, block, reclaim, timeout/crash cleanup,
+or spawn failure. A delayed cleanup from an old run therefore cannot release
+its successor's lease. Existing tasks have no resource keys, preserving prior
+scheduling behavior after migration.
 
 ## Collaboration patterns
 

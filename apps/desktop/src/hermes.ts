@@ -1185,7 +1185,9 @@ export function approvePairing(platform: string, requestId: string): Promise<{ o
     ...profileScoped(),
     path: '/api/pairing/approve',
     method: 'POST',
-    body: { platform, request_id: requestId }
+    // These endpoints read the profile off the body, not the query string —
+    // `profileScoped()` alone would approve into the wrong profile's store.
+    body: { platform, request_id: requestId, ...profileScoped() }
   })
 }
 
@@ -1194,7 +1196,7 @@ export function revokePairing(platform: string, userId: string): Promise<{ ok: b
     ...profileScoped(),
     path: '/api/pairing/revoke',
     method: 'POST',
-    body: { platform, user_id: userId }
+    body: { platform, user_id: userId, ...profileScoped() }
   })
 }
 

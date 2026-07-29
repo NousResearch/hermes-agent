@@ -5195,23 +5195,29 @@ def set_config_value(key: str, value: str, force: bool = False):
     is_known, suggestion = _validate_config_key(key)
 
     # Otherwise it goes to config.yaml
-    # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
+    # Read the raw user config first so we write back only user-set values
+    # (not the full merged defaults).
     config_path = get_config_path()
     require_readable_config_before_write(config_path)
-    user_config = {}
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
+                raw_config = fast_safe_load(f) or {}
         except Exception:
-            user_config = {}
+            raw_config = {}
+    else:
+        raw_config = {}
+    # Navigate on the loaded config (merged with DEFAULT_CONFIG) so that
+    # keys present only in defaults (e.g. ``platforms.telegram``) are found
+    # by _set_nested instead of creating a duplicate top-level block when
+    # the raw file lacks the parent tree (#71047).
+    user_config = load_config()
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
-
+    
     # Preserve values for string-typed settings.  In particular, enum members
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.
@@ -5237,10 +5243,13 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    # Write only user config back (not the full merged defaults)
+    # Write only user-set values (raw keys) back, not the full merged config.
+    # First extract the raw keys we actually changed: start with the original
+    # raw keys, then fold in the new key if it's not already present.
+    _set_nested(raw_config, key, value)
     ensure_hermes_home()
     from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_yaml_write(config_path, raw_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

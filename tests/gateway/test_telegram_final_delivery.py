@@ -60,6 +60,7 @@ async def test_turn_final_flood_immediately_delivers_missing_tail():
 
     adapter.send.assert_awaited_once()
     assert adapter.send.await_args.kwargs["content"] == "The completed answer follows here."
+    assert adapter.send.await_args.kwargs["reply_to"] is None
     assert adapter.send.await_args.kwargs["metadata"] == {
         "thread_id": "77",
         "notify": True,
@@ -133,6 +134,7 @@ async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
 
     adapter.send.assert_awaited_once()
     assert adapter.send.await_args.kwargs["content"] == final_text
+    assert adapter.send.await_args.kwargs["reply_to"] is None
     assert adapter.send.await_args.kwargs["metadata"] == {"notify": True}
     adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
     assert consumer.message_id == "final-1"

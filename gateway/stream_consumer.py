@@ -1385,6 +1385,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(final=True),
                 )
                 if result.success:
@@ -1480,6 +1481,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=final_text,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(final=True),
                 )
             except Exception as exc:

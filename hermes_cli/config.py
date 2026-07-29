@@ -1399,7 +1399,10 @@ def _normalize_custom_provider_entry(
 
     models = entry.get("models")
     if isinstance(models, dict) and models:
-        normalized["models"] = models
+        # Shallow-copy: `entry` may alias a cached config sub-dict, and the
+        # normalized entry escapes into long-lived runtime state
+        # (agent._custom_providers) — don't share the cached models mapping.
+        normalized["models"] = dict(models)
     elif isinstance(models, list) and models:
         # Hand-edited configs (and older Hermes versions) may write
         # ``models`` as a plain list of ids or as ``[{id: ...}]`` rows.

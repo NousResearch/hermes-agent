@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import time
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -90,6 +91,21 @@ class TestShouldExclude:
     def test_excludes_pycache(self):
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("plugins/__pycache__/mod.cpython-312.pyc"))
+
+    def test_excludes_chrome_runtime_caches_but_preserves_profile_state(self):
+        from hermes_cli.backup import _should_exclude
+
+        assert _should_exclude(Path("chrome-debug/Default/GPUCache/cache.db"))
+        assert _should_exclude(Path("chrome-debug/Default/Code Cache/js/index"))
+        assert _should_exclude(Path("chrome-debug/ShaderCache/GPUCache/data_0"))
+        assert _should_exclude(
+            Path("profiles/coder/chrome-debug/Default/GPUCache/cache.db")
+        )
+        assert not _should_exclude(Path("chrome-debug/Default/Cookies"))
+        assert not _should_exclude(Path("chrome-debug/Default/Login Data"))
+        assert not _should_exclude(
+            Path("profiles/coder/chrome-debug/Default/Login Data")
+        )
 
     def test_excludes_pyc_files(self):
         from hermes_cli.backup import _should_exclude
@@ -258,7 +274,7 @@ class TestBackup:
             def __init__(self, connection):
                 self._connection = connection
 
-            def backup(self, _destination):
+            def backup(self, _destination, **_kwargs):
                 raise sqlite3.OperationalError("forced backup failure")
 
             def close(self):
@@ -1430,6 +1446,29 @@ class TestSafeCopyDb:
         conn.close()
         assert rows == [("wal-test",)]
 
+    def test_locked_database_stall_is_bounded_and_cleans_destination(self, tmp_path):
+        """sqlite3.Connection.backup() retries SQLITE_BUSY indefinitely unless
+        its progress callback enforces a no-progress deadline."""
+        from hermes_cli.backup import _safe_copy_db
+
+        src = tmp_path / "locked-cache.db"
+        dst = tmp_path / "copy.db"
+        holder = sqlite3.connect(src, timeout=0)
+        holder.execute("CREATE TABLE cache (key TEXT)")
+        holder.commit()
+        holder.execute("BEGIN EXCLUSIVE")
+
+        started = time.monotonic()
+        try:
+            result = _safe_copy_db(src, dst, stall_timeout=0.1)
+        finally:
+            holder.rollback()
+            holder.close()
+
+        assert result is False
+        assert time.monotonic() - started < 2.0
+        assert not dst.exists()
+
 
 
     def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
@@ -2075,6 +2114,39 @@ class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""
 
+    def test_locked_chrome_cache_is_skipped_without_losing_profile_state(self, tmp_path):
+        """A live Chrome cache DB cannot stall a full pre-update backup, while
+        persistent browser state outside cache directories remains restorable."""
+        hermes_home = tmp_path / ".hermes"
+        profile = hermes_home / "profiles" / "coder" / "chrome-debug" / "Default"
+        gpu_cache = profile / "GPUCache"
+        gpu_cache.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        (profile / "Cookies").write_bytes(b"persistent-session-state")
+
+        cache_db = gpu_cache / "cache.db"
+        holder = sqlite3.connect(cache_db, timeout=0)
+        holder.execute("CREATE TABLE cache (key TEXT)")
+        holder.commit()
+        holder.execute("BEGIN EXCLUSIVE")
+
+        import hermes_cli.backup as backup_mod
+
+        out_zip = tmp_path / "pre-update.zip"
+        started = time.monotonic()
+        try:
+            result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+        finally:
+            holder.rollback()
+            holder.close()
+
+        assert result == out_zip
+        assert time.monotonic() - started < 2.0
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert "profiles/coder/chrome-debug/Default/Cookies" in names
+        assert "profiles/coder/chrome-debug/Default/GPUCache/cache.db" not in names
+
     def test_failed_sqlite_snapshot_removes_incomplete_archive(self, tmp_path, monkeypatch):
         """The non-interactive full-zip helper must fail the entire archive
         rather than return success after omitting a live WAL database."""
@@ -2100,7 +2172,7 @@ class TestPreUpdateBackup:
             def __init__(self, connection):
                 self._connection = connection
 
-            def backup(self, _destination):
+            def backup(self, _destination, **_kwargs):
                 raise sqlite3.OperationalError("forced backup failure")
 
             def close(self):

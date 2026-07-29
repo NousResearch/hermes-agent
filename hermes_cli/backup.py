@@ -68,6 +68,23 @@ _EXCLUDED_DIRS = {
     ".ruff_cache",
 }
 
+# Chrome's dedicated CDP profile contains both durable operator state (cookies,
+# logins) and regenerable runtime caches. Preserve the former, but never walk or
+# snapshot the latter: Chrome helper processes can hold cache SQLite databases
+# in a state where sqlite3.Connection.backup() reports SQLITE_BUSY forever.
+_CHROME_REGENERABLE_CACHE_DIRS = {
+    "cache",
+    "cachestorage",
+    "code cache",
+    "dawngraphitecache",
+    "dawnwebgpucache",
+    "gpucache",
+    "graphitedawncache",
+    "grshadercache",
+    "shadercache",
+    "shared dictionary",
+}
+
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
     ".pyc",
@@ -212,6 +229,14 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
+    if "chrome-debug" in parts:
+        chrome_root_index = parts.index("chrome-debug")
+        if any(
+            part.casefold() in _CHROME_REGENERABLE_CACHE_DIRS
+            for part in parts[chrome_root_index + 1 :]
+        ):
+            return True
+
     for part in parts:
         if part not in _EXCLUDED_DIRS:
             continue
@@ -253,19 +278,67 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 # SQLite safe copy
 # ---------------------------------------------------------------------------
 
-def _safe_copy_db(src: Path, dst: Path) -> bool:
+_SQLITE_BACKUP_STALL_TIMEOUT_SECONDS = 5.0
+_SQLITE_BACKUP_PAGES_PER_STEP = 256
+_SQLITE_BACKUP_RETRY_SLEEP_SECONDS = 0.05
+
+
+def _safe_copy_db(
+    src: Path,
+    dst: Path,
+    *,
+    stall_timeout: float = _SQLITE_BACKUP_STALL_TIMEOUT_SECONDS,
+) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
-    Handles WAL mode — produces a consistent snapshot even while
-    the DB is being written to. Fail closed if a consistent snapshot cannot
-    be created: copying only the live main file can omit committed WAL data.
+    Handles WAL mode — produces a consistent snapshot even while the DB is
+    being written to. A progress callback bounds time without forward progress;
+    CPython's backup loop otherwise retries SQLITE_BUSY indefinitely and ignores
+    the source connection timeout. The deadline resets whenever the remaining
+    page count falls, so large healthy databases are not subject to a total
+    wall-clock limit.
+
+    Fail closed if a consistent snapshot cannot be created: copying only the
+    live main file can omit committed WAL data.
     """
     conn = None
     backup_conn = None
     try:
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        # A short connection busy timeout is load-bearing: SQLite applies it
+        # before the first backup progress callback, so the default 5 seconds
+        # would defeat a shorter stall_timeout and delay every locked probe.
+        conn = sqlite3.connect(
+            f"file:{src}?mode=ro",
+            uri=True,
+            timeout=_SQLITE_BACKUP_RETRY_SLEEP_SECONDS,
+        )
         backup_conn = sqlite3.connect(str(dst))
-        conn.backup(backup_conn)
+        last_progress_at = time.monotonic()
+        last_remaining: Optional[int] = None
+
+        def _progress(status: int, remaining: int, total: int) -> None:
+            nonlocal last_progress_at, last_remaining
+            now = time.monotonic()
+            if status == sqlite3.SQLITE_DONE:
+                return
+            if status == sqlite3.SQLITE_OK:
+                if last_remaining is None or remaining < last_remaining:
+                    last_remaining = remaining
+                    last_progress_at = now
+                return
+            if now - last_progress_at >= stall_timeout:
+                raise TimeoutError(
+                    "SQLite backup made no progress for "
+                    f"{stall_timeout:.1f}s (status={status}, "
+                    f"remaining={remaining}, total={total})"
+                )
+
+        conn.backup(
+            backup_conn,
+            pages=_SQLITE_BACKUP_PAGES_PER_STEP,
+            progress=_progress,
+            sleep=_SQLITE_BACKUP_RETRY_SLEEP_SECONDS,
+        )
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
@@ -536,14 +609,13 @@ def run_backup(args) -> None:
         dp = Path(dirpath)
         rel_dir = dp.relative_to(hermes_root)
 
-        # Prune excluded directories in-place so os.walk doesn't descend
-        # ``hermes-agent`` is only pruned at the root level; nested dirs
-        # with the same name (e.g. in skills/) must be preserved.
-        is_root = rel_dir == Path(".")
+        # Prune excluded directories in-place so os.walk doesn't descend.
+        # Route through the path-aware helper so Chrome cache subtrees are
+        # skipped while the rest of the persistent browser profile survives.
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
+            if not _should_exclude(rel_dir / d)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -1492,8 +1564,13 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            rel_dir = dp.relative_to(hermes_root)
+            # Keep the full/update helper aligned with run_backup: avoid
+            # descending into regenerable cache trees, but retain durable
+            # browser profile state such as cookies and logins.
+            dirnames[:] = [
+                d for d in dirnames if not _should_exclude(rel_dir / d)
+            ]
 
             for fname in filenames:
                 fpath = dp / fname

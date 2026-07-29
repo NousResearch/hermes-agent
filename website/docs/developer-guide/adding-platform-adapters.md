@@ -541,9 +541,9 @@ Three touchpoints:
 
 ### 4. Gateway Runner (`gateway/run.py`)
 
-Five touchpoints:
+Six touchpoints:
 
-1. **`_create_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch
+1. **`_instantiate_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
 4. **Early env check `_any_allowlist` tuple** — Add `"NEWPLAT_ALLOWED_USERS"`

@@ -1237,21 +1237,21 @@ def _build_gateway_agent_history(
 
     # Strip interrupted tool-call tails so the LLM doesn't re-execute
     # tools that were killed mid-flight.
-    agent_history = _strip_interrupted_tool_tails(agent_history)
+    agent_history = strip_interrupted_tool_tails(agent_history)
 
     # Strip a dangling assistant(tool_calls) tail with no tool answers —
     # the signature of a SIGKILL mid-tool-call (e.g. the tool itself ran
     # `docker restart`/`kill` and took the gateway down before the result
     # was persisted). Without this the model re-issues the unanswered call
     # on resume and loops the restart forever (#49201).
-    agent_history = _strip_dangling_tool_call_tail(agent_history)
+    agent_history = strip_dangling_tool_call_tail(agent_history)
 
     # Strip stale dangerous-confirmation text in user messages (#59607).
     # A high-risk confirmation phrase (e.g. "confirm forced restart") that
     # is older than the expiry window must not be replayed to the model,
     # otherwise an unrelated follow-up message can be interpreted as a
     # fresh confirmation and trigger the destructive action a second time.
-    agent_history = _strip_stale_dangerous_confirmations(
+    agent_history = strip_stale_dangerous_confirmations(
         agent_history, now=time.time()
     )
 
@@ -1346,14 +1346,13 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
 
 # Replay-tail sanitization lives in agent/replay_cleanup.py so every resume
 # surface (this messaging gateway AND the TUI/WebUI gateway) shares one
-# implementation.  Re-exported under the historical private names so existing
-# call sites and tests keep working.
+# implementation.  Import the canonical names directly — the historical
+# private ``_``-prefixed aliases were retired once the last external
+# consumers (tests) moved to agent.replay_cleanup.
 from agent.replay_cleanup import (  # noqa: E402
-    is_interrupted_tool_result as _is_interrupted_tool_result,
-    strip_interrupted_tool_tails as _strip_interrupted_tool_tails,
-    strip_dangling_tool_call_tail as _strip_dangling_tool_call_tail,
-    strip_stale_dangerous_confirmations as _strip_stale_dangerous_confirmations,
-    is_dangerous_confirmation as _is_dangerous_confirmation,
+    strip_interrupted_tool_tails,
+    strip_dangling_tool_call_tail,
+    strip_stale_dangerous_confirmations,
 )
 
 
@@ -4769,7 +4768,7 @@ class TurnRunner:
                 # dangerous confirmation can't slip through this path
                 # either. Idempotent; messages without timestamps are
                 # untouched.
-                agent_history = _strip_stale_dangerous_confirmations(
+                agent_history = strip_stale_dangerous_confirmations(
                     _selected, now=time.time()
                 )
         

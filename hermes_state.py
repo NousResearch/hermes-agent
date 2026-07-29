@@ -4459,6 +4459,7 @@ class SessionDB:
         chat_id: Optional[str] = None,
         chat_type: Optional[str] = None,
         thread_id: Optional[str] = None,
+        profile_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer.
 
@@ -4493,9 +4494,17 @@ class SessionDB:
 
             # Conservative fallback for rows created by current code but with a
             # temporarily-missing exact key: still require the complete peer
-            # tuple so we never cross chats/threads/users.
+            # tuple so we never cross chats/threads/users.  In multiplex mode
+            # multiple profiles share one peer tuple (e.g. Telegram DM chat_id
+            # == user_id for every bot), so the owning profile must be filtered
+            # here too — otherwise a DM to bot A could adopt bot B's session.
             if chat_id is None or chat_type is None:
                 return None
+            fallback_params: list = [source, user_id, chat_id, chat_type, thread_id]
+            profile_clause = ""
+            if profile_name:
+                profile_clause = " AND COALESCE(profile_name, '') = COALESCE(?, '')"
+                fallback_params.append(profile_name)
             row = self._conn.execute(
                 """
                 SELECT * FROM sessions
@@ -4504,14 +4513,15 @@ class SessionDB:
                   AND COALESCE(chat_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_type, '') = COALESCE(?, '')
                   AND COALESCE(thread_id, '') = COALESCE(?, '')
+                  {profile_clause}
                   AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
                 ORDER BY started_at DESC
                 LIMIT 1
-                """,
-                (source, user_id, chat_id, chat_type, thread_id),
+                """.format(profile_clause=profile_clause),
+                fallback_params,
             ).fetchone()
         return dict(row) if row else None
 

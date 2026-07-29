@@ -1265,15 +1265,65 @@ class SessionStore:
             loader = getattr(_db, "load_gateway_routing_entries", None)
             if callable(loader):
                 try:
+                    _loaded_raw: Dict[str, SessionEntry] = {}
                     for key, entry_json in loader(scope=self._routing_scope()).items():
                         try:
                             entry_data = json.loads(entry_json)
                             if isinstance(entry_data, dict):
-                                self._entries[key] = SessionEntry.from_dict(entry_data)
+                                _loaded_raw[key] = SessionEntry.from_dict(entry_data)
                         except (ValueError, KeyError, TypeError) as e:
                             logger.warning(
                                 "Skipping invalid routing entry %r: %s", key, e
                             )
+
+                    # Profile-consistency guard for multiplex mode (#64934):
+                    # The peer-fallback recovery bug could map multiple profiles'
+                    # routing keys to the same session_id (e.g. all 9 Telegram
+                    # bots DM-ing one user → all resolved to the busiest agent's
+                    # session).  Detect this: if two or more keys with different
+                    # profiles point to the same session_id, keep only the one
+                    # whose origin.profile matches the session_key's profile
+                    # segment, and drop the rest so they get fresh sessions.
+                    _sid_to_keys: Dict[str, list] = {}
+                    for key, entry in _loaded_raw.items():
+                        _sid_to_keys.setdefault(entry.session_id, []).append(key)
+                    for _sid, _keys in _sid_to_keys.items():
+                        if len(_keys) <= 1:
+                            continue
+                        _profiles = set()
+                        for _k in _keys:
+                            _parts = _k.split(":")
+                            _p = _parts[1] if len(_parts) > 1 else None
+                            if _p and _p != "main":
+                                _profiles.add(_p)
+                        if len(_profiles) <= 1:
+                            continue  # same profile, different routes — fine
+                        logger.warning(
+                            "gateway.session: dropping %d cross-profile routing "
+                            "entries sharing session_id %s (profiles: %s) — "
+                            "keeping only the profile-matching entry",
+                            len(_keys) - 1, _sid, sorted(_profiles),
+                        )
+                        for _k in list(_keys):
+                            _entry = _loaded_raw[_k]
+                            _origin_profile = (
+                                _entry.origin.profile if _entry.origin else None
+                            )
+                            _key_parts = _k.split(":")
+                            _key_profile = (
+                                _key_parts[1]
+                                if len(_key_parts) > 1 and _key_parts[1] != "main"
+                                else None
+                            )
+                            if _key_profile and _origin_profile != _key_profile:
+                                logger.info(
+                                    "gateway.session: dropping routing entry %r "
+                                    "(origin.profile=%s ≠ key profile=%s) -> "
+                                    "session_id %s",
+                                    _k, _origin_profile, _key_profile, _sid,
+                                )
+                                del _loaded_raw[_k]
+                    self._entries.update(_loaded_raw)
                     db_had_entries = bool(self._entries)
                 except Exception as e:
                     logger.warning(
@@ -1550,10 +1600,16 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return True
+        """Prevent a multiplexed gateway from reviving another profile's row.
 
+        In multiplex mode multiple profiles share one state.db and one set of
+        peer tuples (e.g. Telegram DM chat_id == user_id for every bot in the
+        gateway). The session_key encodes the owning profile (``agent:<profile>:``),
+        so a recovered row whose key belongs to a different profile must never
+        be adopted — otherwise a DM to bot A can wake up bot B's session. The
+        same check protects non-multiplexed gateways from a stale row left by a
+        previous single-profile run.
+        """
         recovered_key = str(recovered.get("session_key") or "")
         if not recovered_key or recovered_key == requested_session_key:
             return True
@@ -1693,6 +1749,7 @@ class SessionStore:
                 chat_id=source.chat_id if allow_peer_fallback else None,
                 chat_type=source.chat_type if allow_peer_fallback else None,
                 thread_id=source.thread_id,
+                profile_name=self._profile_from_session_key(session_key),
             )
         except Exception as exc:
             logger.debug(

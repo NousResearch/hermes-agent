@@ -7319,6 +7319,77 @@ def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     ) is None
 
 
+def test_gateway_session_recovery_fallback_respects_profile_name(db):
+    """Fallback peer-tuple recovery must not cross profile boundaries.
+
+    In multiplex mode multiple profiles share one peer tuple (e.g. Telegram
+    DM chat_id == user_id for every bot).  The session_key encodes the owning
+    profile, so the fallback query must filter on profile_name when provided —
+    otherwise a DM to one bot can adopt another bot's session.
+    """
+    # Two sessions for the same Telegram DM peer, different profiles.
+    db.create_session(
+        "gw-alpha",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:alpha:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        profile_name="alpha",
+    )
+    db.append_message("gw-alpha", "user", "hello from alpha")
+    db.end_session("gw-alpha", "agent_close")
+
+    db.create_session(
+        "gw-beta",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:beta:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        profile_name="beta",
+    )
+    db.append_message("gw-beta", "user", "hello from beta")
+    db.end_session("gw-beta", "agent_close")
+
+    # Searching for alpha must return only alpha's row, never beta's.
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:alpha:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        profile_name="alpha",
+    )
+    assert recovered is not None
+    assert recovered["id"] == "gw-alpha"
+
+    # Searching for beta must return only beta's row.
+    recovered_beta = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:beta:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        profile_name="beta",
+    )
+    assert recovered_beta is not None
+    assert recovered_beta["id"] == "gw-beta"
+
+    # Without the profile filter, the most recent row wins (legacy behavior).
+    # Use a non-existent exact key to force the fallback query path.
+    recovered_any = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:gamma:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered_any is not None
+    # beta was created after alpha so it is the latest row.
+    assert recovered_any["id"] == "gw-beta"
+
+
 def test_gateway_metadata_display_name_origin_round_trip(db):
     """record_gateway_session_peer persists display_name/origin_json (#9006)."""
     db.create_session("gw-meta", "telegram", user_id="u1")

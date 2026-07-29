@@ -72,29 +72,27 @@ def update_marker_path() -> Path:
 def _pid_alive(pid: int) -> bool:
     """True when a process with ``pid`` currently exists.
 
-    ``os.kill(pid, 0)`` is POSIX-only in spirit but CPython implements the
-    signal-0 existence probe on Windows too. ``PermissionError`` means the pid
-    exists but is owned by another user — still alive for our purposes.
+    Delegates to :func:`gateway.status._pid_exists`, the project's existing
+    no-kill probe. Do NOT hand-roll this with ``os.kill(pid, 0)``: on Windows
+    that is not a no-op — CPython routes ``sig=0`` to
+    ``GenerateConsoleCtrlEvent``, which Ctrl+C's the target's whole console
+    process group (bpo-14484). A liveness check that killed the updater it was
+    asking about would be a spectacular way to fix a concurrency bug.
 
-    A value too large for the platform's ``pid_t`` raises ``OverflowError``
-    (not ``OSError``), so a corrupt marker would otherwise crash every update
-    that reads it. Treat any unusable pid as dead: the marker is garbage and
-    must not wedge the lock.
+    Any pid we cannot evaluate counts as dead: a corrupt marker must not wedge
+    the lock forever.
     """
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        from gateway.status import _pid_exists
+
+        return bool(_pid_exists(pid))
+    except Exception as exc:
+        # Import failure or an unusable pid (e.g. larger than the platform's
+        # pid_t). Treat the marker as stale rather than blocking updates.
+        logger.debug("Could not probe pid %s: %s", pid, exc)
         return False
-    except PermissionError:
-        return True
-    except (OverflowError, ValueError):
-        return False
-    except OSError:
-        # Unexpected errno: assume alive rather than stomping a live updater.
-        return True
-    return True
 
 
 @dataclass(frozen=True)

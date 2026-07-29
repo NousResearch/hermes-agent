@@ -1244,28 +1244,37 @@ export function KanbanBoardPage() {
   // override is dropped and auto takes over — so a drained lane collapses even
   // if it was manually expanded ages ago, while expanding an empty lane still
   // sticks for as long as it stays empty.
-  const laneCounts = useRef<null | Record<string, number>>(null)
+  //
+  // The phase is a string signature held in state, not a ref: React bails out
+  // when it's unchanged, so the common case (a poll where no lane's emptiness
+  // moved) costs no extra render, and nothing lags a render behind the value
+  // it mirrors.
+  const lanePhase = filtered
+    ? filtered.columns.map(col => `${col.name}:${col.tasks.length === 0 ? 'empty' : 'full'}`).join('|')
+    : null
+
+  const [prevLanePhase, setPrevLanePhase] = useState<null | string>(null)
 
   useEffect(() => {
-    if (!filtered) {
+    if (lanePhase === null || lanePhase === prevLanePhase) {
       return
     }
 
-    const counts = Object.fromEntries(filtered.columns.map(col => [col.name, col.tasks.length]))
-    const prev = laneCounts.current
-    laneCounts.current = counts
+    setPrevLanePhase(lanePhase)
 
-    if (!prev) {
+    if (prevLanePhase === null) {
       return
     }
 
+    const before = new Map(prevLanePhase.split('|').map(entry => entry.split(':') as [string, string]))
     const overrides = { ...$collapsedLanes.get() }
     let changed = false
 
-    for (const [name, count] of Object.entries(counts)) {
-      const before = prev[name]
+    for (const entry of lanePhase.split('|')) {
+      const [name, phase] = entry.split(':')
+      const was = before.get(name)
 
-      if (before !== undefined && (before === 0) !== (count === 0) && name in overrides) {
+      if (was !== undefined && was !== phase && name in overrides) {
         delete overrides[name]
         changed = true
       }
@@ -1274,7 +1283,7 @@ export function KanbanBoardPage() {
     if (changed) {
       $collapsedLanes.set(overrides)
     }
-  }, [filtered])
+  }, [lanePhase, prevLanePhase])
 
   const toggleLane = (name: string, auto: boolean) => {
     const overrides = { ...laneOverrides }

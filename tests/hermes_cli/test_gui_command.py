@@ -1054,6 +1054,237 @@ def test_force_adhoc_signing_respects_explicit_caller_flag(monkeypatch):
     assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "true"
 
 
+# --- macOS TCC-stable local signing (relaunch fixup) -----------------------
+
+
+def _write_info_plist(bundle: Path, identifier: str) -> None:
+    import plistlib
+
+    info = bundle / "Contents" / "Info.plist"
+    info.parent.mkdir(parents=True, exist_ok=True)
+    info.write_bytes(plistlib.dumps({"CFBundleIdentifier": identifier}))
+
+
+def _make_signable_app(desktop_dir: Path) -> Path:
+    """Build a fake packaged Hermes.app with the pieces the signer must find."""
+    ent_dir = desktop_dir / "electron"
+    ent_dir.mkdir(parents=True, exist_ok=True)
+    (ent_dir / "entitlements.mac.plist").write_text("<plist/>", encoding="utf-8")
+    (ent_dir / "entitlements.mac.inherit.plist").write_text("<plist/>", encoding="utf-8")
+
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    _write_info_plist(app, "com.nousresearch.hermes")
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    (app / "Contents" / "MacOS" / "Hermes").write_text("", encoding="utf-8")
+
+    helper = app / "Contents" / "Frameworks" / "Hermes Helper.app"
+    _write_info_plist(helper, "com.nousresearch.hermes.helper")
+
+    native_dir = app / "Contents" / "Resources" / "app.asar.unpacked" / "node_modules" / "pty"
+    native_dir.mkdir(parents=True)
+    (native_dir / "pty.node").write_text("", encoding="utf-8")
+    (app / "Contents" / "Frameworks" / "chrome_crashpad_handler").write_text("", encoding="utf-8")
+    return app
+
+
+def _collect_codesign_calls(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    return calls
+
+
+def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatch):
+    """The standalone Mach-O pass must actually find files inside the bundle.
+
+    Regression: an absolute-path parts check always matches the outer
+    Hermes.app component, silently skipping every .node/.dylib/crashpad
+    binary — codesign then rejects the outer signature (nested code unsigned).
+    """
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    calls = _collect_codesign_calls(monkeypatch)
+
+    assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is True
+
+    signed = [c[-1] for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
+    assert str(app / "Contents" / "Resources" / "app.asar.unpacked" / "node_modules" / "pty" / "pty.node") in signed
+    assert str(app / "Contents" / "Frameworks" / "chrome_crashpad_handler") in signed
+
+
+def test_desktop_macos_local_codesign_stable_requirements_and_entitlements(tmp_path, monkeypatch):
+    """Ad-hoc signing must not leave the bundle with a cdhash-only identity.
+
+    TCC pins grants to the Designated Requirement; cdhash-only DRs churn on
+    every rebuild. Each bundle gets an explicit identifier requirement, the
+    main app keeps its entitlements, helpers keep the inherit entitlements,
+    and the whole thing is strictly verified at the end.
+    """
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
+    ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    calls = _collect_codesign_calls(monkeypatch)
+
+    assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is True
+
+    sign_calls = [c for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
+    assert any(
+        '=designated => identifier "com.nousresearch.hermes"' in c and str(ent_main) in c
+        for c in sign_calls
+    )
+    assert any(
+        '=designated => identifier "com.nousresearch.hermes.helper"' in c and str(ent_inherit) in c
+        for c in sign_calls
+    )
+    assert calls[-1][:4] == ["/usr/bin/codesign", "--verify", "--deep", "--strict"]
+
+
+def test_desktop_macos_local_codesign_keychain_identity_skips_requirements(tmp_path, monkeypatch):
+    """A real cert anchors the DR by itself; no explicit requirement injected."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    calls = _collect_codesign_calls(monkeypatch)
+
+    assert cli_main._desktop_macos_local_codesign(
+        app, desktop_dir=desktop_dir, identity="Hermes Local Signing"
+    ) is True
+
+    sign_calls = [c for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
+    assert sign_calls, "expected sign invocations"
+    assert all(c[3] == "Hermes Local Signing" for c in sign_calls)
+    assert all("--requirements" not in c for c in sign_calls)
+
+
+def test_desktop_macos_local_codesign_false_without_codesign(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    monkeypatch.setattr(cli_main.shutil, "which", lambda name: None)
+    assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is False
+
+
+def test_desktop_macos_local_codesign_refuses_without_entitlements(tmp_path, monkeypatch):
+    """Hardened runtime without allow-jit bricks Electron — must raise, not sign.
+
+    Hardened-runtime restrictions are enforced even for ad-hoc signatures, so
+    signing with --options runtime while the entitlement plists are missing
+    would produce a bundle that crashes on launch. The fixup catches the raise
+    and falls back to the legacy plain ad-hoc sign instead.
+    """
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    (desktop_dir / "electron" / "entitlements.mac.plist").unlink()
+    calls = _collect_codesign_calls(monkeypatch)
+
+    with pytest.raises(FileNotFoundError):
+        cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir)
+    assert calls == []  # nothing was signed with a runtime flag sans entitlements
+
+
+def test_relaunchable_fixup_noop_when_publisher_signing_configured(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setenv("CSC_LINK", "publisher-cert")
+
+    with patch("hermes_cli.main.subprocess.run") as run:
+        assert cli_main._desktop_macos_relaunchable_fixup(root / "apps" / "desktop") is True
+    run.assert_not_called()
+
+
+def test_relaunchable_fixup_explicit_publisher_decision_beats_environment(tmp_path, monkeypatch):
+    """A caller that already decided publisher signing wins over later env state."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.setenv("APPLE_SIGNING_IDENTITY", "loaded-later-from-dotenv")
+
+    with patch("hermes_cli.main.subprocess.run") as run:
+        assert cli_main._desktop_macos_relaunchable_fixup(
+            root / "apps" / "desktop", publisher_signing_configured=True
+        ) is True
+    run.assert_not_called()
+
+
+def test_relaunchable_fixup_never_clobbers_valid_developer_id_signature(tmp_path, monkeypatch):
+    """A bundle with an intact Team ID signature must be left untouched."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:2] == ["/usr/bin/codesign", "-dv"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="TeamIdentifier=T2F6S8MF7C\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
+    assert all(c[:3] != ["/usr/bin/codesign", "--force", "--sign"] for c in calls)
+    assert all(c[0] != "xattr" for c in calls)
+
+
+def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monkeypatch, capsys):
+    """A failing stable sign must still leave a launchable (deep ad-hoc) bundle."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
+    app = exe.parents[2]
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(
+        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_macos_has_valid_real_signature", lambda a: False)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_signing_identity", lambda: None)
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["codesign"])
+
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", boom)
+
+    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is False
+    assert ["xattr", "-cr", str(app)] in calls
+    assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
+
+
+def test_desktop_macos_local_signing_identity_reads_config(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"desktop": {"macos_signing_identity": "  Hermes Local Signing  "}},
+    ):
+        assert cli_main._desktop_macos_local_signing_identity() == "Hermes Local Signing"
+    with patch("hermes_cli.config.load_config", return_value={"desktop": {}}):
+        assert cli_main._desktop_macos_local_signing_identity() is None
+
+
 # --- desktop.* launch options (config.yaml) -------------------------------
 
 

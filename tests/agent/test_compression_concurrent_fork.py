@@ -340,10 +340,17 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     )
 
 
-def test_durable_message_committed_before_lease_aborts_stale_snapshot(
+def test_durable_message_committed_before_lease_is_adopted(
     tmp_path: Path,
 ) -> None:
-    """A durable row absent from the caller snapshot must survive in the parent."""
+    """A durable row absent from the caller snapshot must still be compressed.
+
+    Previously this path aborted and returned the stale snapshot unchanged,
+    which permanently wedged busy sessions: every compress attempt saw the
+    DB ahead of the in-memory list, logged "changed before lease
+    acquisition", and never called the compressor. Adopting the durable
+    transcript keeps the late-committed turn and lets compression proceed.
+    """
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "PRE_LEASE_DURABLE_RACE"
     db.create_session(parent_sid, source="webui")
@@ -359,15 +366,20 @@ def test_durable_message_committed_before_lease_aborts_stale_snapshot(
         stale_snapshot, "sys", approx_tokens=120_000
     )
 
-    assert returned is stale_snapshot
-    assert agent.session_id == parent_sid
-    assert db.find_live_compression_child(parent_sid) is None
-    assert [m["content"] for m in db.get_messages_as_conversation(parent_sid)] == [
+    agent.context_compressor.compress.assert_called_once()
+    compressed_arg = agent.context_compressor.compress.call_args.args[0]
+    assert [m["content"] for m in compressed_arg] == [
         "old durable",
         "late committed before lease",
     ]
-    agent.context_compressor.compress.assert_not_called()
-
+    # Must not echo the stale snapshot — compression proceeded on the
+    # adopted durable transcript (rotation publishes a child session).
+    assert returned is not stale_snapshot
+    assert returned[0]["content"] == "[CONTEXT COMPACTION] summary"
+    assert agent.session_id != parent_sid
+    child_id = _live_child_id(db, parent_sid)
+    assert child_id is not None
+    assert child_id == agent.session_id
 
 def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     """The loser of the lock race must return its input messages verbatim.

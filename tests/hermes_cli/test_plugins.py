@@ -189,6 +189,32 @@ class TestPluginDiscovery:
         assert result.changed is True
         assert result.trace == [{"source": "same-payload"}]
 
+    def test_tool_request_middleware_hides_internal_skip_relay_flag(
+        self,
+        monkeypatch,
+    ):
+        observed = []
+
+        def middleware(**kwargs):
+            observed.append(kwargs)
+            return {"args": kwargs["args"]}
+
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        apply_tool_request_middleware(
+            "read_file",
+            {"path": "README.md"},
+            session_id="",
+            skip_relay=True,
+        )
+
+        assert len(observed) == 1
+        assert "skip_relay" not in observed[0]
+
     def test_execution_middleware_post_next_call_error_does_not_retry(self, monkeypatch):
         calls = []
 

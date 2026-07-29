@@ -100,6 +100,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
+  // ⌘⇧S — "s" for status bar. VS Code ships
+  // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
+  // gap in their View family) and Hermes has no chord dispatcher, so this
+  // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
+  { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
@@ -221,5 +226,10 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
   { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
   // Fixed, context-local shortcuts surfaced for discoverability.
-  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] }
+  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
+  // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
+  // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
+  // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.
+  { id: 'view.terminalCopy', category: 'view', keys: IS_MAC ? ['mod+c'] : ['mod+shift+c'] },
+  { id: 'view.terminalPaste', category: 'view', keys: IS_MAC ? ['mod+v'] : ['mod+shift+v'] }
 ]

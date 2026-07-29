@@ -123,6 +123,27 @@ class TestValidateAudioFile:
 
 
 # ---------------------------------------------------------------------------
+# Config resolution
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSttConfig:
+
+    def test_merges_default_local_initial_prompt(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "stt:\n  local:\n    model: small\n",
+            encoding="utf-8",
+        )
+
+        from tools.transcription_tools import _load_stt_config
+        local_config = _load_stt_config()["local"]
+
+        assert local_config["model"] == "small"
+        assert local_config["initial_prompt"] == ""
+
+
+# ---------------------------------------------------------------------------
 # Local transcription
 # ---------------------------------------------------------------------------
 
@@ -151,6 +172,79 @@ class TestTranscribeLocal:
 
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
+
+    def test_passes_initial_prompt_when_configured(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_info = MagicMock(language="zh", duration=2.5)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([], mock_info)
+
+        fake_fw = _fake_faster_whisper_module(mock_model)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": {"initial_prompt": "以下是普通话的句子，使用简体中文。"},
+             }), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
+             patch("tools.transcription_tools._local_model", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "base")
+
+        assert result["success"] is True
+        assert mock_model.transcribe.call_args.kwargs["initial_prompt"] == (
+            "以下是普通话的句子，使用简体中文。"
+        )
+
+    def test_omits_blank_initial_prompt(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_info = MagicMock(language="en", duration=2.5)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([], mock_info)
+
+        fake_fw = _fake_faster_whisper_module(mock_model)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": {"initial_prompt": "   "},
+             }), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
+             patch("tools.transcription_tools._local_model", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "base")
+
+        assert result["success"] is True
+        assert "initial_prompt" not in mock_model.transcribe.call_args.kwargs
+
+    def test_accepts_null_local_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_info = MagicMock(language="en", duration=2.5)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([], mock_info)
+
+        fake_fw = _fake_faster_whisper_module(mock_model)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": None,
+             }), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
+             patch("tools.transcription_tools._local_model", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "base")
+
+        assert result["success"] is True
+        # Contract: null `stt.local:` config must not crash, and must not
+        # force a language or initial_prompt. Baseline kwargs (beam_size,
+        # VAD hardening) are pinned by test_stt_silence_hallucinations —
+        # don't exact-match the dict here (change-detector).
+        kwargs = mock_model.transcribe.call_args.kwargs
+        assert kwargs["beam_size"] == 5
+        assert "language" not in kwargs
+        assert "initial_prompt" not in kwargs
 
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
@@ -189,6 +283,44 @@ class TestTranscribeOpenAI:
 
         assert result["success"] is True
         assert result["transcript"] == "Hello from OpenAI"
+
+    def test_configured_language_is_forwarded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "Привіт"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "openai": {"language": "uk"},
+             }), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(str(audio_file), "whisper-1")
+
+        assert result["success"] is True
+        assert mock_client.audio.transcriptions.create.call_args.kwargs["language"] == "uk"
+
+    def test_unset_language_omits_argument(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "Hello"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "openai": {"language": ""},
+             }), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(str(audio_file), "whisper-1")
+
+        assert result["success"] is True
+        assert "language" not in mock_client.audio.transcriptions.create.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +385,44 @@ class TestTranscribeAudio:
         result = transcribe_audio("/nonexistent/file.ogg")
         assert result["success"] is False
         assert "not found" in result["error"]
+
+
+class TestLocalFallback:
+
+    def test_uses_installed_faster_whisper_without_changing_provider(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "openai", "local": {"model": "small"}},
+        ), patch(
+            "tools.transcription_tools._HAS_FASTER_WHISPER",
+            True,
+        ), patch(
+            "tools.transcription_tools._transcribe_local",
+            return_value={"success": True, "transcript": "local result"},
+        ) as mock_local:
+            from tools.transcription_tools import transcribe_audio_local_fallback
+
+            result = transcribe_audio_local_fallback(str(audio_file))
+
+        assert result["transcript"] == "local result"
+        mock_local.assert_called_once_with(str(audio_file), "small")
+
+    def test_does_not_install_when_no_local_backend_exists(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), patch(
+            "tools.transcription_tools._has_local_command", return_value=False
+        ):
+            from tools.transcription_tools import transcribe_audio_local_fallback
+
+            result = transcribe_audio_local_fallback(str(audio_file))
+
+        assert result["success"] is False
+        assert "installed local STT" in result["error"]
 
 
 # ---------------------------------------------------------------------------

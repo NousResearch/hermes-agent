@@ -35,6 +35,8 @@ def test_cjk_tail_does_not_expand_to_english_char_budget():
             summary_target_ratio=0.2,
             quiet_mode=True,
         )
+        # Resolve while the mock is active (lazy init, #32221).
+        _ = compressor.context_length
 
     messages = [
         {"role": "user", "content": "head 1"},

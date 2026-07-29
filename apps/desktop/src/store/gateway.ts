@@ -2,6 +2,7 @@ import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@h
 import { atom } from 'nanostores'
 
 import { HermesGateway } from '@/hermes'
+import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
@@ -136,6 +137,12 @@ export function activeGateway(): HermesGateway | null {
 // composer reflect the active profile's socket without a background reconnect
 // flipping the foreground enabled/disabled state.
 function reportGatewayState(profile: string, state: ConnectionState): void {
+  // Any socket opening replays parked prompts; hold OS notifications so a
+  // launch/reconnect doesn't alert about state that already existed.
+  if (state === 'open') {
+    markNativeNotifyBaseline()
+  }
+
   if (normKey(profile) === g.activeKey) {
     setGatewayState(state)
   }

@@ -4683,8 +4683,11 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
             cfg_path = default_root / "config.yaml"
             if not cfg_path.exists():
                 return
-            with open(cfg_path, encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f) or {}
+            # Raw read of the DEFAULT root's config (not the active profile
+            # home, so load_config() is the wrong owner here); whole probe is
+            # fail-open via the enclosing except.
+            from hermes_cli.config import read_user_config_raw
+            cfg = read_user_config_raw(cfg_path)
             multiplex = bool(
                 cfg.get("multiplex_profiles")
                 or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")

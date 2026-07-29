@@ -1,21 +1,23 @@
 import { closeActiveTerminal } from '@/app/right-sidebar/terminal/terminals'
-import { closeWorkspaceTab } from '@/components/pane-shell/tree/store'
+import { closeFocusedSessionTab } from '@/components/pane-shell/tree/store'
 import { isFocusWithin } from '@/lib/keybinds/combo'
-import { $artifactTabs } from '@/store/artifacts'
-import { $filePreviewTabs, $previewTarget, closeActiveRightRailTab } from '@/store/preview'
+import { $previewTabs, closeActiveRightRailTab } from '@/store/preview'
 import { closeSessionTile, nextSessionTileForWorkspace } from '@/store/session-states'
 
 /**
  * ⌘W — close the tab of the context you're in, by precedence:
  *   1. a focused terminal → its active terminal tab,
  *   2. right-rail tabs (live preview and/or file peeks),
- *   3. the MAIN zone → its active tab (a session tile stacked into the workspace).
- *   4. the MAIN (workspace) tab itself, when session tabs are stacked with it:
+ *   3. the FOCUSED chat zone → its active tab (a session tile stacked into it).
+ *   4. the workspace tab itself, when session tabs are stacked with it:
  *      the workspace can't close, so ⌘W shifts the NEXT session tab into main
  *      (loads it as the primary + drops its now-redundant tile).
  * Returns false when nothing closes, so ⌘W is a no-op — it never closes the
  * window (a bare workspace stays put). Shared by the keyboard path (Win/Linux)
  * and the macOS menu-accelerator IPC.
+ *
+ * Steps 3-4 follow the same focused zone ⌘1…⌘9 indexes, so a second chat zone
+ * with its own tab strip closes ITS tab instead of main's.
  *
  * `loadSessionIntoWorkspace` carries the app's route-based "load this session
  * into main" (the two call sites have router access); omitting it disables the
@@ -28,18 +30,16 @@ export function closeActiveTab(loadSessionIntoWorkspace?: (storedSessionId: stri
     return true
   }
 
-  // Prefer tab *presence* over the derived active file target. After the live
-  // preview is cleared, `$rightRailActiveTabId` can stay on `preview` while
-  // file tabs remain (the rail UI falls back to tabs[0]). Gating only on
-  // `$filePreviewTarget` made ⌘W fall through to closeWorkspaceTab() and look
-  // broken with a file tab still on screen.
-  if ($previewTarget.get() || $filePreviewTabs.get().length > 0 || $artifactTabs.get().length > 0) {
+  // Gate on tab *presence*, not on the selection: a stale `$rightRailActiveTabId`
+  // would otherwise make ⌘W fall through to closeFocusedSessionTab() and look
+  // broken with a tab still on screen. The store resolves which tab that is.
+  if ($previewTabs.get().length > 0) {
     return closeActiveRightRailTab()
   }
 
-  // A closeable main-zone tab (a session tile that's the active tab) closes
-  // outright; the uncloseable workspace tab returns false and falls through.
-  if (closeWorkspaceTab()) {
+  // A closeable tab in the focused chat zone (a session tile that's the active
+  // tab) closes outright; the uncloseable workspace tab falls through.
+  if (closeFocusedSessionTab()) {
     return true
   }
 

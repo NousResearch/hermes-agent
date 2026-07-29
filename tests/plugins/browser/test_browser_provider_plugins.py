@@ -115,9 +115,11 @@ class TestBundledPluginsRegister:
         assert isinstance(schema, dict)
         assert "name" in schema
         assert "env_vars" in schema
-        # Every cloud-browser plugin needs the agent-browser post-setup hook
-        # so the picker auto-installs the CLI on selection.
-        assert schema.get("post_setup") == "agent_browser"
+        # Every cloud-browser plugin needs the cloud-scoped post-setup hook
+        # ("browserbase" = agent-browser CLI only, no local Chromium install)
+        # so the picker auto-installs the CLI on selection without gating
+        # readiness on a local Chromium build the cloud never uses.
+        assert schema.get("post_setup") == "browserbase"
 
     @pytest.mark.parametrize(
         "plugin_name",
@@ -359,13 +361,14 @@ class TestPickerIntegration:
         assert names == ["browser-use", "browserbase", "firecrawl"]
 
     def test_picker_rows_carry_post_setup_hook(self) -> None:
-        """Every browser plugin row has post_setup='agent_browser' so
-        selecting it triggers the agent-browser CLI install."""
+        """Every browser plugin row has the cloud-scoped post_setup hook
+        ('browserbase': agent-browser CLI only) so selecting it installs the
+        CLI without requiring a local Chromium the cloud never uses."""
         _ensure_plugins_loaded()
         from hermes_cli.tools_config import _plugin_browser_providers
 
         for row in _plugin_browser_providers():
-            assert row.get("post_setup") == "agent_browser", (
+            assert row.get("post_setup") == "browserbase", (
                 f"plugin row {row['browser_provider']!r} missing post_setup hook"
             )
 

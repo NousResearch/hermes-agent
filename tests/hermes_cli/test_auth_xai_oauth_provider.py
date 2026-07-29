@@ -14,6 +14,7 @@ from hermes_cli.auth import (
     XAI_OAUTH_CLIENT_ID,
     XAI_OAUTH_SCOPE,
     _read_xai_oauth_tokens,
+    _refresh_xai_oauth_tokens,
     _save_xai_oauth_tokens,
     _xai_access_token_is_expiring,
     _xai_oauth_poll_device_token,
@@ -279,6 +280,109 @@ def test_save_and_read_xai_oauth_tokens_roundtrip(tmp_path, monkeypatch):
     assert data["tokens"]["refresh_token"] == "rt-1"
     assert data["redirect_uri"] == "http://127.0.0.1:56121/callback"
     assert data["discovery"]["token_endpoint"] == "https://auth.x.ai/oauth2/token"
+
+
+def test_save_xai_oauth_tokens_set_active_false_preserves_active_provider(
+    tmp_path, monkeypatch
+):
+    """Side-tool credential saves must not flip auth.json active_provider."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "openrouter",
+                "providers": {},
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_xai_oauth_tokens(
+        {
+            "access_token": "side-tool-at",
+            "refresh_token": "side-tool-rt",
+            "id_token": "",
+            "token_type": "Bearer",
+        },
+        discovery={"token_endpoint": "https://auth.x.ai/oauth2/token"},
+        set_active=False,
+    )
+
+    raw = json.loads(auth_path.read_text())
+    assert raw["active_provider"] == "openrouter"
+    assert raw["providers"]["xai-oauth"]["tokens"]["access_token"] == "side-tool-at"
+
+
+def test_save_xai_oauth_tokens_default_sets_active_provider(tmp_path, monkeypatch):
+    """Intentional login default must promote xai-oauth to active_provider."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "openrouter",
+                "providers": {},
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_xai_oauth_tokens(
+        {
+            "access_token": "login-at",
+            "refresh_token": "login-rt",
+            "id_token": "",
+            "token_type": "Bearer",
+        },
+        discovery={"token_endpoint": "https://auth.x.ai/oauth2/token"},
+    )
+
+    raw = json.loads(auth_path.read_text())
+    assert raw["active_provider"] == "xai-oauth"
+    assert raw["providers"]["xai-oauth"]["tokens"]["access_token"] == "login-at"
+
+
+def test_refresh_xai_oauth_tokens_preserves_active_provider(tmp_path, monkeypatch):
+    """Token refresh must not flip active_provider away from the chat provider."""
+    hermes_home = tmp_path / "hermes"
+    near = _jwt_with_exp(int(time.time()) + 30)
+    _setup_hermes_auth(hermes_home, access_token=near, refresh_token="rt-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    auth_path = hermes_home / "auth.json"
+    raw = json.loads(auth_path.read_text())
+    raw["active_provider"] = "openrouter"
+    auth_path.write_text(json.dumps(raw))
+
+    new_access = _jwt_with_exp(int(time.time()) + 7200)
+
+    def _fake_pure(access_token, refresh_token, **kwargs):
+        return {
+            "access_token": new_access,
+            "refresh_token": "rt-new",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "last_refresh": "2026-07-25T12:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_pure)
+
+    tokens = _read_xai_oauth_tokens()["tokens"]
+    _refresh_xai_oauth_tokens(
+        tokens,
+        token_endpoint="https://auth.x.ai/oauth2/token",
+        timeout_seconds=5.0,
+    )
+
+    after = json.loads(auth_path.read_text())
+    assert after["active_provider"] == "openrouter"
+    assert after["providers"]["xai-oauth"]["tokens"]["access_token"] == new_access
 
 
 def test_read_xai_oauth_tokens_missing(tmp_path, monkeypatch):

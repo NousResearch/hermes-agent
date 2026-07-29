@@ -177,3 +177,35 @@ async def test_internal_events_bypass_hook(monkeypatch):
     # Even though the hook would say skip, internal events bypass it.
     await runner._handle_message(event)
     assert called["count"] == 0
+
+@pytest.mark.asyncio
+async def test_hook_fires_without_session_store_attribute(monkeypatch):
+    """A runner missing session_store still delivers the event to plugins.
+
+    Regression: the hook kwargs read ``self.session_store`` directly, so a
+    partially-initialized runner raised AttributeError inside the dispatch
+    try-block — the hook never fired, and every message logged
+    "pre_gateway_dispatch invocation failed: 'GatewayRunner' object has no
+    attribute 'session_store'". Plugins must receive the event (with
+    session_store=None) instead.
+    """
+    _clear_auth_env(monkeypatch)
+
+    seen = {}
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            seen["session_store"] = kwargs.get("session_store", "MISSING")
+            return [{"action": "skip", "reason": "plugin-handled"}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    del runner.session_store
+
+    result = await runner._handle_message(_make_event("hi"))
+    assert result is None
+    # Hook actually fired (skip short-circuited before auth) with a None store.
+    assert seen == {"session_store": None}
+    adapter.send.assert_not_awaited()

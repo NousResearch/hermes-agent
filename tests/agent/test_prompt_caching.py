@@ -3,8 +3,10 @@
 
 from agent.prompt_caching import (
     _apply_cache_marker,
+    _build_marker,
     _can_carry_marker,
     apply_anthropic_cache_control,
+    strip_anthropic_cache_control,
 )
 
 
@@ -130,6 +132,90 @@ class TestApplyAnthropicCacheControl:
         assert result[0] is not msgs[0]
         # Original should be unmodified
         assert "cache_control" not in msgs[0].get("content", "")
+
+    def test_caller_list_not_mutated_and_unmarked_msgs_shared(self):
+        """Guard the shallow-copy change (was full deepcopy).
+
+        The optimization returns ``list(api_messages)`` and deep-copies ONLY
+        the <=4 messages that receive a cache_control marker. This test pins
+        two invariants that a "deep-copies too little / too much" regression
+        would break (prompt caching is sacred — the caller's history must
+        never be mutated):
+
+        1. The caller's original list and every message dict in it is left
+           byte-identical after the call (no in-place marker leaks upstream).
+        2. Un-marked messages in the middle are returned as the SAME object
+           (shared reference) — proving we did not needlessly deep-copy the
+           whole history — while marked messages are fresh copies.
+        """
+        import copy
+
+        msgs = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "middle-unmarked-1"},
+            {"role": "assistant", "content": "middle-unmarked-2"},
+            {"role": "user", "content": "m3"},
+            {"role": "assistant", "content": "m4"},
+            {"role": "user", "content": "m5"},
+        ]
+        before = copy.deepcopy(msgs)
+        result = apply_anthropic_cache_control(msgs, cache_ttl="5m")
+
+        # (1) caller list + every element unchanged after the call.
+        assert msgs == before, "apply_anthropic_cache_control mutated the caller's list"
+
+        # System (0) + last 3 non-system (3,4,5) get markers => index 1 and 2
+        # are un-marked and must be the SAME objects (shallow, not deep-copied).
+        assert result[1] is msgs[1]
+        assert result[2] is msgs[2]
+        # Marked messages must be fresh copies (never the caller's objects).
+        assert result[0] is not msgs[0]
+        assert result[-1] is not msgs[-1]
+
+        # Mutating a returned marked message must not bleed into the caller.
+        result[0]["content"] = "TAMPERED"
+        assert msgs[0]["content"] == "System"
+
+    def test_output_equivalent_to_full_deepcopy_impl(self):
+        """Byte-equivalence: shallow-copy output structurally matches what a
+        naive full-deepcopy implementation would produce (same breakpoints,
+        same TTL, same positions) for both native_anthropic modes."""
+        import copy
+
+        def _reference_full_deepcopy(api_messages, cache_ttl, native_anthropic):
+            # Mirror of the pre-optimization implementation: deepcopy the whole
+            # list, then apply markers to system + last (4 - used) non-system.
+            messages = copy.deepcopy(api_messages)
+            if not messages:
+                return messages
+            marker = _build_marker(cache_ttl)
+            used = 0
+            if messages[0].get("role") == "system":
+                _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+                used += 1
+            remaining = 4 - used
+            non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
+            for idx in non_sys[-remaining:]:
+                _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
+            return messages
+
+        base = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+        ]
+        for native in (True, False):
+            for ttl in ("5m", "1h"):
+                got = apply_anthropic_cache_control(
+                    copy.deepcopy(base), cache_ttl=ttl, native_anthropic=native
+                )
+                want = _reference_full_deepcopy(
+                    copy.deepcopy(base), cache_ttl=ttl, native_anthropic=native
+                )
+                assert got == want, f"structural mismatch native={native} ttl={ttl}"
 
     def test_system_message_gets_marker(self):
         msgs = [
@@ -317,7 +403,10 @@ class TestNormalizationOrdering:
         from agent import conversation_loop
 
         src = inspect.getsource(conversation_loop)
-        mark = src.index("apply_anthropic_cache_control(\n")
+        # Anchor on the call-block decoration (before the retry loop), not the
+        # mid-failover redecoration helper which also calls apply_*.
+        anchor = src.index("Runs LAST, after every message mutation above")
+        mark = src.index("apply_anthropic_cache_control(\n", anchor)
         for earlier in (
             'am["content"].strip()',              # whitespace normalization
             "_sanitize_api_messages(api_messages)",       # orphan sweep
@@ -327,3 +416,119 @@ class TestNormalizationOrdering:
             assert src.index(earlier) < mark, (
                 f"{earlier!r} must run before cache breakpoints are injected"
             )
+
+
+class TestStripAnthropicCacheControl:
+    """strip must undo decoration so failover can re-render for a new policy."""
+
+    def test_removes_top_level_and_part_markers(self):
+        messages = apply_anthropic_cache_control(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "yo"},
+            ],
+            native_anthropic=True,
+        )
+        assert any(
+            "cache_control" in (m if isinstance(m.get("content"), str) else {})
+            or (
+                isinstance(m.get("content"), list)
+                and any(
+                    isinstance(p, dict) and "cache_control" in p for p in m["content"]
+                )
+            )
+            or "cache_control" in m
+            for m in messages
+        )
+        strip_anthropic_cache_control(messages)
+        for msg in messages:
+            assert "cache_control" not in msg
+            content = msg.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        assert "cache_control" not in part
+
+    def test_flattens_system_static_volatile_back_to_string(self):
+        static = "You are helpful.\n"
+        full = static + "Model: claude\nProvider: anthropic"
+        messages = apply_anthropic_cache_control(
+            [{"role": "system", "content": full}, {"role": "user", "content": "hi"}],
+            native_anthropic=True,
+            static_system_prefix=static,
+        )
+        assert isinstance(messages[0]["content"], list)
+        strip_anthropic_cache_control(messages)
+        assert messages[0]["content"] == full
+
+    def test_preserves_multimodal_part_structure(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "see", "cache_control": {"type": "ephemeral"}},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}},
+                ],
+            }
+        ]
+        strip_anthropic_cache_control(messages)
+        content = messages[0]["content"]
+        assert isinstance(content, list) and len(content) == 2
+        assert content[0] == {"type": "text", "text": "see"}
+        assert content[1]["type"] == "image_url"
+
+    def test_preserves_organic_multipart_text_lists(self):
+        # Multi-part pure-text lists NOT produced by decoration (merged user
+        # turns, imported transcripts) must keep their structure — a ""-join
+        # would fuse "Hello"+"world" into "Helloworld" and change wire bytes
+        # on the common no-failover path (redecoration runs every attempt).
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                    {"type": "text", "text": "world"},
+                ],
+            }
+        ]
+        strip_anthropic_cache_control(messages)
+        content = messages[0]["content"]
+        assert isinstance(content, list) and len(content) == 2
+        assert [p["text"] for p in content] == ["Hello", "world"]
+
+    def test_preserves_extra_part_keys_like_citations(self):
+        # anthropic_adapter deliberately whitelists citations on text blocks;
+        # strip must not destroy them by flattening the part away.
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "answer",
+                        "citations": [{"src": "doc"}],
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        ]
+        strip_anthropic_cache_control(messages)
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["citations"] == [{"src": "doc"}]
+        assert "cache_control" not in content[0]
+
+    def test_marker_removal_is_copy_on_write_for_part_dicts(self):
+        # The per-call api_messages copy is SHALLOW (msg.copy()) — content
+        # part dicts alias the persistent history. Stripping a marker must
+        # never rewrite the stored transcript's part dicts in place.
+        shared_part = {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+        history = [{"role": "user", "content": [shared_part]}]
+        api_messages = [m.copy() for m in history]
+        strip_anthropic_cache_control(api_messages)
+        assert "cache_control" in shared_part  # history untouched
+        api_content = api_messages[0]["content"]
+        if isinstance(api_content, list):
+            assert all("cache_control" not in p for p in api_content)
+

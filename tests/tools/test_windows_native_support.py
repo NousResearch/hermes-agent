@@ -666,15 +666,21 @@ class TestTuiGatewayEntrySignalGuards:
     def test_source_guards_each_signal_installation(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "tui_gateway" / "entry.py").read_text(encoding="utf-8")
-        # Every signal.signal(...) at module scope must be preceded by a
-        # hasattr check.  We look at the text: no bare "signal.signal("
-        # call should appear outside a function body without a guard.
-        # Simpler heuristic: all SIGPIPE / SIGHUP references outside the
-        # dict-building loop must be wrapped in hasattr.
-        assert 'hasattr(signal, "SIGPIPE")' in source
-        assert 'hasattr(signal, "SIGHUP")' in source
-        assert 'hasattr(signal, "SIGTERM")' in source
-        assert 'hasattr(signal, "SIGINT")' in source
+        # Every signal installation at module scope must be guarded against
+        # missing signals (Windows: SIGPIPE/SIGHUP absent).  Originally this
+        # was ``hasattr(signal, "SIGPIPE")`` inline; PR #72677 refactored to
+        # ``_install_signal("SIGPIPE", ...)`` which does the same guard via
+        # ``getattr(signal, signame, None)`` internally.  Either form is
+        # acceptable — what matters is no bare ``signal.signal(SIGPIPE)``
+        # at module scope without a guard.
+        for sig_name in ("SIGPIPE", "SIGHUP", "SIGTERM", "SIGINT"):
+            assert (
+                f'hasattr(signal, "{sig_name}")' in source
+                or f'_install_signal("{sig_name}"' in source
+            ), (
+                f"signal {sig_name} must be installed via a guarded path "
+                f"(hasattr or _install_signal), not bare signal.signal()"
+            )
 
     def test_module_imports_cleanly(self):
         """Importing the module must not raise — verifies the guards work."""

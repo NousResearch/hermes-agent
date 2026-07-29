@@ -613,13 +613,18 @@ def test_nous_inference_auth_logs_do_not_include_secret_values(
 
     monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
 
-    caplog.set_level(logging.INFO, logger="hermes_cli.auth")
+    caplog.set_level(logging.DEBUG, logger="hermes_cli.auth")
     auth_mod.resolve_nous_runtime_credentials(
         force_refresh=True,
     )
 
     logged = caplog.text
     assert "using NAS invoke JWT" in logged
+    assert not any(
+        record.levelno >= logging.INFO
+        and "using NAS invoke JWT" in record.getMessage()
+        for record in caplog.records
+    )
     assert token not in logged
     assert refreshed_token not in logged
     assert refresh_token not in logged

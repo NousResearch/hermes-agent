@@ -28,10 +28,10 @@ interface ModelPickerDialogProps {
   onSelect: (selection: { provider: string; model: string }) => void
   profile?: string
   /**
-   * Optional class to apply to DialogContent. Use to override z-index when
-   * stacking the picker on top of another fixed overlay (e.g. the desktop
-   * onboarding overlay, which sits at z-1300; the default Dialog z-130 ends
-   * up rendering underneath and blocks pointer events).
+   * Optional class for DialogContent. Use it to lift the picker onto a higher
+   * rung of the overlay ladder when it opens over another fixed overlay (the
+   * desktop onboarding overlay, say) — on the default modal rung it renders
+   * underneath and blocks pointer events.
    */
   contentClassName?: string
 }
@@ -85,7 +85,7 @@ export function ModelPickerDialog({
   // Open the full onboarding provider selector to add/switch a provider.
   // Reuses the entire onboarding flow (OAuth rows, API-key form, device-code,
   // model-confirm) instead of duplicating provider UI here. Closes the picker
-  // so the onboarding overlay (z-1300) isn't rendered underneath it.
+  // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
     startManualOnboarding()
     onOpenChange(false)

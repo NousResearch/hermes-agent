@@ -21,6 +21,16 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // occluded windows. A streaming chat app must keep painting in the
 // background, so every chat window opts out. The preload path is injected
 // because it depends on the Electron entry's __dirname.
+//
+// `autoplayPolicy: 'no-user-gesture-required'` is load-bearing for voice:
+// Chromium's default autoplay policy suspends audio (HTMLAudioElement.play()
+// and AudioContext) until the user has interacted with the frame. A voice
+// conversation started by the "Hey Hermes" wake word has NO preceding click,
+// so the FIRST reply's audio playback was rejected (NotAllowedError, silently
+// swallowed) and only turn 2+ spoke — the very "first message in a new voice
+// session is silent" bug. Manual voice-start worked only because the button
+// click counted as the gesture. This is a native app the user deliberately
+// launched; there is no drive-by-autoplay concern to protect against.
 function chatWindowWebPreferences(preloadPath: string) {
   return {
     preload: preloadPath,
@@ -29,7 +39,8 @@ function chatWindowWebPreferences(preloadPath: string) {
     sandbox: true,
     nodeIntegration: false,
     devTools: true,
-    backgroundThrottling: false
+    backgroundThrottling: false,
+    autoplayPolicy: 'no-user-gesture-required' as const
   }
 }
 

@@ -1,6 +1,7 @@
 """Tests for the central tool registry."""
 
 import json
+import logging
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -111,6 +112,57 @@ class TestRegisterAndDispatch:
         assert result["tool"] == name
         assert result["result_type"] == "NoneType"
 
+
+    def test_cross_mcp_toolsets_do_not_overwrite_atomically(self, caplog):
+        """Parallel MCP registrations with one name leave exactly one owner."""
+        reg = ToolRegistry()
+        barrier = threading.Barrier(3)
+        errors = []
+
+        def _register(toolset, owner):
+            try:
+                barrier.wait(timeout=5)
+
+                def _handler(args, **kwargs):
+                    return json.dumps({"owner": owner})
+
+                reg.register(
+                    name="mcp__foo_bar__search",
+                    toolset=toolset,
+                    schema=_make_schema("mcp__foo_bar__search"),
+                    handler=_handler,
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_register, args=("mcp-foo-bar", "dash")),
+            threading.Thread(target=_register, args=("mcp-foo_bar", "underscore")),
+        ]
+
+        with caplog.at_level(logging.ERROR, logger="tools.registry"):
+            for thread in threads:
+                thread.start()
+            barrier.wait(timeout=5)
+            for thread in threads:
+                thread.join(timeout=10)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == []
+        assert reg._generation == 1
+
+        entry = reg.get_entry("mcp__foo_bar__search")
+        assert entry is not None
+        assert entry.toolset in {"mcp-foo-bar", "mcp-foo_bar"}
+        assert json.loads(reg.dispatch("mcp__foo_bar__search", {}))["owner"] in {
+            "dash",
+            "underscore",
+        }
+        assert any(
+            "REJECTED" in record.message
+            and "mcp__foo_bar__search" in record.message
+            for record in caplog.records
+        )
 
 class TestGetDefinitions:
     def test_returns_openai_format(self):

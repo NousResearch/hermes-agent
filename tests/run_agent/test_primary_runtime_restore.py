@@ -518,14 +518,52 @@ class TestTryRecoverPrimaryTransport:
         )
         assert result is False
 
-    def test_skipped_for_nous_provider(self):
-        agent = _make_agent(provider="nous", base_url="https://inference.nous.nousresearch.com/v1")
+    def test_skipped_for_nous_chat_completions(self):
+        """OpenAI-wire Portal traffic still rides aggregator retry infra."""
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        agent.api_mode = "chat_completions"
         error = _make_transport_error("ReadTimeout")
 
         result = agent._try_recover_primary_transport(
             error, retry_count=3, max_retries=3,
         )
         assert result is False
+
+    def test_allowed_for_nous_anthropic_messages(self):
+        """Portal Claude holds a local Anthropic SDK client — rebuild it."""
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        agent.api_mode = "anthropic_messages"
+        agent.model = "anthropic/claude-opus-4.8"
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "model": "anthropic/claude-opus-4.8",
+            "provider": "nous",
+            "anthropic_api_key": "portal-jwt",
+            "anthropic_base_url": "https://inference-api.nousresearch.com/v1",
+            "is_anthropic_oauth": False,
+        })
+        error = _make_transport_error("ReadTimeout")
+        rebuilt = MagicMock(name="anthropic-client")
+
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=rebuilt,
+            ),
+            patch("time.sleep"),
+        ):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        assert agent._anthropic_client is rebuilt
 
     def test_allowed_for_anthropic_direct(self):
         """Direct Anthropic endpoint should get recovery."""

@@ -71,6 +71,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
 
@@ -1791,7 +1792,14 @@ class QQAdapter(BasePlatformAdapter):
             return None
 
         if content_type.startswith("image/"):
-            ext = mimetypes.guess_extension(content_type) or ".jpg"
+            # preserves historical qqbot mapping: trust mimetypes'
+            # guess (never the shared table) and fall back to .jpg.
+            ext = ext_for_mime(
+                content_type,
+                use_defaults=False,
+                use_mimetypes=True,
+                fallback=".jpg",
+            ) or ".jpg"
             return cache_image_from_bytes(data, ext)
         elif content_type == "voice" or content_type.startswith("audio/"):
             # QQ voice messages are typically .amr or .silk format.
@@ -1812,16 +1820,14 @@ class QQAdapter(BasePlatformAdapter):
         fn = filename.strip().lower()
         if ct == "voice" or ct.startswith("audio/"):
             return True
+        # QQ file uploads have content_type="file".  Without this guard,
+        # any uploaded audio file (e.g. .wav, .mp3) would be misrouted into
+        # the STT pipeline and never be received as a normal file attachment.
+        if ct == "file":
+            return False
         _VOICE_EXTENSIONS = (
-            ".silk",
-            ".amr",
-            ".mp3",
-            ".wav",
-            ".ogg",
-            ".m4a",
-            ".aac",
-            ".speex",
-            ".flac",
+            ".silk", ".amr", ".mp3", ".wav", ".ogg",
+            ".m4a", ".aac", ".speex", ".flac",
         )
         if any(fn.endswith(ext) for ext in _VOICE_EXTENSIONS):
             return True
@@ -1938,15 +1944,15 @@ class QQAdapter(BasePlatformAdapter):
                     )
                     return None
 
-            # 4. Call STT API
+            # 4. Call STT API and always clean up the temp WAV afterward.
             logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
-            transcript = await self._call_stt(wav_path)
-
-            # 5. Cleanup temp file
             try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
+                transcript = await self._call_stt(wav_path)
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
 
             if transcript:
                 logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])

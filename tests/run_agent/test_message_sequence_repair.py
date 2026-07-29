@@ -770,3 +770,133 @@ def test_sanitize_preserves_populated_tool_calls():
     out = sanitize_api_messages(list(messages))
     assistant = [m for m in out if m.get("role") == "assistant"][0]
     assert [tc["id"] for tc in assistant["tool_calls"]] == ["call_Z"]
+
+
+# ── Self-recovery: heal empty-content non-final messages ──────────────────
+# Repro of the production incident: a dead stream persisted an empty-content
+# assistant stub mid-transcript, and every later request 400'd with
+# "all messages must have non-empty content except for the optional final
+# assistant message" (INVALID_REQUEST_BODY). sanitize_api_messages now heals
+# such turns on the per-call copy so the session recovers itself in memory.
+
+def test_sanitize_heals_empty_assistant_stub_between_tool_and_user():
+    """The exact production shape: tool -> EMPTY assistant (finish=length) ->
+    user recovery. The empty assistant would 400 the whole request; it must be
+    substituted with non-empty placeholder content, not left empty."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do a thing"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_A", "type": "function",
+             "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "result"},
+        {"role": "assistant", "content": None},  # <-- poison stub (non-final)
+        {"role": "user", "content": "[System: previous response was cut off]"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    # Every non-final message now has non-empty content.
+    for m in out[:-1]:
+        c = m.get("content")
+        assert m.get("tool_calls") or (isinstance(c, str) and c.strip()) or (
+            isinstance(c, list) and c), f"empty non-final survived: {m}"
+    # The stub specifically became the placeholder.
+    stub = out[3]
+    assert stub["role"] == "assistant"
+    assert stub["content"] == "[response interrupted]"
+
+
+def test_sanitize_heals_empty_user_message():
+    """An empty user turn mid-transcript is equally invalid and is healed."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": ""},          # <-- empty user (non-final)
+        {"role": "assistant", "content": "still here"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert out[1]["content"] == "[response interrupted]"
+
+
+def test_sanitize_allows_empty_final_assistant():
+    """Negative control: an empty FINAL assistant message is legal per the API
+    ('except for the optional final assistant message') and must NOT be
+    touched."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": ""},  # final — allowed empty
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert out[-1]["content"] == ""  # untouched
+
+
+def test_sanitize_empty_heal_is_non_destructive():
+    """Healing must not mutate the caller's persisted dicts — only the per-call
+    copy is repaired, so the stored trajectory keeps the true empty turn."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    original_stub = {"role": "assistant", "content": None}
+    messages = [
+        {"role": "user", "content": "q"},
+        original_stub,
+        {"role": "user", "content": "recovery"},
+    ]
+    sanitize_api_messages(list(messages))
+    assert original_stub["content"] is None  # untouched in-place
+
+
+def test_sanitize_preserves_reasoning_only_and_toolcall_turns():
+    """Negative control: a non-final assistant turn that is 'empty content' but
+    carries reasoning OR tool_calls is valid payload and must NOT be rewritten
+    to the placeholder (that would clobber real model output)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_R", "type": "function",
+             "function": {"name": "foo", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_R", "content": "r"},
+        {"role": "user", "content": "next"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    # tool_call assistant keeps its tool_calls, content not clobbered to text
+    tc_asst = out[1]
+    assert tc_asst.get("tool_calls") and tc_asst["tool_calls"][0]["id"] == "call_R"
+    assert tc_asst["content"] != "[response interrupted]"
+
+
+
+def test_sanitize_preserves_codex_item_carrier_turns():
+    """Negative control: a codex commentary-phase assistant turn persists with
+    content:'' by DESIGN — its text lives in codex_message_items (delivered
+    via the interim callback, replayed as structured items for prefix-cache
+    hits).  The empty-content repair must treat the item carriers as payload
+    and never rewrite these turns (July 2026: a write-time pad that ignored
+    this broke codex commentary replay in CI)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "analyze repo"},
+        {"role": "assistant", "content": "", "codex_message_items": [
+            {"id": "msg_1", "phase": "commentary",
+             "content": [{"type": "output_text", "text": "I'll inspect first."}]},
+        ]},
+        {"role": "user", "content": "go on"},
+        {"role": "assistant", "content": "", "codex_reasoning_items": [
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"},
+        ]},
+        {"role": "user", "content": "final"},
+    ]
+    out = sanitize_api_messages(list(messages))
+    commentary = out[1]
+    reasoning_carrier = out[3]
+    assert commentary["content"] == "", (
+        "codex_message_items carrier must keep its designed-empty content"
+    )
+    assert reasoning_carrier["content"] == "", (
+        "codex_reasoning_items carrier must keep its designed-empty content"
+    )

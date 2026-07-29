@@ -64,7 +64,9 @@ class TestMarkdownStripping:
         assert "Done." in result
 
     def test_strips_headers(self):
-        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary\nSome text"
+        # The shared cleaner folds a heading into the following sentence as a
+        # spoken lead-in ("Summary, Some text.") instead of a bare label.
+        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary, Some text."
 
     def test_strips_list_markers(self):
         text = "- item one\n- item two\n* item three"
@@ -915,6 +917,59 @@ class TestVoiceBeepConfigReal:
         mock_beep.assert_not_called()
 
 
+class TestMaxRecordingSecondsConfigReal:
+    """voice.max_recording_seconds must reach the recorder from config.
+
+    Regression for the dead-config fix: the predicate alone can stay green
+    while the CLI wiring regresses, so pin the actual assignment made by
+    ``_voice_start_recording`` for the valid / disabled / corrupted cases.
+    """
+
+    def _start_with_voice_cfg(self, voice_cfg):
+        with patch("cli._cprint"), \
+             patch("cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.create_audio_recorder") as mock_create, \
+             patch(
+                 "tools.voice_mode.check_voice_requirements",
+                 return_value={
+                     "available": True,
+                     "audio_available": True,
+                     "stt_available": True,
+                     "details": "OK",
+                     "missing_packages": [],
+                 },
+             ), \
+             patch("hermes_cli.config.load_config", return_value={"voice": voice_cfg}):
+            recorder = MagicMock()
+            recorder.supports_silence_autostop = True
+            mock_create.return_value = recorder
+
+            cli = _make_voice_cli()
+            cli._voice_start_recording()
+
+        return recorder
+
+    def test_configured_cap_reaches_recorder(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 45})
+        assert recorder._max_recording_seconds == 45
+
+    def test_non_positive_value_disables_cap(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 0})
+        assert recorder._max_recording_seconds == 0.0
+
+    def test_bool_falls_back_to_documented_default(self):
+        # bool is a subclass of int — ``max_recording_seconds: true`` must not
+        # become a 1-second cap; it falls back to the documented 120 default,
+        # mirroring the silence-param corruption handling.
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": True})
+        assert recorder._max_recording_seconds == 120.0
+
+    def test_garbage_falls_back_to_documented_default(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": "long"})
+        assert recorder._max_recording_seconds == 120.0
+
+
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
 
@@ -1060,6 +1115,47 @@ class TestVoiceSpeakResponseReal:
         cli._voice_speak_response("Hello world")
         mock_play.assert_called_once()
 
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch(
+        "tools.tts_tool.text_to_speech_tool",
+        return_value='{"success": true, "file_path": "/tmp/hermes_voice/actual.flac"}',
+    )
+    def test_play_audio_uses_returned_tts_file_path(
+        self, _tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        _isf.side_effect = lambda path: path == "/tmp/hermes_voice/actual.flac"
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+        mock_play.assert_called_once_with("/tmp/hermes_voice/actual.flac")
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("tools.tts_tool.text_to_speech_tool")
+    def test_play_audio_prefers_requested_mp3_over_returned_ogg(
+        self, mock_tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        def fake_tts(**kwargs):
+            mp3_path = kwargs["output_path"]
+            ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+
+        mock_tts.side_effect = fake_tts
+
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+
+        requested_path = mock_tts.call_args.kwargs["output_path"]
+        mock_play.assert_called_once_with(requested_path)
+
 
 class TestVoiceStopAndTranscribeReal:
     """Tests _voice_stop_and_transcribe with real CLI instance."""
@@ -1112,7 +1208,12 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
-        assert cli._pending_input.get_nowait() == "hello world"
+        queued = cli._pending_input.get_nowait()
+        # Voice transcripts are wrapped in the _VoiceInputMessage sentinel so
+        # only genuine STT output gets the voice prefix (#65827).
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "hello world"
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1203,6 +1304,56 @@ class TestVoiceStopAndTranscribeReal:
         cli._voice_stop_and_transcribe()
         cli._voice_start_recording.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("stt_config", "expected_model"),
+        [
+            ({"provider": "local", "model": "whisper-1", "local": {"model": "small"}}, "small"),
+            ({"provider": "local", "local": {"model": "tiny"}}, "tiny"),
+            ({"provider": "local", "model": "whisper-1"}, "base"),
+        ],
+    )
+    def test_local_stt_shows_model_download_status(self, stt_config, expected_model):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch("hermes_cli.config.load_config", return_value={"stt": stt_config}), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any(
+            f"local STT model '{expected_model}'" in message
+            and "first use may download it from Hugging Face" in message
+            for message in messages
+        )
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model=expected_model)
+
+    def test_non_local_stt_keeps_generic_transcribing_status(self):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"stt": {"provider": "openai", "model": "whisper-1"}},
+             ), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any("Transcribing..." in message for message in messages)
+        assert all("Hugging Face" not in message for message in messages)
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
+
     @patch("cli._cprint")
     @patch("cli.os.unlink")
     @patch("cli.os.path.isfile", return_value=True)
@@ -1278,7 +1429,10 @@ class TestVoiceBargeCaptureSubmit:
 
         cli._voice_submit_barge_utterance(str(wav))
 
-        assert cli._pending_input.get_nowait() == "stop, do it differently"
+        queued = cli._pending_input.get_nowait()
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "stop, do it differently"
         assert not cli._voice_barge_capture.is_set()
         assert not wav.exists()
 
@@ -1300,3 +1454,286 @@ class TestVoiceBargeCaptureSubmit:
         assert cli._pending_input.empty()
         assert not cli._voice_barge_capture.is_set()
         assert restarted.wait(2.0)  # continuous mode resumes listening
+
+
+# ============================================================================
+# Full-duplex agent-turn listener — CLI phase behaviour
+# ============================================================================
+
+
+class TestVoiceFullDuplexListener:
+    """_voice_full_duplex_listener: one mic for the whole turn. Generation-
+    phase speech interrupts the in-flight agent turn; playback-phase speech
+    cuts TTS; the capture is submitted either way."""
+
+    def _cli(self, monkeypatch, *, listen, voice_cfg=None, **overrides):
+        cli = _make_voice_cli(
+            _voice_mode=True, _voice_continuous=True, **overrides
+        )
+        cli.agent = None
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": dict(voice_cfg or {"barge_in": True})},
+        )
+        monkeypatch.setattr("tools.voice_mode.full_duplex_listen", listen)
+        monkeypatch.setattr("tools.voice_mode.is_audio_output_active", lambda: False)
+        monkeypatch.setattr("tools.voice_mode.stop_playback", lambda: None)
+        return cli
+
+    def test_generation_trip_interrupts_agent_and_submits(self, monkeypatch, tmp_path):
+        """Speech during generation → agent.interrupt() (the same seam the
+        typed interrupt uses) + pending TTS pipeline cut + capture queued."""
+        wav = tmp_path / "fd.wav"
+        wav.write_bytes(b"RIFF")
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            on_trigger("generation")
+            return str(wav)
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
+        interrupted = threading.Event()
+        cli.agent = SimpleNamespace(interrupt=lambda: interrupted.set())
+        pipe_stop = threading.Event()
+        cli._voice_tts_stop = pipe_stop
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "actually wait"},
+        )
+
+        cli._voice_full_duplex_listener()
+
+        assert interrupted.is_set()
+        assert pipe_stop.is_set()  # stale reply's TTS can never play
+        from cli import _VoiceInputMessage
+        queued = cli._pending_input.get_nowait()
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "actually wait"
+        assert not cli._voice_barge_capture.is_set()
+
+    def test_playback_trip_cuts_tts_without_interrupting_agent(self, monkeypatch, tmp_path):
+        """Speech during playback → pipeline stop + stop_playback; the agent
+        (already finished) is NOT interrupted."""
+        wav = tmp_path / "fd.wav"
+        wav.write_bytes(b"RIFF")
+        stops = []
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            on_trigger("playback")
+            return str(wav)
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=False)
+        interrupted = threading.Event()
+        cli.agent = SimpleNamespace(interrupt=lambda: interrupted.set())
+        pipe_stop = threading.Event()
+        cli._voice_tts_stop = pipe_stop
+        monkeypatch.setattr("tools.voice_mode.stop_playback", lambda: stops.append(True))
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "hang on"},
+        )
+
+        cli._voice_full_duplex_listener()
+
+        assert not interrupted.is_set()
+        assert pipe_stop.is_set()
+        assert stops == [True]
+        assert str(cli._pending_input.get_nowait()) == "hang on"
+
+    def test_listener_arms_at_submit_and_survives_into_playback(self, monkeypatch):
+        """Lifecycle: should_stop is False during generation AND during
+        pending TTS (survives the phase transition — no re-arm race), and
+        True once the turn is fully done."""
+        probes = {}
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            # generation: agent running, TTS not started
+            probes["generation"] = should_stop()
+            # transition: agent done, TTS still pending
+            cli._agent_running = False
+            cli._voice_tts_done.clear()
+            probes["playback_pending"] = should_stop()
+            # turn fully done
+            cli._voice_tts_done.set()
+            probes["done"] = should_stop()
+            return None
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
+        cli._voice_tts_done.set()
+
+        cli._voice_full_duplex_listener()
+
+        assert probes["generation"] is False
+        assert probes["playback_pending"] is False  # same listener spans phases
+        assert probes["done"] is True
+
+    def test_double_arm_refused(self, monkeypatch):
+        """Only one listener may own the mic per turn — the second arm is a
+        no-op (the fallback speak path arms as a safety net)."""
+        calls = []
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            calls.append(True)
+            return None
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=False)
+        cli._voice_fd_active = threading.Event()
+        cli._voice_fd_active.set()  # a listener already owns the mic
+
+        cli._voice_full_duplex_listener()
+        assert calls == []
+
+    def test_config_multiplier_and_grace_forwarded(self, monkeypatch):
+        seen = {}
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None,
+                        multiplier=None, grace_ms=None, **_kw):
+            seen["multiplier"] = multiplier
+            seen["grace_ms"] = grace_ms
+            return None
+
+        cli = self._cli(
+            monkeypatch,
+            listen=fake_listen,
+            voice_cfg={
+                "barge_in": True,
+                "barge_in_threshold_multiplier": 4.5,
+                "barge_in_grace_seconds": 1.0,
+            },
+            _agent_running=False,
+        )
+        cli._voice_full_duplex_listener()
+        assert seen["multiplier"] == 4.5
+        assert seen["grace_ms"] == 1000
+
+    def test_barge_in_disabled_never_opens_mic(self, monkeypatch):
+        calls = []
+
+        def fake_listen(*a, **k):
+            calls.append(True)
+            return None
+
+        cli = self._cli(
+            monkeypatch, listen=fake_listen,
+            voice_cfg={"barge_in": False}, _agent_running=True,
+        )
+        cli._voice_full_duplex_listener()
+        assert calls == []
+
+    def test_stop_phrase_mid_generation_interrupts_and_ends_chat(self, monkeypatch, tmp_path):
+        """Bare 'stop' during generation = stop everything: the turn is
+        interrupted at trip time AND the voice chat is disabled."""
+        wav = tmp_path / "fd.wav"
+        wav.write_bytes(b"RIFF")
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            on_trigger("generation")
+            return str(wav)
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
+        interrupted = threading.Event()
+        cli.agent = SimpleNamespace(interrupt=lambda: interrupted.set())
+        disabled = []
+        cli._disable_voice_mode = lambda: disabled.append(True)
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "stop"},
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode.is_voice_stop_phrase",
+            lambda text: text.strip().lower() == "stop",
+        )
+
+        cli._voice_full_duplex_listener()
+
+        assert interrupted.is_set()   # turn interrupted at trip
+        assert disabled == [True]     # chat ended by the stop phrase
+        assert cli._pending_input.empty()  # stop phrase never reaches the agent
+
+
+# ============================================================================
+# Typed stop phrase — typing "stop" during a voice chat ends it
+# ============================================================================
+class TestTypedVoiceStop:
+    """_typed_voice_stop: a TYPED bare stop phrase during an active voice chat
+    ends the chat (same as saying "stop"); outside voice mode it passes
+    through to the agent untouched."""
+
+    def _cli(self, **overrides):
+        cli = _make_voice_cli(**overrides)
+        cli._disable_calls = []
+        cli._disable_voice_mode = lambda: cli._disable_calls.append(True)
+        return cli
+
+    @pytest.fixture(autouse=True)
+    def _pin_stop_phrases(self, monkeypatch):
+        # Hermetic: don't let a dev machine's voice.stop_phrases config
+        # change which utterances count as a stop phrase.
+        monkeypatch.setattr(
+            "tools.voice_mode._load_voice_stop_phrases", lambda: ("stop",)
+        )
+
+    def test_typed_stop_ends_voice_chat_when_voice_on(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop("stop") is True
+        assert cli._disable_calls == [True]
+
+    def test_typed_stop_during_continuous_mode(self):
+        cli = self._cli(_voice_mode=False, _voice_continuous=True)
+        assert cli._typed_voice_stop("Stop.") is True
+        assert cli._disable_calls == [True]
+
+    def test_typed_stop_passes_through_when_voice_off(self):
+        cli = self._cli(_voice_mode=False, _voice_continuous=False)
+        assert cli._typed_voice_stop("stop") is False
+        assert cli._disable_calls == []
+
+    def test_longer_typed_message_passes_through_in_voice_mode(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop("stop the docker container") is False
+        assert cli._disable_calls == []
+
+    def test_non_string_input_passes_through(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop(("text", ["img.png"])) is False
+        assert cli._disable_calls == []
+
+
+# ============================================================================
+# Fallback (whole-file) TTS path arms the full-duplex listener
+# ============================================================================
+
+class TestFallbackSpeakArmsBargeMonitor:
+    """_voice_speak_response_async must arm _voice_full_duplex_listener in
+    continuous voice mode. This is the safety net for speak calls outside a
+    chat turn — the primary arm happens at utterance-submit in chat()."""
+
+    def _cli(self, **overrides):
+        cli = _make_voice_cli(**overrides)
+        cli._monitor_calls = []
+        cli._voice_full_duplex_listener = (
+            lambda: cli._monitor_calls.append(True)
+        )
+        cli._voice_speak_response = lambda text: None
+        return cli
+
+    def _drain_threads(self):
+        import time
+        time.sleep(0.15)
+
+    def test_monitor_armed_in_continuous_voice_mode(self):
+        cli = self._cli(_voice_mode=True, _voice_tts=True, _voice_continuous=True)
+        cli._voice_speak_response_async("a reply")
+        self._drain_threads()
+        assert len(cli._monitor_calls) == 1
+
+    def test_no_monitor_outside_continuous_mode(self):
+        cli = self._cli(_voice_mode=True, _voice_tts=True, _voice_continuous=False)
+        cli._voice_speak_response_async("a reply")
+        self._drain_threads()
+        assert cli._monitor_calls == []
+
+    def test_no_monitor_when_tts_disabled(self):
+        cli = self._cli(_voice_mode=True, _voice_tts=False, _voice_continuous=True)
+        cli._voice_speak_response_async("a reply")
+        self._drain_threads()
+        assert cli._monitor_calls == []

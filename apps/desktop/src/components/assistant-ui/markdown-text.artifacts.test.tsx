@@ -1,7 +1,8 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $artifactTabs, artifactsForSession, clearArtifactRegistry } from '@/store/artifacts'
+import { artifactsForSession, clearArtifactRegistry } from '@/store/artifacts'
+import { $previewTabs } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { MarkdownTextContent } from './markdown-text'
@@ -51,7 +52,7 @@ describe('MarkdownTextContent artifacts', () => {
     expect(artifactsForSession('session-artifacts')).toHaveLength(1)
     expect(artifactsForSession('session-artifacts')[0]?.kind).toBe('html')
     // Registration alone must not open the rail (offer, don't hijack).
-    expect($artifactTabs.get()).toHaveLength(0)
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
   it('keeps a small fence as a plain code block', async () => {

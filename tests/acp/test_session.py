@@ -502,6 +502,17 @@ class TestPersistence:
         assert db.get_session(s1.session_id) is None
         assert db.get_session(s2.session_id) is None
 
+    def test_cleanup_removes_archived_db_only_session(self, manager):
+        state = manager.create_session()
+        db = manager._get_db()
+        db.set_session_archived(state.session_id, True)
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        manager.cleanup()
+
+        assert db.get_session(state.session_id) is None
+
     def test_list_sessions_includes_db_only(self, manager):
         """Sessions only in DB (not in memory) appear in list_sessions."""
         state = manager.create_session(cwd="/db-only")

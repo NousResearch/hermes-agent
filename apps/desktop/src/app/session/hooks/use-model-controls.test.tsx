@@ -140,6 +140,85 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('deepseek')
   })
 
+  it('keeps a live session authoritative when Settings saves a new profile default', async () => {
+    const queryClient = new QueryClient()
+    $activeSessionId.set('runtime-1')
+    setCurrentModel('tencent/hy3:free')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      model: 'tencent/hy3:free',
+      provider: 'nous',
+      providers: []
+    })
+    queryClient.setQueryData(modelOptionsQueryKey('default', 'runtime-1'), {
+      model: 'tencent/hy3:free',
+      provider: 'nous',
+      providers: []
+    })
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    result.current.applySavedMainModel('nous', 'poolside/laguna-xs-2.1:free')
+    await result.current.refreshCurrentModel()
+
+    // Settings changes the profile default, not the active session. The footer
+    // and its session-scoped picker cache must keep showing the live runtime.
+    expect($currentModel.get()).toBe('tencent/hy3:free')
+    expect($currentProvider.get()).toBe('nous')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'runtime-1'))).toMatchObject({
+      model: 'tencent/hy3:free',
+      provider: 'nous'
+    })
+
+    // The global cache reflects the save, and the next fresh draft may reseed
+    // from that default instead of preserving the old session's model.
+    expect(getCurrentModelSource()).toBe('default')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toMatchObject({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    $activeSessionId.set(null)
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
+    expect($currentProvider.get()).toBe('nous')
+  })
+
+  it('paints a saved profile default immediately when no session is active', () => {
+    const queryClient = new QueryClient()
+    setCurrentModel('tencent/hy3:free')
+    setCurrentProvider('nous')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    result.current.applySavedMainModel('nous', 'poolside/laguna-xs-2.1:free')
+
+    expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
+    expect($currentProvider.get()).toBe('nous')
+    expect(getCurrentModelSource()).toBe('default')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toMatchObject({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+  })
+
   it('routes active-session picker changes through config.set with an explicit session-scoped provider', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)

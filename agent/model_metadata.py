@@ -13,17 +13,39 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
 
-import requests
 import yaml
+
+if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
+    import requests
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
+
+# ``requests`` (with urllib3) costs ~27 ms of the `import cli` waterfall and
+# is only used inside the fetch functions below. It's resolved lazily:
+# ``_ensure_requests()`` populates the module global on the runtime path, and
+# the PEP 562 ``__getattr__`` covers external attribute access — notably
+# ``patch("agent.model_metadata.requests.get")`` in tests, which resolves the
+# attribute at patch time.
+
+
+def _ensure_requests():
+    if "requests" not in globals():
+        import requests as _requests
+        globals()["requests"] = _requests
+    return globals()["requests"]
+
+
+def __getattr__(name: str):
+    if name == "requests":
+        return _ensure_requests()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _resolve_requests_verify() -> bool | str:
@@ -122,6 +144,67 @@ _ENDPOINT_MODEL_CACHE_TTL = 300
 # Values are (server_type, monotonic_timestamp).
 _ENDPOINT_PROBE_TTL_SECONDS = 3600.0
 _endpoint_probe_path_cache: Dict[str, tuple] = {}
+
+# ── Disk L2 for local-endpoint probe results ────────────────────────────────
+# The in-process caches above die with the process, so every CLI cold start
+# with a local model re-paid the probe waterfall in AIAgent.__init__:
+# detect_local_server_type (up to 4 HTTP GETs, ≤2 s each on a hung server)
+# + /api/show (≤3 s). A short-TTL disk cache makes back-to-back CLI
+# invocations hit disk instead of the network. Only SUCCESSFUL probes are
+# persisted (a down server must not pin a negative verdict), and the TTL is
+# short enough that swapping the server on a port (stop Ollama, start
+# LM Studio) is picked up within minutes — strictly fresher than the 1 h
+# in-process TTL that already accepts that staleness.
+_LOCAL_PROBE_DISK_TTL_SECONDS = 300.0
+
+
+def _local_probe_disk_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "local_endpoint_probes.json"
+
+
+def _load_local_probe_disk_cache() -> Dict[str, Any]:
+    try:
+        with _local_probe_disk_cache_path().open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _local_probe_disk_get(kind: str, key: str) -> Optional[Any]:
+    """Return a fresh cached value for ``kind:key``, else None."""
+    entry = _load_local_probe_disk_cache().get(f"{kind}:{key}")
+    if not isinstance(entry, dict):
+        return None
+    try:
+        if (time.time() - float(entry["ts"])) >= _LOCAL_PROBE_DISK_TTL_SECONDS:
+            return None
+        return entry["value"]
+    except Exception:
+        return None
+
+
+def _local_probe_disk_put(kind: str, key: str, value: Any) -> None:
+    """Persist a successful probe result. Best-effort; prunes stale entries."""
+    try:
+        now = time.time()
+        data = _load_local_probe_disk_cache()
+        data = {
+            k: v
+            for k, v in data.items()
+            if isinstance(v, dict)
+            and (now - float(v.get("ts", 0))) < _LOCAL_PROBE_DISK_TTL_SECONDS
+        }
+        data[f"{kind}:{key}"] = {"value": value, "ts": now}
+        atomic_json_write(
+            _local_probe_disk_cache_path(),
+            data,
+            indent=0,
+            separators=(",", ":"),
+        )
+    except Exception as e:
+        logger.debug("Failed to save local probe disk cache: %s", e)
 
 
 def _get_model_metadata_cache_path() -> Path:
@@ -752,6 +835,13 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
         return cached[0]
 
+    # Disk L2: a fresh cross-process verdict skips the HTTP waterfall
+    # entirely (back-to-back CLI invocations, cron ticks).
+    disk_hit = _local_probe_disk_get("server_type", server_url)
+    if isinstance(disk_hit, str):
+        _endpoint_probe_path_cache[server_url] = (disk_hit, time.monotonic())
+        return disk_hit
+
     headers = _auth_headers(api_key)
 
     result: Optional[str] = None
@@ -804,6 +894,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
 
     if result is not None:
         _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
+        _local_probe_disk_put("server_type", server_url, result)
     return result
 
 
@@ -926,6 +1017,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 return _model_metadata_cache
 
     try:
+        _ensure_requests()
         # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
         # retry stage through proxies that 403 CONNECT, ballooning to minutes
         # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
@@ -982,6 +1074,7 @@ def fetch_endpoint_model_metadata(
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
+    _ensure_requests()
 
     if not force_refresh:
         cached = _endpoint_model_metadata_cache.get(normalized)
@@ -1523,6 +1616,13 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     if server_type != "ollama":
         return None
 
+    # Disk L2: /api/show results are stable for a given (model, server) on
+    # human timescales — skip the HTTP roundtrip on fresh cross-process hits.
+    _disk_key = f"{server_url}|{bare_model}"
+    disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
+    if isinstance(disk_hit, int) and disk_hit > 0:
+        return disk_hit
+
     headers = _auth_headers(api_key)
 
     try:
@@ -1540,7 +1640,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                         parts = line.strip().split()
                         if len(parts) >= 2:
                             try:
-                                return int(parts[-1])
+                                _ctx = int(parts[-1])
+                                _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
+                                return _ctx
                             except ValueError:
                                 pass
 
@@ -1548,7 +1650,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
             model_info = data.get("model_info", {})
             for key, value in model_info.items():
                 if "context_length" in key and isinstance(value, (int, float)):
-                    return int(value)
+                    _ctx = int(value)
+                    _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
+                    return _ctx
     except Exception:
         pass
     return None
@@ -1882,6 +1986,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         }
+        _ensure_requests()
         resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             return None
@@ -1989,6 +2094,7 @@ def _fetch_codex_oauth_context_lengths_with_source(
         headers["ChatGPT-Account-Id"] = acct_id
 
     try:
+        _ensure_requests()
         resp = requests.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers=headers,
@@ -2429,21 +2535,27 @@ def get_model_context_length(
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
-            # 2b. Ollama native /api/show — any URL might be an Ollama server
-            # (local, cloud, or custom hosting).  Non-Ollama servers return
-            # 404/405 quickly.  Fall through on failure.
-            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
-            if ctx is not None:
-                if not _skip_persistent_context_cache(base_url, provider):
-                    save_context_length(model, base_url, ctx)
-                return ctx
-            # 3. Try querying local server directly
+            # For local endpoints, run the probe that respects configured
+            # Modelfile context values first.  _query_local_context_length
+            # prefers num_ctx from Modelfile, while _query_ollama_api_show
+            # returns the GGUF training max first which can be larger and
+            # would create a false-safe window for compression (#63122).
+            # Non-local endpoints preserve the existing GGUF-first behavior.
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
                     if not _skip_persistent_context_cache(base_url, provider):
                         _maybe_cache_local_context_length(model, base_url, local_ctx)
                     return local_ctx
+            # 2b. Ollama native /api/show — non-local endpoints preserve
+            # the existing generic /api/show GGUF-first behavior.
+            # Non-Ollama servers return 404/405 quickly.
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            if ctx is not None:
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
+                return ctx
+            # 3. Probe-down fallback after endpoint-specific detection failed
             logger.info(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "

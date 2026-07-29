@@ -6,6 +6,7 @@ import {
   ContextMenu,
   ContextMenuCheckboxItem,
   ContextMenuContent,
+  ContextMenuItem,
   ContextMenuLabel,
   ContextMenuSeparator,
   ContextMenuTrigger
@@ -13,8 +14,9 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { $statusbarHiddenIds, setStatusbarItemVisible } from '@/store/statusbar-prefs'
+import { $statusbarHiddenIds, setStatusbarItemVisible, toggleStatusbarVisible } from '@/store/statusbar-prefs'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
 // trigger). The 'text' variant intentionally omits hover/transition/disabled.
@@ -92,7 +94,7 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
       <ContextMenuTrigger asChild>
         <footer
           className={cn(
-            'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
+            'flex h-5 shrink-0 items-stretch justify-between gap-2 bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
             className
           )}
           data-slot="statusbar"
@@ -121,7 +123,8 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 
 /** Right-click the bar to choose what it shows. Lists every item that named
  *  itself with `toggleLabel`, in bar order (left cluster then right), so the
- *  menu reads like the surface it edits. */
+ *  menu reads like the surface it edits. Hiding the whole bar lives at the
+ *  bottom — VS Code puts it on the same context menu. */
 function StatusbarVisibilityMenu({
   hiddenIds,
   items,
@@ -151,30 +154,42 @@ function StatusbarVisibilityMenu({
     })
   }, [items, leftItems])
 
-  if (toggles.length === 0) {
-    return null
-  }
-
   return (
     <ContextMenuContent className="w-52">
-      <ContextMenuLabel>{copy.customizeTitle}</ContextMenuLabel>
-      <ContextMenuSeparator />
-      {toggles.map(item => (
-        <ContextMenuCheckboxItem
-          checked={item.lockedVisible || !hiddenIds.includes(item.id)}
-          disabled={item.lockedVisible}
-          key={item.id}
-          onCheckedChange={checked => setStatusbarItemVisible(item.id, checked)}
-          // Radix closes the menu on select; keep it open so several items can
-          // be toggled in one pass (this is a preferences surface, not a
-          // command list).
-          onSelect={event => event.preventDefault()}
-        >
-          <span className="truncate">{item.toggleLabel}</span>
-        </ContextMenuCheckboxItem>
-      ))}
+      {toggles.length > 0 && (
+        <>
+          <ContextMenuLabel>{copy.customizeTitle}</ContextMenuLabel>
+          <ContextMenuSeparator />
+          {toggles.map(item => (
+            <ContextMenuCheckboxItem
+              checked={item.lockedVisible || !hiddenIds.includes(item.id)}
+              disabled={item.lockedVisible}
+              key={item.id}
+              onCheckedChange={checked => setStatusbarItemVisible(item.id, checked)}
+              // Radix closes the menu on select; keep it open so several items can
+              // be toggled in one pass (this is a preferences surface, not a
+              // command list).
+              onSelect={event => event.preventDefault()}
+            >
+              <span className="truncate">{item.toggleLabel}</span>
+            </ContextMenuCheckboxItem>
+          ))}
+          <ContextMenuSeparator />
+        </>
+      )}
+      <ContextMenuItem onSelect={toggleStatusbarVisible}>
+        <span className="truncate">{copy.hideStatusbar}</span>
+        <StatusbarHideHint />
+      </ContextMenuItem>
     </ContextMenuContent>
   )
+}
+
+/** The live ⌘⇧S hint on the hide row — the way back once the bar is gone. */
+function StatusbarHideHint() {
+  const hint = useKeybindHint('view.toggleStatusbar')
+
+  return hint ? <span className="ml-auto pl-2 text-(--ui-text-quaternary)">{hint}</span> : null
 }
 
 /** Memoized: `useStatusbarItems` rebuilds the item array whenever ANY of its

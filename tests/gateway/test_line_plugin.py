@@ -1,6 +1,6 @@
 """Tests for the LINE platform adapter plugin.
 
-Covers the seven synthesis areas from the PR review:
+Covers LINE adapter behavior from the PR review:
 
 1. webhook signature verification (HMAC-SHA256, base64) + tampering rejection
 2. inbound chat-id resolution for user / group / room sources
@@ -8,8 +8,9 @@ Covers the seven synthesis areas from the PR review:
 4. inbound dedup via webhookEventId
 5. RequestCache state machine (PENDING → READY → DELIVERED, ERROR)
 6. Markdown stripping with URL preservation + LINE-sized chunking
-7. send routing: reply token preferred → push fallback → batched at 5/call
-8. register() metadata + standalone_send shape
+7. inbound media normalization to gateway message types and MIME metadata
+8. send routing: reply token preferred → push fallback → batched at 5/call
+9. register() metadata + standalone_send shape
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import hashlib
 import hmac
 import base64
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -297,7 +298,84 @@ class TestMarkdownAndChunking:
 
 
 # ---------------------------------------------------------------------------
-# 7. Send routing (reply -> push fallback, batching, system-bypass)
+# 7. Inbound media normalization
+# ---------------------------------------------------------------------------
+
+class TestInboundMedia:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.fetch_content = AsyncMock(return_value=b"line-bytes")
+        ad.handle_message = AsyncMock()
+        return ad
+
+    def _event(self, msg_type, **message):
+        payload = {"type": msg_type, "id": f"{msg_type}-1"}
+        payload.update(message)
+        return {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "Cline", "userId": "Uline"},
+            "message": payload,
+        }
+
+    def _captured_event(self, adapter):
+        adapter.handle_message.assert_awaited_once()
+        return adapter.handle_message.await_args.args[0]
+
+    def test_image_message_uses_photo_type_and_image_mime(self, adapter):
+        with patch.object(_line, "cache_image_from_bytes", return_value="/cache/image.jpg") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("image")))
+
+        cache.assert_called_once_with(b"line-bytes", ext=".jpg")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.PHOTO
+        assert event.media_urls == ["/cache/image.jpg"]
+        assert event.media_types == ["image/jpeg"]
+
+    def test_audio_message_uses_voice_type_and_audio_cache(self, adapter):
+        with patch.object(_line, "cache_audio_from_bytes", return_value="/cache/audio.m4a") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("audio")))
+
+        cache.assert_called_once_with(b"line-bytes", ext=".m4a")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.VOICE
+        assert event.media_urls == ["/cache/audio.m4a"]
+        assert event.media_types[0].startswith("audio/")
+
+    def test_video_message_uses_video_type_and_video_cache(self, adapter):
+        with patch.object(_line, "cache_video_from_bytes", return_value="/cache/video.mp4") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("video")))
+
+        cache.assert_called_once_with(b"line-bytes", ext=".mp4")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.VIDEO
+        assert event.media_urls == ["/cache/video.mp4"]
+        assert event.media_types == ["video/mp4"]
+
+    def test_file_message_uses_document_type_and_original_filename(self, adapter):
+        with patch.object(_line, "cache_document_from_bytes", return_value="/cache/report.pdf") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("file", fileName="report.pdf")))
+
+        cache.assert_called_once_with(b"line-bytes", "report.pdf")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.DOCUMENT
+        assert event.media_urls == ["/cache/report.pdf"]
+        assert event.media_types == ["application/pdf"]
+
+
+# ---------------------------------------------------------------------------
+# 8. Send routing (reply -> push fallback, batching, system-bypass)
 # ---------------------------------------------------------------------------
 
 class TestSendRouting:
@@ -400,7 +478,7 @@ class TestSendRouting:
 
 
 # ---------------------------------------------------------------------------
-# 8. Register() metadata + plugin entry points
+# 9. Register() metadata + plugin entry points
 # ---------------------------------------------------------------------------
 
 class TestRegister:
@@ -674,3 +752,144 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 10. Dual-stack bind default (NS-603)
+# ---------------------------------------------------------------------------
+
+class TestDualStackBind:
+    """The LINE webhook server's default bind must serve BOTH IPv4 and IPv6.
+
+    Regression guard for the hosted LINE 502 (NS-603): Fly.io 6PN — the
+    private network the edge router reverse-proxies LINE ingest over — is
+    IPv6-only (``<app>.internal`` resolves to an ``fdaa:…`` address). The
+    adapter used to default to ``host="0.0.0.0"`` (IPv4 only), so the
+    router's dial to ``<app>.internal:8646`` hit an address nothing was
+    listening on → connection refused → 502 on webhook verification.
+
+    Mirrors gateway/platforms/webhook.py's fix (commit d542894ad):
+    ``DEFAULT_HOST = None`` → asyncio binds one socket per address family.
+    ``"::"`` is NOT a valid substitute (bindv6only=1 on Fly machines makes
+    it IPv6-only, breaking IPv4 loopback health probes).
+    """
+
+    def _cfg(self, **extra):
+        from gateway.config import PlatformConfig
+        base = {"channel_access_token": "tok", "channel_secret": "sec"}
+        base.update(extra)
+        return PlatformConfig(enabled=True, extra=base)
+
+    def test_default_host_is_none_for_dual_stack(self, monkeypatch):
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        assert _line.DEFAULT_HOST is None
+        ad = LineAdapter(self._cfg())
+        assert ad.webhook_host is None
+
+    def test_empty_host_normalises_to_none(self, monkeypatch):
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        ad = LineAdapter(self._cfg(host=""))
+        assert ad.webhook_host is None
+
+    def test_pinned_host_is_preserved(self, monkeypatch):
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        ad = LineAdapter(self._cfg(host="127.0.0.1"))
+        assert ad.webhook_host == "127.0.0.1"
+
+    def test_line_host_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("LINE_HOST", "10.0.0.5")
+        ad = LineAdapter(self._cfg())
+        assert ad.webhook_host == "10.0.0.5"
+
+    @pytest.mark.asyncio
+    async def test_default_bind_serves_both_families(self, monkeypatch):
+        """Behavioural proof: host=None opens v4 AND v6 listening sockets."""
+        # Guard: on IPv4-only hosts (CI runners with IPv6 disabled) the
+        # dual-stack bind legitimately yields no v6 socket — that's the
+        # environment, not a regression. Probe an actual ::1 bind rather
+        # than trusting socket.has_ipv6 (compile-time constant).
+        import socket as _socket
+        if not _socket.has_ipv6:
+            pytest.skip("IPv6 not supported by this Python build")
+        try:
+            _probe = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+            try:
+                _probe.bind(("::1", 0))
+            finally:
+                _probe.close()
+        except OSError:
+            pytest.skip("IPv6 stack unavailable on this host (cannot bind ::1)")
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        ad = LineAdapter(self._cfg(port=0))
+        ad._client = MagicMock()
+        ad._client.get_bot_user_id = AsyncMock(return_value="Ubot")
+
+        # Skip credential/network preamble — drive the aiohttp bind directly
+        # the same way connect() does.
+        from aiohttp import web
+        ad._app = web.Application()
+        ad._runner = web.AppRunner(ad._app)
+        await ad._runner.setup()
+        site = web.TCPSite(ad._runner, ad.webhook_host, 0)
+        try:
+            await site.start()
+            addrs = list(ad._runner.addresses)
+            has_v6 = any(len(a) == 4 for a in addrs)
+            has_v4 = any(len(a) == 2 for a in addrs)
+            assert has_v4, f"IPv4 bind missing — got {addrs}"
+            assert has_v6, (
+                f"IPv6 bind missing (the 6PN reachability bug, NS-603) — got {addrs}"
+            )
+        finally:
+            await ad._runner.cleanup()
+
+
+class TestMediaPublicUrlGuard:
+    """Outbound media requires LINE_PUBLIC_URL whenever the bind host is not
+    a publicly fetchable address — including the new dual-stack ``None``
+    default and the legacy wildcard strings."""
+
+    def _adapter(self, monkeypatch, **extra):
+        from gateway.config import PlatformConfig
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        monkeypatch.delenv("LINE_PUBLIC_URL", raising=False)
+        base = {"channel_access_token": "tok", "channel_secret": "sec"}
+        base.update(extra)
+        return LineAdapter(PlatformConfig(enabled=True, extra=base))
+
+    def test_missing_public_url_true_for_default_none(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+        assert ad.webhook_host is None
+        assert ad._missing_public_url() is True
+
+    @pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+    def test_missing_public_url_true_for_wildcards(self, monkeypatch, wildcard):
+        ad = self._adapter(monkeypatch, host=wildcard)
+        assert ad._missing_public_url() is True
+
+    def test_missing_public_url_false_with_public_base(self, monkeypatch):
+        ad = self._adapter(monkeypatch, public_url="https://tunnel.example.com")
+        if not ad.public_base_url:
+            # Adapter reads env var name LINE_PUBLIC_URL / extra key —
+            # set directly if the extra key differs.
+            ad.public_base_url = "https://tunnel.example.com"
+        assert ad._missing_public_url() is False
+
+    def test_missing_public_url_false_with_pinned_host(self, monkeypatch):
+        ad = self._adapter(monkeypatch, host="203.0.113.7")
+        assert ad._missing_public_url() is False
+
+    def test_send_image_blocked_without_public_url(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        ad._client = MagicMock()
+        img = tmp_path / "x.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n123")
+        result = asyncio.run(ad.send_image_file("Uchat", str(img)))
+        assert not result.success
+        assert "LINE_PUBLIC_URL" in (result.error or "")
+
+    def test_media_url_never_contains_none(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+        url = ad._media_url("tok123", "cat.jpg")
+        assert "None" not in url
+        assert url.startswith("https://")

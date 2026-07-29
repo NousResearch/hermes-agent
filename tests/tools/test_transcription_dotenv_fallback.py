@@ -205,13 +205,7 @@ class TestTranscribeCallSitesReadDotenv:
         assert seen_keys == ["mistral-dotenv-key"]
 
     def test_transcribe_xai_forwards_dotenv_key(self):
-        """xAI STT now resolves credentials through ``tools.xai_http`` so the
-        OAuth bearer wins when present and ``XAI_API_KEY`` is the fallback.
-        Patch the resolver's ``get_env_value`` to simulate a dotenv-only key
-        and confirm it reaches the HTTP call. The per-call-site
-        ``transcription_tools.get_env_value`` is still consulted for the
-        ``XAI_STT_BASE_URL`` override (covered by ``test_custom_base_url``).
-        """
+        """An explicit XAI_API_KEY must win over Grok subscription OAuth for STT."""
         from tools import transcription_tools as tt
         from tools import xai_http
 
@@ -231,7 +225,12 @@ class TestTranscribeCallSitesReadDotenv:
                 return "xai-dotenv-key"
             return None
 
-        with patch.object(xai_http, "get_env_value", side_effect=fake_get_env_value), \
+        with patch.object(tt, "get_env_value", side_effect=fake_get_env_value), \
+             patch.object(xai_http, "resolve_xai_http_credentials", return_value={
+                 "provider": "xai-oauth",
+                 "api_key": "subscription-oauth-token",
+                 "base_url": "https://api.x.ai/v1",
+             }), \
              patch("requests.post", side_effect=fake_post), \
              patch("builtins.open", MagicMock()):
             result = tt._transcribe_xai("/tmp/fake.mp3", "grok-stt")

@@ -28,6 +28,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +213,17 @@ class TestCacheMediaBytes:
         assert result is not None
         assert result.kind == "video"
         assert result.media_type == "video/mp4"
+
+    def test_m2a_routes_to_mpeg_audio_without_mime_hint(self):
+        from gateway.platforms.base import cache_media_bytes
+
+        result = cache_media_bytes(b"mpeg-audio", filename="clip.m2a", mime_type="")
+
+        assert result is not None
+        assert result.kind == "audio"
+        assert result.media_type == "audio/mpeg"
+        assert result.path.endswith(".m2a")
+        assert os.path.exists(result.path)
 
     def test_mime_only_resolves_extension(self):
         from gateway.platforms.base import cache_media_bytes

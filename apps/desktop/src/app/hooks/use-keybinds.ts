@@ -48,15 +48,18 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
+import { openSession } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  navigateToWorkspacePage,
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
@@ -101,7 +104,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   const goToSession = (sessionId: null | string) => {
     if (sessionId) {
-      navigate(sessionRoute(sessionId))
+      openSession(sessionId, navigate)
     }
   }
 
@@ -138,9 +141,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
-    'nav.skills': () => navigate(SKILLS_ROUTE),
-    'nav.messaging': () => navigate(MESSAGING_ROUTE),
-    'nav.artifacts': () => navigate(ARTIFACTS_ROUTE),
+    'nav.skills': () => navigateToWorkspacePage(navigate, SKILLS_ROUTE),
+    'nav.messaging': () => navigateToWorkspacePage(navigate, MESSAGING_ROUTE),
+    'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
@@ -173,6 +176,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleRightSidebar': () =>
       layoutHasRootSide('right') ? toggleFileBrowserOpen() : setTerminalTakeover(!$terminalTakeover.get()),
     'view.toggleReview': toggleReview,
+    'view.toggleStatusbar': toggleStatusbarVisible,
     'view.showFiles': showFiles,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     // Create first so the pane's open-effect ensure sees a non-empty set and

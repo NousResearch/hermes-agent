@@ -157,18 +157,12 @@ def clarify_tool(
             choices = None  # empty list → open-ended
 
     if callback is None:
-        return json.dumps(
-            {"error": "Clarify tool is not available in this execution context."},
-            ensure_ascii=False,
-        )
+        return tool_error("Clarify tool is not available in this execution context.")
 
     try:
         raw_response = _invoke_callback(callback, question, choices, multi_select)
     except Exception as exc:
-        return json.dumps(
-            {"error": f"Failed to get user input: {exc}"},
-            ensure_ascii=False,
-        )
+        return tool_error(f"Failed to get user input: {exc}")
 
     if multi_select and choices is not None:
         user_response = _parse_multi_select_response(raw_response)

@@ -152,6 +152,11 @@ docs/superpowers/*
 .update-incomplete
 .update-incomplete.lock
 
+# Checkout fingerprint the __pycache__ tree was last validated against
+# (launch-time stale-bytecode sweep). Runtime state, never a code change.
+.bytecode-fingerprint
+.bytecode-fingerprint.tmp
+
 # Installer-written method stamp in the managed checkout root (scripts/install.sh).
 # Runtime metadata only — never a code change. Ignore so `git status` stays clean
 # and `hermes update`'s untracked autostash does not treat it as a local edit (#66189 / #54855).

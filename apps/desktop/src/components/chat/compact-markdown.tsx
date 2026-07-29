@@ -42,7 +42,7 @@ function tagged<T extends keyof typeof TAG_CLASSES>(Tag: T) {
 function MarkdownAnchor({ children, className, href, ...rest }: ComponentProps<'a'>) {
   if (!href || !/^https?:\/\//i.test(href)) {
     return (
-      <a className={cn('link-chip font-medium', className)} href={href} {...rest}>
+      <a className={cn('link-chip', className)} href={href} {...rest}>
         {children}
       </a>
     )

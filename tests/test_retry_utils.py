@@ -258,3 +258,61 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
 
     assert long_waits, "long-backoff tier never reached within the retry ceiling"
     assert long_waits == [30.0, 60.0, 90.0, 120.0]
+
+
+# ---------------------------------------------------------------------------
+# parse_retry_after_seconds — shared Retry-After parser
+# ---------------------------------------------------------------------------
+
+
+class TestParseRetryAfterSeconds:
+    def test_numeric_string(self):
+        from agent.retry_utils import parse_retry_after_seconds
+        assert parse_retry_after_seconds("120") == 120.0
+        assert parse_retry_after_seconds(" 4.5 ") == 4.5
+
+    def test_numeric_value(self):
+        from agent.retry_utils import parse_retry_after_seconds
+        assert parse_retry_after_seconds(45) == 45.0
+        assert parse_retry_after_seconds(3.25) == 3.25
+
+    def test_negative_clamped_to_zero(self):
+        from agent.retry_utils import parse_retry_after_seconds
+        assert parse_retry_after_seconds("-5") == 0.0
+        assert parse_retry_after_seconds(-1.5) == 0.0
+
+    def test_http_date(self):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        from agent.retry_utils import parse_retry_after_seconds
+
+        future = datetime.now(timezone.utc) + timedelta(seconds=90)
+        seconds = parse_retry_after_seconds(format_datetime(future, usegmt=True))
+        assert seconds is not None and 80 <= seconds <= 91
+
+        past = datetime.now(timezone.utc) - timedelta(seconds=90)
+        assert parse_retry_after_seconds(format_datetime(past, usegmt=True)) == 0.0
+
+    def test_missing_and_garbage(self):
+        from agent.retry_utils import parse_retry_after_seconds
+        assert parse_retry_after_seconds(None) is None
+        assert parse_retry_after_seconds({}) is None
+        assert parse_retry_after_seconds("") is None
+        assert parse_retry_after_seconds("soonish") is None
+        assert parse_retry_after_seconds(object()) is None
+        assert parse_retry_after_seconds(True) is None
+
+    def test_headers_case_insensitive(self):
+        from agent.retry_utils import parse_retry_after_seconds
+        assert parse_retry_after_seconds({"Retry-After": "30"}) == 30.0
+        assert parse_retry_after_seconds({"retry-after": "30"}) == 30.0
+        assert parse_retry_after_seconds({"Content-Type": "x"}) is None
+
+    def test_headers_get_raises(self):
+        from agent.retry_utils import parse_retry_after_seconds
+
+        class Explosive:
+            def get(self, _key):
+                raise RuntimeError("boom")
+
+        assert parse_retry_after_seconds(Explosive()) is None

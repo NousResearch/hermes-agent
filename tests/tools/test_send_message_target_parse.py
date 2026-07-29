@@ -29,6 +29,23 @@ def test_e164_target_still_requires_phone_platform() -> None:
     assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
+def test_photon_dm_chat_guid_is_explicit() -> None:
+    # 'any;-;+1555...' is the platform-native DM space GUID inbound events
+    # carry — it must pass through verbatim instead of bouncing off the
+    # channel directory (issue #69960's secondary target-resolution bug).
+    chat_id, thread_id, is_explicit = _parse_target_ref(
+        "photon", "any;-;+15551234567"
+    )
+
+    assert chat_id == "any;-;+15551234567"
+    assert thread_id is None
+    assert is_explicit is True
+
+
+def test_photon_dm_chat_guid_only_matches_photon() -> None:
+    assert _parse_target_ref("signal", "any;-;+15551234567")[2] is False
+
+
 def test_whatsapp_group_jid_target_is_explicit() -> None:
     chat_id, thread_id, is_explicit = _parse_target_ref(
         "whatsapp", "120363408391911677@g.us"

@@ -57,6 +57,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import {
+  $sessionTiles,
   closeSessionTile,
   dropSessionState,
   openSessionTile,
@@ -68,7 +69,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
-import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
+import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 
@@ -458,7 +459,7 @@ export function useSessionActions({
       }
 
       if (item.route) {
-        navigate(item.route)
+        navigateToWorkspacePage(navigate, item.route)
       }
     },
     [navigate, startFreshSessionDraft]
@@ -557,6 +558,20 @@ export function useSessionActions({
       resetViewSync()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
+
+      // A session is EITHER the main thread OR a tile — never both. openSessionTile
+      // enforces this from the tile side (it refuses to tile the selected session);
+      // this enforces it from the main side. Loading an existing session into main
+      // (cold-start restore, a pasted/⌘K route, a notification jump) while it's also
+      // an open tile would paint the same transcript twice — the workspace pane from
+      // the route and the tile pane in parallel, both fighting one runtime. Drop the
+      // now-redundant tile so main owns it. Runs before the async awaits below (and
+      // before the selection listener homes focus) so the tile is gone the same tick
+      // the route takes over; the warm cache/runtime binding survives for main to reuse.
+      if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
+        closeSessionTile(storedSessionId)
+      }
+
       // Optimistically clear any prior resume-failure latch for this session:
       // we're attempting a fresh resume, so the self-heal in use-route-resume
       // must not keep treating it as stranded. It's re-armed below only if THIS
@@ -1102,6 +1117,7 @@ export function useSessionActions({
   const forkBranch = useCallback(
     async (
       branchMessages: BranchMessage[],
+      sourceSessionId: null | string,
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string
@@ -1119,14 +1135,19 @@ export function useSessionActions({
         await ensureGatewayProfile(profile)
 
         // No title: the backend auto-names the branch from its parent's lineage.
-        const branched = await requestGateway<SessionCreateResponse>('session.create', {
-          cols: 96,
-          source: 'desktop',
-          ...(cwd && { cwd }),
-          ...(profile ? { profile } : {}),
-          messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          ...(parentStoredId && { parent_session_id: parentStoredId })
-        })
+        const branched = sourceSessionId
+          ? await requestGateway<SessionCreateResponse>('session.branch', {
+              session_id: sourceSessionId,
+              count: branchMessages.length
+            })
+          : await requestGateway<SessionCreateResponse>('session.create', {
+              cols: 96,
+              source: 'desktop',
+              ...(cwd && { cwd }),
+              ...(profile ? { profile } : {}),
+              messages: branchMessages.map(({ content, role }) => ({ content, role })),
+              ...(parentStoredId && { parent_session_id: parentStoredId })
+            })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
@@ -1212,7 +1233,7 @@ export function useSessionActions({
         ? messages.findIndex(message => message.id === messageId)
         : messages.findLastIndex(message => message.role === 'assistant' || message.role === 'user')
 
-      const start = at >= 0 ? at : Math.max(messages.length - 1, 0)
+      const start = 0
       const end = at >= 0 ? at + 1 : messages.length
       const branchMessages = toBranchMessages(messages.slice(start, end))
 
@@ -1229,7 +1250,13 @@ export function useSessionActions({
       // must stay on that thread's backend (cache hit for an open session).
       const profile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
 
-      return forkBranch(branchMessages, selectedStoredSessionIdRef.current, $currentCwd.get().trim(), profile)
+      return forkBranch(
+        branchMessages,
+        activeSessionIdRef.current,
+        selectedStoredSessionIdRef.current,
+        $currentCwd.get().trim(),
+        profile
+      )
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]
   )
@@ -1261,7 +1288,7 @@ export function useSessionActions({
           return false
         }
 
-        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim(), profile)
+        return await forkBranch(branchMessages, null, stored?.id ?? storedSessionId, stored?.cwd?.trim(), profile)
       } catch (err) {
         notifyError(err, copy.branchFailed)
 

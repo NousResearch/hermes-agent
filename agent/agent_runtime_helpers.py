@@ -1221,7 +1221,15 @@ def try_recover_primary_transport(
     if agent._is_openrouter_url():
         return False
     provider_lower = (agent.provider or "").strip().lower()
-    if provider_lower in {"nous", "nous-research"}:
+    # Portal OpenAI-wire traffic still rides aggregator retry infra, so one
+    # more rebuilt OpenAI client won't help. Portal Claude on the native
+    # Messages route holds a local Anthropic SDK client whose connection
+    # pool *does* need the rebuild every other anthropic_messages provider
+    # already gets — don't blanket-skip the dual-wire path.
+    if (
+        provider_lower in {"nous", "nous-portal", "nousresearch"}
+        and getattr(agent, "api_mode", None) != "anthropic_messages"
+    ):
         return False
 
     try:
@@ -1895,7 +1903,15 @@ def anthropic_prompt_cache_policy(
 
     if is_native_anthropic:
         return True, True
-    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
+    # Envelope layout is an OpenAI-wire construct. Portal Claude on the native
+    # Messages route must fall through to the third-party anthropic_messages
+    # branch below, which emits inner-block cache_control breakpoints; the
+    # envelope form would be dropped and serve 0% cache hits.
+    if (
+        (is_openrouter or is_nous_portal)
+        and (is_claude or is_kimi)
+        and not is_anthropic_wire
+    ):
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -2059,8 +2075,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     from hermes_cli.providers import determine_api_mode
 
     # ── Determine api_mode if not provided ──
+    # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
+    # resolve correctly; without it determine_api_mode falls back to the
+    # openai_chat overlay default.
     if not api_mode:
-        api_mode = determine_api_mode(new_provider, base_url)
+        api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -2117,6 +2136,16 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     _snapshot["_credential_pool_entry_id"] = getattr(
         agent, "_credential_pool_entry_id", _MISSING
     )
+
+    def _restore_snapshot() -> None:
+        for _name, _value in _snapshot.items():
+            if _value is _MISSING:
+                # Attribute did not exist before the swap — don't fabricate it.
+                continue
+            try:
+                setattr(agent, _name, _value)
+            except Exception:  # noqa: BLE001
+                pass
 
     try:
         # Clear the per-config context_length override so the new model's
@@ -2286,15 +2315,41 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # caller's exception handler can surface a meaningful warning.  The
         # exception is re-raised; cli.py / gateway/run.py / tui_gateway catch
         # it and print "Agent swap failed; change applied to next session".
-        for _name, _value in _snapshot.items():
-            if _value is _MISSING:
-                # Attribute did not exist before the swap — don't fabricate it.
-                continue
-            try:
-                setattr(agent, _name, _value)
-            except Exception:  # noqa: BLE001
-                pass
+        _restore_snapshot()
         raise
+
+    # ── LM Studio: preload before probing context length ──
+    _sm_custom_providers = None
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            get_custom_provider_context_length,
+            load_config,
+        )
+
+        _sm_cfg = load_config()
+        _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
+        _destination_context_intent = get_custom_provider_context_length(
+            model=agent.model,
+            base_url=agent.base_url,
+            custom_providers=_sm_custom_providers,
+        )
+    except Exception:
+        _destination_context_intent = None
+    agent._config_context_length = _destination_context_intent
+    _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
+        _destination_context_intent
+    )
+    if agent._lmstudio_load_was_unverified(_runtime_context_length):
+        logger.warning(
+            "LM Studio model activation was rejected or completed without a "
+            "verifiable active context length during model switch; continuing "
+            "with configured context"
+        )
+    _effective_context_length = agent._effective_lmstudio_context_length(
+        _destination_context_intent,
+        _runtime_context_length,
+    )
 
     # ── Re-evaluate prompt caching ──
     agent._use_prompt_caching, agent._use_native_cache_layout = (
@@ -2306,22 +2361,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         )
     )
 
-    # ── LM Studio: preload before probing context length ──
-    agent._ensure_lmstudio_runtime_loaded()
-
     # ── Update context compressor ──
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         from agent.model_metadata import get_model_context_length
-        # Re-read custom_providers from live config so per-model
-        # context_length overrides are honored when switching to a
-        # custom provider mid-session (closes #15779).
-        _sm_custom_providers = None
-        try:
-            from hermes_cli.config import load_config, get_compatible_custom_providers
-            _sm_cfg = load_config()
-            _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
-        except Exception:
-            _sm_custom_providers = None
+        if _sm_custom_providers is None:
+            try:
+                from hermes_cli.config import get_compatible_custom_providers, load_config
+                _sm_custom_providers = get_compatible_custom_providers(load_config())
+            except Exception:
+                _sm_custom_providers = None
         # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
         # token provider). ``get_model_context_length`` expects a
         # string for its live-probe paths; for Foundry the context
@@ -2333,7 +2381,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             base_url=agent.base_url,
             api_key=_ctx_api_key,
             provider=agent.provider,
-            config_context_length=getattr(agent, "_config_context_length", None),
+            config_context_length=_effective_context_length,
             custom_providers=_sm_custom_providers,
         )
         agent.context_compressor.update_model(
@@ -2456,7 +2504,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
-                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None) -> str:
+                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
+                 skip_tool_execution_middleware: bool = False) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -2635,8 +2684,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
     else:
         def _execute(next_args: dict) -> Any:
-            return _ra().handle_function_call(
-                function_name, next_args, effective_task_id,
+            dispatch_kwargs = dict(
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
@@ -2648,6 +2696,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            if skip_tool_execution_middleware:
+                dispatch_kwargs["skip_tool_execution_middleware"] = True
+            return _ra().handle_function_call(
+                function_name,
+                next_args,
+                effective_task_id,
+                **dispatch_kwargs,
+            )
+
+    if skip_tool_execution_middleware:
+        return _execute(function_args)
 
     from hermes_cli.middleware import run_tool_execution_middleware
 
@@ -2760,6 +2819,129 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+# Placeholder substituted for an empty non-final message that would otherwise
+# make the provider reject the whole request. Kept identical to the stub-
+# creation placeholder in chat_completion_helpers so a healed transcript reads
+# consistently whether the empty turn was caught at write time or send time.
+_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
+
+
+def _msg_has_payload(msg: Dict[str, Any]) -> bool:
+    """True if ``msg`` carries anything the API treats as non-empty content.
+
+    Covers string content, non-empty multimodal content lists, tool_calls,
+    tool_call_id linkage (tool results), and reasoning payloads. Mirrors the
+    emptiness checks used by ``AIAgent._is_thinking_only_assistant`` but is
+    role-agnostic so it can vet user/assistant/tool turns uniformly.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        if content.strip():
+            return True
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                # any typed block (text/image/tool_use/document/...) counts,
+                # as long as a text block is not itself blank
+                if block.get("type") == "text":
+                    if isinstance(block.get("text"), str) and block["text"].strip():
+                        return True
+                    continue
+                return True
+            elif block:
+                return True
+    elif content not in (None, ""):
+        return True
+    # Structural payloads that make an "empty-content" message still valid.
+    if msg.get("tool_calls"):
+        return True
+    if isinstance(msg.get("reasoning_content"), str) and msg["reasoning_content"].strip():
+        return True
+    if msg.get("reasoning") or msg.get("reasoning_details"):
+        return True
+    # Codex Responses item carriers: a commentary-phase assistant turn
+    # persists with content:"" by DESIGN — its text lives in
+    # ``codex_message_items`` (delivered via the interim callback) and the
+    # structured items are replayed for prefix-cache hits.  Same for
+    # ``codex_reasoning_items``.  These turns are never wire-empty on any
+    # api_mode: the codex transport replays the items, and the
+    # chat-completions transport strips the carriers only after this repair
+    # pass has already run.  Treat them as payload so the repair never
+    # rewrites a designed-empty codex turn (July 2026: a write-time pad that
+    # ignored this broke codex commentary replay in CI).
+    if msg.get("codex_message_items") or msg.get("codex_reasoning_items"):
+        return True
+    return False
+
+
+def repair_empty_non_final_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Heal empty-content non-final messages before they reach the provider.
+
+    Root-cause context: a stream that dies with 0 recovered characters (peer
+    reset, stall-kill) could persist an assistant turn with ``content=None``
+    and no tool_calls. The Anthropic message schema — and the litellm/Bedrock
+    proxies in front of it — reject ANY request whose transcript contains an
+    empty non-final message:
+
+        "all messages must have non-empty content except for the optional
+         final assistant message"  (HTTP 400 INVALID_REQUEST_BODY)
+
+    Once such a message lands mid-transcript it poisons EVERY subsequent turn
+    of that session until it scrolls out of context. The write-time guard in
+    ``chat_completion_helpers`` stops NEW stubs, but sessions already carrying
+    one (persisted before the guard, or fed in from a host history) stay stuck
+    and previously needed a manual DB edit + gateway restart to recover.
+
+    This pass is the self-healing counterpart: it runs unconditionally on the
+    per-call ``api_messages`` copy, so a poisoned transcript repairs itself
+    IN MEMORY on the very next send — no restart, no DB surgery. The final
+    message is left untouched (an empty final assistant turn is legal). The
+    stored conversation history is never mutated; only the wire copy is
+    repaired, so the UI/session trace stays faithful.
+
+    Repair strategy is substitution, not deletion: dropping a mid-transcript
+    turn can break role alternation and tool-call pairing, whereas an honest
+    minimal placeholder keeps the sequence intact and reads correctly as an
+    interrupted turn on replay.
+    """
+    if not messages or len(messages) < 2:
+        return messages
+
+    repaired: List[Dict[str, Any]] = []
+    healed = 0
+    last_idx = len(messages) - 1
+    for idx, msg in enumerate(messages):
+        if (
+            idx != last_idx
+            and isinstance(msg, dict)
+            # tool results are validated by their own orphan/pairing pass; an
+            # empty tool result is a separate (and rarer) concern.
+            and msg.get("role") in ("assistant", "user")
+            and not _msg_has_payload(msg)
+        ):
+            # Shallow-copy so stored history / prompt caching stays byte-stable.
+            fixed = dict(msg)
+            fixed["content"] = _INTERRUPTED_PLACEHOLDER
+            repaired.append(fixed)
+            healed += 1
+        else:
+            repaired.append(msg)
+
+    if healed:
+        _ra().logger.warning(
+            "Pre-call sanitizer: healed %d empty non-final message(s) by "
+            "substituting placeholder content — an empty-content turn was in "
+            "the transcript and would 400 the request ('messages must have "
+            "non-empty content' / INVALID_REQUEST_BODY). Self-recovering the "
+            "poisoned transcript in memory; no restart needed.",
+            healed,
+        )
+        return repaired
+    return messages
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2779,6 +2961,15 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             continue
         filtered.append(msg)
     messages = filtered
+
+    # --- Heal empty-content non-final messages (self-recovery) ---
+    # A dead stream can leave an empty assistant stub (or an empty user turn)
+    # mid-transcript; the provider then 400s EVERY subsequent request until it
+    # scrolls out. Repair it here, on the per-call copy, so a poisoned session
+    # recovers itself in memory on the next send — no restart, no DB edit.
+    # Done first so a substituted turn participates normally in the tool-pair
+    # and dedup passes below.
+    messages = repair_empty_non_final_messages(messages)
 
     # --- Drop empty / malformed tool_calls arrays on assistant messages ---
     # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
@@ -3239,75 +3430,139 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     return changed
 
 
+def _iter_httpx_pool_objects(http_client: Any):
+    """Yield httpcore pool objects reachable from an httpx client.
+
+    Hermes' keepalive client (#10324 / ``_build_keepalive_http_client``) and
+    any ``HTTP(S)_PROXY`` configuration put live connections on *mounted*
+    transports (``client._mounts``), not only on the default
+    ``client._transport``. Walking the default transport alone makes
+    ``force_close_tcp_sockets`` return 0 while a stream is still mid-recv —
+    the interrupt logs success and the provider keeps burning the slot
+    (#72975).
+    """
+    seen_pools: set[int] = set()
+
+    def _emit(pool: Any):
+        if pool is None:
+            return
+        marker = id(pool)
+        if marker in seen_pools:
+            return
+        seen_pools.add(marker)
+        yield pool
+
+    def _pools_for_transport(transport: Any):
+        if transport is None:
+            return
+        # Normal httpx.HTTPTransport / HTTPProxy-as-transport: connections
+        # live under ``_pool``. HTTPProxy itself *is* a ConnectionPool and
+        # may be mounted directly — then ``_connections`` is on the
+        # transport.
+        pool = getattr(transport, "_pool", None)
+        if pool is not None:
+            yield from _emit(pool)
+            return
+        if getattr(transport, "_connections", None) is not None:
+            yield from _emit(transport)
+
+    try:
+        yield from _pools_for_transport(getattr(http_client, "_transport", None))
+        mounts = getattr(http_client, "_mounts", None) or {}
+        for _pattern, mounted in list(mounts.items()):
+            yield from _pools_for_transport(mounted)
+    except Exception:
+        return
+
+
+def _connection_candidates(conn: Any):
+    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    seen: set[int] = set()
+    stack = [conn]
+    while stack:
+        candidate = stack.pop()
+        if candidate is None:
+            continue
+        marker = id(candidate)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        yield candidate
+        inner = getattr(candidate, "_connection", None)
+        if inner is not None and id(inner) not in seen:
+            stack.append(inner)
+
+
 def _iter_pool_sockets(client: Any):
     """Yield raw sockets reachable from an OpenAI/httpx client pool.
 
     httpcore 1.x stores the concrete HTTP11/HTTP2 connection under
     ``conn._connection``; older versions exposed stream attributes directly
-    on the pool entry. Keep the traversal defensive because these are private
-    transport internals and vary across httpx/httpcore releases.
+    on the pool entry. Proxy tunnels wrap another layer
+    (``TunnelHTTPConnection`` / ``ForwardHTTPConnection``). Keep the
+    traversal defensive because these are private transport internals and
+    vary across httpx/httpcore releases.
+
+    Also walks ``httpx`` mount transports — see ``_iter_httpx_pool_objects``.
     """
     try:
         http_client = getattr(client, "_client", None)
         if http_client is None:
-            return
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return
+            # Some SDK wrappers *are* the httpx client (or expose the pool
+            # directly). Fall through so mount-aware discovery still runs.
+            http_client = client
+        pools = list(_iter_httpx_pool_objects(http_client))
+    except Exception:
+        return
+
+    if not pools:
+        return
+
+    seen: set[int] = set()
+    for pool in pools:
         connections = (
             getattr(pool, "_connections", None)
             or getattr(pool, "_pool", None)
             or []
         )
-    except Exception:
-        return
-
-    seen: set[int] = set()
-    for conn in list(connections):
-        candidates = [conn]
-        inner = getattr(conn, "_connection", None)
-        if inner is not None:
-            candidates.append(inner)
-        for candidate in candidates:
-            stream = (
-                getattr(candidate, "_network_stream", None)
-                or getattr(candidate, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                get_extra_info = getattr(stream, "get_extra_info", None)
-                if callable(get_extra_info):
-                    try:
-                        sock = get_extra_info("socket")
-                    except Exception:
-                        sock = None
-            if sock is None:
-                wrapped = getattr(stream, "stream", None)
-                if wrapped is not None:
-                    sock = getattr(wrapped, "_sock", None)
-            if sock is None:
-                # anyio-backed streams expose the raw socket through
-                # SocketAttribute.raw_socket when available.
-                wrapped = getattr(stream, "_stream", None)
-                extra = getattr(wrapped, "extra", None)
-                if callable(extra):
-                    try:
-                        from anyio.abc import SocketAttribute
-                        sock = extra(SocketAttribute.raw_socket)
-                    except Exception:
-                        sock = None
-            if sock is None:
-                continue
-            marker = id(sock)
-            if marker in seen:
-                continue
-            seen.add(marker)
-            yield sock
+        for conn in list(connections):
+            for candidate in _connection_candidates(conn):
+                stream = (
+                    getattr(candidate, "_network_stream", None)
+                    or getattr(candidate, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    get_extra_info = getattr(stream, "get_extra_info", None)
+                    if callable(get_extra_info):
+                        try:
+                            sock = get_extra_info("socket")
+                        except Exception:
+                            sock = None
+                if sock is None:
+                    wrapped = getattr(stream, "stream", None)
+                    if wrapped is not None:
+                        sock = getattr(wrapped, "_sock", None)
+                if sock is None:
+                    # anyio-backed streams expose the raw socket through
+                    # SocketAttribute.raw_socket when available.
+                    wrapped = getattr(stream, "_stream", None)
+                    extra = getattr(wrapped, "extra", None)
+                    if callable(extra):
+                        try:
+                            from anyio.abc import SocketAttribute
+                            sock = extra(SocketAttribute.raw_socket)
+                        except Exception:
+                            sock = None
+                if sock is None:
+                    continue
+                marker = id(sock)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                yield sock
 
 
 def cleanup_dead_connections(agent) -> bool:

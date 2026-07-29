@@ -119,6 +119,57 @@ def test_run_one_job_exception_marks_failure(monkeypatch):
     assert marks == [("j6", False)]
 
 
+def test_run_one_job_base_exception_records_failure_then_reraises(monkeypatch):
+    """#73973: a BaseException escaping run_job (CancelledError re-raised by the
+    inner teardown handler, KeyboardInterrupt, SystemExit) must still record the
+    failure via mark_job_run — otherwise a claim_dispatch()-consumed one-shot is
+    left wedged with completed==times but last_run_at never written. The
+    BaseException itself is re-raised after recording so shutdown semantics are
+    preserved."""
+    import asyncio
+
+    import pytest
+
+    for exc in (asyncio.CancelledError(), KeyboardInterrupt(), SystemExit(1)):
+        def boom(job, *, defer_agent_teardown=None, _exc=exc):
+            raise _exc
+
+        monkeypatch.setattr(s, "run_job", boom)
+        marks = []
+        monkeypatch.setattr(
+            s, "mark_job_run",
+            lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok, err)),
+        )
+
+        with pytest.raises(type(exc)):
+            s.run_one_job({"id": "jbase", "name": "t"})
+
+        assert marks and marks[0][0] == "jbase" and marks[0][1] is False, (
+            f"{type(exc).__name__}: failure was not recorded"
+        )
+        # Empty str(exc) (e.g. bare CancelledError) falls back to the class name.
+        assert marks[0][2], f"{type(exc).__name__}: error text must be non-empty"
+
+
+def test_run_one_job_plain_exception_still_swallowed(monkeypatch):
+    """The BaseException widening must not change plain-Exception behavior:
+    recorded, returns False, NOT re-raised."""
+    def boom(job, *, defer_agent_teardown=None):
+        raise ValueError("plain failure")
+
+    monkeypatch.setattr(s, "run_job", boom)
+    marks = []
+    monkeypatch.setattr(
+        s, "mark_job_run",
+        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok)),
+    )
+
+    ok = s.run_one_job({"id": "jplain", "name": "t"})
+
+    assert ok is False
+    assert marks == [("jplain", False)]
+
+
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
     execute run_job inside a profile secret scope so credential reads
@@ -159,6 +210,104 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_run["scope"] is not None
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after run_one_job returned (no leak).
+    assert ss.current_secret_scope() is None
+
+
+def test_run_one_job_env_injected_credential_resolves_without_multiplex(
+    monkeypatch, tmp_path
+):
+    """Regression for #65773: single-profile deployment (multiplex OFF) where
+    the provider key is injected via the process environment ONLY (container
+    env var / systemd Environment= / secret-manager wrapper) and is absent
+    from <home>/.env.
+
+    run_one_job installs a <home>/.env secret scope around every job. Before
+    c758ded6d (#69057, salvage of #67827) an installed scope was authoritative
+    even with multiplexing off, so the env-injected key resolved to empty
+    inside cron, the client shipped the "no-key-required" placeholder, and
+    every provider call 401'd — while interactive turns on the same deployment
+    (which never install a scope when multiplex is off) kept working.
+
+    Behavior contract at the cron layer, regardless of how it's implemented
+    (scope-miss fallthrough on main today, or a multiplex guard on the
+    installation site): during run_job with multiplex OFF,
+    get_secret(<env-injected key>) must return the process-environment value.
+    """
+    from agent import secret_scope as ss
+
+    # Profile .env exists but does NOT carry the provider key — exactly the
+    # reported deployment shape.
+    (tmp_path / ".env").write_text("UNRELATED_KEY=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "env-injected-key")
+
+    observed = {}
+
+    def fake_run_job(job, *, defer_agent_teardown=None):
+        # This is where resolve_runtime_provider() reads the credential.
+        observed["key"] = ss.get_secret("DEEPINFRA_API_KEY")
+        # And a key that IS in .env must still resolve (scope stays useful).
+        observed["env_file_key"] = ss.get_secret("UNRELATED_KEY")
+        return (True, "out", "final", None)
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    # set_multiplex_active writes a module-level global (deployment mode, not
+    # per-task state) — restore whatever was there to avoid cross-test leaks.
+    prev_multiplex = ss.is_multiplex_active()
+    ss.set_multiplex_active(False)
+    try:
+        ok = s.run_one_job({"id": "j-65773", "name": "t"})
+    finally:
+        ss.set_multiplex_active(prev_multiplex)
+
+    assert ok is True
+    # The user-facing symptom: this was None/"" before the fix (key absent
+    # from .env), which became the "no-key-required" placeholder → HTTP 401.
+    assert observed["key"] == "env-injected-key"
+    # .env-sourced secrets keep resolving through the scope.
+    assert observed["env_file_key"] == "x"
+    # No scope leaks out of run_one_job.
+    assert ss.current_secret_scope() is None
+
+
+def test_run_one_job_env_file_wins_over_environ_without_multiplex(
+    monkeypatch, tmp_path
+):
+    """Precedence half of #65773: when a key exists in BOTH <home>/.env and
+    the process environment, cron must resolve the .env value (the installed
+    scope is an overlay over os.environ, checked first — matching
+    load_hermes_dotenv's .env-overrides-shell precedence on interactive paths).
+    """
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("DEEPINFRA_API_KEY=from-env-file\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "stale-shell-value")
+
+    observed = {}
+
+    def fake_run_job(job, *, defer_agent_teardown=None):
+        observed["key"] = ss.get_secret("DEEPINFRA_API_KEY")
+        return (True, "out", "final", None)
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    prev_multiplex = ss.is_multiplex_active()
+    ss.set_multiplex_active(False)
+    try:
+        ok = s.run_one_job({"id": "j-65773b", "name": "t"})
+    finally:
+        ss.set_multiplex_active(prev_multiplex)
+
+    assert ok is True
+    assert observed["key"] == "from-env-file"
     assert ss.current_secret_scope() is None
 
 

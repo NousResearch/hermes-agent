@@ -3,6 +3,7 @@ import { type PointerEvent as ReactPointerEvent, type RefObject, useCallback, us
 import {
   POPOUT_ESTIMATED_HEIGHT,
   POPOUT_WIDTH_REM,
+  type PopoutBounds,
   type PopoutPosition,
   type PopoutSize,
   readPopoutBounds,
@@ -35,6 +36,8 @@ interface PressState {
 
 interface ComposerPopoutGesturesOptions {
   composerRef: RefObject<HTMLFormElement | null>
+  /** Layout zone this composer belongs to — the scope its float is stored under. */
+  groupId: string
   onDock: () => void
   onPopOut: () => void
   poppedOut: boolean
@@ -46,7 +49,15 @@ function gestureTargetOk(target: EventTarget | null) {
     return false
   }
 
-  return !target.closest('button, a, input, textarea, select, [role="menuitem"], [data-radix-popper-content-wrapper]')
+  // `composer-no-drag`: chrome that lives inside the composer root but isn't
+  // part of the draggable frame — the floating pill strips. The pills are
+  // `button`s and already excluded, but the strip's own box (the gaps between
+  // pills) isn't, so without this a press landing between two badges still
+  // drags. The strips are `w-fit`, so this costs the grab band only the width
+  // of the badges themselves.
+  return !target.closest(
+    'button, a, input, textarea, select, [role="menuitem"], [data-radix-popper-content-wrapper], [data-slot="composer-no-drag"]'
+  )
 }
 
 /** Floating composer's 5px outer frame — grab here to drag without long-press. */
@@ -67,10 +78,17 @@ function isFloatDragPlatform(target: EventTarget | null) {
 }
 
 /** 0 (far) → 1 (inside the dock zone). Drives both the dock glow and the
- *  release-to-dock test (which fires at proximity 1). */
-function dockProximityOf(rect: DOMRect) {
-  const horizontalDist = Math.abs(rect.left + rect.width / 2 - window.innerWidth / 2)
-  const verticalGap = window.innerHeight - DOCK_ZONE_BOTTOM_PX - rect.bottom
+ *  release-to-dock test (which fires at proximity 1).
+ *
+ *  Measured against THIS surface's area, not the window: the dock target is the
+ *  docked composer, which sits at the bottom-center of its own chat surface. In
+ *  a split (or any layout where the chat isn't the full window) the viewport's
+ *  bottom-center is somewhere else entirely, so dragging onto the real dock
+ *  never registered. */
+function dockProximityOf(rect: DOMRect, area?: PopoutBounds) {
+  const a = area ?? { bottom: window.innerHeight, left: 0, right: window.innerWidth, top: 0 }
+  const horizontalDist = Math.abs(rect.left + rect.width / 2 - (a.left + a.right) / 2)
+  const verticalGap = a.bottom - DOCK_ZONE_BOTTOM_PX - rect.bottom
 
   const v = verticalGap <= 0 ? 1 : Math.max(0, 1 - verticalGap / DOCK_VERTICAL_FALLOFF_PX)
 
@@ -109,6 +127,7 @@ function popoutPositionUnderPointer(
  */
 export function useComposerPopoutGestures({
   composerRef,
+  groupId,
   onDock,
   onPopOut,
   poppedOut,
@@ -142,7 +161,12 @@ export function useComposerPopoutGestures({
   const beginFloatDrag = useCallback(
     (state: PressState, clientX: number, clientY: number, next: PopoutPosition, size?: PopoutSize) => {
       clearTimer()
-      const clamped = setComposerPopoutPosition(next, { area: readPopoutBounds(composerRef.current), size })
+
+      const clamped = setComposerPopoutPosition(groupId, next, {
+        area: readPopoutBounds(composerRef.current),
+        size
+      })
+
       liveRef.current = clamped
 
       state.mode = 'float'
@@ -154,7 +178,7 @@ export function useComposerPopoutGestures({
 
       setDragging(true)
     },
-    [clearTimer, composerRef]
+    [clearTimer, composerRef, groupId]
   )
 
   const peelOffFromDock = useCallback(
@@ -255,17 +279,19 @@ export function useComposerPopoutGestures({
 
       const composer = composerRef.current
       const size = composer ? { height: composer.offsetHeight, width: composer.offsetWidth } : undefined
+      const area = readPopoutBounds(composer)
 
       liveRef.current = setComposerPopoutPosition(
+        groupId,
         {
           bottom: state.startBottom - (pending.y - state.startY),
           right: state.startRight - (pending.x - state.startX)
         },
-        { area: readPopoutBounds(composer), size }
+        { area, size }
       )
 
       if (composer) {
-        setDockProximity(dockProximityOf(composer.getBoundingClientRect()))
+        setDockProximity(dockProximityOf(composer.getBoundingClientRect(), area))
       }
     }
 
@@ -317,13 +343,14 @@ export function useComposerPopoutGestures({
       if (state.armed && state.mode === 'float') {
         const composer = composerRef.current
         const rect = composer?.getBoundingClientRect()
+        const area = readPopoutBounds(composer)
 
-        if (rect && dockProximityOf(rect) >= 1) {
+        if (rect && dockProximityOf(rect, area) >= 1) {
           onDock()
         } else {
           // Persist the resting position once, on release — never per move.
           const size = composer ? { height: composer.offsetHeight, width: composer.offsetWidth } : undefined
-          setComposerPopoutPosition(liveRef.current, { area: readPopoutBounds(composer), persist: true, size })
+          setComposerPopoutPosition(groupId, liveRef.current, { area, persist: true, size })
         }
       }
 
@@ -340,7 +367,7 @@ export function useComposerPopoutGestures({
       window.removeEventListener('pointerup', handleUp)
       window.removeEventListener('pointercancel', handleUp)
     }
-  }, [composerRef, onDock, peelOffFromDock, resetGesture])
+  }, [composerRef, groupId, onDock, peelOffFromDock, resetGesture])
 
   useEffect(() => clearTimer, [clearTimer])
 

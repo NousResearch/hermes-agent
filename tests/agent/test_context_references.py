@@ -112,8 +112,9 @@ def test_expand_file_range_and_folder_listing(sample_repo: Path):
     )
 
     assert result.expanded
-    assert "Review and" in result.message
-    assert "Review @file:src/main.py:1-2" not in result.message
+    # The typed `@` tokens stay in the prose — clients render each one as an
+    # inline chip where the user put it, rather than a detached list.
+    assert result.message.startswith("Review @file:src/main.py:1-2 and @folder:src/")
     assert "--- Attached Context ---" in result.message
     assert "def alpha():" in result.message
     assert "return 'changed'" in result.message

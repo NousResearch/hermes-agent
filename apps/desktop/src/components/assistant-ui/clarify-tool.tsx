@@ -489,6 +489,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       const key = event.key.toLowerCase()
 
+      // Only the letters this card actually renders a row for. Anything past
+      // the last row belongs to the composer — the user is typing a message
+      // instead of picking an option, and swallowing the keystroke here would
+      // make the first letter of it vanish.
       if (key.length === 1 && key >= 'a' && key <= 'z') {
         const index = key.charCodeAt(0) - 97
 
@@ -538,11 +542,13 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   }
 
   return (
-    // `data-clarify-choices` marks the panel as owning printable/Enter keys
-    // while its A/B/C… shortcuts are live, so the global type-to-focus listener
-    // (`composerFocusBlockedBySurface`) stands down and the letters reach this
-    // card instead of being redirected into the composer.
-    <ClarifyShell className="grid gap-2 px-2.5 py-2" data-clarify-choices={hasChoices ? '' : undefined}>
+    // `data-clarify-choices` marks the panel as owning its OWN shortcut keys
+    // (Enter, and 1..N+1 / A.. for the N choices plus "Other") while they're
+    // live, so the global type-to-focus listener (`clarifyCardOwnsKey`) yields
+    // exactly those and lets every other printable through to the composer —
+    // typing a real message instead of picking an option stays possible. The
+    // value is the choice count so the check needs no store access.
+    <ClarifyShell className="grid gap-2 px-2.5 py-2" data-clarify-choices={hasChoices ? choices.length : undefined}>
       <div className="flex items-start gap-2">
         <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
         <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />

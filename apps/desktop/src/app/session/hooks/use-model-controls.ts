@@ -55,6 +55,29 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
     [queryClient]
   )
 
+  // Settings → Model writes the profile default, which the backend applies to
+  // new sessions only. Keep a live session's renderer state and session-scoped
+  // model-options cache authoritative instead of briefly painting the saved
+  // default as if the active agent had switched. Marking the composer as
+  // default-derived still lets the next fresh draft reseed from profile config.
+  const applySavedMainModel = useCallback(
+    (provider: string, model: string) => {
+      const liveSessionId = $activeSessionId.get()
+
+      setCurrentModelSource('default')
+
+      if (!liveSessionId) {
+        setCurrentProvider(provider)
+        setCurrentModel(model)
+      }
+
+      // A null session id is the profile-global model-options key. Never patch
+      // the live session key here: only config.set --session may change it.
+      updateModelOptionsCache(null, provider, model, false)
+    },
+    [updateModelOptionsCache]
+  )
+
   // Seed the composer's model state from the profile default. `force` reseeds
   // for a profile swap (the new profile has its own default); otherwise this
   // only fills an EMPTY selection so a user's pick (plain UI state in
@@ -220,5 +243,5 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
     [copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
-  return { refreshCurrentModel, selectModel, updateModelOptionsCache }
+  return { applySavedMainModel, refreshCurrentModel, selectModel }
 }

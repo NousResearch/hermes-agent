@@ -17,11 +17,13 @@ import pytest
 import yaml
 
 from hermes_cli.agent_import import (
+    ENTRY_DELIMITER,
     AgentImporter,
     claude_rule_to_command_pattern,
     detect_agents,
     extract_markdown_entries,
     is_secret_key,
+    parse_existing_memory_entries,
     sanitize_mcp_env,
 )
 
@@ -484,6 +486,86 @@ class TestMergeSemantics:
         assert (hermes_home / "memories" / "MEMORY.md").read_text() == first
         memory_items = [i for i in report["items"] if i["kind"] == "claude-md"]
         assert memory_items[0]["status"] == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# The DESTINATION memories/MEMORY.md is a §-delimited store, not a document
+# ---------------------------------------------------------------------------
+
+# A realistic hand-edited store: one entry, no "§", with a fenced code block
+# and a markdown table — exactly the content extract_markdown_entries() drops.
+EXISTING_MEMORY = """Homelab runbook. Restart the ingress controller with:
+
+```bash
+kubectl -n ingress rollout restart deploy/nginx
+```
+
+Escalation ladder:
+
+| Severity | Contact | Window |
+|----------|---------|--------|
+| SEV1     | on-call | 15m    |
+| SEV2     | #ops    | 4h     |
+
+Never page for SEV3.
+"""
+
+
+class TestExistingMemoryStorePreserved:
+    """An import must not shred the memory store it merges into.
+
+    ``memories/MEMORY.md`` is the entry-delimited store written by
+    ``MemoryStore._write_file``; a single-entry or hand-edited store contains
+    no ``§`` delimiter.  Parsing it with the *source* markdown extractor drops
+    code blocks and table rows and splits one entry into fragments, and the
+    merged result is written straight back over the file.
+    """
+
+    @pytest.fixture()
+    def seeded_home(self, hermes_home):
+        memory = hermes_home / "memories" / "MEMORY.md"
+        memory.parent.mkdir(parents=True, exist_ok=True)
+        memory.write_text(EXISTING_MEMORY, encoding="utf-8")
+        return hermes_home
+
+    def test_undelimited_store_is_one_entry(self, seeded_home):
+        path = seeded_home / "memories" / "MEMORY.md"
+        assert ENTRY_DELIMITER not in path.read_text(encoding="utf-8")
+        assert parse_existing_memory_entries(path) == [EXISTING_MEMORY.strip()]
+
+    def test_agrees_with_memory_store_parser(self, seeded_home):
+        from tools.memory_tool import MemoryStore
+
+        path = seeded_home / "memories" / "MEMORY.md"
+        raw = path.read_text(encoding="utf-8")
+        assert parse_existing_memory_entries(path) == MemoryStore._parse_entries(raw)
+
+    def test_import_preserves_existing_entry_verbatim(
+            self, claude_tree, seeded_home):
+        path = seeded_home / "memories" / "MEMORY.md"
+        run_import("claude-code", claude_tree, seeded_home, execute=True)
+        entries = path.read_text(encoding="utf-8").split(ENTRY_DELIMITER)
+        # The pre-existing store survives byte-intact as a SINGLE entry ...
+        assert entries[0] == EXISTING_MEMORY.strip()
+        # ... including the parts the markdown extractor would have dropped.
+        assert "kubectl -n ingress rollout restart deploy/nginx" in entries[0]
+        assert "| SEV1     | on-call | 15m    |" in entries[0]
+        # ... and the imported entries are still appended after it.
+        assert any("type hints" in e for e in entries[1:])
+
+    def test_import_backs_up_the_previous_store(self, claude_tree, seeded_home):
+        memories = seeded_home / "memories"
+        run_import("claude-code", claude_tree, seeded_home, execute=True)
+        backups = sorted(memories.glob("MEMORY.md.bak.*"))
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == EXISTING_MEMORY
+
+    def test_dry_run_leaves_the_store_untouched(self, claude_tree, seeded_home):
+        memories = seeded_home / "memories"
+        run_import("claude-code", claude_tree, seeded_home, execute=False)
+        assert (memories / "MEMORY.md").read_text(
+            encoding="utf-8") == EXISTING_MEMORY
+        assert not list(memories.glob("MEMORY.md.bak.*"))
 
 
 # ---------------------------------------------------------------------------

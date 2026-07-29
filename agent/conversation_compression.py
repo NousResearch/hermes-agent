@@ -1402,7 +1402,10 @@ def compress_context(
     # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
     # engine session-switch. The conversation keeps one durable id for life,
     # eliminating the session-rotation bug cluster. Default True (2107b86024).
-    in_place = bool(getattr(agent, "compression_in_place", False))
+    # Default True matches DEFAULT_CONFIG / #38763. A missing attribute must
+    # NOT fall back to rotation mode — that re-enables the pre-lease drift
+    # path and can wedge busy sessions that never set the flag.
+    in_place = bool(getattr(agent, "compression_in_place", True))
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False
@@ -1712,6 +1715,13 @@ def compress_context(
         # non-destructive — pre-compaction rows are soft-archived (active=0,
         # compacted=1), stay searchable and recoverable, so snapshot/durable
         # drift cannot lose data there and must not abort compaction.
+        #
+        # When durable DID grow, ADOPT it and continue rather than aborting.
+        # Aborting returned the stale snapshot unchanged, so busy sessions
+        # (memory review / shared session_id writers) stayed permanently
+        # behind the DB: every /compress and auto-compress saw
+        # "changed before lease acquisition", surfaced as the misleading
+        # "No changes from compression", and never reclaimed tokens.
         if not in_place and _lock_db is not None and _lock_sid:
             durable_loader = getattr(
                 type(_lock_db), "get_messages_as_conversation", None
@@ -1719,16 +1729,19 @@ def compress_context(
             if callable(durable_loader):
                 durable_parent = durable_loader(_lock_db, _lock_sid)
                 if isinstance(durable_parent, list) and len(durable_parent) > len(messages):
-                    logger.warning(
-                        "compression aborted: session=%s changed before lease "
-                        "acquisition; preserving newer durable messages",
+                    logger.info(
+                        "compression: session=%s grew before lease "
+                        "(%d → %d msgs); adopting durable snapshot",
                         _lock_sid,
+                        len(messages),
+                        len(durable_parent),
                     )
-                    _release_lock()
-                    existing_prompt = getattr(agent, "_cached_system_prompt", None)
-                    if not existing_prompt:
-                        existing_prompt = agent._build_system_prompt(system_message)
-                    return messages, existing_prompt
+                    messages = durable_parent
+                    _pre_msg_count = len(messages)
+                    # Token estimate was for the stale snapshot; clear it so
+                    # the compressor re-derives from the adopted transcript
+                    # instead of under-counting the newly visible rows.
+                    approx_tokens = 0
 
         # Notify external memory provider before compression discards context.
         # The provider's on_pre_compress() may return a string of insights it
@@ -2027,14 +2040,13 @@ def compress_context(
             # (same startswith gate as the restore path); otherwise the
             # request layer falls back to the legacy single-breakpoint
             # layout with the prompt bytes untouched.
-            try:
-                from agent.system_prompt import build_system_prompt_parts as _build_parts
+            from agent.system_prompt import reconstruct_static_prefix
 
-                _static = _build_parts(agent, system_message=system_message)["stable"]
-                if _static and cached_system_prompt.startswith(_static):
-                    agent._cached_system_prompt_static = _static
-            except Exception:
-                pass
+            reconstruct_static_prefix(
+                agent,
+                system_message=system_message,
+                log_label="compression keep-prompt",
+            )
         else:
             new_system_prompt = agent._build_system_prompt(system_message)
             agent._cached_system_prompt = new_system_prompt
@@ -2709,16 +2721,28 @@ def try_shrink_image_parts_in_messages(
             media_type = "image/jpeg"
         return f"data:{media_type};base64,{data}"
 
-    def _write_data_url_to_source(source: dict, data_url: str) -> None:
+    def _write_data_url_to_source(source: dict, data_url: str) -> dict:
+        """Return a NEW source dict carrying the re-encoded payload.
+
+        Copy-on-write: content parts on the per-call ``api_messages`` list may
+        be shared references into the persistent conversation history (the
+        per-message copy is shallow, and cache decoration only deep-copies the
+        marked messages). Mutating the existing dict would rewrite the stored
+        transcript with the degraded image — so the caller replaces the part,
+        never edits it in place.
+        """
         header, _, data = data_url.partition(",")
         media_type = "image/jpeg"
         if header.startswith("data:"):
             candidate = header[len("data:"):].split(";", 1)[0].strip()
             if candidate.startswith("image/"):
                 media_type = candidate
-        source["type"] = "base64"
-        source["media_type"] = media_type
-        source["data"] = data
+        return {
+            **source,
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }
 
     for msg in api_messages:
         if not isinstance(msg, dict):
@@ -2726,7 +2750,13 @@ def try_shrink_image_parts_in_messages(
         content = msg.get("content")
         if not isinstance(content, list):
             continue
-        for part in content:
+        # Copy-on-write per message: never mutate part/source dicts in place —
+        # they can alias the stored conversation history (see
+        # _write_data_url_to_source). Build a replacement content list on the
+        # first shrunken part and reassign msg["content"] (a top-level write on
+        # the per-call message copy, which never reaches history).
+        new_content: list | None = None
+        for part_idx, part in enumerate(content):
             if not isinstance(part, dict):
                 continue
             ptype = part.get("type")
@@ -2735,7 +2765,12 @@ def try_shrink_image_parts_in_messages(
                 url = _source_to_data_url(source)
                 resized, unshrinkable = _shrink_data_url(url or "")
                 if resized and isinstance(source, dict):
-                    _write_data_url_to_source(source, resized)
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {
+                        **part,
+                        "source": _write_data_url_to_source(source, resized),
+                    }
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
@@ -2749,17 +2784,26 @@ def try_shrink_image_parts_in_messages(
                 url = image_value.get("url", "")
                 resized, unshrinkable = _shrink_data_url(url)
                 if resized:
-                    image_value["url"] = resized
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {
+                        **part,
+                        "image_url": {**image_value, "url": resized},
+                    }
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
             elif isinstance(image_value, str):
                 resized, unshrinkable = _shrink_data_url(image_value)
                 if resized:
-                    part["image_url"] = resized
+                    if new_content is None:
+                        new_content = list(content)
+                    new_content[part_idx] = {**part, "image_url": resized}
                     changed_count += 1
                 elif unshrinkable:
                     unshrinkable_oversized += 1
+        if new_content is not None:
+            msg["content"] = new_content
 
     if changed_count:
         logger.info(

@@ -2506,6 +2506,14 @@ DEFAULT_CONFIG = {
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.
         "max_spawn_depth": 1,        # depth (1 = flat [default], 2 = orchestrator→leaf, 3+ = deeper)
+        # When a delegation's owner process exits AFTER its consolidated result
+        # was already delivered to the parent conversation, the leftover row is
+        # pure bookkeeping — the chat already has the result. Replaying it as a
+        # terminal notice costs context and attention for zero signal, and a
+        # burst of them trains the reader to ignore the genuinely-lost case
+        # (owner died with children unaccounted for), which is always reported.
+        # Set to false to keep those post-delivery records visible.
+        "suppress_delivered_owner_exit_tombstones": True,
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
         # When a subagent hits a dangerous-command approval prompt, the parent's
         # prompt_toolkit TUI owns stdin — a thread-local input() call from the

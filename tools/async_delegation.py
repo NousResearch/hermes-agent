@@ -115,6 +115,36 @@ _monitor_lock = threading.Lock()
 _monitor_thread: Optional[threading.Thread] = None
 _monitor_stop = threading.Event()
 
+#: Default for ``delegation.suppress_delivered_owner_exit_tombstones``.
+_DEFAULT_SUPPRESS_DELIVERED_TOMBSTONES = True
+
+
+def _suppress_delivered_tombstones() -> bool:
+    """Whether a post-delivery owner-exit tombstone stays out of the chat.
+
+    Behavioral setting, so it lives in ``config.yaml`` under
+    ``delegation.suppress_delivered_owner_exit_tombstones`` (never a new env
+    var — ``.env`` is for secrets). Defaults to ``True``: the parent surface
+    already received the consolidated result, so re-entering the conversation
+    to say "and the owner process later exited" is noise that trains the
+    reader to ignore the genuinely-lost case. Set it ``False`` to keep the
+    bookkeeping record visible.
+    """
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+
+        value = cfg_get(
+            read_raw_config(), "delegation", "suppress_delivered_owner_exit_tombstones"
+        )
+        if value is None:
+            value = DEFAULT_CONFIG["delegation"][
+                "suppress_delivered_owner_exit_tombstones"
+            ]
+        return bool(value)
+    except Exception:  # pragma: no cover - config must never break recovery
+        logger.debug("suppress_delivered_owner_exit_tombstones lookup failed", exc_info=True)
+    return _DEFAULT_SUPPRESS_DELIVERED_TOMBSTONES
+
 
 def _db_path():
     return get_hermes_home() / "state.db"
@@ -290,24 +320,146 @@ def _note_delivery_attempt(delegation_id: str) -> None:
         )
 
 
+#: Terminal statuses a *child* may report. Anything else (or a missing child
+#: record entirely) means that child never reached a terminal state and its
+#: work is genuinely unaccounted for.
+_CHILD_ACCOUNTED_STATUSES = frozenset({"completed", "success"})
+
+
+def _child_terminal_states(result: Any, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Per-child terminal states already recorded for a delegation.
+
+    The row's ``result_json`` carries whatever the owner managed to persist
+    before it died. For a batch that is a ``results`` list with one entry per
+    child; for a single delegation it is that one child's own result dict.
+    Returns a normalized list of ``{index, goal, status, exit_reason, summary}``
+    so a tombstone can *name* which children died and how far they got instead
+    of discarding information the store already holds.
+    """
+    goals = task.get("goals") or ([task["goal"]] if task.get("goal") else [])
+    raw: List[Any] = []
+    if isinstance(result, dict):
+        if isinstance(result.get("results"), list):
+            raw = result["results"]
+        elif result.get("status"):
+            raw = [result]
+    children: List[Dict[str, Any]] = []
+    # Iterate over the DISPATCHED goals, not just the recorded results: a child
+    # that never reported at all is exactly the one we must surface.
+    total = max(len(raw), len(goals))
+    for index in range(total):
+        entry = raw[index] if index < len(raw) and isinstance(raw[index], dict) else {}
+        goal = entry.get("goal") or (goals[index] if index < len(goals) else "")
+        children.append({
+            "index": index,
+            "goal": str(goal or "")[:120],
+            "status": entry.get("status") or "unknown",
+            "exit_reason": entry.get("exit_reason"),
+            "summary": entry.get("summary"),
+        })
+    return children
+
+
+def _tombstone_for(
+    *,
+    delivered: bool,
+    children: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build the terminal record for an owner that exited without finalizing.
+
+    Two OPPOSITE situations reach this point and they must not be reported
+    identically:
+
+    * the owner died *after* its consolidated result was already delivered to
+      the parent surface — pure bookkeeping, nothing was lost; and
+    * the owner died with children still unaccounted for — real lost work that
+      needs re-dispatch.
+
+    Returns ``{"status", "error", "unaccounted", "children"}``.
+    """
+    unaccounted = [
+        child for child in children
+        if str(child.get("status") or "") not in _CHILD_ACCOUNTED_STATUSES
+    ]
+    if delivered:
+        return {
+            "status": "delivered_owner_exited",
+            "error": (
+                "Delegation owner exited AFTER its result was delivered; "
+                "no action needed (bookkeeping only)."
+            ),
+            "unaccounted": [],
+            "children": children,
+        }
+    if not children:
+        # No per-child state was ever recorded — the honest legacy answer.
+        return {
+            "status": "unknown",
+            "error": (
+                "Delegation owner exited before recording a terminal result "
+                "and no per-child state was recorded; outcome unknown."
+            ),
+            "unaccounted": [],
+            "children": [],
+        }
+    if not unaccounted:
+        return {
+            "status": "unknown",
+            "error": (
+                f"Delegation owner exited before recording a terminal result, but all "
+                f"{len(children)} child task(s) reached a terminal state; "
+                f"results may not have reached the conversation."
+            ),
+            "unaccounted": [],
+            "children": children,
+        }
+    detail = "; ".join(
+        f"#{child['index']} {child['status']}"
+        + (f"/{child['exit_reason']}" if child.get("exit_reason") else "")
+        + (f" ({child['goal']})" if child.get("goal") else "")
+        for child in unaccounted
+    )
+    ids = ", ".join(f"#{child['index']}" for child in unaccounted)
+    return {
+        "status": "unknown",
+        "error": (
+            f"Delegation owner exited with {len(unaccounted)} of {len(children)} "
+            f"child task(s) unaccounted (re-dispatch {ids}): {detail}"
+        ),
+        "unaccounted": unaccounted,
+        "children": children,
+    }
+
+
 def recover_abandoned_delegations() -> int:
-    """Classify records whose owning process disappeared as outcome unknown."""
+    """Classify records whose owning process disappeared.
+
+    A row is only re-entered into the conversation when its outcome is
+    genuinely in doubt. Delivery is tracked on ``delivery_state``, which is
+    orthogonal to ``state``: a batch whose consolidated summary already
+    reached the parent surface can still be sitting at ``state='running'``
+    when its owner dies, and re-reaping it as "outcome unknown" produces a
+    phantom alarm indistinguishable from a real loss.
+    """
     try:
         from gateway.status import _pid_exists, get_process_start_time
     except Exception:
         return 0
     now = time.time()
     recovered = 0
+    suppress_delivered = _suppress_delivered_tombstones()
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id,
+                      delivery_state, result_json
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json, origin_session_id,
+             delivery_state, result_json) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -316,6 +468,29 @@ def recover_abandoned_delegations() -> int:
             if live:
                 continue
             task = json.loads(task_json or "{}")
+            try:
+                prior_result = json.loads(result_json or "null")
+            except (TypeError, ValueError):
+                prior_result = None
+            delivered = str(delivery_state or "") == "delivered"
+            children = _child_terminal_states(prior_result, task)
+            tombstone = _tombstone_for(delivered=delivered, children=children)
+            if delivered and suppress_delivered:
+                # Terminal-DELIVERED: settle the row so it is never re-reaped,
+                # but do NOT re-enter a conversation that already has the
+                # result. delivery_state stays 'delivered' so restart recovery
+                # (which only restores 'pending' rows) skips it.
+                conn.execute(
+                    """UPDATE async_delegations SET state=?, completed_at=?,
+                       updated_at=? WHERE delegation_id=?""",
+                    (tombstone["status"], now, now, delegation_id),
+                )
+                logger.info(
+                    "async_delegation_tombstone delegation_id=%s disposition=delivered_suppressed",
+                    delegation_id,
+                )
+                recovered += 1
+                continue
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
                 "session_key": session_key, "origin_ui_session_id": origin_ui,
@@ -326,16 +501,35 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None,
-                "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
+                "status": tombstone["status"], "summary": None,
+                "error": tombstone["error"],
+                # Per-child terminal states travel with the tombstone in BOTH
+                # directions, so a consumer never has to guess what was lost.
+                "owner_exit_delivered": delivered,
+                "child_states": tombstone["children"],
+                "unaccounted_children": tombstone["unaccounted"],
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
-            result = {"status": "unknown", "summary": None, "error": event["error"]}
+            result = {
+                "status": tombstone["status"], "summary": None,
+                "error": tombstone["error"],
+                "child_states": tombstone["children"],
+                "unaccounted_children": tombstone["unaccounted"],
+            }
             conn.execute(
-                """UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
+                """UPDATE async_delegations SET state=?, completed_at=?,
+                   updated_at=?, event_json=?, result_json=?,
+                   delivery_state=CASE WHEN delivery_state='delivered'
+                                       THEN 'delivered' ELSE 'pending' END
                    WHERE delegation_id=?""",
-                (now, now, json.dumps(event), json.dumps(result), delegation_id),
+                (tombstone["status"], now, now, json.dumps(event),
+                 json.dumps(result), delegation_id),
+            )
+            logger.info(
+                "async_delegation_tombstone delegation_id=%s disposition=%s unaccounted=%d",
+                delegation_id,
+                "delivered" if delivered else "lost",
+                len(tombstone["unaccounted"]),
             )
             recovered += 1
     return recovered
@@ -373,7 +567,8 @@ def mark_completion_delivered(delegation_id: str) -> bool:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
-            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
+            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?,
+                      state=CASE WHEN state IN ('running','finalizing') THEN 'delivered' ELSE state END
                WHERE delegation_id=? AND delivery_state!='delivered'""",
             (now, now, delegation_id),
         )
@@ -470,13 +665,23 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
-    """Acknowledge acceptance for the consumer holding this claim."""
+    """Acknowledge acceptance for the consumer holding this claim.
+
+    Delivery is the moment the consolidated result reaches the parent surface,
+    so it is also the moment the row becomes terminal. Without flipping
+    ``state`` here the row sits at ``running`` forever and the owner-liveness
+    reaper later tombstones a batch that was fully delivered — the phantom
+    "outcome unknown" alarm. ``state`` only advances out of a non-terminal
+    value, so a row that already recorded a real outcome keeps it.
+    """
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
             """UPDATE async_delegations SET delivery_state='delivered',
                       delivered_at=?, updated_at=?, delivery_claim=NULL,
-                      delivery_claimed_at=NULL
+                      delivery_claimed_at=NULL,
+                      state=CASE WHEN state IN ('running','finalizing')
+                                 THEN 'delivered' ELSE state END
                WHERE delegation_id=? AND delivery_state='pending'
                  AND delivery_claim=?""",
             (now, now, delegation_id, claim_id),

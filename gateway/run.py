@@ -17528,7 +17528,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         def _strip_ansi(text: str) -> str:
-            return re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+            from tools.ansi_strip import strip_ansi
+            return strip_ansi(text)
 
         bytes_sent = 0
         last_stream_time = loop.time()
@@ -17770,7 +17771,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
                 # Strip ANSI escape codes for clean display
-                output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
+                from tools.ansi_strip import strip_ansi
+                output = strip_ansi(output).strip()
                 if output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]

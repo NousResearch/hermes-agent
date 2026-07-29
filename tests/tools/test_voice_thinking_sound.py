@@ -16,7 +16,11 @@ import threading
 import time
 from unittest.mock import patch
 
-import numpy as np
+import pytest
+
+np = pytest.importorskip(
+    "numpy", reason="numpy is a lazy voice dependency, absent in hermetic CI"
+)
 
 import tools.voice_mode as vm
 

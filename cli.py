@@ -12060,17 +12060,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             args=(text,),
             daemon=True,
         ).start()
-        # Spoken barge-in must work on the whole-file fallback path too —
-        # previously only the streaming pipeline armed the monitor, so when
-        # streaming TTS couldn't start (missing sounddevice, failed probe)
-        # talking over the reply did nothing. The monitor's _cut_playback
-        # uses stop_playback(), which kills the file player, so the same
-        # machinery covers this path; the stop event it receives is only
-        # used to signal the (nonexistent) streaming pipeline.
+        # Spoken barge-in must work on the whole-file fallback path too. The
+        # full-duplex agent-turn listener normally already covers playback
+        # (armed at turn start in chat()); this arm is an idempotent safety
+        # net for speak calls outside a chat turn — the listener refuses to
+        # double-arm via _voice_fd_active.
         if self._voice_continuous:
             threading.Thread(
-                target=self._voice_barge_in_monitor,
-                args=(threading.Event(),),
+                target=self._voice_full_duplex_listener,
                 daemon=True,
             ).start()
 
@@ -12147,60 +12144,107 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._voice_tts_done.set()
 
 
-    def _voice_barge_in_monitor(self, stop_event: threading.Event) -> None:
-        """VAD barge-in: cut streaming TTS the moment the user starts talking.
+    def _voice_full_duplex_listener(self) -> None:
+        """Full-duplex agent-turn listener: mic live for the WHOLE turn.
 
-        Runs for one turn alongside the streaming pipeline (continuous voice
-        mode only — the mic is otherwise idle during playback). On speech,
-        playback is cut immediately while the monitor KEEPS capturing (with
-        pre-roll, so the interruption is transcribed from its first syllable
-        — restarting the recorder after detection would lose the opening
-        words). ``_voice_barge_capture`` suppresses process_loop's auto-
-        restart until the captured utterance has been submitted.
+        Armed at utterance-submit (chat() start in continuous voice mode) and
+        disarmed when the turn is fully done (agent finished + TTS played).
+        Replaces the old per-playback ``_voice_barge_in_monitor``, which only
+        listened while TTS audio was playing — during LLM generation the mic
+        was dead, so the user could not interject by voice at all (and the
+        playback monitor calibrated against its own speaker bleed, making
+        the trigger unreachable; see tools.voice_mode.full_duplex_listen).
 
-        A short startup grace period delays VAD activation so TTS playback
-        has time to establish before the mic starts listening.  Without
-        this, speaker bleed during the first few hundred milliseconds can
-        falsely trigger barge-in and cut the response short.
+        Phase behaviour:
+
+        * generation (no TTS audio yet): speech interrupts the in-flight
+          agent turn via ``self.agent.interrupt()`` — the same seam the
+          typed/Ctrl+C interrupt uses — and the captured utterance is
+          submitted as the next message.
+        * playback: speech cuts TTS (pipeline stop event + stop_playback)
+          and the interruption is captured with pre-roll and submitted.
+
+        The stop phrase ends the voice chat in BOTH phases (a stop during
+        generation means "stop everything": the turn is already interrupted
+        at trip time, then ``_voice_submit_barge_utterance`` disables voice
+        mode).
         """
+        fd_active = getattr(self, "_voice_fd_active", None)
+        if fd_active is None:
+            fd_active = threading.Event()
+            self._voice_fd_active = fd_active
+        if fd_active.is_set():
+            return  # one listener owns the mic for this turn
+        fd_active.set()
         try:
             from hermes_cli.config import load_config
             voice_cfg = load_config().get("voice") or {}
             if not (isinstance(voice_cfg, dict) and voice_cfg.get("barge_in", True)):
                 return
-            from tools.voice_mode import listen_for_speech, stop_playback
+            from tools.voice_mode import (
+                full_duplex_listen,
+                is_audio_output_active,
+                stop_playback,
+            )
 
-            # Grace period: wait briefly before opening the mic so the
-            # first TTS sentence is already playing and the VAD calibration
-            # samples the actual playback level (not silence).  This
-            # prevents speaker bleed from falsely triggering barge-in
-            # at the start of playback.
-            _grace_s = float(voice_cfg.get("barge_in_grace_seconds", 2.0))
-            if _grace_s > 0:
-                stop_event.wait(timeout=_grace_s)
-                if stop_event.is_set() or self._voice_tts_done.is_set():
-                    return
+            try:
+                _mult = float(voice_cfg.get("barge_in_threshold_multiplier", 0) or 0)
+            except (TypeError, ValueError):
+                _mult = 0.0
+            try:
+                _grace_ms = int(float(voice_cfg.get("barge_in_grace_seconds", 0.5)) * 1000)
+            except (TypeError, ValueError):
+                _grace_ms = 500
 
-            def _cut_playback():
-                if not self._voice_tts_done.is_set():
-                    import traceback as _tb
+            tts_done = getattr(self, "_voice_tts_done", None)
+
+            def _should_stop() -> bool:
+                if not (getattr(self, "_voice_mode", False) and getattr(self, "_voice_continuous", False)):
+                    return True
+                if getattr(self, "_agent_running", False):
+                    return False
+                # Agent finished — keep listening until TTS fully played.
+                if tts_done is not None and not tts_done.is_set():
+                    return False
+                return not is_audio_output_active()
+
+            def _on_trigger(phase: str) -> None:
+                # Latch BEFORE cutting anything: suppresses process_loop's
+                # auto-restart until the capture is submitted.
+                self._voice_barge_capture.set()
+                if phase == "playback":
                     logger.debug(
-                        "TTS CUT: barge-in _cut_playback fired (VAD trip) — "
-                        "stop_event.set() + stop_playback()\n%s",
-                        "".join(_tb.format_stack()),
+                        "TTS CUT: full-duplex listener tripped during playback"
                     )
                     from tools.tts_streaming import mark_speech_interrupted
                     mark_speech_interrupted()
-                    self._voice_barge_capture.set()
-                    stop_event.set()
+                    _pipe_stop = getattr(self, "_voice_tts_stop", None)
+                    if _pipe_stop is not None:
+                        _pipe_stop.set()
                     stop_playback()
+                else:
+                    # Generation phase: no audio to cut — interrupt the
+                    # in-flight agent turn (same seam as typed interrupt).
+                    logger.debug(
+                        "full-duplex listener tripped during generation — "
+                        "interrupting agent turn"
+                    )
+                    _pipe_stop = getattr(self, "_voice_tts_stop", None)
+                    if _pipe_stop is not None:
+                        _pipe_stop.set()  # never let the stale reply speak
+                    try:
+                        if self.agent is not None and getattr(self, "_agent_running", False):
+                            _cprint(f"\n{_DIM}🎤 Voice interjection — interrupting…{_RST}")
+                            self.agent.interrupt()
+                    except Exception as e:
+                        logger.debug("voice interjection interrupt failed: %s", e)
 
-            wav_path = listen_for_speech(
-                lambda: stop_event.is_set() or self._voice_tts_done.is_set(),
-                capture=True,
-                on_trigger=_cut_playback,
-                sustained_ms=1000,
-                calibration_ms=800,
+            wav_path = full_duplex_listen(
+                _should_stop,
+                is_playing=is_audio_output_active,
+                on_trigger=_on_trigger,
+                multiplier=_mult or None,
+                grace_ms=max(0, _grace_ms),
             )
             if wav_path and self._voice_barge_capture.is_set():
                 self._voice_submit_barge_utterance(wav_path)
@@ -12208,7 +12252,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._voice_barge_capture.clear()
         except Exception as e:
             self._voice_barge_capture.clear()
-            logger.debug("Voice barge-in monitor failed: %s", e)
+            logger.debug("Voice full-duplex listener failed: %s", e)
+        finally:
+            fd_active.clear()
 
     def _voice_submit_barge_utterance(self, wav_path: str) -> None:
         """Transcribe a barge-captured interruption and queue it as the next turn."""
@@ -13372,6 +13418,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # reset at the start of each user turn.
             self._reasoning_shown_this_turn = False
 
+            # Full-duplex agent-turn listener (continuous voice mode): arm
+            # the mic NOW — at utterance-submit — not when TTS playback
+            # starts. It spans generation (speech interrupts the turn) and
+            # playback (speech cuts TTS), and disarms itself when the turn
+            # is fully done. See _voice_full_duplex_listener.
+            if self._voice_mode and self._voice_continuous:
+                threading.Thread(
+                    target=self._voice_full_duplex_listener, daemon=True
+                ).start()
+
             # --- Streaming TTS setup ---
             # Any working TTS provider streams sentence-by-sentence as the agent
             # generates tokens: PCM-streaming providers (ElevenLabs, OpenAI) play
@@ -13431,12 +13487,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 tts_thread.start()
                 # Expose the pipeline's stop event so barge-in paths (voice
-                # key, VAD monitor) can cut playback from outside this turn.
+                # key, full-duplex listener) can cut playback from outside
+                # this turn. The full-duplex listener itself was armed at
+                # turn start (see above) — it spans generation AND playback.
                 self._voice_tts_stop = stop_event
-                if self._voice_continuous:
-                    threading.Thread(
-                        target=self._voice_barge_in_monitor, args=(stop_event,), daemon=True
-                    ).start()
 
                 def stream_callback(delta: str):
                     if text_queue is not None:

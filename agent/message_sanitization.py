@@ -400,8 +400,16 @@ def _strip_images_from_messages(messages: list) -> bool:
         practice this only hits synthetic image-only user messages appended
         for attachment delivery; real user turns always include text.
 
+    This runs on the persistent history as well as the per-call copy, so any
+    message it rewrites must also lose its ``api_content`` sidecar: the sidecar
+    carries the exact bytes previously sent — here, the images this strip
+    exists to remove — and the next turn substitutes it back into ``content``,
+    undoing the strip on the wire.
+
     Returns True if any image parts were removed.
     """
+    from agent.turn_context import drop_stale_api_content
+
     found = False
     to_delete = []
     for i, msg in enumerate(messages):
@@ -427,6 +435,8 @@ def _strip_images_from_messages(messages: list) -> bool:
                 # Synthetic image-only user/assistant message with no text;
                 # safe to drop.
                 to_delete.append(i)
+            # Content was rewritten — the pre-strip sidecar is now stale.
+            drop_stale_api_content(msg)
     for i in reversed(to_delete):
         del messages[i]
     return found

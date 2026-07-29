@@ -342,12 +342,14 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
 
     # Try to identify our unit name and ask systemctl for its config.
     unit_name: Optional[str] = None
+    cgroup_path: Optional[str] = None
     try:
         # /proc/self/cgroup gives us "0::/user.slice/.../hermes-gateway.service"
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
             for line in fh:
                 # systemd cgroup line ends with the unit name
                 if ".service" in line:
+                    cgroup_path = line.strip().split(":", 2)[-1]
                     parts = line.strip().split("/")
                     for p in reversed(parts):
                         if p.endswith(".service"):
@@ -360,11 +362,20 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     if not unit_name:
         return None
 
-    # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
-    # on which manager actually owns the unit.  Try user first since
-    # that's the common case for hermes.
+    # Query systemctl for TimeoutStopUSec. Use --user OR system depending
+    # on which manager actually owns the unit.  The cgroup path tells us
+    # which manager launched this process; respecting it avoids false
+    # positives when an inactive user unit with the same name has a stale
+    # TimeoutStopSec but the running service is a system unit.
     timeout_us: Optional[int] = None
-    for flag in (["--user"], []):
+    if cgroup_path and "/system.slice/" in cgroup_path:
+        flag_order = ([], ["--user"])
+    elif cgroup_path and "/user.slice/" in cgroup_path:
+        flag_order = (["--user"], [])
+    else:
+        flag_order = (["--user"], [])
+
+    for flag in flag_order:
         try:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],

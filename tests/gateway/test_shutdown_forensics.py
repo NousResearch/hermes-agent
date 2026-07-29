@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import signal
 import sys
@@ -248,3 +249,48 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def test_system_slice_prefers_system_manager_over_stale_user_unit(self, monkeypatch):
+        """A system service must not read a same-named stale user unit.
+
+        Root can have both a system gateway unit and an inactive user unit with
+        the same name. If the system unit has TimeoutStopSec=210 but the user
+        manager reports the default 90s, consulting --user first produces a
+        false "stale systemd unit" warning at gateway startup.
+        """
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+
+        def fake_open(path, *args, **kwargs):
+            assert path == "/proc/self/cgroup"
+            return io.StringIO(
+                "0::/system.slice/hermes-gateway-mes-kanban-orchestrator.service\n"
+            )
+
+        class Result:
+            returncode = 0
+
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "--user" in cmd:
+                return Result("TimeoutStopUSec=1min 30s\n")
+            return Result("TimeoutStopUSec=3min 30s\n")
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert calls
+        assert "--user" not in calls[0]
+        assert result == {
+            "unit": "hermes-gateway-mes-kanban-orchestrator.service",
+            "timeout_stop_sec": 210.0,
+            "drain_timeout": 180.0,
+            "expected_min": 210.0,
+            "mismatch": False,
+        }

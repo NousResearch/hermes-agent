@@ -10,7 +10,6 @@ fixture because `ssl.create_default_context(cafile=...)` parses the
 bundle and refuses stubs.
 """
 
-import os
 import shutil
 import ssl
 import subprocess
@@ -19,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from hermes_cli.auth import _default_verify, _resolve_verify
 

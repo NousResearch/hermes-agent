@@ -101,6 +101,17 @@ def _install_fake_tools_package():
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
+    # The fake `agent` package has an empty __path__, so every real
+    # agent.* submodule that production code imports needs an explicit
+    # stand-in here. tools.browser_tool imports redact_cdp_url;
+    # hermes_cli.auth (imported transitively by nous_account /
+    # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
+    sys.modules["agent.redact"] = types.SimpleNamespace(
+        redact_cdp_url=lambda value: str(value),
+    )
+    sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
+        sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
+    )
 
     # Stubs for the browser-provider plugin layer introduced in PR #25214.
     # The fake `agent` package has an empty __path__ so real submodules

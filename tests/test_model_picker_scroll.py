@@ -12,10 +12,7 @@ is always within the visible window.  These tests exercise that logic in
 isolation without requiring a real TTY.
 """
 
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ---------------------------------------------------------------------------

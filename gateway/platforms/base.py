@@ -5437,14 +5437,18 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            from hermes_cli.commands import should_bypass_active_session
+            from hermes_cli.commands import (
+                is_interrupt_then_dispatch,
+                should_bypass_active_session,
+            )
 
             if should_bypass_active_session(cmd):
                 # /stop, /new, /reset must cancel the in-flight adapter task
                 # and preserve ordering of queued follow-ups.  Route those
                 # through the dedicated handoff path that serializes
                 # cancellation + runner response + pending drain.
-                if cmd in {"stop", "new", "reset"}:
+                # (Registry-derived: busy_policy == "interrupt_then_dispatch".)
+                if cmd and is_interrupt_then_dispatch(cmd):
                     self._discard_text_debounce(session_key)
                     try:
                         await self._dispatch_active_session_command(event, session_key, cmd)

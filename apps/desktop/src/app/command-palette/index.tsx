@@ -451,11 +451,13 @@ export function CommandPalette() {
 
   const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
 
-  // Sessions: plain select = open in-place (focus existing tile/main, else main);
-  // ⌘/⌃-select / ⌘-Enter = new tab; ⇧⌘ = own window. Same door as the sidebar.
+  // Sessions: plain select = open beside what's already loaded (focus existing
+  // tile/main, else a new tab — main only when it's a blank draft);
+  // ⌘/⌃-select / ⌘-Enter = force a new tab; ⇧⌘ = own window. Same door as the
+  // sidebar, minus the sidebar's licence to spend main.
   const goSession = useCallback(
     (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
-      openSession(sessionId, navigate, openSessionIntentFromModifiers(event))
+      openSession(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
     },
     [navigate]
   )

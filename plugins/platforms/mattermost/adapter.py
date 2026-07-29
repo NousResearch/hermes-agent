@@ -292,6 +292,7 @@ class MattermostAdapter(BasePlatformAdapter):
             return False
 
         self._session = aiohttp.ClientSession(
+            trust_env=True,
             timeout=aiohttp.ClientTimeout(total=30)
         )
         self._closing = False

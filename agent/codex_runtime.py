@@ -140,6 +140,12 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+    # Sibling of the chat-completions snapshot in agent/conversation_loop.py.
+    # Codex app-server sessions never traverse that loop, so without this the
+    # "last provider call" guarantee silently degrades to "last chat-completions
+    # call" and `/context` reports a stale turn on a Codex session.
+    # ``usage_dict`` above already holds exactly the eight canonical fields.
+    agent.last_turn_usage = dict(usage_dict)
 
     cost_result = estimate_usage_cost(
         agent.model,

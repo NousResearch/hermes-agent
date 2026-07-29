@@ -136,6 +136,61 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
 
+        # The last-provider-call snapshot must be populated on the Codex
+        # app-server path too, not only in the chat-completions loop. Assert
+        # every advertised field, so a partially-populated snapshot fails.
+        assert agent.last_turn_usage == {
+            "input_tokens": 80,
+            "output_tokens": 25,
+            "cache_read_tokens": 20,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 5,
+            "prompt_tokens": 100,
+            "completion_tokens": 25,
+            "total_tokens": 130,
+        }
+
+    def test_codex_app_server_snapshot_is_not_aliased_to_session_state(
+        self, monkeypatch
+    ):
+        """The snapshot must be an independent dict, not a live alias.
+
+        ``usage_dict`` is reused downstream (the compressor consumes it), so a
+        bare assignment would let a later mutation rewrite a completed turn's
+        recorded usage.
+        """
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-usage-2",
+                thread_id="thread-usage-2",
+                token_usage_last={
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+                model_context_window=200000,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-usage-2"
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        snapshot = agent.last_turn_usage
+        assert snapshot is not None
+        snapshot_copy = dict(snapshot)
+        # Mutating the compressor's view must not retroactively edit the turn.
+        agent.context_compressor.last_prompt_tokens = 999
+        assert agent.last_turn_usage == snapshot_copy
+
     def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

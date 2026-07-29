@@ -45,8 +45,9 @@ def _make_minimal_agent() -> AIAgent:
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
+    agent.last_turn_usage = None
 
-    # The two fields under test
+    # The fields under test
     agent._user_turn_count = 0
     agent.context_compressor = None  # will be set per-test as needed
 
@@ -88,6 +89,24 @@ class TestResetSessionState:
         assert agent._user_turn_count == 0, (
             f"_user_turn_count must be 0 after reset; got: {agent._user_turn_count}"
         )
+
+    def test_last_turn_usage_cleared_on_reset(self):
+        """Last-call usage snapshot must not leak across sessions."""
+        agent = _make_minimal_agent()
+        agent.last_turn_usage = {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 80,
+            "cache_write_tokens": 10,
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+        }
+        agent.context_compressor = None
+
+        agent.reset_session_state()
+
+        assert agent.last_turn_usage is None
 
     def test_both_fields_cleared_together(self):
         """Both stale fields are cleared in a single reset_session_state() call."""

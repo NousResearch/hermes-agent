@@ -95,7 +95,7 @@ class ToolSearchConfig:
     listing: str = "auto"  # "auto" | "on" | "off"
     # Absolute cap on the embedded listing, regardless of context size.
     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
-    listing_max_tokens: int = 20000
+    listing_max_tokens: int = 4000
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -143,7 +143,7 @@ class ToolSearchConfig:
             listing = listing_raw
         else:
             listing = "auto"
-        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 20000)))
+        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
 
         return cls(
             enabled=enabled,
@@ -512,7 +512,7 @@ def _listing_group_label(source_name: str) -> str:
 def build_catalog_listing(
     deferrable: List[Dict[str, Any]],
     *,
-    max_tokens: int = 20000,
+    max_tokens: int = 4000,
 ) -> Optional[str]:
     """Render a skills-style manifest of the deferred catalog.
 
@@ -545,7 +545,7 @@ def build_catalog_listing(
 def build_catalog_listing_with_form(
     deferrable: List[Dict[str, Any]],
     *,
-    max_tokens: int = 20000,
+    max_tokens: int = 4000,
 ) -> Tuple[Optional[str], str]:
     """Like :func:`build_catalog_listing` but also reports the form used.
 
@@ -861,6 +861,25 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     }
 
 
+def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any]]:
+    """Return a compact, deterministic summary of connected deferred sources.
+
+    Included only when search returns no matches. This gives the model enough
+    evidence to retry with a source/action query instead of treating a lexical
+    miss as proof that the capability is unavailable, without adding anything
+    to the fixed per-turn prompt.
+    """
+    counts: Dict[str, int] = {}
+    for entry in catalog:
+        source_name = entry.source_name or entry.source or "other"
+        label = _listing_group_label(source_name)
+        counts[label] = counts.get(label, 0) + 1
+    return [
+        {"name": name, "tool_count": counts[name]}
+        for name in sorted(counts)
+    ]
+
+
 def dispatch_tool_search(args: Dict[str, Any],
                          *,
                          current_tool_defs: List[Dict[str, Any]],
@@ -881,11 +900,20 @@ def dispatch_tool_search(args: Dict[str, Any],
     _, deferrable = classify_tools(current_tool_defs)
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
-    return json.dumps({
+    result: Dict[str, Any] = {
         "query": query,
         "total_available": len(catalog),
         "matches": [_format_search_hit(h) for h in hits],
-    }, ensure_ascii=False)
+    }
+    if not hits and catalog:
+        result["available_sources"] = _available_source_summary(catalog)
+        result["hint"] = (
+            "No lexical match was found, but the sources above are connected "
+            "and their tools remain available. Retry tool_search with the "
+            "service name plus a concrete action or object before concluding "
+            "the capability is unavailable."
+        )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def dispatch_tool_describe(args: Dict[str, Any],

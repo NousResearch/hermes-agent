@@ -417,3 +417,105 @@ def convert_table_to_bullets(text: str) -> str:
         i += 1
 
     return '\n'.join(out)
+
+
+# ─── Mention-pattern compilation ─────────────────────────────────────────────
+
+
+def compile_mention_patterns(
+    raw,
+    *,
+    log_prefix: str,
+    platform_label: str | None = None,
+    display_label: str | None = None,
+    defaults: 'list[str] | None' = None,
+    logger_: 'logging.Logger | None' = None,
+) -> 'list[re.Pattern]':
+    """Compile regex wake-word/mention patterns from config or env values.
+
+    Two adapter families share this logic:
+
+    * **Config-style** (dingtalk, telegram): pass ``platform_label`` (e.g.
+      ``"dingtalk"``). ``raw`` is the value from ``config.extra`` after env
+      fallback parsing; must be a list or string, anything else logs a warning
+      and yields ``[]``. Non-string entries are skipped. A summary info log is
+      emitted when patterns load.
+    * **Wakeword-style** (photon, bluebubbles): pass ``defaults``. ``raw`` may
+      be None (use defaults), a string (JSON list or comma/newline separated),
+      a list, or a scalar (wrapped in a list). Entries are coerced via
+      ``str()``.
+
+    ``log_prefix`` is interpolated into every log message so per-adapter log
+    output stays byte-identical to the historical inline implementations.
+    """
+    log = logger_ or logger
+
+    if platform_label is not None:
+        # Config-style (dingtalk/telegram) semantics.
+        display = display_label or platform_label
+        patterns = raw
+        if patterns is None:
+            return []
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        if not isinstance(patterns, list):
+            log.warning(
+                "[%s] %s mention_patterns must be a list or string; got %s",
+                log_prefix,
+                platform_label,
+                type(patterns).__name__,
+            )
+            return []
+
+        compiled: list[re.Pattern] = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as exc:
+                log.warning(
+                    "[%s] Invalid %s mention pattern %r: %s",
+                    log_prefix,
+                    display,
+                    pattern,
+                    exc,
+                )
+        if compiled:
+            log.info(
+                "[%s] Loaded %d %s mention pattern(s)",
+                log_prefix,
+                len(compiled),
+                display,
+            )
+        return compiled
+
+    # Wakeword-style (photon/bluebubbles) semantics.
+    if raw is None:
+        patterns = list(defaults or [])
+    elif isinstance(raw, str):
+        text = raw.strip()
+        try:
+            loaded = json.loads(text) if text else []
+        except Exception:
+            loaded = None
+        patterns = loaded if isinstance(loaded, list) else [
+            part.strip()
+            for line in text.splitlines()
+            for part in line.split(",")
+        ]
+    elif isinstance(raw, list):
+        patterns = raw
+    else:
+        patterns = [raw]
+
+    compiled = []
+    for pattern in patterns:
+        text = str(pattern).strip()
+        if not text:
+            continue
+        try:
+            compiled.append(re.compile(text, re.IGNORECASE))
+        except re.error as exc:
+            log.warning("[%s] Invalid mention pattern %r: %s", log_prefix, text, exc)
+    return compiled

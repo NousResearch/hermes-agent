@@ -296,6 +296,86 @@ class TestUpdateManagedUv:
             # Still returns the path — failure is non-fatal
             assert result == str(tmp_path / "bin" / "uv")
 
+    def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path, monkeypatch):
+        """A recent success stamp must skip `uv self update` entirely while the
+        vulnerable-runtime repair probe still runs (CVE repair is never gated)."""
+        from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv
+
+        uv = tmp_path / "bin" / "uv"
+        _make_executable(uv)
+        # Fresh stamp under the isolated HERMES_HOME.
+        import hermes_constants
+        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch(
+                 "hermes_cli.managed_uv.repair_vulnerable_runtime",
+                 return_value=RuntimeRepairResult("skipped"),
+             ) as mock_repair:
+            result = update_managed_uv()
+
+        assert result == str(uv)
+        assert mock_run.call_count == 0, "fresh stamp must skip the network self-update"
+        mock_repair.assert_called_once_with(str(uv))
+
+    def test_force_overrides_fresh_stamp(self, tmp_path):
+        from hermes_cli.managed_uv import update_managed_uv
+
+        uv = tmp_path / "bin" / "uv"
+        _make_executable(uv)
+        import hermes_constants
+        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
+            result = update_managed_uv(force=True)
+
+        assert result == str(uv)
+        assert mock_run.call_args_list[0][0][0] == [str(uv), "self", "update"]
+
+    def test_stale_stamp_runs_self_update_and_refreshes_stamp(self, tmp_path):
+        import os as _os
+        import time as _time
+
+        from hermes_cli.managed_uv import UV_SELF_UPDATE_INTERVAL_SECONDS, update_managed_uv
+
+        uv = tmp_path / "bin" / "uv"
+        _make_executable(uv)
+        import hermes_constants
+        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        old = _time.time() - UV_SELF_UPDATE_INTERVAL_SECONDS - 60
+        _os.utime(stamp, (old, old))
+
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
+            update_managed_uv()
+
+        assert mock_run.call_args_list[0][0][0] == [str(uv), "self", "update"]
+        assert stamp.stat().st_mtime > old + 30, "successful self-update must refresh the stamp"
+
+    def test_self_update_timeout_non_fatal(self, tmp_path):
+        import subprocess as _subprocess
+
+        from hermes_cli.managed_uv import update_managed_uv
+
+        uv = tmp_path / "bin" / "uv"
+        _make_executable(uv)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.side_effect = _subprocess.TimeoutExpired(cmd="uv self update", timeout=60)
+            result = update_managed_uv()
+        # Timeout is non-fatal; path still returned.
+        assert result == str(uv)
+
     def test_old_updater_api_triggers_runtime_repair(self, tmp_path):
         """The pre-pull main.py call site must activate the fresh module hook."""
         from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv

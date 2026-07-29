@@ -1,10 +1,11 @@
-"""Flush pending messages to disk before shutdown to prevent data loss.
+"""Flush pending messages and agent transcripts to disk before shutdown to prevent data loss.
 
 When FTS5 index corruption prevents ``INSERT INTO messages``, the gateway
-accumulates messages in ``_pending_messages`` (memory-only).  On shutdown,
-``.clear()`` discards the only surviving copy — permanent user data loss.
+accumulates messages in ``_pending_messages`` (memory-only) and the live
+``agent._session_messages`` cannot be flushed via ``_flush_messages_to_session_db``.
+On shutdown, ``.clear()`` discards the only surviving copy — permanent user data loss.
 
-This module provides two hooks:
+This module provides three hooks:
 
 1. ``flush_pending_to_file()`` — called BEFORE ``_pending_messages.clear()``
    during shutdown.  Serialises any non-empty pending slots to a JSON file
@@ -14,6 +15,10 @@ This module provides two hooks:
    Reads flush files, inserts messages into state.db via ``SessionDB.append_message``
    (so FTS indexing, session metadata, and display_kind are handled correctly),
    then deletes the flush file on success.
+
+3. ``flush_agent_history_to_file()`` — called from ``_finalize_shutdown_agents``
+   when ``_flush_messages_to_session_db`` raises.  Dumps the live
+   ``agent._session_messages`` to the same atomic JSON recovery directory.
 
 See issue #72680 for the full incident report.
 """
@@ -198,6 +203,11 @@ def recover_pending_to_db(
     for path in flush_files:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            # Agent-history snapshots use a different schema (reason +
+            # messages list) and are meant for manual operator recovery,
+            # not automatic DB insertion. Skip them silently.
+            if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
+                continue
             session_key = payload.get("session_key", "")
             data = payload.get("data", {})
             text = data.get("text", "")
@@ -257,3 +267,55 @@ def recover_pending_to_db(
             "Recovered %d pending message(s) from shutdown flush", recovered,
         )
     return recovered
+
+
+def flush_agent_history_to_file(
+    session_id: Optional[str],
+    history: list,
+) -> None:
+    """Best-effort dump of an agent's in-memory transcript before teardown.
+
+    Used when ``_flush_messages_to_session_db`` raises (e.g. FTS/SQLite
+    index corruption, #72680): the live ``agent._session_messages`` could
+    not be written to disk, and a plain debug log would lose it permanently
+    when the process exits. Serialize to an atomic JSON file outside the
+    broken DB so an operator can salvage the conversation after repairing
+    state.db.
+
+    Failures are swallowed — shutdown must never block on a best-effort
+    backup.
+    """
+    if not history:
+        return
+    try:
+        flush_dir = _get_flush_dir()
+        snapshot = []
+        for _m in history:
+            try:
+                snapshot.append(
+                    _m if isinstance(_m, (dict, list, str, int, float, bool, type(None)))
+                    else str(_m)
+                )
+            except Exception:
+                continue
+        _write_payload(
+            flush_dir,
+            {
+                "reason": "shutdown-with-unpersisted-agent-history",
+                "issue": "#72680",
+                "session_id": session_id,
+                "count": len(snapshot),
+                "messages": snapshot,
+            },
+        )
+        logger.warning(
+            "Preserved %d in-memory message(s) for session %s "
+            "(possible FTS corruption — recover after repairing state.db)",
+            len(snapshot),
+            session_id,
+        )
+    except Exception as _e:
+        logger.warning(
+            "Agent-history shutdown preservation failed for session %s: %s",
+            session_id, _e,
+        )

@@ -7,59 +7,37 @@ When that flush raises (FTS/SQLite corruption) the in-memory transcript must
 be dumped to a recovery snapshot instead of lost.
 
 These tests exercise the real preservation path:
-``_finalize_shutdown_agents`` -> flush raises -> ``_preserve_agent_history_on_shutdown``.
+``_finalize_shutdown_agents`` -> flush raises -> ``_preserve_agent_history_on_shutdown``
+-> ``flush_agent_history_to_file``.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
-import os
-import sys
-import types
 from pathlib import Path
 
 import pytest
 
-_REPO = Path(__file__).resolve().parents[2]
-_GATEWAY_RUN = _REPO / "gateway" / "run.py"
+from gateway.shutdown_flush import (
+    flush_agent_history_to_file,
+)
 
 
-def _make_runner_with_agent(mod, *, flush_raises=False, history=None):
-    """Build a minimal object graph exercising the real method chain."""
-    runner = types.SimpleNamespace()
-    runner._pending_messages = {}  # runner dict (unused by live path, kept for parity)
-    runner._preserve_agent_history_on_shutdown = (
-        mod.GatewayRunner._preserve_agent_history_on_shutdown.__get__(runner, mod.GatewayRunner)
-    )
-
-    class FakeAgent:
-        session_id = "sess:abc123"
-        _session_messages = history or [{"role": "user", "content": "hi"}]
-
-        def _flush_messages_to_session_db(self, messages, conversation_history=None):
-            if flush_raises:
-                raise RuntimeError("database disk image is malformed")
-            # healthy path: nothing to dump
-            self._flushed = True
-
-    agent = FakeAgent()
-    return runner, agent
+def _make_flush_dir(tmp_path: Path) -> Path:
+    """Create a temp flush dir and monkeypatch _get_flush_dir to use it."""
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir(parents=True, exist_ok=True)
+    return flush_dir
 
 
 def test_preserves_agent_history_when_flush_raises(tmp_path, monkeypatch):
-    mod = _load_gateway_run()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    runner, agent = _make_runner_with_agent(
-        mod, flush_raises=True, history=[{"role": "user", "content": "lost msg"}]
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
-    # Simulate the relevant slice of _finalize_shutdown_agents.
-    _flush = getattr(agent, "_flush_messages_to_session_db")
-    try:
-        _flush(agent._session_messages)
-    except Exception as _flush_err:
-        runner._preserve_agent_history_on_shutdown(agent.session_id, agent._session_messages)
+    history = [{"role": "user", "content": "lost msg"}]
+    flush_agent_history_to_file("sess:abc123", history)
 
-    files = list((tmp_path / "shutdown-recovery").glob("agent_history_*.json"))
+    files = list(flush_dir.glob("*.json"))
     assert files, "expected recovery snapshot"
     data = json.loads(files[0].read_text(encoding="utf-8"))
     assert data["issue"] == "#72680"
@@ -68,41 +46,56 @@ def test_preserves_agent_history_when_flush_raises(tmp_path, monkeypatch):
     assert data["messages"][0]["content"] == "lost msg"
 
 
-def test_no_recovery_file_on_healthy_flush(tmp_path, monkeypatch):
-    mod = _load_gateway_run()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    runner, agent = _make_runner_with_agent(mod, flush_raises=False)
-    _flush = getattr(agent, "_flush_messages_to_session_db")
-    try:
-        _flush(agent._session_messages)
-    except Exception as _flush_err:
-        runner._preserve_agent_history_on_shutdown(agent.session_id, agent._session_messages)
-    assert not list((tmp_path / "shutdown-recovery").glob("*.json"))
+def test_no_recovery_file_on_empty_history(tmp_path, monkeypatch):
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    flush_agent_history_to_file("sess:abc123", [])
+    assert not list(flush_dir.glob("*.json"))
+
+
+def test_no_recovery_file_on_none_history(tmp_path, monkeypatch):
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    flush_agent_history_to_file("sess:abc123", None)  # type: ignore[arg-type]
+    assert not list(flush_dir.glob("*.json"))
 
 
 def test_non_fatal_on_write_error(tmp_path, monkeypatch):
-    mod = _load_gateway_run()
-    bad = tmp_path / "file"
-    bad.write_text("x")
-    monkeypatch.setenv("HERMES_HOME", str(bad))
-    runner, agent = _make_runner_with_agent(
-        mod, flush_raises=True, history=[{"role": "user", "content": "x"}]
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
     )
-    _flush = getattr(agent, "_flush_messages_to_session_db")
-    try:
-        _flush(agent._session_messages)
-    except Exception as _flush_err:
-        # Must not raise even though the dump target is invalid.
-        runner._preserve_agent_history_on_shutdown(agent.session_id, agent._session_messages)
+
+    def fail_write(*args, **kwargs):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr("gateway.shutdown_flush._write_payload", fail_write)
+
+    # Must not raise even though the dump target is broken.
+    flush_agent_history_to_file(
+        "sess:abc123", [{"role": "user", "content": "x"}]
+    )
 
 
-def _load_gateway_run():
-    spec = importlib.util.spec_from_file_location("gateway_run_72680b", _GATEWAY_RUN)
-    mod = importlib.util.module_from_spec(spec)
-    mod.logger = types.SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: None)
-    sys.modules["gateway_run_72680b"] = mod
-    try:
-        spec.loader.exec_module(mod)
-    except Exception:
-        pass
-    return mod
+def test_preserves_non_serializable_as_string(tmp_path, monkeypatch):
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+
+    class Weird:
+        def __str__(self):
+            return "<weird>"
+
+    history = [{"role": "user", "content": "ok"}, Weird()]
+    flush_agent_history_to_file("sess:abc", history)
+
+    files = list(flush_dir.glob("*.json"))
+    assert len(files) == 1
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert data["count"] == 2
+    assert data["messages"][1] == "<weird>"

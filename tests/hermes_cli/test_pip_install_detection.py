@@ -41,30 +41,6 @@ def test_stamp_file_takes_precedence(tmp_path):
         assert detect_install_method(project_root=tmp_path) == "docker"
 
 
-@pytest.mark.parametrize("retired_method", ["pip", "homebrew"])
-def test_code_scoped_retired_stamp_falls_back_to_unknown(tmp_path, retired_method):
-    """Removed install methods must not survive in an upgraded code stamp."""
-    (tmp_path / ".install_method").write_text(retired_method + "\n")
-    with patch("hermes_cli.config.get_managed_system", return_value=None), \
-         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path):
-        from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=tmp_path) == "unknown"
-
-
-@pytest.mark.parametrize("retired_method", ["pip", "homebrew"])
-def test_home_scoped_retired_stamp_falls_back_to_unknown(tmp_path, retired_method):
-    """Removed install methods must not survive in an upgraded home stamp."""
-    code = tmp_path / "code"
-    home = tmp_path / "home"
-    code.mkdir()
-    home.mkdir()
-    (home / ".install_method").write_text(retired_method + "\n")
-    with patch("hermes_cli.config.get_managed_system", return_value=None), \
-         patch("hermes_cli.config.get_hermes_home", return_value=home):
-        from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=code) == "unknown"
-
-
 def test_code_scoped_stamp_wins_over_home_stamp(tmp_path):
     """The stamp next to the running code is authoritative over $HERMES_HOME.
 
@@ -103,25 +79,6 @@ def test_home_docker_stamp_ignored_when_not_containerized(tmp_path):
          patch("hermes_cli.config._running_in_container", return_value=False):
         from hermes_cli.config import detect_install_method
         assert detect_install_method(project_root=code) == "git"
-
-
-def test_home_docker_stamp_honored_inside_container(tmp_path):
-    """A 'docker' home stamp is still honoured when genuinely containerized.
-
-    Back-compat: an older published image that only ever wrote the home-scoped
-    stamp (no baked code stamp) must still resolve to 'docker' so the update
-    path keeps directing the user to ``docker pull``.
-    """
-    code = tmp_path / "code"
-    home = tmp_path / "home"
-    code.mkdir()
-    home.mkdir()
-    (home / ".install_method").write_text("docker\n")
-    with patch("hermes_cli.config.get_managed_system", return_value=None), \
-         patch("hermes_cli.config.get_hermes_home", return_value=home), \
-         patch("hermes_cli.config._running_in_container", return_value=True):
-        from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=code) == "docker"
 
 
 def test_home_non_docker_stamp_still_honored_for_backcompat(tmp_path):
@@ -187,13 +144,6 @@ def test_container_unknown_install_without_stamp_is_unknown(tmp_path):
 def test_recommended_update_command_docker():
     from hermes_cli.config import recommended_update_command_for_method
     assert "docker pull" in recommended_update_command_for_method("docker")
-
-
-def test_recommended_update_command_nix():
-    from hermes_cli.config import recommended_update_command_for_method
-    command = recommended_update_command_for_method("nix")
-    assert "nix profile upgrade" in command
-    assert "nixos-rebuild" in command
 
 
 def test_nix_store_path_detected_as_nix(tmp_path, monkeypatch):

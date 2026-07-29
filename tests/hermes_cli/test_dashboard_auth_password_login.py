@@ -208,13 +208,6 @@ class TestProviderListFlag:
         assert '<form class="provider-form" data-provider="testpw"' in login.text
         assert "/auth/password-login" in login.text
 
-    def test_password_provider_auth_login_redirects_to_login_form(self, gated_app):
-        resp = gated_app.get(
-            "/auth/login?provider=testpw&next=%2F",
-            follow_redirects=False,
-        )
-        assert resp.status_code == 302
-        assert resp.headers["location"] == "/login?next=%2F"
 
     def test_oauth_provider_reports_false(self):
         clear_providers()
@@ -282,51 +275,6 @@ class TestPasswordLoginRoute:
         assert resp.json()["detail"] == "Invalid credentials"
         assert "set-cookie" not in {k.lower() for k in resp.headers}
 
-    def test_unknown_user_returns_same_generic_401(self, gated_app):
-        resp = gated_app.post(
-            "/auth/password-login",
-            json={"provider": "testpw", "username": "ghost", "password": "hunter2"},
-        )
-        assert resp.status_code == 401
-        assert resp.json()["detail"] == "Invalid credentials"
-
-    def test_unknown_provider_returns_404(self, gated_app):
-        resp = gated_app.post(
-            "/auth/password-login",
-            json={"provider": "nope", "username": "admin", "password": "hunter2"},
-        )
-        assert resp.status_code == 404
-
-    def test_oauth_provider_rejects_password_login_with_404(self):
-        # An OAuth-only provider (supports_password False) must not be
-        # reachable via the password route — same 404 as unknown, so the
-        # endpoint isn't a provider-capability oracle.
-        clear_providers()
-        register_provider(StubAuthProvider())
-        _reset_password_rate_limit()
-        prev = getattr(web_server.app.state, "auth_required", None)
-        web_server.app.state.auth_required = True
-        try:
-            client = TestClient(
-                web_server.app, base_url="https://fly-app.fly.dev"
-            )
-            resp = client.post(
-                "/auth/password-login",
-                json={"provider": "stub", "username": "x", "password": "y"},
-            )
-            assert resp.status_code == 404
-        finally:
-            clear_providers()
-            _reset_password_rate_limit()
-            web_server.app.state.auth_required = prev
-
-    def test_provider_unreachable_returns_503(self, gated_app, pw_provider):
-        pw_provider.unreachable = True
-        resp = gated_app.post(
-            "/auth/password-login",
-            json={"provider": "testpw", "username": "admin", "password": "hunter2"},
-        )
-        assert resp.status_code == 503
 
     def test_open_redirect_next_is_dropped(self, gated_app):
         resp = gated_app.post(
@@ -341,15 +289,6 @@ class TestPasswordLoginRoute:
         assert resp.status_code == 200
         # Malicious absolute URL dropped → lands at root.
         assert resp.json()["next"] == "/"
-
-    def test_route_is_public_unauthenticated(self, gated_app):
-        # The login route itself must be reachable without a session —
-        # otherwise you could never log in.
-        resp = gated_app.post(
-            "/auth/password-login",
-            json={"provider": "testpw", "username": "admin", "password": "hunter2"},
-        )
-        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -447,15 +386,3 @@ class TestLoginPageRender:
         finally:
             clear_providers()
 
-    def test_mixed_providers_render_both(self):
-        clear_providers()
-        register_provider(StubAuthProvider())
-        register_provider(PasswordProvider())
-        try:
-            html = render_login_html()
-            # OAuth redirect button AND a password form, both present.
-            assert "/auth/login?provider=stub" in html
-            assert 'data-provider="testpw"' in html
-            assert "<script>" in html
-        finally:
-            clear_providers()

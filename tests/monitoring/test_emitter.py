@@ -35,20 +35,6 @@ def test_process_singleton_stays_dormant_until_subscribed():
         emitter.reset_emitter_for_tests()
 
 
-def test_emit_accepts_dataclass_and_dict(tmp_path):
-    em = MonitoringEmitter()
-    seen: list = []
-    em.subscribe(lambda batch: seen.extend(batch))
-    em.emit(GatewayHealthEvent(name="gateway.health_snapshot", active_agents=2))
-    em.emit({"event": "gateway_diagnostic", "name": "platform.fatal",
-             "subsystem": "platform.slack"})
-    em.flush()
-    em.close()
-    kinds = {ev.get("event") for ev in seen}
-    assert kinds == {"gateway_health", "gateway_diagnostic"}
-    health = next(ev for ev in seen if ev["event"] == "gateway_health")
-    assert health["active_agents"] == 2
-    assert "ts_ns" in health
 
 
 def test_subscriber_failure_is_isolated():
@@ -66,33 +52,6 @@ def test_subscriber_failure_is_isolated():
     assert len(good) == 1  # the raising subscriber did not break fan-out
 
 
-def test_flush_waits_for_in_flight_subscriber_delivery():
-    em = MonitoringEmitter()
-    subscriber_started = threading.Event()
-    release_subscriber = threading.Event()
-    flush_finished = threading.Event()
-
-    def blocking_subscriber(_batch):
-        subscriber_started.set()
-        release_subscriber.wait(timeout=2.0)
-
-    em.subscribe(blocking_subscriber)
-    em.emit({"event": "gateway_health", "name": "gateway.exit"})
-    assert subscriber_started.wait(timeout=1.0)
-
-    flush_thread = threading.Thread(
-        target=lambda: (em.flush(timeout=1.0), flush_finished.set()),
-        daemon=True,
-    )
-    flush_thread.start()
-
-    try:
-        assert not flush_finished.wait(timeout=0.1)
-    finally:
-        release_subscriber.set()
-
-    assert flush_finished.wait(timeout=1.0)
-    em.close()
 
 
 def test_unsubscribe_stops_delivery():

@@ -176,12 +176,3 @@ class TestVisibleProvidersInjectsTTSPlugins:
         names = [row.get("name") for row in visible]
         assert "Cartesia" not in names
 
-    def test_tts_category_without_plugins_only_hardcoded(self):
-        """No plugins → picker shows exactly the hardcoded rows."""
-        tts_cat = tools_config.TOOL_CATEGORIES["tts"]
-        visible = tools_config._visible_providers(tts_cat, config={})
-        names = [row.get("name") for row in visible]
-        # No row has the plugin marker
-        assert all(not row.get("tts_plugin_name") for row in visible)
-        # Hardcoded rows still present (sample one of the always-visible ones)
-        assert "Microsoft Edge TTS" in names

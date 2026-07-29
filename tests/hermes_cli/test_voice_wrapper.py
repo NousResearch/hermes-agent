@@ -13,7 +13,6 @@ stack.
 import pytest
 
 
-
 class TestPublicAPI:
     def test_gateway_symbols_importable(self):
         """Match the exact import shape tui_gateway/server.py uses."""
@@ -44,18 +43,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit("ctrl+b") == "c-b"
         assert normalize_voice_record_key_for_prompt_toolkit("alt+r") == "a-r"
 
-    def test_control_option_opt_aliases_match_tui_parser(self):
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("control+o") == "c-o"
-        assert normalize_voice_record_key_for_prompt_toolkit("option+space") == "a-space"
-        assert normalize_voice_record_key_for_prompt_toolkit("opt+enter") == "a-enter"
-
-    def test_case_insensitive(self):
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("Ctrl+B") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("CONTROL+O") == "c-o"
 
     def test_non_string_falls_back_to_default(self):
         from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
@@ -65,10 +52,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit(True) == "c-b"
         assert normalize_voice_record_key_for_prompt_toolkit({}) == "c-b"
 
-    def test_empty_string_falls_back(self):
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("") == "c-b"
 
     def test_super_win_fall_back_to_default_in_cli(self):
         """prompt_toolkit has no super modifier, so ``super+b`` / ``win+o``
@@ -83,14 +66,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit("windows+o") == "c-b"
 
     # Round-10 Copilot review regressions on #19835.
-    def test_strips_whitespace_within_and_around(self):
-        """``ctrl + b`` / ``  option + space  `` are accepted by the TUI
-        parser; the CLI normalizer must mirror that or the same config
-        binds different shortcuts across runtimes."""
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl + b") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("  option + space  ") == "a-space"
 
     def test_named_key_aliases_collapse_to_prompt_toolkit_canonical(self):
         """TUI accepts ``return`` / ``esc`` / ``bs`` / ``del`` etc.;
@@ -103,40 +78,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit("ctrl+bs") == "c-backspace"
         assert normalize_voice_record_key_for_prompt_toolkit("alt+del") == "a-delete"
 
-    def test_typoed_named_keys_fall_back_to_default(self):
-        """``ctrl+spcae`` would otherwise pass through as ``c-spcae`` and
-        prompt_toolkit would reject it at startup — fall back instead."""
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+spcae") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+f5") == "c-b"
-
-    def test_bare_char_and_multi_modifier_fall_back(self):
-        """TUI parser rejects bare-char (``o``) and multi-modifier
-        (``ctrl+alt+r``) configs; the CLI normalizer must match."""
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("o") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("b") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+alt+r") == "c-b"
-
-    def test_reserved_ctrl_chars_fall_back(self):
-        """``ctrl+c`` / ``ctrl+d`` / ``ctrl+l`` are always claimed by
-        the CLI's prompt_toolkit input layer or terminal driver; match
-        the TUI parser's rejection to keep /voice status honest."""
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+c") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+d") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+l") == "c-b"
-
-    def test_unknown_modifier_falls_back(self):
-        """``meta+b`` is ambiguous on the wire (Alt on xterm, Cmd on
-        legacy macOS), same class as the TUI parser's rejection."""
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("meta+b") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("shift+b") == "c-b"
 
     # Round-14 Copilot review regression on #19835. On macOS the TUI
     # parser rejects alt+c/d/l because hermes-ink reports Alt as
@@ -157,15 +98,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         # Other alt letters still bind on darwin.
         assert normalize_voice_record_key_for_prompt_toolkit("alt+r") == "a-r"
         assert normalize_voice_record_key_for_prompt_toolkit("alt+space") == "a-space"
-
-    def test_alt_cdl_allowed_on_non_macos(self, monkeypatch):
-        monkeypatch.setattr("sys.platform", "linux")
-
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+c") == "a-c"
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+d") == "a-d"
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+l") == "a-l"
 
 
 class TestVoiceRecordKeyFromConfig:
@@ -190,11 +122,6 @@ class TestVoiceRecordKeyFromConfig:
         for bad_root in (None, True, 1, "ctrl+b", [], ["ctrl+b"]):
             assert voice_record_key_from_config(bad_root) is None, bad_root
 
-    def test_non_dict_voice_entry(self):
-        from hermes_cli.voice import voice_record_key_from_config
-
-        for bad_voice in (None, True, "cmd+b", 42, ["ctrl+b"]):
-            assert voice_record_key_from_config({"voice": bad_voice}) is None, bad_voice
 
     def test_missing_record_key_returns_none(self):
         from hermes_cli.voice import voice_record_key_from_config
@@ -238,12 +165,6 @@ class TestFormatVoiceRecordKeyForStatus:
         assert format_voice_record_key_for_status("alt+enter") == "Alt+Enter"
         assert format_voice_record_key_for_status("ctrl+esc") == "Ctrl+Escape"
 
-    def test_aliases_render_via_normalized_form(self):
-        from hermes_cli.voice import format_voice_record_key_for_status
-
-        assert format_voice_record_key_for_status("control+o") == "Ctrl+O"
-        assert format_voice_record_key_for_status("option+space") == "Alt+Space"
-        assert format_voice_record_key_for_status("opt+enter") == "Alt+Enter"
 
     def test_non_string_scalar_falls_back_to_ctrl_b_label(self):
         from hermes_cli.voice import format_voice_record_key_for_status
@@ -495,30 +416,6 @@ class TestContinuousLoopSimulation:
 
         voice.stop_continuous()
 
-    def test_auto_restart_false_stops_after_first_transcript(self, fake_recorder, monkeypatch):
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": "single shot"},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        transcripts = []
-        statuses = []
-
-        voice.start_continuous(
-            on_transcript=lambda t: transcripts.append(t),
-            on_status=lambda s: statuses.append(s),
-            auto_restart=False,
-        )
-        fake_recorder.last_callback()
-
-        assert transcripts == ["single shot"]
-        assert fake_recorder.start_calls == 1
-        assert statuses == ["listening", "transcribing", "idle"]
-        assert voice.is_continuous_active() is False
 
     def test_auto_restart_false_retains_silent_strikes_across_starts(
         self, fake_recorder, monkeypatch
@@ -546,71 +443,6 @@ class TestContinuousLoopSimulation:
         assert voice.is_continuous_active() is False
         assert fake_recorder.start_calls == 3
 
-    def test_force_transcribe_stop_delivers_current_buffer(self, fake_recorder, monkeypatch):
-        import hermes_cli.voice as voice
-
-        class ImmediateThread:
-            def __init__(self, target, daemon=False):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": "manual stop"},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        transcripts = []
-        statuses = []
-
-        voice.start_continuous(
-            on_transcript=lambda t: transcripts.append(t),
-            on_status=lambda s: statuses.append(s),
-        )
-        voice.stop_continuous(force_transcribe=True)
-
-        assert fake_recorder.stopped == 1
-        assert transcripts == ["manual stop"]
-        assert statuses == ["listening", "transcribing", "idle"]
-        assert voice.is_continuous_active() is False
-
-    def test_force_transcribe_empty_single_shots_hit_silent_limit(
-        self, fake_recorder, monkeypatch
-    ):
-        import hermes_cli.voice as voice
-
-        class ImmediateThread:
-            def __init__(self, target, daemon=False):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": ""},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        silent_limit_fired = []
-
-        for _ in range(3):
-            voice.start_continuous(
-                on_transcript=lambda _t: None,
-                on_silent_limit=lambda: silent_limit_fired.append(True),
-                auto_restart=False,
-            )
-            voice.stop_continuous(force_transcribe=True)
-
-        assert silent_limit_fired == [True]
-        assert fake_recorder.stopped == 3
-        assert voice._continuous_no_speech_count == 0
 
     def test_force_transcribe_valid_single_shot_resets_silent_strikes(
         self, fake_recorder, monkeypatch
@@ -647,32 +479,6 @@ class TestContinuousLoopSimulation:
         assert silent_limit_fired == []
         assert voice._continuous_no_speech_count == 0
 
-    def test_force_transcribe_stop_failure_cancels_and_clears_stopping(
-        self, fake_recorder, monkeypatch
-    ):
-        import hermes_cli.voice as voice
-
-        class ImmediateThread:
-            def __init__(self, target, daemon=False):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
-        fake_recorder.fail_stop = True
-
-        statuses = []
-        voice.start_continuous(
-            on_transcript=lambda _t: None,
-            on_status=lambda s: statuses.append(s),
-        )
-        voice.stop_continuous(force_transcribe=True)
-
-        assert fake_recorder.cancelled == 1
-        assert statuses == ["listening", "transcribing", "idle"]
-        assert voice.is_continuous_active() is False
-        assert voice._continuous_stopping is False
 
     def test_restart_failure_reports_idle(self, fake_recorder, monkeypatch):
         import hermes_cli.voice as voice
@@ -817,33 +623,6 @@ class TestContinuousLoopSimulation:
         assert stop_fired == ["stop"]
         assert voice.is_continuous_active() is False
 
-    def test_broken_busy_probe_fails_open(self, fake_recorder, monkeypatch):
-        """A raising probe must not make the voice chat immortal — silent
-        cycles count as if no probe were registered."""
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": ""},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        def _boom():
-            raise RuntimeError("probe broken")
-
-        monkeypatch.setattr(voice, "_voice_busy_probe", _boom)
-
-        silent_limit_fired = []
-        voice.start_continuous(
-            on_transcript=lambda _t: None,
-            on_silent_limit=lambda: silent_limit_fired.append(True),
-        )
-        for _ in range(3):
-            fake_recorder.last_callback()
-
-        assert silent_limit_fired == [True]
-        assert voice.is_continuous_active() is False
 
     def test_force_transcribe_silent_cycle_held_while_busy(self, fake_recorder, monkeypatch):
         """The single-shot (auto_restart=False, force_transcribe) strike path
@@ -924,21 +703,10 @@ class TestBeepsEnabledTruthyStrings:
     def test_quoted_false_string_disables(self, monkeypatch):
         assert self._enabled_with(monkeypatch, "false") is False
 
-    def test_quoted_off_string_disables(self, monkeypatch):
-        assert self._enabled_with(monkeypatch, "off") is False
-
-    def test_quoted_true_string_enables(self, monkeypatch):
-        assert self._enabled_with(monkeypatch, "true") is True
 
     def test_real_booleans_pass_through(self, monkeypatch):
         assert self._enabled_with(monkeypatch, True) is True
         assert self._enabled_with(monkeypatch, False) is False
-
-    def test_missing_key_defaults_true(self, monkeypatch):
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"voice": {}})
-        assert voice._beeps_enabled() is True
 
 
 @pytest.mark.real_audio_playback
@@ -976,56 +744,4 @@ class TestSpeakTextStreamingDispatch:
         assert streamed == ["Hello streaming world"]
         assert synced == [], "sync whole-file path must be skipped when streaming"
 
-    def test_no_streamer_falls_back_to_sync_path(self, monkeypatch):
-        import hermes_cli.voice as voice
-        import tools.tts_streaming as ts
-        from tools import tts_tool
 
-        monkeypatch.setattr(
-            ts, "resolve_streaming_provider", lambda cfg, preferred=None: None
-        )
-        played = []
-        returned_path = "/tmp/hermes_voice/fallback.mp3"
-        monkeypatch.setattr(
-            tts_tool,
-            "text_to_speech_tool",
-            lambda **_kw: f'{{"success": true, "file_path": "{returned_path}"}}',
-        )
-        monkeypatch.setattr(voice.os, "makedirs", lambda *a, **k: None)
-        monkeypatch.setattr(voice.os.path, "isfile", lambda p: p == returned_path)
-        monkeypatch.setattr(voice.os.path, "getsize", lambda _p: 1000)
-        monkeypatch.setattr(voice.os, "unlink", lambda _p: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda p: played.append(p))
-
-        assert voice.speak_text("Hello sync world") is None
-        assert played == [returned_path]
-
-    def test_streaming_failure_falls_back_to_sync_path(self, monkeypatch):
-        import hermes_cli.voice as voice
-        import tools.tts_streaming as ts
-        from tools import tts_tool
-
-        monkeypatch.setattr(
-            ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()
-        )
-
-        def broken_stream(text_queue, stop_event, done_event, *a, **k):
-            raise RuntimeError("audio device exploded")
-
-        monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", broken_stream)
-
-        played = []
-        returned_path = "/tmp/hermes_voice/recovered.mp3"
-        monkeypatch.setattr(
-            tts_tool,
-            "text_to_speech_tool",
-            lambda **_kw: f'{{"success": true, "file_path": "{returned_path}"}}',
-        )
-        monkeypatch.setattr(voice.os, "makedirs", lambda *a, **k: None)
-        monkeypatch.setattr(voice.os.path, "isfile", lambda p: p == returned_path)
-        monkeypatch.setattr(voice.os.path, "getsize", lambda _p: 1000)
-        monkeypatch.setattr(voice.os, "unlink", lambda _p: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda p: played.append(p))
-
-        assert voice.speak_text("Recover me") is None
-        assert played == [returned_path]

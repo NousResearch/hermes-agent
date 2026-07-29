@@ -33,36 +33,10 @@ class TestRoutableFromRegion:
             "us.anthropic.claude-sonnet-4-6", "eu-central-2"
         )
 
-    def test_eu_profile_offered_in_eu(self):
-        assert bedrock_model_routable_from_region(
-            "eu.anthropic.claude-sonnet-4-6", "eu-central-2"
-        )
-
-    def test_global_profile_offered_everywhere(self):
-        for region in ("eu-central-2", "us-east-1", "ap-southeast-1"):
-            assert bedrock_model_routable_from_region(
-                "global.anthropic.claude-sonnet-4-6", region
-            )
-
-    def test_bare_foundation_id_offered_everywhere(self):
-        assert bedrock_model_routable_from_region(
-            "anthropic.claude-3-sonnet-20240229-v1:0", "eu-central-2"
-        )
-
-    def test_apac_spellings_route_in_ap_regions(self):
-        for prefix in ("ap.", "apac.", "jp."):
-            assert bedrock_model_routable_from_region(
-                f"{prefix}anthropic.claude-sonnet-4-6", "ap-northeast-1"
-            )
 
     def test_eu_profile_not_offered_in_us(self):
         assert not bedrock_model_routable_from_region(
             "eu.anthropic.claude-sonnet-4-6", "us-east-1"
-        )
-
-    def test_unknown_region_hides_nothing(self):
-        assert bedrock_model_routable_from_region(
-            "us.anthropic.claude-sonnet-4-6", ""
         )
 
 

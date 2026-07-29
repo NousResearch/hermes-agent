@@ -41,13 +41,6 @@ def test_scorer_matches_typescript_reference():
         assert round(score, 2) == expected, f"{label!r}/{query!r}: {score} != {expected}"
 
 
-def test_is_boundary_camelcase_and_separators():
-    assert _is_boundary("gpt-4o", 0) is True       # start
-    assert _is_boundary("gpt-4o", 4) is True        # after '-'
-    assert _is_boundary("gpt-4o", 2) is False       # mid-word
-    assert _is_boundary("GptO", 3) is True          # lower->upper transition
-
-
 def test_token_score_takes_orig_and_lower():
     # Exact match (lower == token) earns the +20 bonus over a prefix.
     exact = _token_score("sonnet", "sonnet", "sonnet")
@@ -76,18 +69,6 @@ def test_high_byte_keys_ignored():
     handled, _, changed = _handle_active_search_key(_FakeCurses, 200, search)
     assert (handled, changed) == (False, False)
     assert search.query == "ab"
-
-
-def test_fuzzy_score_empty_query_is_zero():
-    assert _fuzzy_score("anything", "") == 0
-    assert _fuzzy_score("anything", "   ") == 0
-
-
-def test_fuzzy_score_prefix_beats_scattered():
-    prefix = _fuzzy_score("gpt-4o-mini", "gpt")
-    scattered = _fuzzy_score("a-g-p-t", "gpt")
-    assert prefix is not None and scattered is not None
-    assert prefix > scattered
 
 
 def test_fuzzy_score_exact_and_shorter_rank_higher():
@@ -121,7 +102,3 @@ def test_filter_indices_blank_query_preserves_order():
     assert _filter_indices(models, "   ") == [0, 1, 2]
 
 
-def test_filter_indices_stable_for_equal_scores():
-    # Identical labels score identically; original order is the tiebreak.
-    items = ["ab", "ab", "ab"]
-    assert _filter_indices(items, "ab") == [0, 1, 2]

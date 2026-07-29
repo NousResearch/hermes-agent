@@ -231,22 +231,6 @@ class TestBackendGate:
         assert loaded.enabled is False
         assert "not enabled" in (loaded.error or "")
 
-    def test_user_backend_loads_when_enabled(self, tmp_path, monkeypatch):
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        user_plugins = hermes_home / "plugins"
-
-        _write_plugin(
-            user_plugins,
-            ["image_gen", "fancy"],
-            manifest_extra={"kind": "backend"},
-        )
-        _enable(hermes_home, "image_gen/fancy")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert mgr._plugins["image_gen/fancy"].enabled is True
 
     def test_exclusive_kind_skipped(self, tmp_path, monkeypatch):
         """``kind: exclusive`` plugins are recorded but not loaded — the

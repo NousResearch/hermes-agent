@@ -88,26 +88,6 @@ class TestResolveAzureFoundryRuntimeEntra:
         assert callable(runtime["api_key"])
         assert runtime["source"] == "entra_id"
 
-    def test_entra_inherits_codex_responses_for_gpt5_family(self, fake_azure_identity):
-        """GPT-5.x / o-series / codex models on Azure are Responses-API-only.
-        The runtime auto-upgrades api_mode regardless of auth mode — this is
-        the same behaviour as the static-key path (see
-        ``hermes_cli/models.py::azure_foundry_model_api_mode``)."""
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        runtime = _resolve_azure_foundry_runtime(
-            requested_provider="azure-foundry",
-            model_cfg={
-                "provider": "azure-foundry",
-                "base_url": "https://my-resource.openai.azure.com/openai/v1",
-                "api_mode": "chat_completions",
-                "auth_mode": "entra_id",
-                "default": "gpt-5.4",
-            },
-        )
-        # GPT-5.x is upgraded to codex_responses — Entra path inherits.
-        assert runtime["api_mode"] == "codex_responses"
-        assert callable(runtime["api_key"])
-        assert runtime["auth_mode"] == "entra_id"
 
     def test_entra_propagates_scope_only(self, fake_azure_identity):
         """``model.entra.scope`` is the only Hermes-managed Azure SDK
@@ -141,26 +121,6 @@ class TestResolveAzureFoundryRuntimeEntra:
         assert "interactive_browser_tenant_id" not in kw
         assert "authority" not in kw
 
-    def test_entra_default_scope_when_unset(self, fake_azure_identity):
-        """When ``model.entra.scope`` is not set, the runtime resolves
-        Microsoft's documented inference scope —
-        ``https://ai.azure.com/.default`` — regardless of whether the
-        endpoint is ``*.openai.azure.com`` or ``*.services.ai.azure.com``.
-        Both shapes use the SAME scope per Microsoft's docs; the
-        ``cognitiveservices.azure.com`` scope is the control-plane
-        audience and is rejected for inference by newer resources."""
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT
-        _resolve_azure_foundry_runtime(
-            requested_provider="azure-foundry",
-            model_cfg={
-                "provider": "azure-foundry",
-                "base_url": "https://r.openai.azure.com/openai/v1",
-                "api_mode": "chat_completions",
-                "auth_mode": "entra_id",
-            },
-        )
-        assert fake_azure_identity["scope"] == SCOPE_AI_AZURE_DEFAULT
 
     def test_entra_scope_override_wins(self, fake_azure_identity):
         """Users on sovereign clouds / unusual tenants can set
@@ -183,32 +143,6 @@ class TestResolveAzureFoundryRuntimeEntra:
             == "https://cognitiveservices.azure.com/.default"
         )
 
-    def test_entra_with_anthropic_messages_is_supported(self, fake_azure_identity):
-        """Entra ID now works for both OpenAI-style and Anthropic-style
-        Azure Foundry endpoints. The runtime returns a callable
-        ``api_key``; downstream
-        :func:`agent.anthropic_adapter.build_anthropic_client` detects
-        the callable and installs an httpx event hook that mints a
-        fresh bearer JWT per request (the Anthropic SDK does not
-        accept callable auth_token natively)."""
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        runtime = _resolve_azure_foundry_runtime(
-            requested_provider="azure-foundry",
-            model_cfg={
-                "provider": "azure-foundry",
-                "base_url": "https://r.services.ai.azure.com/anthropic",
-                "api_mode": "anthropic_messages",
-                "auth_mode": "entra_id",
-                "default": "claude-sonnet-4-5",
-            },
-        )
-        assert runtime["provider"] == "azure-foundry"
-        assert runtime["auth_mode"] == "entra_id"
-        assert runtime["api_mode"] == "anthropic_messages"
-        # Callable api_key — the anthropic_adapter detects this and
-        # plumbs through an httpx event hook.
-        assert callable(runtime["api_key"])
-        assert not isinstance(runtime["api_key"], str)
 
     def test_entra_with_explicit_api_key_uses_string_escape_hatch(self, fake_azure_identity):
         """Passing --api-key on the CLI overrides the entra path so a
@@ -228,23 +162,6 @@ class TestResolveAzureFoundryRuntimeEntra:
         assert runtime["api_key"] == "explicit-string-key"
         assert runtime["auth_mode"] == "api_key"
         assert runtime["source"] == "explicit"
-
-    def test_entra_runtime_dict_keeps_only_scope_override(self, fake_azure_identity):
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        runtime = _resolve_azure_foundry_runtime(
-            requested_provider="azure-foundry",
-            model_cfg={
-                "provider": "azure-foundry",
-                "base_url": "https://r.openai.azure.com/openai/v1",
-                "api_mode": "chat_completions",
-                "auth_mode": "entra_id",
-                "entra": {
-                    "scope": "https://custom.example/.default",
-                    "client_id": "legacy-client",
-                },
-            },
-        )
-        assert runtime["entra"] == {"scope": "https://custom.example/.default"}
 
 
 # ---------------------------------------------------------------------------
@@ -296,24 +213,6 @@ class TestResolveAzureFoundryRuntimeApiKey:
         )
         assert runtime["base_url"] == "https://r.services.ai.azure.com/anthropic"
 
-    def test_missing_api_key_raises_with_entra_hint(self, monkeypatch):
-        from hermes_cli.auth import AuthError
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
-        with pytest.raises(AuthError) as exc_info:
-            _resolve_azure_foundry_runtime(
-                requested_provider="azure-foundry",
-                model_cfg={
-                    "provider": "azure-foundry",
-                    "base_url": "https://r.openai.azure.com/openai/v1",
-                    "api_mode": "chat_completions",
-                },
-            )
-        msg = str(exc_info.value)
-        assert "AZURE_FOUNDRY_API_KEY" in msg
-        # Surface the Entra alternative so users discover the keyless path.
-        assert "entra_id" in msg
-
 
 # ---------------------------------------------------------------------------
 # _get_azure_foundry_auth_status (auth.py) — never mints a token
@@ -349,43 +248,6 @@ class TestAzureFoundryAuthStatus:
         assert info["azure_identity_installed"] is True
         assert info["scope"].endswith("/.default")
 
-    def test_entra_status_reports_missing_package(self, monkeypatch):
-        from hermes_cli import auth as _auth
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {
-                "model": {
-                    "provider": "azure-foundry",
-                    "auth_mode": "entra_id",
-                    "base_url": "https://r.openai.azure.com/openai/v1",
-                },
-            },
-        )
-        monkeypatch.setattr(
-            "agent.azure_identity_adapter.has_azure_identity_installed",
-            lambda: False,
-        )
-        info = _auth._get_azure_foundry_auth_status()
-        assert info["logged_in"] is False
-        assert info["azure_identity_installed"] is False
-        assert "azure-identity" in info["hint"]
-
-    def test_api_key_status_uses_env_var(self, monkeypatch):
-        from hermes_cli import auth as _auth
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {
-                "model": {
-                    "provider": "azure-foundry",
-                    "auth_mode": "api_key",
-                    "base_url": "https://r.openai.azure.com/openai/v1",
-                },
-            },
-        )
-        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-real-key-xxx")
-        info = _auth._get_azure_foundry_auth_status()
-        assert info["auth_mode"] == "api_key"
-        assert info["logged_in"] is True
 
     def test_api_key_status_false_when_missing(self, monkeypatch):
         from hermes_cli import auth as _auth

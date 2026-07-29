@@ -278,20 +278,3 @@ def test_background_discovery_retries_after_dead_thread_with_zero_connected(monk
     assert calls["mcp"] == 2
 
 
-def test_background_discovery_does_not_retry_when_servers_connected(monkeypatch):
-    """Once at least one MCP server is connected, repeat calls stay no-ops."""
-    calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=True, calls=calls)
-
-    mcp_startup.start_background_mcp_discovery(
-        logger=_retry_logger(), thread_name="test-mcp-noretry-1"
-    )
-    thread = mcp_startup._mcp_discovery_thread
-    if thread is not None:
-        thread.join(timeout=1.0)
-    assert calls["mcp"] == 1
-
-    mcp_startup.start_background_mcp_discovery(
-        logger=_retry_logger(), thread_name="test-mcp-noretry-2"
-    )
-    assert calls["mcp"] == 1

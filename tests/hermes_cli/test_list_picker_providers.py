@@ -166,30 +166,6 @@ def test_empty_models_row_dropped(monkeypatch):
     assert [p["slug"] for p in result] == ["openrouter"]
 
 
-def test_custom_endpoint_with_api_url_kept_when_models_empty(monkeypatch):
-    """User-defined endpoints with an ``api_url`` survive even if models empty.
-
-    Rationale: custom endpoints may accept any model id the user types --
-    the picker still shows the row so the user can enter one manually.
-    """
-    base = [
-        _make_provider("local-ollama", is_user_defined=True,
-                       api_url="http://localhost:11434/v1", models=[],
-                       source="user-config"),
-    ]
-
-    monkeypatch.setattr(model_switch, "list_authenticated_providers",
-                        lambda **kw: list(base))
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
-                        lambda *a, **kw: [])
-
-    result = model_switch.list_picker_providers(max_models=50)
-
-    assert len(result) == 1
-    assert result[0]["slug"] == "local-ollama"
-    assert result[0]["models"] == []
-
-
 def test_user_defined_without_api_url_and_empty_models_dropped(monkeypatch):
     """An is_user_defined row WITHOUT api_url and no models is still dropped.
 

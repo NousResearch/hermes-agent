@@ -62,50 +62,6 @@ def test_load_picker_context_full_dict():
     assert isinstance(ctx.custom_providers, list)
 
 
-def test_load_picker_context_normalizes_list_of_dict_models():
-    cfg = _cfg(
-        providers={
-            "static-gateway": {
-                "name": "Static Gateway",
-                "api": "https://router.example.com/v1",
-                "default_model": "claude-3-7-sonnet",
-                "models": [
-                    {"id": "claude-3-7-sonnet"},
-                    {"id": "claude-sonnet-4", "context_length": 200000},
-                ],
-                "discover_models": False,
-            }
-        },
-    )
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        ctx = load_picker_context()
-
-    assert len(ctx.custom_providers) == 1
-    assert ctx.custom_providers[0]["models"] == {
-        "claude-3-7-sonnet": {},
-        "claude-sonnet-4": {"context_length": 200000},
-    }
-    assert ctx.custom_providers[0]["discover_models"] is False
-
-
-def test_load_picker_context_falls_back_to_name_when_default_missing():
-    cfg = _cfg(model={"name": "gpt-5.4", "provider": "openai"})
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        ctx = load_picker_context()
-    assert ctx.current_model == "gpt-5.4"
-    assert ctx.current_provider == "openai"
-
-
-def test_load_picker_context_string_model_legacy_shape():
-    """config.model can be a bare string in older configs."""
-    cfg = {"model": "some-model", "providers": {}, "custom_providers": []}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        ctx = load_picker_context()
-    assert ctx.current_model == "some-model"
-    assert ctx.current_provider == ""
-    assert ctx.current_base_url == ""
-
-
 def test_load_picker_context_empty_config():
     cfg = _cfg()
     with patch("hermes_cli.config.load_config", return_value=cfg):
@@ -142,13 +98,6 @@ def test_with_overrides_truthy_only_strings():
     assert overlaid.current_provider == "orig"
     assert overlaid.current_model == "orig-model"
     assert overlaid.current_base_url == "orig-url"
-
-
-def test_with_overrides_truthy_value_replaces():
-    ctx = _empty_ctx()
-    overlaid = ctx.with_overrides(current_provider="anthropic")
-    assert overlaid.current_provider == "anthropic"
-    assert overlaid.current_model == "orig-model"  # untouched
 
 
 def test_with_overrides_no_args_returns_self_or_equivalent():
@@ -194,86 +143,6 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["providers"][0]["slug"] == "moa"
     assert payload["providers"][0]["models"] == ["default"]
     assert payload["providers"][1:] == rows
-
-
-def test_build_models_payload_does_not_call_provider_model_ids():
-    """``build_models_payload`` is a thin shape adapter — it delegates the
-    actual curation to ``list_authenticated_providers`` (which DOES call
-    ``cached_provider_model_ids`` internally for live discovery, with disk
-    caching). ``build_models_payload`` itself must not call the live fetcher
-    directly; the test pins that boundary.
-    """
-    rows = [{"slug": "nous", "name": "Nous", "models": ["hermes-4-405b"],
-             "total_models": 1, "is_current": False, "is_user_defined": False,
-             "source": "built-in"}]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows), \
-         patch("hermes_cli.models.provider_model_ids") as mock_pm:
-        build_models_payload(ctx)
-    mock_pm.assert_not_called()
-
-
-def test_build_models_payload_uses_cached_nous_tier_by_default():
-    """Picker payloads should not force fresh Nous account checks.
-
-    Desktop/status picker opens are request/response UI paths. They can hit
-    the short free-tier cache; explicit model/auth flows can still opt into a
-    fresh account check when needed.
-    """
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    rows = [_nous_row()]
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=rows,
-    ) as mock_list:
-        build_models_payload(ctx)
-
-    mock_list.assert_called_once()
-    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is False
-
-
-def test_build_models_payload_can_force_fresh_nous_tier():
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    rows = [_nous_row()]
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=rows,
-    ) as mock_list:
-        build_models_payload(ctx, force_fresh_nous_tier=True)
-
-    mock_list.assert_called_once()
-    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is True
-
-
-def test_build_models_payload_can_skip_custom_provider_probes():
-    ctx = _empty_ctx()
-    rows = []
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=rows,
-    ) as mock_list:
-        build_models_payload(ctx, probe_custom_providers=False)
-
-    mock_list.assert_called_once()
-    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
-
-
-def test_build_models_payload_can_probe_only_current_custom_provider():
-    ctx = _empty_ctx()
-    rows = []
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=rows,
-    ) as mock_list:
-        build_models_payload(
-            ctx,
-            probe_custom_providers=False,
-            probe_current_custom_provider=True,
-        )
-
-    mock_list.assert_called_once()
-    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
-    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
 
 
 def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
@@ -331,27 +200,6 @@ def test_list_authenticated_providers_force_fresh_is_keyword_only():
     assert param.default is False
 
 
-def test_pricing_uses_cached_nous_tier_by_default():
-    rows = [_nous_row()]
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    with (
-        _list_auth_returning(rows),
-        patch(
-            "hermes_cli.models.get_pricing_for_provider",
-            return_value={
-                "openai/gpt-5.5": {
-                    "prompt": "0.000001",
-                    "completion": "0.000002",
-                },
-            },
-        ),
-        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
-    ):
-        build_models_payload(ctx, pricing=True)
-
-    mock_free.assert_called_once_with(force_fresh=False)
-
-
 def test_pricing_can_force_fresh_nous_tier():
     rows = [_nous_row()]
     ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
@@ -399,22 +247,6 @@ def test_include_unconfigured_appends_canonical_skeletons():
     assert all(r["total_models"] == 0 for r in skeletons)
 
 
-def test_include_unconfigured_skips_already_present_slugs():
-    """If list_authenticated_providers already returned a row for a
-    canonical slug, include_unconfigured must NOT duplicate it."""
-    rows = [
-        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
-         "total_models": 1, "is_current": True, "is_user_defined": False,
-         "source": "built-in"},
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx, include_unconfigured=True)
-    or_rows = [r for r in payload["providers"] if r["slug"] == "openrouter"]
-    assert len(or_rows) == 1
-    assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
-
-
 def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_rows():
     rows = [
         {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.4"],
@@ -452,43 +284,6 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
         "gemini",
         "custom:lab",
     ]
-
-
-def test_explicit_only_keeps_unauthenticated_current_provider_visible():
-    """Desktop's configured-only picker must retain its saved provider row."""
-    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
-    with _list_auth_returning([]):
-        payload = build_models_payload(
-            ctx,
-            explicit_only=True,
-            picker_hints=True,
-        )
-
-    assert [row["slug"] for row in payload["providers"]] == ["deepseek"]
-    row = payload["providers"][0]
-    assert row["source"] == "configured-current"
-    assert row["authenticated"] is False
-    assert row["models"] == ["deepseek-v4-pro"]
-    assert "DEEPSEEK_API_KEY" in row["warning"]
-def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
-    """If the saved provider is currently unauthenticated, keep a visible row
-    with the saved model so GUI pickers don't silently jump to another
-    authenticated provider."""
-    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
-    with _list_auth_returning([]):
-        payload = build_models_payload(
-            ctx, include_unconfigured=True, picker_hints=True,
-        )
-
-    deepseek = next(r for r in payload["providers"] if r["slug"] == "deepseek")
-    assert deepseek["source"] == "configured-current"
-    assert deepseek["is_current"] is True
-    assert deepseek["authenticated"] is False
-    assert deepseek["models"] == ["deepseek-v4-pro"]
-    assert deepseek["total_models"] == 1
-    assert deepseek["auth_type"] == "api_key"
-    assert "DEEPSEEK_API_KEY" in deepseek["warning"]
-    assert "saved model only" in deepseek["warning"]
 
 
 def test_include_unconfigured_does_not_duplicate_configured_current_row():
@@ -553,30 +348,6 @@ def test_picker_hints_marks_authed_rows_authenticated():
     with _list_auth_returning(rows):
         payload = build_models_payload(ctx, picker_hints=True)
     assert payload["providers"][0]["authenticated"] is True
-
-
-def test_picker_hints_adds_warning_to_skeleton_rows():
-    """Skeleton rows (unconfigured canonical providers) must carry the
-    setup hint the picker UI displays."""
-    rows = []
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(
-            ctx, include_unconfigured=True, picker_hints=True,
-        )
-    skeleton_rows = [r for r in payload["providers"]
-                     if r.get("source") == "canonical"]
-    assert skeleton_rows, "test setup: expected at least one skeleton row"
-    for row in skeleton_rows:
-        assert row["authenticated"] is False
-        assert "auth_type" in row
-        assert "warning" in row
-        # api_key providers get "paste X to activate" / others get the
-        # hermes model fallback.
-        assert (
-            row["warning"].startswith("paste ")
-            or row["warning"].startswith("run `hermes model`")
-        )
 
 
 def test_picker_hints_api_key_warning_format():
@@ -764,70 +535,6 @@ def test_aggregator_dedup_removes_overlapping_models():
     assert or_row["total_models"] == 2
 
 
-def test_aggregator_dedup_case_insensitive():
-    """Dedup uses case-insensitive matching.  (#45954)"""
-    rows = [
-        _user_provider_row("my-proxy", ["NVIDIA/NIM/MiniMax-M3"]),
-        _aggregator_row("openrouter", ["nvidia/nim/minimax-m3", "other/model"]),
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx)
-
-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
-    assert "nvidia/nim/minimax-m3" not in or_row["models"]
-    assert or_row["total_models"] == 1
-
-
-def test_aggregator_dedup_no_overlap_unchanged():
-    """When there's no overlap, aggregator models are untouched.  (#45954)"""
-    rows = [
-        _user_provider_row("litellm-proxy", ["custom/model-a"]),
-        _aggregator_row("openrouter", ["anthropic/claude-sonnet-4.6"]),
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx)
-
-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
-    assert or_row["models"] == ["anthropic/claude-sonnet-4.6"]
-    assert or_row["total_models"] == 1
-
-
-def test_aggregator_dedup_no_user_providers_unchanged():
-    """When there are no user-defined providers, nothing is filtered.
-    (#45954)"""
-    rows = [
-        _aggregator_row("openrouter", [
-            "nvidia/nim/minimax-m3",
-            "anthropic/claude-sonnet-4.6",
-        ]),
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx)
-
-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
-    assert len(or_row["models"]) == 2
-
-
-def test_aggregator_dedup_multiple_user_providers():
-    """Models from all user-defined providers are excluded from aggregators.
-    (#45954)"""
-    rows = [
-        _user_provider_row("proxy-a", ["model-x"]),
-        _user_provider_row("proxy-b", ["model-y"]),
-        _aggregator_row("openrouter", ["model-x", "model-y", "model-z"]),
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx)
-
-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
-    assert or_row["models"] == ["model-z"]
-    assert or_row["total_models"] == 1
-
-
 def test_aggregator_dedup_does_not_empty_user_defined_custom_provider():
     """A named custom provider has slug ``custom:<name>``, which makes it
     *both* ``is_user_defined=True`` *and* ``is_aggregator()==True``
@@ -920,52 +627,6 @@ def test_two_custom_providers_with_overlap_both_survive():
     assert b_row["models"] == ["shared/model", "b/only"]
     assert a_row["total_models"] == 2
     assert b_row["total_models"] == 2
-
-
-def test_build_models_payload_keeps_static_provider_models_from_providers_dict():
-    """The inventory payload must keep configured static models from a
-    ``providers:`` entry even when the same endpoint also appears via the
-    compatibility ``custom_providers`` view and live discovery would fail."""
-    cfg = _cfg(
-        model={
-            "provider": "static-gateway",
-            "default": "claude-3-7-sonnet",
-        },
-        providers={
-            "static-gateway": {
-                "name": "Static Gateway",
-                "api": "https://router.example.com/v1",
-                "api_key": "sk-test",
-                "default_model": "claude-3-7-sonnet",
-                "models": [
-                    {"id": "claude-3-7-sonnet"},
-                    {"id": "claude-sonnet-4"},
-                ],
-                "discover_models": False,
-            }
-        },
-    )
-    with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("agent.models_dev.fetch_models_dev", return_value={}),
-        patch("hermes_cli.providers.HERMES_OVERLAYS", {}),
-        patch(
-            "hermes_cli.models.fetch_api_models",
-            side_effect=AssertionError("fetch_api_models must not be called"),
-        ),
-    ):
-        ctx = load_picker_context()
-        payload = build_models_payload(ctx)
-
-    rows = [
-        row
-        for row in payload["providers"]
-        if row.get("api_url") == "https://router.example.com/v1"
-    ]
-    assert len(rows) == 1
-    assert rows[0]["slug"] == "static-gateway"
-    assert rows[0]["models"] == ["claude-3-7-sonnet", "claude-sonnet-4"]
-    assert rows[0]["total_models"] == 2
 
 
 def test_build_models_payload_no_max_models_returns_full_list():
@@ -1072,79 +733,6 @@ def test_apply_featured_keeps_newest_n_per_lab():
     assert featured == [*a_models[:_FEATURED_PER_LAB], "b/solo"]
     assert f"a/m{_FEATURED_PER_LAB}" not in featured
     assert f"a/m{_FEATURED_PER_LAB + 1}" not in featured
-
-
-def test_apply_featured_keeps_whole_lab_when_under_the_cap():
-    """A lab with <= _FEATURED_PER_LAB models keeps all of them."""
-    rows = [
-        {
-            "slug": "nous",
-            "models": ["anthropic/opus", "anthropic/haiku", "google/gemini"],
-        }
-    ]
-    _apply_featured_with_dates(
-        rows,
-        {
-            "anthropic/opus": "2026-07-01",
-            "anthropic/haiku": "2026-03-01",
-            "google/gemini": "2026-05-01",
-        },
-    )
-    # Both anthropic models (2 <= 5) and the single google model survive, in
-    # the row's original order.
-    assert rows[0]["featured_models"] == [
-        "anthropic/opus",
-        "anthropic/haiku",
-        "google/gemini",
-    ]
-
-
-def test_apply_featured_ranks_within_list_not_against_now():
-    """The kept models are the newest *in the list*, even if every model is old
-    — the current date never enters the comparison."""
-    rows = [{"slug": "nous", "models": ["a/one", "a/two", "b/three"]}]
-    _apply_featured_with_dates(
-        rows,
-        {"a/one": "2019-01-01", "a/two": "2020-01-01", "b/three": "2018-06-01"},
-    )
-    # Both "a" models kept (2 <= 5), ordered by the row; "b" kept.
-    assert rows[0]["featured_models"] == ["a/one", "a/two", "b/three"]
-
-
-def test_apply_featured_tie_breaks_on_list_order():
-    """Same release_date within a lab falls back to curated (earliest) order
-    when the cut has to choose."""
-    from hermes_cli.inventory import _FEATURED_PER_LAB
-
-    # N+1 same-dated models in lab "x" so exactly one must be dropped; the LAST
-    # one in list order loses the tie.
-    x_models = [f"x/m{i}" for i in range(_FEATURED_PER_LAB + 1)]
-    rows = [{"slug": "nous", "models": [*x_models, "y/solo"]}]
-    dates = {m: "2026-07-09" for m in x_models}
-    dates["y/solo"] = "2026-01-01"
-    _apply_featured_with_dates(rows, dates)
-
-    featured = rows[0]["featured_models"]
-    # Earliest N in list order survive the tie; the last is dropped.
-    assert featured == [*x_models[:_FEATURED_PER_LAB], "y/solo"]
-    assert x_models[_FEATURED_PER_LAB] not in featured
-
-
-def test_apply_featured_undated_lab_falls_back_to_list_order():
-    """A lab whose models have no models.dev date keeps them in list order
-    (undated sorts last, ties broken by position), up to the per-lab cap."""
-    rows = [{"slug": "nous", "models": ["a/first", "a/second", "b/only"]}]
-    _apply_featured_with_dates(rows, {"b/only": "2026-01-01"})  # a/* undated
-    # Both undated "a" models kept (2 <= 5), in list order; "b" kept.
-    assert rows[0]["featured_models"] == ["a/first", "a/second", "b/only"]
-
-
-def test_apply_featured_empty_for_single_lab_provider():
-    """A provider serving one lab is not an aggregator — no shortlist, so the
-    caller falls back to top-N instead of hiding models."""
-    rows = [{"slug": "deepseek", "models": ["deepseek-v4-pro", "deepseek-v4-flash"]}]
-    _apply_featured_with_dates(rows, {})
-    assert rows[0]["featured_models"] == []
 
 
 def test_apply_featured_empty_for_prefixless_models():

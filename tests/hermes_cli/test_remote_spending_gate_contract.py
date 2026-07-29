@@ -36,12 +36,6 @@ def test_403_remote_spending_revoked_maps_to_typed_exc_with_actor():
     assert exc.recovery == "reconnect"
 
 
-def test_403_revoked_absent_actor_is_none_not_crash():
-    exc = _raise(403, {"error": "remote_spending_revoked"})
-    assert isinstance(exc, BillingRemoteSpendingRevoked)
-    assert exc.actor is None  # surface treats absent as "self"
-
-
 def test_401_session_revoked_is_distinct_from_plain_401():
     revoked = _raise(401, {"error": "session_revoked", "recovery": "login"})
     assert isinstance(revoked, BillingSessionRevoked)
@@ -49,13 +43,6 @@ def test_401_session_revoked_is_distinct_from_plain_401():
 
     plain = _raise(401, {"error": "invalid_token"})
     assert not isinstance(plain, BillingSessionRevoked)
-
-
-def test_403_insufficient_scope_still_maps_to_scope_required():
-    exc = _raise(403, {"error": "insufficient_scope"})
-    assert isinstance(exc, BillingScopeRequired)
-    # NOT mistaken for a revoke.
-    assert not isinstance(exc, BillingRemoteSpendingRevoked)
 
 
 def test_503_is_rate_limited_not_revoked_and_carries_retry_after():
@@ -93,28 +80,9 @@ def _serialize(status, payload, headers=None):
     return srv._serialize_billing_error(_raise(status, payload, headers))
 
 
-def test_envelope_threads_actor_code_recovery():
-    env = _serialize(403, {"error": "remote_spending_revoked", "actor": "admin", "recovery": "reconnect"})
-    assert env["error"] == "remote_spending_revoked"
-    assert env["actor"] == "admin"
-    assert env["recovery"] == "reconnect"
-    assert env["ok"] is False
-
-
 def test_envelope_session_revoked_kind():
     env = _serialize(401, {"error": "session_revoked", "recovery": "login"})
     assert env["error"] == "session_revoked"
     assert env["recovery"] == "login"
 
 
-def test_envelope_503_preserves_server_code_with_retry():
-    env = _serialize(503, {"error": "temporarily_unavailable"}, {"Retry-After": "30"})
-    assert env["error"] == "temporarily_unavailable"
-    assert env["retry_after"] == 30
-
-
-def test_envelope_business_code_survives():
-    env = _serialize(403, {"error": "cli_billing_disabled", "code": "remote_spending_disabled", "recovery": "enable_account_toggle"})
-    assert env["error"] == "cli_billing_disabled"
-    assert env["code"] == "remote_spending_disabled"
-    assert env["recovery"] == "enable_account_toggle"

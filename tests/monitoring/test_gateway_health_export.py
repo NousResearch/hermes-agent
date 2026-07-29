@@ -14,21 +14,6 @@ def test_gateway_diagnostic_event_preserves_positional_error_class():
     assert event.source_logger is None
 
 
-def test_default_config_keeps_gateway_health_export_disabled():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    cfg = DEFAULT_CONFIG["monitoring"]["gateway_health_export"]
-
-    assert cfg["enabled"] is False
-    assert cfg["metrics_enabled"] is True
-    assert cfg["diagnostic_events_enabled"] is True
-    assert cfg["warning_error_events_enabled"] is True
-    assert cfg["export_interval_seconds"] == 60
-    assert cfg["logs_export_interval_seconds"] == 5
-    assert cfg["resource_attributes"]["deployment.environment.name"] == "production"
-    assert "deployment.environment" not in cfg["resource_attributes"]
-    # Redaction is always-on and deliberately NOT configurable.
-    assert "redaction" not in cfg
 
 
 def test_gateway_health_snapshot_maps_runtime_status_to_low_cardinality_metrics():
@@ -93,69 +78,8 @@ def test_gateway_health_snapshot_maps_runtime_status_to_low_cardinality_metrics(
     assert all("secret" not in str(v).lower() for v in degraded.attributes.values())
 
 
-def test_gateway_health_snapshot_emits_content_free_diagnostic_event():
-    from agent.monitoring.gateway_health import build_gateway_health_snapshot
-
-    snapshot = build_gateway_health_snapshot(
-        {
-            "gateway_state": "running",
-            "active_agents": 1,
-            "platforms": {
-                "slack": {"state": "fatal", "error_code": "auth_failed", "error_message": "Bearer sk-live-secret"},
-            },
-        },
-        gateway_running=True,
-        profile="default",
-        install_id="install-1",
-        version="v-test",
-        supervision_mode="container",
-    )
-
-    events = [event.to_dict() for event in snapshot.events]
-    health = next(e for e in events if e["event"] == "gateway_health")
-    platform = next(e for e in events if e["event"] == "gateway_diagnostic" and e["name"] == "platform.fatal")
-
-    assert health["gateway_state"] == "running"
-    assert health["active_agents"] == 1
-    assert health["gateway_busy"] is True
-    assert health["gateway_drainable"] is True
-    assert health["fatal_platform_count"] == 1
-    assert platform["platform"] == "slack"
-    assert platform["error_code"] == "auth_failed"
-    assert "redacted_message" not in platform
-    assert "Bearer" not in str(platform)
 
 
-def test_gateway_health_snapshot_preserves_real_bounded_platform_states():
-    from agent.monitoring.gateway_health import build_gateway_health_snapshot
-
-    expected = {
-        "connecting",
-        "connected",
-        "disconnected",
-        "disabled",
-        "fatal",
-        "paused",
-        "retrying",
-    }
-    snapshot = build_gateway_health_snapshot(
-        {
-            "gateway_state": "running",
-            "platforms": {state: {"state": state} for state in expected},
-        },
-        gateway_running=True,
-        profile="default",
-        install_id="install-1",
-        version="v-test",
-        supervision_mode="container",
-    )
-
-    observed = {
-        metric.attributes["hermes.platform.state"]
-        for metric in snapshot.metrics
-        if metric.name == "hermes.platform.up"
-    }
-    assert observed == expected
 
 
 def test_gateway_diagnostic_log_handler_never_carries_rendered_message(caplog):
@@ -198,155 +122,14 @@ def test_gateway_diagnostic_log_handler_never_carries_rendered_message(caplog):
     assert "Alice Smith" not in str(event)
 
 
-@pytest.mark.parametrize(
-    "message",
-    [
-        "Connect call failed ('127.0.0.1', 9)",
-        "failed to connect to relay",
-        "connection refused",
-        "network is unreachable",
-        "temporary failure in name resolution",
-    ],
-)
-def test_gateway_error_classifier_recognizes_bounded_network_failures(message):
-    from agent.monitoring.gateway_health import classify_gateway_error
-
-    assert classify_gateway_error(message) == "network_error"
 
 
-def test_gateway_diagnostic_log_handler_enriches_relay_scope_without_message_content(
-    monkeypatch,
-):
-    from agent.monitoring import emitter
-    from agent.monitoring.gateway_health import GatewayDiagnosticLogHandler
-
-    captured = []
-
-    class DummyEmitter:
-        def emit(self, event):
-            captured.append(event.to_dict())
-
-    monkeypatch.setattr(emitter, "get_emitter", lambda: DummyEmitter())
-    handler = GatewayDiagnosticLogHandler(profile="default", version="v-test")
-    logger = logging.getLogger("gateway.relay.adapter")
-    logger.addHandler(handler)
-    try:
-        logger.warning(
-            "Connect call failed for ws://alice@example.com/private; "
-            "credential=«redacted:sk-…»"
-        )
-    finally:
-        logger.removeHandler(handler)
-
-    assert len(captured) == 1
-    event = captured[0]
-    assert event["subsystem"] == "platform.relay"
-    assert event["platform"] == "relay"
-    assert event["source_logger"] == "gateway.relay.adapter"
-    assert event["error_class"] == "network_error"
-    assert event["error_code"] == "network_error"
-    assert "alice@example.com" not in str(event)
-    assert "private" not in str(event)
 
 
-def test_runtime_status_transition_emits_lifecycle_and_platform_events(monkeypatch):
-    from agent.monitoring import emitter
-    from agent.monitoring.gateway_health import emit_runtime_status_transition
-
-    captured = []
-
-    class DummyEmitter:
-        def emit(self, event):
-            captured.append(event.to_dict())
-
-    old = emitter.emit
-    monkeypatch.setattr(emitter, "emit", lambda event: captured.append(event.to_dict()))
-
-    previous = {"gateway_state": "starting", "platforms": {"slack": {"state": "running"}}}
-    current = {
-        "gateway_state": "running",
-        "pid": 123,
-        "active_agents": 1,
-        "platforms": {
-            "slack": {
-                "state": "fatal",
-                "error_code": "auth_failed",
-                "error_message": "Bearer *** failed",
-            }
-        },
-    }
-
-    emit_runtime_status_transition(previous, current)
-
-    names = [e["name"] for e in captured]
-    assert "gateway.lifecycle" in names
-    assert "platform.state_change" in names
-    assert "platform.fatal" in names
-    lifecycle = next(e for e in captured if e["name"] == "gateway.lifecycle")
-    assert lifecycle["old_state"] == "starting"
-    assert lifecycle["new_state"] == "running"
-    assert lifecycle["exit_reason"] is None
-    platform = next(e for e in captured if e["name"] == "platform.state_change")
-    assert platform["old_state"] == "running"
-    assert platform["new_state"] == "fatal"
-    assert platform["error_code"] == "auth_failed"
-    assert "redacted_message" not in platform
 
 
-def test_runtime_status_transition_emits_startup_failed_and_exit():
-    from agent.monitoring.gateway_health import emit_runtime_status_transition
-    from agent.monitoring import emitter
-
-    captured = []
-    old = emitter.emit
-    emitter.emit = lambda event: captured.append(event.to_dict())  # type: ignore[assignment]
-    try:
-        emit_runtime_status_transition(
-            {"gateway_state": "starting"},
-            {
-                "gateway_state": "startup_failed",
-                "exit_reason": "Bearer top-secret-token rejected for user@example.com",
-            },
-        )
-        emit_runtime_status_transition(
-            {"gateway_state": "running"},
-            {
-                "gateway_state": "stopped",
-                "exit_reason": "shutdown requested by user@example.com",
-                "restart_requested": True,
-            },
-        )
-    finally:
-        emitter.emit = old  # type: ignore[assignment]
-
-    names = [e["name"] for e in captured]
-    assert "gateway.startup_failed" in names
-    assert "gateway.exit" in names
-    failed = next(e for e in captured if e["name"] == "gateway.startup_failed")
-    assert "redacted_message" not in failed
-    lifecycle = next(e for e in captured if e["name"] == "gateway.lifecycle")
-    assert lifecycle["exit_reason"] == "auth_failed"
-    exit_event = next(e for e in captured if e["name"] == "gateway.exit")
-    assert exit_event["restart_requested"] is True
-    assert exit_event["exit_reason"] == "restart_requested"
 
 
-def test_otlp_attrs_include_gateway_transition_fields():
-    from agent.monitoring.otlp_exporter import _span_attrs
-
-    attrs = _span_attrs({
-        "event": "gateway_health",
-        "name": "gateway.lifecycle",
-        "old_state": "starting",
-        "new_state": "running",
-        "exit_reason": "restart",
-        "restart_requested": True,
-    })
-
-    assert attrs["hermes.old_state"] == "starting"
-    assert attrs["hermes.new_state"] == "running"
-    assert attrs["hermes.exit_reason"] == "restart"
-    assert attrs["hermes.restart_requested"] is True
 
 
 def test_otlp_attrs_redact_strings_and_never_export_profile():
@@ -398,26 +181,6 @@ def test_instance_id_hash_is_stable_and_distinguishes_instances():
     assert "install-1" not in first
 
 
-def test_runtime_resource_attributes_include_stable_hashed_instance():
-    from agent.monitoring.gateway_health_export import _runtime_resource_attributes
-
-    config = {
-        "monitoring": {
-            "install_id": "private-install-id",
-            "gateway_health_export": {
-                "resource_attributes": {"deployment.environment.name": "staging"}
-            },
-        }
-    }
-
-    attrs = _runtime_resource_attributes(config, telemetry_scope="gateway_health")
-
-    assert attrs["service.name"] == "hermes-gateway"
-    assert attrs["service.instance.id"].startswith("sha256:")
-    assert len(attrs["service.instance.id"]) == len("sha256:") + 24
-    assert "private-install-id" not in str(attrs)
-    assert attrs["deployment.environment.name"] == "staging"
-    assert attrs["telemetry.scope"] == "gateway_health"
 
 
 def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
@@ -437,67 +200,6 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
     assert "top-secret-token" not in str(attrs)
 
 
-def test_diagnostic_log_streamer_uses_validated_source_as_otel_scope():
-    from types import SimpleNamespace
-
-    from agent.monitoring.gateway_health_export import GatewayDiagnosticLogStreamer
-
-    class FakeLogger:
-        def __init__(self):
-            self.records = []
-
-        def emit(self, record):
-            self.records.append(record)
-
-    class FakeProvider:
-        def __init__(self):
-            self.loggers = {}
-
-        def get_logger(self, name):
-            return self.loggers.setdefault(name, FakeLogger())
-
-    provider = FakeProvider()
-    streamer = object.__new__(GatewayDiagnosticLogStreamer)
-    streamer._provider = provider
-    streamer._logger = provider.get_logger("hermes.gateway.diagnostics")
-    streamer._LogRecord = lambda **kwargs: SimpleNamespace(**kwargs)
-    streamer._sdk = {
-        "INVALID_TRACE_ID": 0,
-        "INVALID_SPAN_ID": 0,
-        "TraceFlags": SimpleNamespace(DEFAULT=0),
-        "SeverityNumber": SimpleNamespace(
-            FATAL="fatal", ERROR="error", WARN="warn", INFO="info", DEBUG="debug"
-        ),
-    }
-    streamer.exported = 0
-
-    streamer([
-        {
-            "event": "gateway_diagnostic",
-            "name": "gateway.log.warning",
-            "subsystem": "platform.relay",
-            "platform": "relay",
-            "source_logger": "gateway.relay.adapter",
-            "error_class": "network_error",
-            "severity": "warning",
-        },
-        {
-            "event": "gateway_diagnostic",
-            "name": "gateway.log.warning",
-            "subsystem": "gateway",
-            "source_logger": "gateway.relay.adapter\nalice@example.com",
-            "error_class": "unknown",
-            "severity": "warning",
-        },
-    ])
-
-    precise = provider.loggers["gateway.relay.adapter"].records
-    fallback = provider.loggers["hermes.gateway.diagnostics"].records
-    assert len(precise) == 1
-    assert len(fallback) == 1
-    assert precise[0].body == "gateway diagnostic"
-    assert "source_logger" not in precise[0].attributes
-    assert "alice@example.com" not in str(provider.loggers)
 
 
 def test_gateway_health_export_start_is_fail_open_when_otlp_missing(monkeypatch):
@@ -518,73 +220,8 @@ def test_gateway_health_export_start_is_fail_open_when_otlp_missing(monkeypatch)
     assert runtime.reason == "otlp_unavailable"
 
 
-def test_gateway_health_export_shutdown_flushes_before_unsubscribe(monkeypatch):
-    from agent.monitoring import emitter
-    from agent.monitoring.gateway_health_export import GatewayHealthExportRuntime
-
-    calls = []
-
-    class FakeEmitter:
-        def flush(self, timeout):
-            calls.append(("flush", timeout))
-
-        def unsubscribe(self, subscriber):
-            calls.append(("unsubscribe", subscriber))
-
-    class Streamer:
-        def shutdown(self):
-            calls.append(("shutdown", self))
-
-    streamer = Streamer()
-    log_streamer = Streamer()
-    monkeypatch.setattr(emitter, "get_emitter", lambda: FakeEmitter())
-
-    runtime = GatewayHealthExportRuntime(
-        enabled=True,
-        streamer=streamer,
-        log_streamer=log_streamer,
-    )
-    runtime.shutdown()
-
-    assert calls[0][0] == "flush"
-    assert calls[1:3] == [
-        ("unsubscribe", streamer),
-        ("unsubscribe", log_streamer),
-    ]
 
 
-def test_gateway_health_export_streams_only_gateway_events(monkeypatch):
-    from agent.monitoring import gateway_health_export
-
-    captured = {}
-
-    def fake_start_streaming(config, *, event_filter=None):
-        captured["filter"] = event_filter
-        return object()
-
-    monkeypatch.setattr(gateway_health_export, "_start_metric_provider", lambda *a, **k: None)
-    monkeypatch.setattr(gateway_health_export, "_require_metrics_sdk", lambda *a, **k: {})
-    monkeypatch.setattr(gateway_health_export, "_start_diagnostic_log_streamer", lambda *a, **k: object())
-    monkeypatch.setattr(gateway_health_export, "_attach_log_handler", lambda *a, **k: None)
-    monkeypatch.setattr(gateway_health_export, "_emit_snapshot_events", lambda *a, **k: None)
-    monkeypatch.setattr(gateway_health_export, "_start_snapshot_thread", lambda *a, **k: None)
-    from agent.monitoring import otlp_exporter
-    monkeypatch.setattr(otlp_exporter, "start_streaming", fake_start_streaming)
-
-    runtime = gateway_health_export.start_gateway_health_export({
-        "monitoring": {
-            "gateway_health_export": {"enabled": True, "metrics_enabled": False},
-            "export": {"otlp": {"enabled": True, "endpoint": "http://collector:4318/v1/traces"}},
-        }
-    })
-
-    assert runtime.enabled is True
-    event_filter = captured["filter"]
-    assert event_filter({"event": "gateway_health"}) is True
-    assert event_filter({"event": "gateway_diagnostic"}) is False
-    assert event_filter({"event": "run"}) is False
-    assert event_filter({"event": "model_call"}) is False
-    assert event_filter({"event": "tool_call"}) is False
 
 
 def test_gateway_health_export_metric_failure_does_not_start_streamer(monkeypatch):
@@ -607,87 +244,10 @@ def test_gateway_health_export_metric_failure_does_not_start_streamer(monkeypatc
     assert started == []
 
 
-def test_gateway_health_export_diagnostic_partial_start_cleans_up(monkeypatch):
-    from agent.monitoring import emitter, gateway_health_export, otlp_exporter
-
-    class Streamer:
-        def __call__(self, _batch):
-            pass
-
-        def shutdown(self):
-            pass
-
-    streamer = Streamer()
-    monkeypatch.setattr(gateway_health_export, "_require_metrics_sdk", lambda *a, **k: {})
-    monkeypatch.setattr(gateway_health_export, "_start_metric_provider", lambda *a, **k: None)
-    monkeypatch.setattr(otlp_exporter, "start_streaming", lambda *a, **k: streamer)
-    monkeypatch.setattr(
-        gateway_health_export,
-        "_start_diagnostic_log_streamer",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    emitter.get_emitter().subscribe(streamer)
-
-    runtime = gateway_health_export.start_gateway_health_export({
-        "monitoring": {
-            "gateway_health_export": {"enabled": True, "metrics_enabled": False},
-            "export": {"otlp": {"enabled": True, "endpoint": "http://collector:4318/v1/traces"}},
-        }
-    })
-
-    assert runtime.enabled is False
-    assert runtime.reason == "diagnostics_start_failed"
-    assert streamer not in emitter.get_emitter()._subscribers
 
 
-def test_gateway_health_export_shutdown_is_bounded():
-    import threading
-    import time
-
-    from agent.monitoring.gateway_health_export import GatewayHealthExportRuntime
-
-    release = threading.Event()
-
-    class Blocking:
-        def shutdown(self):
-            release.wait(10)
-
-    runtime = GatewayHealthExportRuntime(
-        enabled=True,
-        streamer=Blocking(),
-        log_streamer=Blocking(),
-        metric_provider=Blocking(),
-    )
-    started = time.monotonic()
-    runtime.shutdown()
-    elapsed = time.monotonic() - started
-    release.set()
-
-    assert elapsed < 2.5
 
 
-def test_otlp_streamer_shutdown_unsubscribes(monkeypatch):
-    from agent.monitoring import emitter
-    from agent.monitoring.otlp_exporter import OTLPStreamer
-
-    class Dummy:
-        def force_flush(self):
-            pass
-        def shutdown(self):
-            pass
-
-    e = emitter.get_emitter()
-    streamer = OTLPStreamer.__new__(OTLPStreamer)
-    streamer._processor = Dummy()
-    streamer._provider = Dummy()
-    streamer._event_filter = None
-    streamer.exported = 0
-    e.subscribe(streamer)
-    assert streamer in e._subscribers
-
-    streamer.shutdown()
-
-    assert streamer not in e._subscribers
 
 
 def test_gateway_diagnostic_log_handler_never_raises_on_malformed_record():
@@ -723,7 +283,3 @@ def test_install_id_persists_across_calls(tmp_path, monkeypatch):
     assert first in (tmp_path / "config.yaml").read_text()
 
 
-def test_install_id_existing_value_wins(monkeypatch):
-    from agent.monitoring.policy import ensure_install_id
-
-    assert ensure_install_id({"monitoring": {"install_id": "keep-me"}}) == "keep-me"

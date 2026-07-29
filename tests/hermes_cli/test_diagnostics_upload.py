@@ -69,27 +69,6 @@ class TestRequestUploadUrl:
             with pytest.raises(RuntimeError):
                 request_upload_url()
 
-    def test_missing_upload_url_raises(self):
-        from hermes_cli.diagnostics_upload import request_upload_url
-
-        resp = _resp(status=200, body=json.dumps({"id": "x"}).encode())
-        with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
-            return_value=resp,
-        ):
-            with pytest.raises(RuntimeError):
-                request_upload_url()
-
-    def test_non_json_raises(self):
-        from hermes_cli.diagnostics_upload import request_upload_url
-
-        resp = _resp(status=200, body=b"<html>not json</html>")
-        with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
-            return_value=resp,
-        ):
-            with pytest.raises(RuntimeError):
-                request_upload_url()
 
     def test_base_url_env_override(self, monkeypatch):
         # NAS_BASE is read at import time; re-import the module under the

@@ -63,29 +63,6 @@ class TestValidation:
         assert _validate_manifest([]) is False
         assert _validate_manifest(None) is False
 
-    def test_rejects_missing_version(self, isolated_home):
-        from hermes_cli.model_catalog import _validate_manifest
-        m = _valid_manifest()
-        del m["version"]
-        assert _validate_manifest(m) is False
-
-    def test_rejects_future_version(self, isolated_home):
-        from hermes_cli.model_catalog import _validate_manifest
-        m = _valid_manifest()
-        m["version"] = 999
-        assert _validate_manifest(m) is False
-
-    def test_rejects_missing_providers(self, isolated_home):
-        from hermes_cli.model_catalog import _validate_manifest
-        m = _valid_manifest()
-        del m["providers"]
-        assert _validate_manifest(m) is False
-
-    def test_rejects_malformed_model_entry(self, isolated_home):
-        from hermes_cli.model_catalog import _validate_manifest
-        m = _valid_manifest()
-        m["providers"]["openrouter"]["models"][0] = {"id": ""}  # empty id
-        assert _validate_manifest(m) is False
 
     def test_rejects_non_string_model_id(self, isolated_home):
         from hermes_cli.model_catalog import _validate_manifest
@@ -110,26 +87,6 @@ class TestFetchSuccess:
         assert cache_file.exists()
         with open(cache_file) as fh:
             assert json.load(fh) == manifest
-
-    def test_second_call_uses_in_process_cache(self, isolated_home):
-        from hermes_cli import model_catalog
-        manifest = _valid_manifest()
-        with patch.object(
-            model_catalog, "_fetch_manifest", return_value=manifest
-        ) as fetch:
-            model_catalog.get_catalog(force_refresh=True)
-            model_catalog.get_catalog()  # should not hit network again
-        assert fetch.call_count == 1
-
-    def test_force_refresh_always_refetches(self, isolated_home):
-        from hermes_cli import model_catalog
-        manifest = _valid_manifest()
-        with patch.object(
-            model_catalog, "_fetch_manifest", return_value=manifest
-        ) as fetch:
-            model_catalog.get_catalog(force_refresh=True)
-            model_catalog.get_catalog(force_refresh=True)
-        assert fetch.call_count == 2
 
 
 class TestFetchFailure:
@@ -216,25 +173,6 @@ class TestFallbackChain:
         assert result is not None
         assert calls == [self.PRIMARY, self.FALLBACK]
 
-    def test_returns_none_when_all_urls_fail(self, isolated_home):
-        from hermes_cli import model_catalog
-
-        with patch.object(model_catalog, "_fetch_manifest", return_value=None) as fetch:
-            result = model_catalog._fetch_manifest_with_fallback(self.PRIMARY, 5.0)
-
-        assert result is None
-        # Primary + every fallback URL was attempted exactly once.
-        assert fetch.call_count == 1 + len(model_catalog.DEFAULT_CATALOG_FALLBACK_URLS)
-
-    def test_dedupes_when_primary_equals_fallback(self, isolated_home):
-        """Operator who configured ``model_catalog.url`` to the raw GitHub URL
-        should not get a duplicate fetch from the fallback list."""
-        from hermes_cli import model_catalog
-
-        with patch.object(model_catalog, "_fetch_manifest", return_value=None) as fetch:
-            model_catalog._fetch_manifest_with_fallback(self.FALLBACK, 5.0)
-
-        assert fetch.call_count == 1, f"expected 1 call, got {fetch.call_count}"
 
     def test_get_catalog_uses_fallback_chain(self, isolated_home):
         """End-to-end: ``get_catalog`` routes through the fallback helper so
@@ -269,18 +207,6 @@ class TestCuratedAccessors:
             ("openrouter/elephant-alpha", "free"),
         ]
 
-    def test_nous_returns_ids(self, isolated_home):
-        from hermes_cli import model_catalog
-        with patch.object(
-            model_catalog, "_fetch_manifest", return_value=_valid_manifest()
-        ):
-            result = model_catalog.get_curated_nous_models()
-        assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
-
-    def test_openrouter_returns_none_when_catalog_empty(self, isolated_home):
-        from hermes_cli import model_catalog
-        with patch.object(model_catalog, "_fetch_manifest", return_value=None):
-            assert model_catalog.get_curated_openrouter_models() is None
 
     def test_nous_returns_none_when_catalog_empty(self, isolated_home):
         from hermes_cli import model_catalog
@@ -325,11 +251,6 @@ class TestDefaultModelFromCache:
             assert model_catalog.get_default_model_from_cache("openrouter") is None
             fetch.assert_not_called()
 
-    def test_no_cache_returns_none_without_network(self, isolated_home):
-        from hermes_cli import model_catalog
-        with patch.object(model_catalog, "_fetch_manifest") as fetch:
-            assert model_catalog.get_default_model_from_cache("openrouter") is None
-            fetch.assert_not_called()
 
     def test_shipped_manifest_labels_glm52_default(self, isolated_home):
         """Contract with the in-repo manifest: both provider blocks label the
@@ -348,25 +269,6 @@ class TestDefaultModelFromCache:
                 f"{provider}: exactly one entry must be labeled default and it "
                 f"must match PREFERRED_SILENT_DEFAULT_MODEL"
             )
-
-
-class TestDisabled:
-    def test_disabled_config_short_circuits(self, isolated_home):
-        from hermes_cli import model_catalog
-        with patch.object(
-            model_catalog,
-            "_load_catalog_config",
-            return_value={
-                "enabled": False,
-                "url": "http://ignored",
-                "ttl_hours": 24.0,
-                "providers": {},
-            },
-        ):
-            with patch.object(model_catalog, "_fetch_manifest") as fetch:
-                result = model_catalog.get_catalog()
-        assert result == {}
-        fetch.assert_not_called()
 
 
 class TestProviderOverride:

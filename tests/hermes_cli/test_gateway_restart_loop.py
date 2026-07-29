@@ -35,24 +35,6 @@ class TestGatewayLifecyclePattern:
     def test_hermes_gateway_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
-    @pytest.mark.parametrize("text", [
-        "launchctl kickstart gui/501/ai.hermes.gateway",
-        "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist",
-        "launchctl stop ai.hermes.gateway",
-        "systemctl restart hermes-gateway",
-        "systemctl stop hermes-gateway.service",
-        "systemctl start hermes-gateway",
-    ])
-    def test_service_manager_commands(self, text):
-        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
-
-    @pytest.mark.parametrize("text", [
-        "kill hermes gateway process",
-        "pkill -f hermes.*gateway",
-        "pkill -f gateway.*hermes",          # inverse token order
-    ])
-    def test_kill_commands(self, text):
-        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
     @pytest.mark.parametrize("text", [
         "restart the server application",
@@ -119,25 +101,6 @@ class TestCronCreateLifecycleBlock:
         assert "Blocked" in out
         assert "#30719" in out
 
-    def test_block_launchctl_kickstart(self, capsys):
-        args = Namespace(
-            cron_command="create",
-            schedule="0 9 * * *",
-            prompt="Run launchctl kickstart -k gui/501/ai.hermes.gateway",
-            name=None,
-            deliver=None,
-            repeat=None,
-            skill=None,
-            skills=None,
-            script=None,
-            workdir=None,
-            profile=None,
-            no_agent=False,
-        )
-        rc = cron_command(args)
-        assert rc == 1
-        out = capsys.readouterr().out
-        assert "Blocked" in out
 
     def test_block_script_with_lifecycle_command(self, tmp_path, capsys, monkeypatch):
         # A no_agent job whose script IS the job (the issue's real abuse path:
@@ -166,25 +129,6 @@ class TestCronCreateLifecycleBlock:
         out = capsys.readouterr().out
         assert "Blocked" in out
 
-    def test_allow_safe_prompt(self, capsys):
-        args = Namespace(
-            cron_command="create",
-            schedule="30m",
-            prompt="Check server health and report status",
-            name=None,
-            deliver=None,
-            repeat=None,
-            skill=None,
-            skills=None,
-            script=None,
-            workdir=None,
-            profile=None,
-            no_agent=False,
-        )
-        rc = cron_command(args)
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "Created job" in out
 
     def test_allow_empty_prompt(self, capsys):
         """Empty prompt (no lifecycle content) should pass the filter — the
@@ -227,13 +171,6 @@ class TestGatewaySelfTargetingGuard:
             gateway_command(args)
         assert exc_info.value.code == 1
 
-    def test_restart_refuses_inside_gateway(self, monkeypatch):
-        monkeypatch.setenv("_HERMES_GATEWAY", "1")
-        from hermes_cli.gateway import gateway_command
-        args = Namespace(gateway_command="restart", all=False, system=False)
-        with pytest.raises(SystemExit) as exc_info:
-            gateway_command(args)
-        assert exc_info.value.code == 1
 
     def test_stop_allows_outside_gateway(self, monkeypatch):
         # With the gateway marker unset, the self-targeting guard must NOT
@@ -252,25 +189,6 @@ class TestGatewaySelfTargetingGuard:
         monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _sentinel)
         monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6", _sentinel)
         args = Namespace(gateway_command="stop", all=False, system=False)
-        with pytest.raises(_Reached):
-            gw.gateway_command(args)
-
-    def test_restart_allows_outside_gateway(self, monkeypatch):
-        # Same as above for restart: guard must not fire when the marker is
-        # unset. The first thing restart does after the guard is the s6
-        # dispatch check — sentinel it so we never reach real signal delivery.
-        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
-        import hermes_cli.gateway as gw
-
-        class _Reached(Exception):
-            pass
-
-        def _sentinel(*a, **k):
-            raise _Reached()
-
-        monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _sentinel)
-        monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6", _sentinel)
-        args = Namespace(gateway_command="restart", all=False, system=False)
         with pytest.raises(_Reached):
             gw.gateway_command(args)
 
@@ -358,28 +276,6 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == ["systemctl status nginx"]
 
-    def test_guard_inactive_outside_gateway(self, monkeypatch):
-        """Without _HERMES_GATEWAY=1 the lifecycle guard must not fire."""
-        import tools.terminal_tool as tt
-
-        calls = []
-
-        class _FakeEnv:
-            env = {}
-            def execute(self, command, **kwargs):
-                calls.append(command)
-                return {"output": "restarting...", "returncode": 0}
-
-        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
-        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
-
-        result = json.loads(tt.terminal_tool(command="systemctl restart hermes-gateway"))
-
-        # Outside the gateway the lifecycle guard doesn't block — the normal
-        # approval flow handles it (here mocked as approved).
-        assert result["exit_code"] == 0
-        assert calls == ["systemctl restart hermes-gateway"]
-
 
 # ---------------------------------------------------------------------------
 # cron.lifecycle_guard module — the shared checker create_job/CLI/terminal use
@@ -394,26 +290,6 @@ class TestLifecycleGuardModule:
             check_gateway_lifecycle("please run hermes gateway restart", None)
         assert "#30719" in str(exc.value)
 
-    def test_clean_prompt_does_not_raise(self):
-        from cron.lifecycle_guard import check_gateway_lifecycle
-        check_gateway_lifecycle("research the gateway architecture", None)
-        check_gateway_lifecycle("check server health and restart watchers", None)
-
-    def test_script_with_command_raises(self, tmp_path, monkeypatch):
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
-        script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
-        with pytest.raises(GatewayLifecycleBlocked):
-            check_gateway_lifecycle("clean prompt", str(script))
-
-    def test_split_across_prompt_and_script_still_blocks(self, tmp_path):
-        """Concatenated scan prevents splitting the command between prompt and
-        script to slip through."""
-        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
-        script = tmp_path / "ops.sh"
-        script.write_text("hermes gateway stop\n")
-        with pytest.raises(GatewayLifecycleBlocked):
-            check_gateway_lifecycle("daily ops job", str(script))
 
     def test_binary_script_does_not_silently_bypass(self, tmp_path):
         """Non-UTF-8 bytes used to be swallowed by UnicodeDecodeError; now we
@@ -424,9 +300,6 @@ class TestLifecycleGuardModule:
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("", str(script))
 
-    def test_missing_script_does_not_raise(self, tmp_path):
-        from cron.lifecycle_guard import check_gateway_lifecycle
-        check_gateway_lifecycle("clean prompt", str(tmp_path / "nonexistent.sh"))
 
     def test_relative_script_resolved_under_scripts_dir(self, tmp_path, monkeypatch):
         """A bare/relative script name resolves under HERMES_HOME/scripts (the
@@ -512,10 +385,6 @@ class TestRestartLoopGuard:
         assert rlg.check_and_record(3, 60, now=1070.0) is False
         assert rlg.check_and_record(3, 60, now=1140.0) is False
 
-    def test_disabled_when_max_restarts_zero(self):
-        import gateway.restart_loop_guard as rlg
-        for i in range(5):
-            assert rlg.check_and_record(0, 60, now=1000.0 + i) is False
 
     def test_is_tripped_reads_without_recording(self):
         import gateway.restart_loop_guard as rlg

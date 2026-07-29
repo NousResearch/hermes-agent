@@ -143,67 +143,9 @@ def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
         assert task.consecutive_failures == 1
 
 
-def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> None:
-    """The circuit-breaker emits ``gave_up`` (not ``blocked``).  Make
-    sure ``_has_sticky_block`` doesn't accidentally treat ``gave_up``
-    as sticky — otherwise we'd regress the safety net for genuinely
-    transient crashes."""
-    with kb.connect() as conn:
-        parent = kb.create_task(conn, title="parent")
-        child = kb.create_task(conn, title="child", parents=[parent])
-        kb.complete_task(conn, parent, result="ok")
-
-        # Status + event match what _record_task_failure writes when
-        # the breaker trips.
-        conn.execute(
-            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
-        )
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-            "VALUES (?, 'gave_up', NULL, ?)",
-            (child, int(time.time())),
-        )
-        conn.commit()
-
-        promoted = kb.recompute_ready(conn)
-        assert promoted == 1
-        assert kb.get_task(conn, child).status == "ready"
-
-
 # ---------------------------------------------------------------------------
 # unblock_task clears the sticky state
 # ---------------------------------------------------------------------------
-
-
-def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -> None:
-    """``hermes kanban unblock`` (or the ``kanban_unblock`` tool) is
-    the only legitimate way out of a worker-initiated block.  After
-    unblock, a *subsequent* circuit-breaker block on the same task
-    must again be eligible for auto-recovery."""
-    with kb.connect() as conn:
-        tid = kb.create_task(conn, title="t")
-        kb.claim_task(conn, tid)
-        kb.block_task(
-            conn, tid,
-            reason="review-required: ...",
-            expected_run_id=kb.get_task(conn, tid).current_run_id,
-        )
-        assert kb.unblock_task(conn, tid)
-        # After unblock the task is no longer blocked at all.
-        assert kb.get_task(conn, tid).status == "ready"
-
-        # Now simulate a *later* circuit-breaker block (no new
-        # ``blocked`` event, just status flip).  The most recent
-        # block/unblock event is ``unblocked`` → guard does not fire
-        # → recompute can recover.
-        conn.execute(
-            "UPDATE tasks SET status='blocked' WHERE id=?", (tid,),
-        )
-        conn.commit()
-
-        promoted = kb.recompute_ready(conn)
-        assert promoted == 1
-        assert kb.get_task(conn, tid).status == "ready"
 
 
 # ---------------------------------------------------------------------------

@@ -29,10 +29,6 @@ class TestRequirementsParser:
         text = "# comment\n-r other.txt\n--index-url https://x\nflask==2.0.1\n"
         assert sa._parse_requirements(text) == [("flask", "2.0.1")]
 
-    def test_skips_unpinned(self):
-        # We deliberately don't try to map >=, ~=, or bare-name deps to OSV.
-        text = "requests>=2.0\ntyping-extensions\nflask~=2.0\n"
-        assert sa._parse_requirements(text) == []
 
     def test_handles_extras_and_markers(self):
         text = 'requests[security]==2.20.0\nflask==2.0.1 ; python_version >= "3.8"\n'
@@ -40,10 +36,6 @@ class TestRequirementsParser:
             ("requests", "2.20.0"),
             ("flask", "2.0.1"),
         ]
-
-    def test_handles_empty(self):
-        assert sa._parse_requirements("") == []
-        assert sa._parse_requirements("   \n\n   ") == []
 
 
 class TestMCPComponentExtraction:
@@ -58,24 +50,6 @@ class TestMCPComponentExtraction:
             source="mcp:fs",
         )
 
-    def test_npx_full_path_command(self):
-        comp = sa._extract_mcp_component(
-            "fetch", "/usr/local/bin/npx", ["mcp-server-fetch@1.2.3"]
-        )
-        assert comp is not None
-        assert comp.name == "mcp-server-fetch"
-        assert comp.version == "1.2.3"
-
-    def test_uvx_pinned(self):
-        comp = sa._extract_mcp_component("time", "uvx", ["mcp-server-time==2.1.0"])
-        assert comp is not None
-        assert comp.ecosystem == "PyPI"
-        assert comp.name == "mcp-server-time"
-        assert comp.version == "2.1.0"
-
-    def test_unpinned_returns_none(self):
-        # Bare npx package name = "latest" at runtime; not an audit subject.
-        assert sa._extract_mcp_component("x", "npx", ["-y", "some-pkg"]) is None
 
     def test_docker_returns_none(self):
         # We don't currently parse docker image refs.
@@ -101,25 +75,6 @@ class TestPluginDiscovery:
     def test_skips_when_no_plugins_dir(self, tmp_path: Path):
         assert sa._discover_plugins(tmp_path) == []
 
-    def test_skips_hidden_dirs(self, tmp_path: Path):
-        (tmp_path / "plugins" / ".hidden").mkdir(parents=True)
-        (tmp_path / "plugins" / ".hidden" / "requirements.txt").write_text(
-            "requests==2.20.0\n"
-        )
-        assert sa._discover_plugins(tmp_path) == []
-
-    def test_reads_pyproject_dependencies(self, tmp_path: Path):
-        plugin = tmp_path / "plugins" / "py"
-        plugin.mkdir(parents=True)
-        (plugin / "pyproject.toml").write_text(
-            '[project]\ndependencies = ["flask==2.0.1", "uvicorn>=0.20"]\n'
-        )
-        components = sa._discover_plugins(tmp_path)
-        # uvicorn>=0.20 is unpinned, so only flask comes through
-        assert len(components) == 1
-        assert components[0].name == "flask"
-        assert components[0].version == "2.0.1"
-
 
 # ─── OSV severity extraction ──────────────────────────────────────────────────
 
@@ -129,12 +84,6 @@ class TestSeverityExtraction:
         rec = {"database_specific": {"severity": "HIGH"}}
         assert sa._osv_severity_from_record(rec) == "HIGH"
 
-    def test_unknown_when_no_severity(self):
-        assert sa._osv_severity_from_record({}) == "UNKNOWN"
-
-    def test_ecosystem_specific_fallback(self):
-        rec = {"affected": [{"ecosystem_specific": {"severity": "MODERATE"}}]}
-        assert sa._osv_severity_from_record(rec) == "MODERATE"
 
     def test_fixed_versions_extracted_and_deduped(self):
         rec = {

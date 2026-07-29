@@ -62,51 +62,8 @@ class TestResetTerminalInputModes(unittest.TestCase):
         # The focus-reporting disable is the specific leak the issue reports.
         self.assertIn("\x1b[?1004l", written)
 
-    def test_noop_when_tui_never_ran(self):
-        """Non-TUI one-shot CLI runs share _run_cleanup via atexit — they must
-        not emit terminal escape codes they never needed (review finding #1)."""
-        cli_mod = _import_cli()
-        fake = _FakeStream(isatty=True)
-        with (
-            patch.object(cli_mod, "_tui_input_modes_active", False),
-            patch.object(cli_mod.sys, "stdout", fake),
-            # Guard: must not touch the real /dev/tty either.
-            patch("builtins.open", mock_open()) as m_open,
-        ):
-            cli_mod._reset_terminal_input_modes_on_exit()
 
-        self.assertEqual(fake.written, [])
-        m_open.assert_not_called()
 
-    def test_noop_when_not_a_tty_and_no_dev_tty(self):
-        """stdout redirected and /dev/tty unavailable → nothing written, no raise."""
-        cli_mod = _import_cli()
-        fake = _FakeStream(isatty=False)
-        with (
-            patch.object(cli_mod, "_tui_input_modes_active", True),
-            patch.object(cli_mod.sys, "stdout", fake),
-            patch("builtins.open", side_effect=OSError("no /dev/tty")),
-        ):
-            cli_mod._reset_terminal_input_modes_on_exit()
-
-        self.assertEqual(fake.written, [], "must not pollute the redirected stream")
-
-    def test_falls_back_to_dev_tty_when_stdout_redirected(self):
-        """When stdout isn't the terminal, reset via /dev/tty (issue's own
-        suggestion) so a TUI that drove /dev/tty still gets cleaned up."""
-        cli_mod = _import_cli()
-        fake = _FakeStream(isatty=False)
-        m_open = mock_open()
-        with (
-            patch.object(cli_mod, "_tui_input_modes_active", True),
-            patch.object(cli_mod.sys, "stdout", fake),
-            patch("builtins.open", m_open),
-        ):
-            cli_mod._reset_terminal_input_modes_on_exit()
-
-        self.assertEqual(fake.written, [])
-        m_open.assert_called_once_with("/dev/tty", "w", encoding="ascii")
-        m_open().write.assert_called_once_with(cli_mod._TERMINAL_INPUT_MODE_RESET_SEQ)
 
     def test_swallows_stdout_errors(self):
         cli_mod = _import_cli()

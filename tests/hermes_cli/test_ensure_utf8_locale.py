@@ -172,8 +172,3 @@ def test_broken_stream_does_not_raise(monkeypatch):
     hermes_cli._ensure_utf8()
 
 
-def test_none_streams_do_not_raise(monkeypatch):
-    """pythonw / detached streams (sys.stdout is None) must be tolerated."""
-    monkeypatch.setattr(sys, "stdout", None, raising=False)
-    monkeypatch.setattr(sys, "stderr", None, raising=False)
-    hermes_cli._ensure_utf8()

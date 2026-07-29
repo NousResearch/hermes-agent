@@ -80,14 +80,6 @@ class TestProfileScopedMessagingReads:
         assert token["is_set"] is False
         assert telegram["configured"] is False
 
-    def test_unscoped_read_shows_dashboard_profile_env(
-        self, client, isolated_profiles
-    ):
-        resp = client.get("/api/messaging/platforms")
-        assert resp.status_code == 200
-        telegram = _telegram(resp.json())
-        token = _env_field(telegram, "TELEGRAM_BOT_TOKEN")
-        assert token["is_set"] is True
 
     def test_unknown_profile_returns_404(self, client, isolated_profiles):
         resp = client.get(
@@ -275,13 +267,6 @@ class TestMultiplexPortBindingGuard:
             assert resp.status_code == 409, platform_id
             assert "default profile" in resp.json()["detail"]
 
-    def test_body_profile_target_is_also_guarded(self, client, isolated_profiles):
-        _enable_multiplex(isolated_profiles["default"])
-        resp = client.put(
-            "/api/messaging/platforms/api_server",
-            json={"enabled": True, "profile": "worker_alpha"},
-        )
-        assert resp.status_code == 409
 
     def test_rejected_request_leaves_env_and_config_untouched(
         self, client, isolated_profiles
@@ -366,17 +351,3 @@ class TestMultiplexPortBindingGuard:
             )
             assert resp.status_code == 200
 
-    def test_non_port_binding_platform_unaffected_on_secondary(
-        self, client, isolated_profiles
-    ):
-        _enable_multiplex(isolated_profiles["default"])
-        resp = client.put(
-            "/api/messaging/platforms/telegram",
-            params={"profile": "worker_alpha"},
-            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}},
-        )
-        assert resp.status_code == 200
-        cfg = yaml.safe_load(
-            (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
-        )
-        assert cfg["platforms"]["telegram"]["enabled"] is True

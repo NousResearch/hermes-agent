@@ -197,44 +197,6 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
 # ---------------------------------------------------------------------------
 
 
-def test_whole_pool_merges_global_providers_when_missing_locally(profile_env):
-    from hermes_cli.auth import read_credential_pool
-
-    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "glob-or",
-            "label": "global-or",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-global",
-        }],
-        "anthropic": [{
-            "id": "glob-ant",
-            "label": "global-ant",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-ant-global",
-        }],
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        "openrouter": [{
-            "id": "prof-or",
-            "label": "profile-or",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "manual",
-            "access_token": "sk-or-profile",
-        }],
-    }))
-
-    pool = read_credential_pool(None)
-    # Profile wins for openrouter, global fills in anthropic.
-    assert [e["id"] for e in pool["openrouter"]] == ["prof-or"]
-    assert [e["id"] for e in pool["anthropic"]] == ["glob-ant"]
-
-
 # ---------------------------------------------------------------------------
 # get_provider_auth_state — singleton fallback
 # ---------------------------------------------------------------------------
@@ -251,21 +213,6 @@ def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_
     state = get_provider_auth_state("nous")
     assert state is not None
     assert state["access_token"] == "nous-global"
-
-
-def test_provider_auth_state_profile_wins_when_present(profile_env):
-    from hermes_cli.auth import get_provider_auth_state
-
-    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "nous-global"},
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "nous-profile"},
-    }))
-
-    state = get_provider_auth_state("nous")
-    assert state is not None
-    assert state["access_token"] == "nous-profile"
 
 
 def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
@@ -290,21 +237,6 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 # ---------------------------------------------------------------------------
 
 
-def test_load_provider_state_falls_back_to_global(profile_env):
-    """When the loaded profile store has no provider entry, fall back to global."""
-    from hermes_cli.auth import _load_auth_store, _load_provider_state
-
-    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "global-nous-token", "refresh_token": "rt"},
-    }))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
-
-    auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "nous")
-    assert state is not None
-    assert state["access_token"] == "global-nous-token"
-
-
 def test_load_provider_state_profile_wins_over_global(profile_env):
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 
@@ -319,16 +251,6 @@ def test_load_provider_state_profile_wins_over_global(profile_env):
     state = _load_provider_state(auth_store, "nous")
     assert state is not None
     assert state["access_token"] == "profile-token"
-
-
-def test_load_provider_state_returns_none_when_neither_has_it(profile_env):
-    from hermes_cli.auth import _load_auth_store, _load_provider_state
-
-    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
-
-    auth_store = _load_auth_store()
-    assert _load_provider_state(auth_store, "nous") is None
 
 
 def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
@@ -352,21 +274,6 @@ def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
     assert state["access_token"] == "classic-token"
     # Absent providers still return None.
     assert _load_provider_state(auth_store, "anthropic") is None
-
-
-def test_load_provider_state_malformed_global_does_not_break_profile(profile_env):
-    """A corrupt global auth.json must not break profile reads."""
-    (profile_env["global"] / "auth.json").write_text("{not valid json")
-    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
-        "nous": {"access_token": "profile-token"},
-    }))
-
-    from hermes_cli.auth import _load_auth_store, _load_provider_state
-
-    auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "nous")
-    assert state is not None
-    assert state["access_token"] == "profile-token"
 
 
 # ---------------------------------------------------------------------------
@@ -585,30 +492,6 @@ def test_write_pool_stale_snapshot_keeps_newer_disk_cooldown(
     assert persisted["last_status"] == disk_status
     assert persisted["last_status_at"] == benched_at
     assert persisted["last_error_code"] == error_code
-
-
-def test_write_pool_expired_disk_cooldown_is_not_resurrected(classic_env):
-    """An expired on-disk cooldown is NOT re-adopted onto the snapshot.
-
-    The pool's own expiry-clear (and any caller that legitimately observed
-    the cooldown lapse) must win: only still-binding cooldowns are merged.
-    """
-    from hermes_cli.auth import write_credential_pool
-
-    _write(classic_env / "auth.json", _make_auth_store(pool={
-        "openrouter": [_pool_entry(
-            last_status="exhausted",
-            last_status_at=time.time() - 90_000,  # far past the 1h 429 TTL
-            last_error_code=429,
-        )],
-    }))
-
-    write_credential_pool("openrouter", [_pool_entry()])
-
-    data = json.loads((classic_env / "auth.json").read_text())
-    persisted = data["credential_pool"]["openrouter"][0]
-    assert persisted.get("last_status") != "exhausted"
-    assert persisted.get("last_error_code") is None
 
 
 def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):

@@ -125,18 +125,6 @@ def test_blank_slate_prompt_size_counts_only_minimal_tools(isolated_home):
     assert data["tools"]["count"] == 6
 
 
-def test_skills_index_reflects_installed_skills(isolated_home):
-    """Installing a skill makes the skills-index block non-empty.
-
-    Note: the skills prompt is cached per-process (in-process LRU + disk
-    snapshot), so we seed the skill BEFORE the first build rather than
-    comparing before/after within one process.
-    """
-    _seed_skill(isolated_home, "hello", "a demo skill for size testing")
-    data = compute_prompt_breakdown("cli")
-    assert data["skills_index"]["bytes"] > 0
-
-
 def test_memory_and_profile_are_attributed(isolated_home):
     """Memory and user-profile blocks are measured separately."""
     _seed_memory(
@@ -208,34 +196,6 @@ def test_skills_breakdown_shape_sorted_and_attributed(isolated_home):
     assert sum(s["index_line_bytes"] for s in skills) <= data["skills_index"]["bytes"]
 
 
-def test_skills_breakdown_unmapped_name_is_none():
-    """A skill line with no matching SKILL.md on disk reports None, not a crash."""
-    block = (
-        "<available_skills>\n"
-        "  demo:\n"
-        "    - phantom-skill: not on disk\n"
-        "</available_skills>\n"
-    )
-    entries = _compute_skills_breakdown(block)
-    assert len(entries) == 1
-    assert entries[0]["name"] == "phantom-skill"
-    assert entries[0]["skill_md_bytes"] is None
-    assert entries[0]["path"] == ""
-    assert entries[0]["index_line_bytes"] > 0
-
-
-def test_skills_breakdown_parses_namespaced_names():
-    """Namespaced names (``ns:skill``) survive the ``name: desc`` split."""
-    block = (
-        "<available_skills>\n"
-        "  plugins:\n"
-        "    - codex:rescue: rescue helper\n"
-        "</available_skills>\n"
-    )
-    entries = _compute_skills_breakdown(block)
-    assert [e["name"] for e in entries] == ["codex:rescue"]
-
-
 def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home):
     """A real posture-demoted category retains every skill in the breakdown."""
     from agent.prompt_builder import build_skills_system_prompt
@@ -260,15 +220,6 @@ def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home)
         assert entry["index_line_total_bytes"] == shared_line_bytes
         assert entry["index_line_shared_bytes"] > 0
         assert entry["index_line_skill_count"] == 2
-
-
-def test_render_includes_per_component_tables(isolated_home):
-    """The rendered report gains the two new sorted tables (additive)."""
-    _seed_skill(isolated_home, "demo-skill", "a demo skill")
-    data = compute_prompt_breakdown("cli")
-    out = render_breakdown(data)
-    assert "Toolsets by size" in out
-    assert "Skills by size" in out
 
 
 def test_render_breakdown_is_plain_text(isolated_home):

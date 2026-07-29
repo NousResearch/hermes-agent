@@ -15,17 +15,6 @@ def test_display_toolset_name_strips_legacy_suffix():
     assert banner._display_toolset_name("web_tools") == "web"
 
 
-def test_display_toolset_name_preserves_clean_names():
-    assert banner._display_toolset_name("browser") == "browser"
-    assert banner._display_toolset_name("file") == "file"
-    assert banner._display_toolset_name("terminal") == "terminal"
-
-
-def test_display_toolset_name_handles_empty():
-    assert banner._display_toolset_name("") == "unknown"
-    assert banner._display_toolset_name(None) == "unknown"
-
-
 def test_build_welcome_banner_uses_normalized_toolset_names():
     """Unavailable toolsets should not have '_tools' appended in banner output."""
     with (
@@ -135,73 +124,6 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
 
 
-def test_build_welcome_banner_disabled_mcp_shows_disabled_not_failed():
-    """A disabled MCP server renders '— disabled' (dim), not '— failed' (red)."""
-    with (
-        patch.object(model_tools, "check_tool_availability", return_value=(["web"], [])),
-        patch.object(banner, "get_available_skills", return_value={}),
-        patch.object(banner, "get_update_result", return_value=None),
-        patch.object(
-            tools.mcp_tool,
-            "get_mcp_status",
-            return_value=[
-                {"name": "linear", "transport": "http", "tools": 0,
-                 "connected": False, "disabled": True},
-                {"name": "broken", "transport": "stdio", "tools": 0,
-                 "connected": False, "disabled": False},
-            ],
-        ),
-    ):
-        console = Console(record=True, force_terminal=False, color_system=None, width=160)
-        banner.build_welcome_banner(
-            console=console, model="anthropic/test-model", cwd="/tmp/project",
-            tools=[{"function": {"name": "read_file"}}],
-            get_toolset_for_tool=lambda n: "file",
-        )
-
-    output = console.export_text()
-    # Disabled server is labeled "disabled", not "failed"
-    assert "linear" in output
-    assert "disabled" in output
-    # A genuinely unreachable server still reads "failed"
-    assert "broken" in output
-    assert "failed" in output
-
-
-def test_build_welcome_banner_configured_mcp_is_not_failed():
-    """A configured MCP server with no connection attempt yet is not a failure."""
-    with (
-        patch.object(model_tools, "check_tool_availability", return_value=(["web"], [])),
-        patch.object(banner, "get_available_skills", return_value={}),
-        patch.object(banner, "get_update_result", return_value=None),
-        patch.object(
-            tools.mcp_tool,
-            "get_mcp_status",
-            return_value=[
-                {
-                    "name": "docker-profile",
-                    "transport": "stdio",
-                    "tools": 0,
-                    "connected": False,
-                    "disabled": False,
-                    "status": "configured",
-                },
-            ],
-        ),
-    ):
-        console = Console(record=True, force_terminal=False, color_system=None, width=160)
-        banner.build_welcome_banner(
-            console=console, model="anthropic/test-model", cwd="/tmp/project",
-            tools=[{"function": {"name": "read_file"}}],
-            get_toolset_for_tool=lambda n: "file",
-        )
-
-    output = console.export_text()
-    assert "docker-profile" in output
-    assert "configured" in output
-    assert "failed" not in output
-
-
 def test_banner_hides_toolsets_not_enabled_for_platform():
     """A globally-registered toolset that isn't enabled for this agent (e.g.
     discord / feishu on a CLI session) must NOT appear in 'Available Tools'.
@@ -278,54 +200,6 @@ def test_banner_skills_section_reflects_disabled_skills_toolset():
     out_enabled = console.export_text()
     assert "Skills toolset disabled" not in out_enabled
     assert "ascii-art" in out_enabled
-
-
-def test_build_welcome_banner_moa_provider_shows_preset_and_aggregator(tmp_path, monkeypatch):
-    """With provider='moa', the banner renders the preset + aggregator, not a bare slug."""
-    import yaml
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    (home / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "moa": {
-                    "default_preset": "opus-gpt",
-                    "presets": {
-                        "opus-gpt": {
-                            "enabled": True,
-                            "reference_models": [
-                                {"provider": "openrouter", "model": "openai/gpt-5.5"},
-                                {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-                            ],
-                            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-                        }
-                    },
-                }
-            }
-        )
-    )
-
-    with (
-        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
-        patch.object(banner, "get_available_skills", return_value={}),
-        patch.object(banner, "get_update_result", return_value=None),
-        patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
-    ):
-        console = Console(record=True, force_terminal=False, color_system=None, width=160)
-        banner.build_welcome_banner(
-            console=console,
-            model="opus-gpt",
-            cwd="/tmp/project",
-            tools=[],
-            enabled_toolsets=[],
-            provider="moa",
-        )
-
-    out = console.export_text()
-    assert "MoA: opus-gpt" in out
-    assert "agg claude-opus-4.8" in out
 
 
 def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):

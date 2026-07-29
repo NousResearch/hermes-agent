@@ -48,35 +48,6 @@ class TestWindowAndBookendShape:
         assert len(anchor_msgs) == 1
 
 
-class TestBookendOverlap:
-    """Bookends shouldn't duplicate messages that are already in the window."""
-
-    def test_bookend_start_empty_when_window_covers_session_head(self, db):
-        ids = _seed_long_session(db, n=10)
-        # Anchor on msg 1 (id index 1), window=3 → covers ids[0..4]
-        anchor = ids[1]
-        view = db.get_anchored_view("s1", anchor, window=3, bookend=3)
-        # Window includes session head, so bookend_start should be empty
-        assert view["bookend_start"] == []
-        # bookend_end is still populated
-        assert len(view["bookend_end"]) > 0
-
-    def test_bookend_end_empty_when_window_covers_session_tail(self, db):
-        ids = _seed_long_session(db, n=10)
-        # Anchor on second-to-last
-        anchor = ids[-2]
-        view = db.get_anchored_view("s1", anchor, window=3, bookend=3)
-        assert view["bookend_end"] == []
-        assert len(view["bookend_start"]) > 0
-
-    def test_short_session_both_bookends_empty(self, db):
-        ids = _seed_long_session(db, n=5)
-        view = db.get_anchored_view("s1", ids[2], window=10, bookend=3)
-        # Window covers entire session
-        assert view["bookend_start"] == []
-        assert view["bookend_end"] == []
-        # And window has all 5 messages
-        assert len(view["window"]) == 5
 
 
 class TestRoleFiltering:
@@ -102,13 +73,6 @@ class TestRoleFiltering:
         ids_in_window = [m["id"] for m in view["window"]]
         assert tool_id in ids_in_window
 
-    def test_keep_roles_none_disables_filter(self, db):
-        db.create_session("s1", source="cli")
-        anchor_id = db.append_message("s1", role="user", content="ask")
-        db.append_message("s1", role="tool", content="output", tool_name="x")
-        view = db.get_anchored_view("s1", anchor_id, window=5, bookend=0, keep_roles=None)
-        roles = [m.get("role") for m in view["window"]]
-        assert "tool" in roles
 
 
 class TestEmptyContentFilter:

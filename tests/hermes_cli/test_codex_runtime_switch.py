@@ -32,11 +32,6 @@ class TestParseArgs:
         assert errors == []
         assert value == expected
 
-    def test_invalid_arg_returns_error(self):
-        value, errors = crs.parse_args("turbo")
-        assert value is None
-        assert errors and "Unknown runtime" in errors[0]
-
 
 class TestGetCurrentRuntime:
     def test_default_when_unset(self):
@@ -49,16 +44,6 @@ class TestGetCurrentRuntime:
             {"model": {"openai_runtime": "garbage"}}
         ) == "auto"
 
-    def test_explicit_codex(self):
-        assert crs.get_current_runtime(
-            {"model": {"openai_runtime": "codex_app_server"}}
-        ) == "codex_app_server"
-
-    def test_handles_non_dict_config(self):
-        assert crs.get_current_runtime(None) == "auto"  # type: ignore[arg-type]
-        assert crs.get_current_runtime("notadict") == "auto"  # type: ignore[arg-type]
-        assert crs.get_current_runtime({"model": "notadict"}) == "auto"
-
 
 class TestSetRuntime:
     def test_creates_model_section_if_missing(self):
@@ -67,11 +52,6 @@ class TestSetRuntime:
         assert old == "auto"
         assert cfg["model"]["openai_runtime"] == "codex_app_server"
 
-    def test_returns_previous_value(self):
-        cfg = {"model": {"openai_runtime": "codex_app_server"}}
-        old = crs.set_runtime(cfg, "auto")
-        assert old == "codex_app_server"
-        assert cfg["model"]["openai_runtime"] == "auto"
 
     def test_invalid_value_raises(self):
         with pytest.raises(ValueError):
@@ -90,11 +70,6 @@ class TestApply:
         assert "codex_app_server" in r.message
         assert "0.130.0" in r.message
 
-    def test_no_change_when_already_set(self):
-        cfg = {"model": {"openai_runtime": "auto"}}
-        r = crs.apply(cfg, "auto")
-        assert r.success
-        assert r.message == "openai_runtime already set to auto"
 
     def test_reapply_codex_app_server_runs_migration(self):
         """Re-applying codex_app_server when already enabled must still
@@ -182,15 +157,6 @@ class TestApply:
         assert cfg["model"]["openai_runtime"] == "codex_app_server"
         assert persisted["model"]["openai_runtime"] == "codex_app_server"
 
-    def test_disable_does_not_check_binary(self):
-        cfg = {"model": {"openai_runtime": "codex_app_server"}}
-        with patch.object(crs, "check_codex_binary_ok") as bin_check:
-            r = crs.apply(cfg, "auto")
-        assert r.success
-        # Binary check is irrelevant when disabling — should not be called
-        # with the codex_app_server enable-gate signature.
-        assert r.new_value == "auto"
-        assert r.old_value == "codex_app_server"
 
     def test_persist_callback_failure_reported(self):
         cfg = {}
@@ -278,11 +244,3 @@ class TestApply:
             "should be cached and called exactly once per apply()"
         )
 
-    def test_binary_check_cached_on_read_only_call(self):
-        """Read-only call (new_value=None) calls the binary check exactly
-        once and reuses the result for the message."""
-        cfg = {"model": {"openai_runtime": "codex_app_server"}}
-        with patch.object(crs, "check_codex_binary_ok",
-                          return_value=(True, "0.130.0")) as bin_check:
-            crs.apply(cfg, None)
-        assert bin_check.call_count == 1

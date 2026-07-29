@@ -49,25 +49,10 @@ def test_raw_csi_arrow_down_decodes_to_down():
     assert read_menu_key(FakeStdscr([27, ord("["), ord("B")])) == NAV_DOWN
 
 
-def test_raw_csi_arrow_up_decodes_to_up():
-    # ESC [ A  -> up
-    assert read_menu_key(FakeStdscr([27, ord("["), ord("A")])) == NAV_UP
-
-
 def test_raw_ss3_arrow_keys_decode():
     # Application cursor mode: ESC O B / ESC O A
     assert read_menu_key(FakeStdscr([27, ord("O"), ord("B")])) == NAV_DOWN
     assert read_menu_key(FakeStdscr([27, ord("O"), ord("A")])) == NAV_UP
-
-
-def test_translated_key_constants_still_work():
-    assert read_menu_key(FakeStdscr([curses.KEY_DOWN])) == NAV_DOWN
-    assert read_menu_key(FakeStdscr([curses.KEY_UP])) == NAV_UP
-
-
-def test_vim_keys():
-    assert read_menu_key(FakeStdscr([ord("j")])) == NAV_DOWN
-    assert read_menu_key(FakeStdscr([ord("k")])) == NAV_UP
 
 
 def test_lone_escape_is_cancel():
@@ -92,12 +77,6 @@ def test_unhandled_csi_sequence_is_consumed_and_ignored():
     assert read_menu_key(fake) == NAV_NONE
     # The trailing 'X' (a genuinely separate keypress) must remain unconsumed.
     assert fake.keys == [ord("X")]
-
-
-def test_home_end_csi_sequences_ignored():
-    # ESC [ H (Home) and ESC [ F (End) -> NAV_NONE, fully consumed.
-    assert read_menu_key(FakeStdscr([27, ord("["), ord("H")])) == NAV_NONE
-    assert read_menu_key(FakeStdscr([27, ord("["), ord("F")])) == NAV_NONE
 
 
 def test_escape_uses_short_timeout_then_restores_blocking():

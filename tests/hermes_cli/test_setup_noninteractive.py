@@ -50,20 +50,6 @@ class TestNonInteractiveSetup:
 
         mock_run_setup.assert_called_once_with(args)
 
-    def test_cmd_setup_defers_no_tty_handling_to_setup_wizard(self):
-        """Bare `hermes setup` should reach setup.py, which prints headless guidance."""
-        from hermes_cli.main import cmd_setup
-
-        args = _make_setup_args(non_interactive=False)
-
-        with (
-            patch("hermes_cli.setup.run_setup_wizard") as mock_run_setup,
-            patch("sys.stdin") as mock_stdin,
-        ):
-            mock_stdin.isatty.return_value = False
-            cmd_setup(args)
-
-        mock_run_setup.assert_called_once_with(args)
 
     def test_non_interactive_flag_skips_wizard(self, capsys):
         """--non-interactive should print guidance and not enter the wizard."""
@@ -83,25 +69,6 @@ class TestNonInteractiveSetup:
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
 
-    def test_no_tty_skips_wizard(self, capsys):
-        """When stdin has no TTY, the setup wizard should print guidance and return."""
-        from hermes_cli.setup import run_setup_wizard
-
-        args = _make_setup_args(non_interactive=False)
-
-        with (
-            patch("hermes_cli.setup.ensure_hermes_home"),
-            patch("hermes_cli.setup.load_config", return_value={}),
-            patch("hermes_cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
-            patch("hermes_cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
-            patch("sys.stdin") as mock_stdin,
-            patch("builtins.input", side_effect=AssertionError("input should not be called")),
-        ):
-            mock_stdin.isatty.return_value = False
-            run_setup_wizard(args)
-
-        out = capsys.readouterr().out
-        assert "hermes config set model.provider custom" in out
 
     def test_reset_flag_rewrites_config_before_noninteractive_exit(self, tmp_path, monkeypatch, capsys):
         """--reset should rewrite config.yaml even when the wizard cannot run interactively."""

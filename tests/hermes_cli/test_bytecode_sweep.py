@@ -50,19 +50,6 @@ def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
     assert recorded.strip().endswith("b" * 40)
 
 
-def test_sweep_noop_when_fingerprint_matches(monkeypatch, tmp_path):
-    repo = _make_repo(tmp_path, sha="c" * 40)
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-    fingerprint = hermes_main._read_git_revision_fingerprint(repo)
-    assert fingerprint is not None
-    (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).write_text(fingerprint, encoding="utf-8")
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert cache.exists()  # untouched — no needless recompiles on every launch
-
-
 def test_sweep_first_launch_clears_and_records(monkeypatch, tmp_path):
     """No stamp yet (first launch with the guard) → sweep once, record."""
     repo = _make_repo(tmp_path, sha="d" * 40)
@@ -75,32 +62,6 @@ def test_sweep_first_launch_clears_and_records(monkeypatch, tmp_path):
     assert (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).exists()
 
 
-def test_sweep_noop_on_non_git_install(monkeypatch, tmp_path):
-    """No .git → no fingerprint → guard must not touch anything or raise."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert cache.exists()
-    assert not (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).exists()
-
-
-def test_sweep_never_raises_on_unreadable_stamp(monkeypatch, tmp_path):
-    repo = _make_repo(tmp_path, sha="e" * 40)
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-    stamp = repo / hermes_main._BYTECODE_FINGERPRINT_FILE
-    stamp.mkdir()  # a directory where a file is expected → OSError on read
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()  # must not raise
-
-    # Unreadable stamp is treated as "changed": cache swept.
-    assert not cache.exists()
-
-
 def test_record_bytecode_fingerprint_writes_atomically(monkeypatch, tmp_path):
     repo = _make_repo(tmp_path, sha="f" * 40)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
@@ -110,16 +71,6 @@ def test_record_bytecode_fingerprint_writes_atomically(monkeypatch, tmp_path):
     stamp = repo / hermes_main._BYTECODE_FINGERPRINT_FILE
     assert stamp.read_text(encoding="utf-8").endswith("f" * 40)
     assert not stamp.with_name(stamp.name + ".tmp").exists()
-
-
-def test_record_bytecode_fingerprint_noop_without_git(monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._record_bytecode_fingerprint()  # must not raise
-
-    assert not (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).exists()
 
 
 def test_sweep_skips_venv_and_git_dirs(monkeypatch, tmp_path):

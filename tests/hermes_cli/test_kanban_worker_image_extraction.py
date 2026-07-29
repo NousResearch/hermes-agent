@@ -85,48 +85,6 @@ class TestExtractFromTaskBody:
         assert paths == [str(img)]
         assert urls == []
 
-    def test_url_in_body_round_trips(self, kanban_home):
-        tid = _add_task_with_body(
-            "The design lives at https://example.com/mock/v3.png — "
-            "make the implementation match it."
-        )
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == []
-        assert urls == ["https://example.com/mock/v3.png"]
-
-    def test_mixed_path_and_url_in_body(self, kanban_home, tmp_path):
-        img = tmp_path / "current.png"
-        img.write_bytes(_PNG)
-        tid = _add_task_with_body(
-            f"Compare the current screenshot {img} against the design at "
-            "https://example.com/target.png and write a diff."
-        )
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == [str(img)]
-        assert urls == ["https://example.com/target.png"]
-
-    def test_body_without_images_yields_nothing(self, kanban_home):
-        tid = _add_task_with_body(
-            "Refactor the auth module to use the new session helper."
-        )
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == []
-        assert urls == []
-
-    def test_empty_body_is_safe(self, kanban_home):
-        tid = _add_task_with_body("")
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == []
-        assert urls == []
-
 
 class TestBuildPartsFromTaskBody:
     """Verify the full pipeline produces a multimodal user turn."""

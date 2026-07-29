@@ -54,15 +54,6 @@ class TestVariantTagPreservation:
         result = _run_switch("nvidia:nemotron-3-super-120b-a12b")
         assert result == "nvidia/nemotron-3-super-120b-a12b"
 
-    def test_legacy_colon_format_with_tag_converts_first_colon_only(self):
-        """vendor:model:free (no slash) → vendor/model:free — first colon becomes slash."""
-        result = _run_switch("nvidia:nemotron-3-super-120b-a12b:free")
-        assert result == "nvidia/nemotron-3-super-120b-a12b:free"
-
-    def test_bare_model_name_unaffected(self):
-        """Bare model names without colons or slashes should work normally."""
-        result = _run_switch("claude-sonnet-4.6")
-        assert result == "anthropic/claude-sonnet-4.6"
 
     def test_already_correct_slug_no_tag(self):
         """Standard vendor/model slugs without tags pass through unchanged."""

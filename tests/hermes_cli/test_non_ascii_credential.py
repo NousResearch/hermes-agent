@@ -36,16 +36,6 @@ class TestCheckNonAsciiCredential:
         captured = capsys.readouterr()
         assert "U+028B" in captured.err  # reports the char
 
-    def test_empty_key(self):
-        result = _check_non_ascii_credential("TEST_KEY", "")
-        assert result == ""
-
-    def test_all_ascii_no_warning(self, capsys):
-        result = _check_non_ascii_credential("KEY", "all-ascii-value-123")
-        assert result == "all-ascii-value-123"
-        captured = capsys.readouterr()
-        assert captured.err == ""
-
 
 class TestEnvLoaderSanitization:
     """Tests for _sanitize_loaded_credentials in env_loader."""

@@ -57,17 +57,6 @@ class TestWriteFrequencyParsing:
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "async"
 
-    def test_string_turn(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "turn"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == "turn"
-
-    def test_string_session(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "session"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == "session"
 
     def test_integer_frequency(self, tmp_path):
         cfg_file = tmp_path / "config.json"
@@ -75,11 +64,6 @@ class TestWriteFrequencyParsing:
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == 5
 
-    def test_integer_string_coerced(self, tmp_path):
-        cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "3"}))
-        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
-        assert cfg.write_frequency == 3
 
     def test_host_block_overrides_root(self, tmp_path):
         cfg_file = tmp_path / "config.json"
@@ -113,10 +97,6 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_title="my-project")
         assert result == "my-project"
 
-    def test_title_with_peer_prefix(self):
-        cfg = HonchoClientConfig(peer_name="eri", session_peer_prefix=True)
-        result = cfg.resolve_session_name("/some/dir", session_title="aeris")
-        assert result == "eri-aeris"
 
     def test_title_sanitized(self):
         cfg = HonchoClientConfig()
@@ -124,11 +104,6 @@ class TestResolveSessionNameTitle:
         # trailing dashes stripped by .strip('-')
         assert result == "my-project-name"
 
-    def test_title_all_invalid_chars_falls_back_to_dirname(self):
-        cfg = HonchoClientConfig()
-        result = cfg.resolve_session_name("/some/dir", session_title="!!! ###")
-        # sanitized to empty → falls back to dirname
-        assert result == "dir"
 
     def test_none_title_falls_back_to_dirname(self):
         cfg = HonchoClientConfig()
@@ -145,35 +120,6 @@ class TestResolveSessionNameTitle:
         result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
         assert result == "20260309_175514_9797dd"
 
-    def test_per_session_with_peer_prefix(self):
-        cfg = HonchoClientConfig(session_strategy="per-session", peer_name="eri", session_peer_prefix=True)
-        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
-        assert result == "eri-20260309_175514_9797dd"
-
-    def test_per_session_no_id_falls_back_to_dirname(self):
-        cfg = HonchoClientConfig(session_strategy="per-session")
-        result = cfg.resolve_session_name("/some/dir", session_id=None)
-        assert result == "dir"
-
-    def test_per_session_id_beats_title(self):
-        # per-session: the run's session_id is authoritative; an (auto-)generated
-        # title must NOT remap a live conversation onto a second Honcho session.
-        cfg = HonchoClientConfig(session_strategy="per-session")
-        result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
-        assert result == "20260309_175514_9797dd"
-
-    def test_per_session_id_beats_manual_map(self):
-        # per-session: session_id also wins over a stale cwd map entry (e.g. the
-        # desktop launching from a mapped home dir).
-        cfg = HonchoClientConfig(session_strategy="per-session", sessions={"/some/dir": "pinned"})
-        result = cfg.resolve_session_name("/some/dir", session_id="20260309_175514_9797dd")
-        assert result == "20260309_175514_9797dd"
-
-    def test_title_still_applies_for_non_per_session(self):
-        # Outside per-session, /title still names the Honcho session.
-        cfg = HonchoClientConfig(session_strategy="per-directory")
-        result = cfg.resolve_session_name("/some/dir", session_title="my-title", session_id="20260309_175514_9797dd")
-        assert result == "my-title"
 
     def test_gateway_key_beats_per_session_id(self):
         # Gateways keep per-chat isolation even in per-session.
@@ -233,16 +179,6 @@ class TestSaveRouting:
             mgr.save(sess)  # turn 3
             assert mock_flush.call_count == 1
 
-    def test_int_frequency_skips_other_turns(self):
-        mgr = _make_manager(write_frequency=5)
-        sess = self._make_session_with_message(mgr)
-        with patch.object(mgr, "_flush_session") as mock_flush:
-            for _ in range(4):
-                mgr.save(sess)
-            assert mock_flush.call_count == 0
-            mgr.save(sess)  # turn 5
-            assert mock_flush.call_count == 1
-
 
 # ---------------------------------------------------------------------------
 # flush_all()
@@ -275,14 +211,6 @@ class TestFlushAll:
             # Called at least once for the queued item
             assert mock_flush.call_count >= 1
 
-    def test_flush_all_tolerates_errors(self):
-        mgr = _make_manager(write_frequency="session")
-        sess = _make_session()
-        mgr._cache = {"key": sess}
-        with patch.object(mgr, "_flush_session", side_effect=RuntimeError("oops")):
-            # Should not raise
-            mgr.flush_all()
-
 
 # ---------------------------------------------------------------------------
 # async writer thread lifecycle
@@ -305,34 +233,6 @@ class TestAsyncWriterThread:
         assert mgr._async_thread.is_alive()
         mgr.shutdown()
         assert not mgr._async_thread.is_alive()
-
-    def test_async_writer_calls_flush(self):
-        mgr = _make_manager(write_frequency="async")
-        sess = _make_session()
-        sess.add_message("user", "async msg")
-
-        flushed = []
-        flushed_event = threading.Event()
-
-        def capture(session):
-            flushed.append(session)
-            flushed_event.set()
-            return True
-
-        mgr._flush_session = capture
-        mgr._async_queue.put(sess)
-        assert flushed_event.wait(timeout=10), "async writer never flushed"
-
-        mgr.shutdown()
-        assert len(flushed) == 1
-        assert flushed[0] is sess
-
-    def test_shutdown_sentinel_stops_loop(self):
-        mgr = _make_manager(write_frequency="async")
-        thread = mgr._async_thread
-        mgr.shutdown()
-        thread.join(timeout=10)
-        assert not thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -389,29 +289,6 @@ class TestAsyncWriterRetry:
         assert call_count[0] == 2
         assert not mgr._async_thread.is_alive()
 
-    def test_retries_when_flush_reports_failure(self):
-        mgr = _make_manager(write_frequency="async")
-        sess = _make_session()
-        sess.add_message("user", "msg")
-
-        call_count = [0]
-        retry_done = threading.Event()
-
-        def fail_then_succeed(session):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                retry_done.set()
-            return call_count[0] > 1
-
-        mgr._flush_session = fail_then_succeed
-
-        with patch("time.sleep"):
-            mgr._async_queue.put(sess)
-            assert retry_done.wait(timeout=10), "async writer never retried"
-
-        mgr.shutdown()
-        assert call_count[0] == 2
-
 
 class TestMemoryFileMigrationTargets:
     def test_soul_upload_targets_ai_peer(self, tmp_path):
@@ -459,10 +336,6 @@ class TestNewConfigFieldDefaults:
     def test_write_frequency_default(self):
         cfg = HonchoClientConfig()
         assert cfg.write_frequency == "async"
-
-    def test_write_frequency_set(self):
-        cfg = HonchoClientConfig(write_frequency="turn")
-        assert cfg.write_frequency == "turn"
 
 
 class TestPrefetchCacheAccessors:

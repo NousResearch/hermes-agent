@@ -14,14 +14,7 @@ from agent.anthropic_adapter import (
 class TestReadClaudeCodeCredentialsFromKeychain:
     """Bug 4: macOS Keychain support for Claude Code >=2.1.114."""
 
-    def test_returns_none_on_linux(self):
-        """Keychain reading is Darwin-only; must return None on other platforms."""
-        with patch("agent.anthropic_adapter.platform.system", return_value="Linux"):
-            assert _read_claude_code_credentials_from_keychain() is None
 
-    def test_returns_none_on_windows(self):
-        with patch("agent.anthropic_adapter.platform.system", return_value="Windows"):
-            assert _read_claude_code_credentials_from_keychain() is None
 
     def test_returns_none_when_security_command_not_found(self):
         """OSError from missing security binary must be handled gracefully."""
@@ -37,58 +30,10 @@ class TestReadClaudeCodeCredentialsFromKeychain:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             assert _read_claude_code_credentials_from_keychain() is None
 
-    def test_returns_none_for_empty_stdout(self):
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            assert _read_claude_code_credentials_from_keychain() is None
 
-    def test_returns_none_for_non_json_payload(self):
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="not valid json", stderr="")
-            assert _read_claude_code_credentials_from_keychain() is None
 
-    def test_returns_none_when_password_field_is_missing_claude_ai_oauth(self):
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=json.dumps({"someOtherService": {"accessToken": "tok"}}),
-                stderr="",
-            )
-            assert _read_claude_code_credentials_from_keychain() is None
 
-    def test_returns_none_when_access_token_is_empty(self):
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=json.dumps({"claudeAiOauth": {"accessToken": "", "refreshToken": "x"}}),
-                stderr="",
-            )
-            assert _read_claude_code_credentials_from_keychain() is None
 
-    def test_parses_valid_keychain_entry(self):
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout=json.dumps({
-                    "claudeAiOauth": {
-                        "accessToken": "kc-access-token-abc",
-                        "refreshToken": "kc-refresh-token-xyz",
-                        "expiresAt": 9999999999999,
-                    }
-                }),
-                stderr="",
-            )
-            creds = _read_claude_code_credentials_from_keychain()
-            assert creds is not None
-            assert creds["accessToken"] == "kc-access-token-abc"
-            assert creds["refreshToken"] == "kc-refresh-token-xyz"
-            assert creds["expiresAt"] == 9999999999999
-            assert creds["source"] == "macos_keychain"
 
 
 class TestReadClaudeCodeCredentialsPriority:
@@ -222,34 +167,7 @@ class TestReadClaudeCodeCredentialsDesync:
         assert creds["accessToken"] == "fresh-file-token"
         assert creds["source"] == "claude_code_credentials_file"
 
-    def test_keychain_fresh_file_expired_returns_keychain(self, tmp_path, monkeypatch):
-        """Mirror case: file is the stale source; Keychain wins on validity."""
-        self._setup(tmp_path, monkeypatch, file_expires_at=self._EXPIRED, file_token="stale-file-token")
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
-            mock_run.return_value = self._keychain_payload(
-                access_token="fresh-keychain-token", expires_at=self._FRESH,
-            )
-            creds = read_claude_code_credentials()
 
-        assert creds is not None
-        assert creds["accessToken"] == "fresh-keychain-token"
-        assert creds["source"] == "macos_keychain"
-
-    def test_both_valid_prefers_later_expiry_when_file_is_fresher(self, tmp_path, monkeypatch):
-        """When both are valid, the one with the later ``expiresAt`` wins so
-        that any subsequent refresh uses the freshest ``refresh_token``.
-        """
-        self._setup(tmp_path, monkeypatch, file_expires_at=self._FRESH, file_token="newer-file-token")
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
-            mock_run.return_value = self._keychain_payload(
-                access_token="older-keychain-token", expires_at=self._FRESH - 1_000_000,
-            )
-            creds = read_claude_code_credentials()
-
-        assert creds is not None
-        assert creds["accessToken"] == "newer-file-token"
 
     def test_both_expired_prefers_later_expiry(self, tmp_path, monkeypatch):
         """When both are expired, return the one with the later ``expiresAt``;

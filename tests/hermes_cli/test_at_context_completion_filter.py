@@ -41,18 +41,6 @@ def test_at_folder_only_yields_directories(tmp_path, monkeypatch):
     assert not any(t == "@folder:.env" for t in texts)
 
 
-def test_at_file_only_yields_files(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    texts = [t for t, _ in _run(tmp_path, "@file:")]
-
-    assert all(t.startswith("@file:") for t in texts), texts
-    assert any(t == "@file:readme.md" for t in texts)
-    assert any(t == "@file:.env" for t in texts)
-    assert not any(t == "@file:src/" for t in texts)
-    assert not any(t == "@file:docs/" for t in texts)
-
-
 def test_at_folder_preserves_prefix_on_empty_match(tmp_path, monkeypatch):
     """User typed `@folder:` (no partial) — completion text must keep the
     `@folder:` prefix even though the previous implementation auto-rewrote

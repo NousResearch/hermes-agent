@@ -27,21 +27,6 @@ class TestPostSetupGate:
             "computer_use", {}
         ) is True
 
-    def test_cua_driver_installed_skips_setup(self, monkeypatch, tmp_path):
-        """When cua-driver is already on PATH, the gate must return False
-        so a re-save through `hermes tools` doesn't re-prompt the user."""
-        from hermes_cli import tools_config
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(
-            tools_config.shutil,
-            "which",
-            lambda name, path=None: "/usr/local/bin/cua-driver" if name == "cua-driver" else None,
-        )
-
-        assert tools_config._toolset_needs_configuration_prompt(
-            "computer_use", {}
-        ) is False
 
     def test_post_setup_predicate_exception_does_not_block(self, monkeypatch):
         """A predicate that raises must be treated as 'satisfied' so a

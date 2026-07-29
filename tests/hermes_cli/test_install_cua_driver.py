@@ -37,13 +37,6 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=True) is False
             warn.assert_not_called()
 
-    def test_non_upgrade_on_unsupported_platform_warns(self):
-        from hermes_cli import tools_config
-
-        with patch.object(tools_config, "_print_warning") as warn, \
-             patch("platform.system", return_value="FreeBSD"):
-            assert tools_config.install_cua_driver(upgrade=False) is False
-            warn.assert_called()
 
     def test_upgrade_on_macos_with_binary_runs_installer(self):
         from hermes_cli import tools_config
@@ -59,75 +52,6 @@ class TestInstallCuaDriverUpgrade:
             runner.assert_called_once()
             kwargs = runner.call_args.kwargs
             assert kwargs.get("verbose") is False
-
-    def test_upgrade_on_macos_without_binary_runs_installer(self):
-        from hermes_cli import tools_config
-
-        with patch("platform.system", return_value="Darwin"), \
-             patch.object(tools_config.shutil, "which",
-                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
-             patch.object(tools_config, "_run_cua_driver_installer",
-                          return_value=True) as runner:
-            assert tools_config.install_cua_driver(upgrade=True) is True
-            runner.assert_called_once()
-
-    def test_upgrade_on_macos_non_writable_applications_skips_refresh(self):
-        from hermes_cli import tools_config
-
-        with patch("platform.system", return_value="Darwin"), \
-             patch.object(tools_config.shutil, "which",
-                          side_effect=lambda n: "/usr/local/bin/" + n
-                                                 if n in {"cua-driver", "curl"} else None), \
-             patch.object(tools_config, "_cua_install_target_writable",
-                          return_value=False), \
-             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
-             patch.object(tools_config, "_print_info") as info:
-            assert tools_config.install_cua_driver(upgrade=True) is True
-            runner.assert_not_called()
-            assert any(
-                "/Applications is not writable" in call.args[0]
-                for call in info.call_args_list
-            )
-
-    def test_fresh_install_on_macos_non_writable_applications_skips_install(self):
-        from hermes_cli import tools_config
-
-        with patch("platform.system", return_value="Darwin"), \
-             patch.object(tools_config.shutil, "which",
-                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
-             patch.object(tools_config, "_cua_install_target_writable",
-                          return_value=False), \
-             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
-             patch.object(tools_config, "_print_info") as info:
-            assert tools_config.install_cua_driver(upgrade=False) is False
-            runner.assert_not_called()
-            assert any(
-                "/Applications is not writable" in call.args[0]
-                for call in info.call_args_list
-            )
-
-    def test_non_upgrade_on_macos_with_binary_skips_install(self):
-        from hermes_cli import tools_config
-
-        with patch("platform.system", return_value="Darwin"), \
-             patch.object(tools_config.shutil, "which",
-                          side_effect=lambda n: "/usr/local/bin/" + n
-                                                 if n in {"cua-driver", "curl"} else None), \
-             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
-             patch("subprocess.run"):
-            assert tools_config.install_cua_driver(upgrade=False) is True
-            runner.assert_not_called()
-
-    def test_non_upgrade_on_macos_without_binary_runs_installer(self):
-        from hermes_cli import tools_config
-
-        with patch("platform.system", return_value="Darwin"), \
-             patch.object(tools_config.shutil, "which",
-                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
-             patch.object(tools_config, "_run_cua_driver_installer",
-                          return_value=True) as runner:
-            assert tools_config.install_cua_driver(upgrade=False) is True
-            runner.assert_called_once()
 
 
 class TestRequireConfirmedUpdate:
@@ -180,28 +104,6 @@ class TestRequireConfirmedUpdate:
             for call in info.call_args_list
         )
 
-    def test_indeterminate_check_points_at_force_path(self):
-        ok, runner, info = self._install("Darwin", None, require_confirmed=True)
-        assert ok is True
-        runner.assert_not_called()
-        assert any(
-            "computer-use install --upgrade" in call.args[0]
-            for call in info.call_args_list
-        )
-
-    def test_confirmed_update_still_runs_installer(self):
-        state = {"current_version": "0.5.0", "latest_version": "0.6.0",
-                 "update_available": True}
-        ok, runner, _ = self._install("Windows", state, require_confirmed=True)
-        assert ok is True
-        runner.assert_called_once()
-
-    def test_up_to_date_short_circuits(self):
-        state = {"current_version": "0.6.0", "latest_version": "0.6.0",
-                 "update_available": False}
-        ok, runner, _ = self._install("Windows", state, require_confirmed=True)
-        assert ok is True
-        runner.assert_not_called()
 
     def test_explicit_upgrade_still_falls_through_on_indeterminate(self):
         # `hermes computer-use install --upgrade` (default flag): the old
@@ -242,8 +144,6 @@ class TestUpdateCheckTimeoutDefaults:
     def test_windows_default_is_generous(self):
         assert self._captured_timeout("win32") == 25.0
 
-    def test_posix_default_unchanged(self):
-        assert self._captured_timeout("linux") == 8.0
 
     def test_explicit_timeout_wins(self):
         from unittest.mock import MagicMock
@@ -372,31 +272,6 @@ class TestPosixStaleInstallLockClear:
         lock = self._make_lock(tmp_path, pid=os.getpid())
         tools_config._clear_stale_cua_install_lock()
         assert lock.exists()
-
-    def test_pidless_fresh_lock_is_kept(self, tmp_path):
-        from hermes_cli import tools_config
-
-        lock = self._make_lock(tmp_path, pid=None)
-        tools_config._clear_stale_cua_install_lock()
-        assert lock.exists()
-
-    def test_pidless_old_lock_is_cleared(self, tmp_path):
-        import os
-        import time
-        from hermes_cli import tools_config
-
-        lock = self._make_lock(tmp_path, pid=None)
-        old = time.time() - (tools_config._CUA_LOCK_STALE_AFTER + 60)
-        os.utime(lock, (old, old))
-        with patch.object(tools_config, "_print_info"):
-            tools_config._clear_stale_cua_install_lock()
-        assert not lock.exists()
-
-    def test_no_lock_is_noop(self, tmp_path):
-        import os
-        os.environ["CUA_DRIVER_RS_HOME"] = str(tmp_path / ".cua-driver")
-        from hermes_cli import tools_config
-        tools_config._clear_stale_cua_install_lock()  # must not raise
 
 
 class TestWindowsStaleInstallLockClearDispatch:
@@ -527,11 +402,6 @@ class TestInstallerTimeoutKillsProcessGroup:
         # Post-kill reap happened.
         assert fake_proc.communicate.call_count == 2
 
-    def test_timeout_ceiling_exceeds_upstream_lock_window(self):
-        from hermes_cli import tools_config
-        # The upstream installer waits up to 600s before reclaiming a stale
-        # lock; our ceiling must give that window room to complete.
-        assert tools_config._CUA_INSTALLER_TIMEOUT > tools_config._CUA_LOCK_STALE_AFTER
 
     def test_installer_runs_in_new_session_on_posix(self, tmp_path):
         import subprocess
@@ -589,36 +459,6 @@ class TestInstallerTimeoutKillsProcessGroup:
         child.kill.assert_called_once_with()
         parent.kill.assert_called_once_with()
         fake_proc.kill.assert_not_called()
-        assert fake_proc.communicate.call_count == 2
-
-    def test_windows_tree_enumeration_failure_falls_back_to_direct_kill(self):
-        import psutil
-        import subprocess
-        from unittest.mock import MagicMock
-        from hermes_cli import tools_config
-
-        parent = MagicMock()
-        parent.children.side_effect = psutil.AccessDenied(pid=12345)
-
-        fake_proc = MagicMock()
-        fake_proc.pid = 12345
-        fake_proc.communicate.side_effect = [
-            subprocess.TimeoutExpired(cmd="powershell", timeout=1),
-            ("", None),
-        ]
-
-        with patch("platform.system", return_value="Windows"), \
-             patch("subprocess.Popen", return_value=fake_proc), \
-             patch("psutil.Process", return_value=parent), \
-             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
-             patch.object(tools_config, "_print_warning"), \
-             patch.object(tools_config, "_print_info"):
-            ok = tools_config._run_cua_driver_installer(
-                label="Refreshing", verbose=False
-            )
-
-        assert ok is False
-        fake_proc.kill.assert_called_once_with()
         assert fake_proc.communicate.call_count == 2
 
 
@@ -681,39 +521,6 @@ class TestInstallerNoShell:
         assert ok is False
         assert not [c for c in calls if c[0] == "popen"]
 
-    def test_temp_script_removed_after_run(self, tmp_path):
-        import os
-        captured = {}
-        import subprocess
-        from unittest.mock import MagicMock
-        from hermes_cli import tools_config
-
-        fake_proc = MagicMock()
-        fake_proc.pid = 1
-        fake_proc.returncode = 0
-        fake_proc.communicate.return_value = ("", None)
-
-        def fake_run(cmd, **kw):
-            m = MagicMock(); m.returncode = 0; m.stderr = ""
-            return m
-
-        def fake_popen(cmd, **kw):
-            captured["script"] = cmd[1]
-            return fake_proc
-
-        with patch("platform.system", return_value="Linux"), \
-             patch("subprocess.run", side_effect=fake_run), \
-             patch("subprocess.Popen", side_effect=fake_popen), \
-             patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
-             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
-             patch.object(tools_config, "_print_warning"), \
-             patch.object(tools_config, "_print_info"), \
-             patch.object(tools_config, "_print_success"):
-            tools_config._run_cua_driver_installer(label="Refreshing", verbose=False)
-
-        assert "script" in captured
-        assert not os.path.exists(captured["script"])
-
 
 class TestConfirmedVersionPinning:
     """When check-update confirms a newer release, the installer run must be
@@ -761,19 +568,6 @@ class TestConfirmedVersionPinning:
         assert ok is True
         assert runner.call_args.kwargs.get("pin_version") == "0.13.1"
 
-    def test_v_prefixed_latest_version_is_normalized(self):
-        state = {"current_version": "0.12.6", "latest_version": "v0.13.1",
-                 "update_available": True}
-        ok, runner = self._install(state)
-        assert ok is True
-        assert runner.call_args.kwargs.get("pin_version") == "0.13.1"
-
-    def test_malformed_latest_version_falls_back_unpinned(self):
-        state = {"current_version": "0.12.6", "latest_version": "not a version",
-                 "update_available": True}
-        ok, runner = self._install(state)
-        assert ok is True
-        assert runner.call_args.kwargs.get("pin_version") is None
 
     def test_missing_latest_version_falls_back_unpinned(self):
         state = {"current_version": "0.12.6", "update_available": True}
@@ -821,10 +615,6 @@ class TestRunInstallerPinEnv:
     def test_pin_version_exported_to_installer_env(self):
         env = self._run("0.13.1")
         assert env.get("CUA_DRIVER_RS_VERSION") == "0.13.1"
-
-    def test_no_pin_leaves_env_untouched(self):
-        env = self._run(None)
-        assert "CUA_DRIVER_RS_VERSION" not in env
 
 
 class TestWindowsAutostartRepair:

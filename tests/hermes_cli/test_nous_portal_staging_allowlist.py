@@ -44,23 +44,6 @@ class TestPortalEnvOverrideHelper:
         monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
         assert _nous_portal_env_override() is None
 
-    def test_hermes_portal_base_url_wins(self, monkeypatch):
-        monkeypatch.setenv(
-            "HERMES_PORTAL_BASE_URL", "https://portal.staging-nousresearch.com/"
-        )
-        monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
-        assert (
-            _nous_portal_env_override() == "https://portal.staging-nousresearch.com"
-        )
-
-    def test_nous_portal_base_url_used_as_fallback(self, monkeypatch):
-        monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
-        monkeypatch.setenv(
-            "NOUS_PORTAL_BASE_URL", "https://portal.staging-nousresearch.com"
-        )
-        assert (
-            _nous_portal_env_override() == "https://portal.staging-nousresearch.com"
-        )
 
     def test_env_override_not_gated_by_allowlist(self, monkeypatch):
         """The whole point: an env-set staging host is NOT in

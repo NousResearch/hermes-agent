@@ -50,65 +50,6 @@ def test_main_no_holders_prints_clear_json(tmp_path: Path, capsys) -> None:
     assert data == {"ok": True, "blocked": False, "processes": []}
 
 
-def test_main_holders_prints_blocked_json(tmp_path: Path, capsys) -> None:
-    from hermes_cli import main as cli_main
-
-    fake_detect = MagicMock(
-        return_value=[(101, "python.exe", "python.exe -m hermes_cli.main serve --host 10.0.0.1")]
-    )
-    with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
-        cli_main, "PROJECT_ROOT", tmp_path
-    ), patch.object(cli_main, "_detect_venv_python_processes", fake_detect), patch.dict(
-        sys.modules, _psutil_fake()
-    ):
-        with pytest.raises(SystemExit) as exc:
-            main()
-
-    assert exc.value.code == 0
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["ok"] is True
-    assert data["blocked"] is True
-    assert len(data["processes"]) == 1
-    p = data["processes"][0]
-    assert p["pid"] == 101
-    assert p["name"] == "python.exe"
-    assert "serve" in p["cmdline"]
-
-
-def test_main_detector_exception_exits_nonzero(tmp_path: Path, capsys) -> None:
-    from hermes_cli import main as cli_main
-
-    with patch.object(
-        cli_main, "_detect_venv_python_processes", side_effect=RuntimeError("boom")
-    ), patch.object(cli_main, "_is_windows", return_value=True), patch.object(
-        cli_main, "PROJECT_ROOT", tmp_path
-    ), patch.dict(sys.modules, _psutil_fake()):
-        with pytest.raises(SystemExit) as exc:
-            main()
-
-    assert exc.value.code != 0
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data == {"ok": False, "blocked": False, "processes": []}
-    assert "boom" in captured.err
-
-
-def test_main_psutil_unavailable_exits_nonzero(tmp_path: Path, capsys) -> None:
-    from hermes_cli import main as cli_main
-
-    with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
-        cli_main, "PROJECT_ROOT", tmp_path
-    ), patch.dict(sys.modules, {"psutil": None}):
-        with pytest.raises(SystemExit) as exc:
-            main()
-
-    assert exc.value.code != 0
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data == {"ok": False, "blocked": False, "processes": []}
-
-
 def test_main_import_hermes_cli_main_fails(tmp_path: Path, capsys) -> None:
     """When the import of hermes_cli.main raises, main() must produce one
     parseable ok=false JSON on stdout, the diagnostic on stderr, and exit

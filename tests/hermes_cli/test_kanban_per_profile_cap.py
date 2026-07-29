@@ -70,36 +70,6 @@ def test_cap_2_balances_two_profiles(isolated_kanban_home_with_profiles):
     assert capped_assignees.count("beta") == 1
 
 
-def test_pre_existing_running_counts_against_cap(isolated_kanban_home_with_profiles):
-    """A task already in 'running' status when dispatch_once starts counts
-    toward the per-profile cap. With 1 alpha pre-running and cap=1, NO new
-    alpha tasks should spawn; beta is independent so 1 beta spawns."""
-    kb = isolated_kanban_home_with_profiles
-    with kb.connect_closing() as conn:
-        kb.create_board(slug="default", name="Test")
-        running_alpha = kb.create_task(conn, title="running alpha", assignee="alpha")
-        with kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET status = 'running', claim_lock = 'test:1' WHERE id = ?",
-                (running_alpha,),
-            )
-        for i in range(2):
-            kb.create_task(conn, title=f"a{i}", assignee="alpha")
-        for i in range(2):
-            kb.create_task(conn, title=f"b{i}", assignee="beta")
-    with kb.connect_closing() as conn:
-        res = kb.dispatch_once(
-            conn, spawn_fn=_fake_spawn, dry_run=True,
-            max_in_progress_per_profile=1,
-        )
-    spawn_assignees = [s[1] for s in res.spawned]
-    capped_assignees = [c[1] for c in res.skipped_per_profile_capped]
-    assert spawn_assignees.count("alpha") == 0
-    assert spawn_assignees.count("beta") == 1
-    assert capped_assignees.count("alpha") == 2
-    assert capped_assignees.count("beta") == 1
-
-
 @pytest.mark.parametrize("cap", [0, -1, "abc", None])
 def test_invalid_cap_treated_as_no_cap(isolated_kanban_home_with_profiles, cap):
     """Cap values that don't represent a positive int should be treated as

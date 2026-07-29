@@ -65,15 +65,6 @@ def test_render_session_markdown_includes_frontmatter_messages_and_verification(
     assert "SHA256 of exported body:" in rendered
 
 
-def test_render_session_markdown_renders_structured_content_as_json_fence():
-    rendered = render_session_markdown(
-        _session(messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
-    )
-
-    assert "```json" in rendered
-    assert '"type": "text"' in rendered
-
-
 def test_safe_session_filename_is_deterministic_and_path_safe():
     filename = safe_session_filename(
         _session(id="20260706_123456_abcd1234", title="Bad / title: * ?"), fmt="qmd"

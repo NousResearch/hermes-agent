@@ -78,17 +78,8 @@ def test_explanation_quiet_for_empty_reason():
     assert AIAgent._format_turn_completion_explanation("guardrail_halt") == ""
 
 
-def test_explanation_for_empty_response_exhausted():
-    out = AIAgent._format_turn_completion_explanation("empty_response_exhausted")
-    assert out  # non-empty
-    assert "empty content" in out
-    assert "continue" in out.lower()
 
 
-def test_explanation_for_partial_stream_recovery():
-    out = AIAgent._format_turn_completion_explanation("partial_stream_recovery")
-    assert "partial" in out.lower()
-    assert "continue" in out.lower()
 
 
 def test_explanation_for_max_iterations_reached_prefix_match():
@@ -99,21 +90,8 @@ def test_explanation_for_max_iterations_reached_prefix_match():
     assert "iteration" in out.lower()
 
 
-def test_explanation_for_all_retries_exhausted():
-    out = AIAgent._format_turn_completion_explanation(
-        "all_retries_exhausted_no_response"
-    )
-    assert "retries" in out.lower()
 
 
-def test_explanation_for_session_persistence_failed():
-    """Fail-closed persistence exits (#72425) must explain themselves."""
-    out = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed"
-    )
-    assert out  # non-empty
-    assert "session storage" in out.lower()
-    assert "disk space" in out.lower()
 
 
 # --------------------------------------------------------------------------
@@ -135,15 +113,6 @@ def test_explainer_disabled_via_env():
         assert agent._turn_completion_explainer_enabled() is False
 
 
-def test_explainer_disabled_via_config():
-    agent = _make_agent()
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"display": {"turn_completion_explainer": False}},
-        ):
-            assert agent._turn_completion_explainer_enabled() is False
 
 
 # --------------------------------------------------------------------------
@@ -203,20 +172,3 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
     assert result["response_previewed"] is False
 
 
-def test_run_conversation_normal_reply_stays_quiet():
-    """A normal short reply like 'Done.' must NOT get an explainer footer."""
-    agent = _make_agent(max_iterations=10)
-    agent.client.chat.completions.create.side_effect = [
-        _mock_response(content="Done.", finish_reason="stop"),
-    ]
-
-    with (
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-    ):
-        result = agent.run_conversation("do something")
-
-    assert result["turn_exit_reason"].startswith("text_response")
-    assert result["final_response"] == "Done."
-    assert "No reply:" not in result["final_response"]

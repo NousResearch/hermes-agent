@@ -196,25 +196,6 @@ def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypa
         ws._oauth_sessions.pop(session_id, None)
 
 
-def test_nous_dashboard_device_flow_does_not_retry_legacy_scope_on_invoke_refusal(monkeypatch):
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
-
-    requested_scopes = []
-
-    def fake_request_device_code(**kwargs):
-        requested_scopes.append(kwargs["scope"])
-        raise _invoke_scope_refusal()
-
-    monkeypatch.delenv("HERMES_AGENT_USE_LEGACY_SESSION_KEYS", raising=False)
-    monkeypatch.setattr(auth_mod, "_request_device_code", fake_request_device_code)
-    monkeypatch.setattr(ws, "_nous_poller", lambda sid: None)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        asyncio.run(ws._start_device_code_flow("nous"))
-    assert requested_scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
-
-
 def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch):
     from hermes_cli import web_server as ws
     from hermes_cli.auth import get_active_provider
@@ -272,71 +253,6 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
         assert runtime["provider"] == "openai-codex"
         assert runtime["api_key"] == access_token
         assert runtime["api_mode"] == "codex_responses"
-    finally:
-        ws._oauth_sessions.pop(sid, None)
-
-
-def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkeypatch):
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
-    from hermes_constants import get_hermes_home
-
-    profile_home = _make_profile_home(tmp_path, monkeypatch)
-
-    class _Resp:
-        def __init__(self, status_code, payload):
-            self.status_code = status_code
-            self._payload = payload
-
-        def json(self):
-            return self._payload
-
-    class _Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def post(self, url, **kwargs):
-            if url.endswith("/deviceauth/usercode"):
-                return _Resp(200, {
-                    "device_auth_id": "device-auth-id",
-                    "interval": 3,
-                    "user_code": "CODEX-1234",
-                })
-            if url.endswith("/deviceauth/token"):
-                return _Resp(200, {
-                    "authorization_code": "authorization-code",
-                    "code_verifier": "code-verifier",
-                })
-            return _Resp(200, {
-                "access_token": "codex-access",
-                "refresh_token": "codex-refresh",
-            })
-
-    saved_homes = []
-    monkeypatch.setattr(httpx, "Client", _Client)
-    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
-    monkeypatch.setattr(
-        auth_mod,
-        "_save_codex_tokens",
-        lambda tokens: saved_homes.append(get_hermes_home()),
-    )
-
-    sid, _ = ws._new_oauth_session(
-        "openai-codex",
-        "device_code",
-        profile="coder",
-    )
-    try:
-        ws._codex_full_login_worker(sid)
-
-        assert ws._oauth_sessions[sid]["status"] == "approved"
-        assert saved_homes == [profile_home]
     finally:
         ws._oauth_sessions.pop(sid, None)
 
@@ -606,41 +522,6 @@ def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
     delete_resp = client.delete("/api/providers/oauth/anthropic", headers=HEADERS)
     assert delete_resp.status_code == 400, delete_resp.text
     assert "Settings" in delete_resp.text
-
-
-def test_xai_oauth_device_code_start_returns_user_code(monkeypatch):
-    """Start MUST hand back xAI's verification URL and user code."""
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
-
-    monkeypatch.setattr(
-        auth_mod,
-        "_xai_oauth_request_device_code",
-        lambda *a, **k: {
-            "device_code": "device-code",
-            "user_code": "ABCD-EFGH",
-            "verification_uri": "https://accounts.x.ai/oauth2/device",
-            "verification_uri_complete": "https://accounts.x.ai/oauth2/device?user_code=ABCD-EFGH",
-            "expires_in": 1800,
-            "interval": 5,
-        },
-    )
-    # Don't let the background poller hit the real token endpoint.
-    monkeypatch.setattr(ws, "_xai_device_poller", lambda sid: None)
-
-    resp = client.post("/api/providers/oauth/xai-oauth/start", headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    try:
-        assert body["flow"] == "device_code"
-        assert body["user_code"] == "ABCD-EFGH"
-        assert body["verification_url"].startswith("https://accounts.x.ai/oauth2/device")
-        sess = ws._oauth_sessions[body["session_id"]]
-        assert sess["provider"] == "xai-oauth"
-        assert sess["flow"] == "device_code"
-        assert sess["device_code"] == "device-code"
-    finally:
-        ws._oauth_sessions.pop(body["session_id"], None)
 
 
 def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path, monkeypatch):

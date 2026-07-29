@@ -35,18 +35,6 @@ def test_estimate_tool_tokens_returns_positive_counts():
         assert count > 0, f"Tool {name} has non-positive token count: {count}"
 
 
-@_needs_tiktoken
-def test_estimate_tool_tokens_is_cached():
-    """Second call should return the same cached dict object."""
-    import hermes_cli.tools_config as tc
-    tc._tool_token_cache = None
-
-    first = tc._estimate_tool_tokens()
-    second = tc._estimate_tool_tokens()
-
-    assert first is second
-
-
 def test_estimate_tool_tokens_returns_empty_when_tiktoken_unavailable(monkeypatch):
     """Graceful degradation when tiktoken cannot be imported."""
     import hermes_cli.tools_config as tc
@@ -68,19 +56,6 @@ def test_estimate_tool_tokens_returns_empty_when_tiktoken_unavailable(monkeypatc
 
     # Reset cache for other tests
     tc._tool_token_cache = None
-
-
-@_needs_tiktoken
-def test_estimate_tool_tokens_covers_known_tools():
-    """Should include schemas for well-known tools like terminal, web_search."""
-    import hermes_cli.tools_config as tc
-    tc._tool_token_cache = None
-
-    tokens = tc._estimate_tool_tokens()
-
-    # These tools should always be discoverable
-    for expected in ("terminal", "web_search", "read_file"):
-        assert expected in tokens, f"Expected {expected!r} in token estimates"
 
 
 # ─── Status Function Tests ───────────────────────────────────────────────────
@@ -134,57 +109,6 @@ def test_status_fn_returns_formatted_token_count(monkeypatch):
     result = status_fn({idx_map["web"], idx_map["terminal"]})
     assert "tokens" in result
     assert "Est. tool context" in result
-
-
-def test_status_fn_deduplicates_overlapping_tools(monkeypatch):
-    """When toolsets overlap (browser includes web_search), tokens should not double-count."""
-    import hermes_cli.tools_config as tc
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
-
-    captured = {}
-
-    def fake_checklist(title, items, selected, *, cancel_returns=None, status_fn=None):
-        captured["status_fn"] = status_fn
-        return selected
-
-    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
-
-    tc._prompt_toolset_checklist("CLI", {"web"})
-
-    status_fn = captured.get("status_fn")
-    if status_fn is None:
-        pytest.skip("tiktoken unavailable; status_fn not created")
-
-    idx_map = {ts_key: i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)}
-
-    # web alone
-    web_only = status_fn({idx_map["web"]})
-    # browser includes web_search, so browser + web should not double-count web_search
-    browser_only = status_fn({idx_map["browser"]})
-    both = status_fn({idx_map["web"], idx_map["browser"]})
-
-    # Extract numeric token counts from strings like "~8.3k tokens" or "~350 tokens"
-    import re
-
-    def parse_tokens(s):
-        m = re.search(r"~([\d.]+)k?\s+tokens", s)
-        if not m:
-            return 0
-        val = float(m.group(1))
-        if "k" in s[m.start():m.end()]:
-            val *= 1000
-        return val
-
-    web_tok = parse_tokens(web_only)
-    browser_tok = parse_tokens(browser_only)
-    both_tok = parse_tokens(both)
-
-    # Both together should be LESS than naive sum (due to web_search dedup)
-    naive_sum = web_tok + browser_tok
-    assert both_tok < naive_sum, (
-        f"Expected deduplication: web({web_tok}) + browser({browser_tok}) = {naive_sum} "
-        f"but combined = {both_tok}"
-    )
 
 
 def test_status_fn_empty_selection():

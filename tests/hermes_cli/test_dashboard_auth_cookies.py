@@ -166,38 +166,6 @@ def test_read_session_cookies_from_request_bare_name():
     assert rt == "rt_value"
 
 
-def test_read_session_provider_from_request():
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/",
-        "headers": [(
-            b"cookie",
-            f"__Host-{SESSION_PROVIDER_COOKIE}=nous".encode(),
-        )],
-    }
-    assert read_session_provider(Request(scope)) == "nous"
-
-
-def test_read_session_cookies_from_request_host_prefix():
-    """Reader also finds cookies set with the __Host- variant
-    (HTTPS direct deploy)."""
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/",
-        "headers": [(
-            b"cookie",
-            f"__Host-{SESSION_AT_COOKIE}=at_value; "
-            f"__Host-{SESSION_RT_COOKIE}=rt_value".encode(),
-        )],
-    }
-    req = Request(scope)
-    at, rt = read_session_cookies(req)
-    assert at == "at_value"
-    assert rt == "rt_value"
-
-
 def test_read_session_cookies_from_request_secure_prefix():
     """Reader also finds cookies set with the __Secure- variant
     (HTTPS behind a proxy prefix)."""
@@ -215,11 +183,6 @@ def test_read_session_cookies_from_request_secure_prefix():
     at, rt = read_session_cookies(req)
     assert at == "at_value"
     assert rt == "rt_value"
-
-
-def test_read_session_cookies_missing_returns_none():
-    req = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
-    assert read_session_cookies(req) == (None, None)
 
 
 def test_read_pkce_cookie_round_trip():

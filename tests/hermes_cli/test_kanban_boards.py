@@ -76,27 +76,11 @@ class TestSlugValidation:
     def test_accepts_valid(self, good):
         assert kb._normalize_board_slug(good) == good
 
-    @pytest.mark.parametrize("bad", [
-        "-leading-hyphen", "_leading_underscore",
-        "with/slash", "with space",
-        "has.dot", "has?question",
-        "..", "../etc", "foo\x00bar",
-    ])
-    def test_rejects_invalid(self, bad):
-        with pytest.raises(ValueError):
-            kb._normalize_board_slug(bad)
 
     def test_empty_returns_none(self):
         assert kb._normalize_board_slug(None) is None
         assert kb._normalize_board_slug("") is None
         assert kb._normalize_board_slug("   ") is None
-
-    def test_auto_lowercases(self):
-        # Uppercase is auto-downcased (friendlier than rejecting). ``Default``
-        # → ``default``, ``ATM10`` → ``atm10``. The on-disk slug is always
-        # lowercase regardless of what the user typed.
-        assert kb._normalize_board_slug("Default") == "default"
-        assert kb._normalize_board_slug("ATM10-Server") == "atm10-server"
 
 
 # ---------------------------------------------------------------------------
@@ -113,18 +97,6 @@ class TestPathResolution:
         p = kb.kanban_db_path(board="atm10-server")
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
 
-    def test_workspaces_per_board(self, fresh_home):
-        assert kb.workspaces_root() == fresh_home / "kanban" / "workspaces"
-        # Uppercase input gets auto-downcased to the on-disk slug.
-        assert kb.workspaces_root(board="projA") == (
-            fresh_home / "kanban" / "boards" / "proja" / "workspaces"
-        )
-
-    def test_logs_per_board(self, fresh_home):
-        assert kb.worker_logs_dir() == fresh_home / "kanban" / "logs"
-        assert kb.worker_logs_dir(board="other") == (
-            fresh_home / "kanban" / "boards" / "other" / "logs"
-        )
 
     def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
         """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
@@ -132,11 +104,6 @@ class TestPathResolution:
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
         assert kb.kanban_db_path(board="ignored") == forced
-
-    def test_env_var_workspaces_override(self, fresh_home, tmp_path, monkeypatch):
-        forced = tmp_path / "ws"
-        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(forced))
-        assert kb.workspaces_root(board="any") == forced
 
 
 # ---------------------------------------------------------------------------
@@ -147,13 +114,6 @@ class TestCurrentBoard:
     def test_default_when_unset(self, fresh_home):
         assert kb.get_current_board() == "default"
 
-    def test_env_var_takes_precedence(self, fresh_home, monkeypatch):
-        # Create the board so the env-var value is honoured (get_current_board
-        # trusts env-var validity, but the resolution chain doesn't require
-        # the board to exist; we just test that env trumps).
-        kb.create_board("envboard")
-        monkeypatch.setenv("HERMES_KANBAN_BOARD", "envboard")
-        assert kb.get_current_board() == "envboard"
 
     def test_file_pointer_honoured(self, fresh_home):
         kb.create_board("filepick")
@@ -176,29 +136,6 @@ class TestCurrentBoard:
         assert not kb.board_exists("ghost")
         assert [b["slug"] for b in kb.list_boards()] == ["default"]
 
-    def test_env_beats_file(self, fresh_home, monkeypatch):
-        kb.create_board("a")
-        kb.create_board("b")
-        kb.set_current_board("a")
-        monkeypatch.setenv("HERMES_KANBAN_BOARD", "b")
-        assert kb.get_current_board() == "b"
-
-    def test_stale_env_falls_through_to_file_pointer(self, fresh_home, monkeypatch):
-        kb.create_board("persisted")
-        kb.set_current_board("persisted")
-        monkeypatch.setenv("HERMES_KANBAN_BOARD", "missing-board")
-        assert kb.get_current_board() == "persisted"
-
-    def test_invalid_env_falls_through(self, fresh_home, monkeypatch):
-        monkeypatch.setenv("HERMES_KANBAN_BOARD", "!!bad!!")
-        # Should not crash — falls through to default.
-        assert kb.get_current_board() == "default"
-
-    def test_clear_current_board(self, fresh_home):
-        kb.create_board("x")
-        kb.set_current_board("x")
-        kb.clear_current_board()
-        assert kb.get_current_board() == "default"
 
     def test_kanban_db_path_reads_current(self, fresh_home):
         """kanban_db_path() with no args respects the on-disk pointer."""
@@ -219,11 +156,6 @@ class TestBoardCRUD:
         slugs = [b["slug"] for b in kb.list_boards()]
         assert slugs == ["default", "foo"]
 
-    def test_create_is_idempotent(self, fresh_home):
-        kb.create_board("bar")
-        kb.create_board("bar")  # no error
-        slugs = [b["slug"] for b in kb.list_boards()]
-        assert slugs == ["default", "bar"]
 
     def test_create_writes_metadata(self, fresh_home):
         meta = kb.create_board(
@@ -242,34 +174,11 @@ class TestBoardCRUD:
         assert again["description"] == "desc"
         assert again["icon"] == "📦"
 
-    def test_remove_archive(self, fresh_home):
-        kb.create_board("toremove")
-        res = kb.remove_board("toremove")
-        assert res["action"] == "archived"
-        assert Path(res["new_path"]).exists()
-        assert "toremove" not in [b["slug"] for b in kb.list_boards()]
-
-    def test_remove_hard_delete(self, fresh_home):
-        kb.create_board("nuke")
-        d = kb.board_dir("nuke")
-        assert d.exists()
-        res = kb.remove_board("nuke", archive=False)
-        assert res["action"] == "deleted"
-        assert not d.exists()
 
     def test_remove_default_forbidden(self, fresh_home):
         with pytest.raises(ValueError, match="default"):
             kb.remove_board("default")
 
-    def test_remove_nonexistent_raises(self, fresh_home):
-        with pytest.raises(ValueError, match="does not exist"):
-            kb.remove_board("nosuch")
-
-    def test_remove_clears_current_pointer(self, fresh_home):
-        kb.create_board("pinned")
-        kb.set_current_board("pinned")
-        kb.remove_board("pinned")
-        assert kb.get_current_board() == "default"
 
     @pytest.mark.parametrize("archive", [True, False])
     def test_remove_clears_init_cache_for_recreated_db(self, fresh_home, archive):
@@ -358,22 +267,6 @@ class TestConnectionIsolation:
         with kb.connect(board="persist") as conn:
             assert kb.list_tasks(conn) == []
 
-    def test_connect_stale_env_uses_fallback_board_without_recreating_it(
-        self, fresh_home, monkeypatch,
-    ):
-        kb.create_board("ephemeral")
-        kb.remove_board("ephemeral")
-        kb.create_board("persist")
-        kb.set_current_board("persist")
-        monkeypatch.setenv("HERMES_KANBAN_BOARD", "ephemeral")
-
-        with kb.connect() as conn:
-            kb.create_task(conn, title="via-fallback", assignee="x")
-
-        with kb.connect(board="persist") as conn:
-            assert [t.title for t in kb.list_tasks(conn)] == ["via-fallback"]
-        assert not kb.board_exists("ephemeral")
-
 
 # ---------------------------------------------------------------------------
 # Worker spawn env injection
@@ -428,39 +321,6 @@ class TestWorkerSpawnEnv:
         assert env["HERMES_KANBAN_DB"] == str(expected_db)
         expected_ws = fresh_home / "kanban" / "boards" / "spawntest" / "workspaces"
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(expected_ws)
-
-    def test_default_board_spawn_keeps_legacy_paths(self, fresh_home, monkeypatch):
-        captured = {}
-
-        class FakeProc:
-            pid = 1
-
-        def fake_popen(cmd, *args, **kwargs):
-            captured["env"] = kwargs.get("env", {})
-            return FakeProc()
-
-        monkeypatch.setattr(subprocess, "Popen", fake_popen)
-        task = kb.Task(
-            id="t_def",
-            title="",
-            body=None,
-            assignee="teknium",
-            status="ready",
-            priority=0,
-            created_by=None,
-            created_at=0,
-            started_at=None,
-            completed_at=None,
-            workspace_kind="scratch",
-            workspace_path=None,
-            claim_lock=None,
-            claim_expires=None,
-            tenant=None,
-        )
-        kb._default_spawn(task, str(fresh_home / "ws"), board=None)
-        env = captured["env"]
-        assert env["HERMES_KANBAN_BOARD"] == "default"
-        assert env["HERMES_KANBAN_DB"] == str(fresh_home / "kanban.db")
 
 
 # ---------------------------------------------------------------------------

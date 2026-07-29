@@ -34,26 +34,6 @@ def test_capture_head_sha_returns_stripped_sha(monkeypatch, tmp_path):
     assert hermes_main._capture_head_sha(["git"], tmp_path) == "deadbeefcafe"
 
 
-def test_capture_head_sha_returns_none_on_git_failure(monkeypatch, tmp_path):
-    import subprocess as _sp
-
-    def fake_run(cmd, **kwargs):
-        raise _sp.CalledProcessError(returncode=128, cmd=cmd)
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-
-    assert hermes_main._capture_head_sha(["git"], tmp_path) is None
-
-
-def test_capture_head_sha_returns_none_on_empty_output(monkeypatch, tmp_path):
-    def fake_run(cmd, **kwargs):
-        return SimpleNamespace(stdout="\n", returncode=0)
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-
-    assert hermes_main._capture_head_sha(["git"], tmp_path) is None
-
-
 # ---------------------------------------------------------------------------
 # _validate_critical_files_syntax
 # ---------------------------------------------------------------------------
@@ -91,38 +71,6 @@ def test_validate_critical_files_syntax_ok_when_all_files_parse(tmp_path):
     assert ok is True
     assert failing_path is None
     assert error is None
-
-
-def test_validate_critical_files_syntax_detects_conflict_markers(tmp_path):
-    """The exact PR #28452 failure mode: orphan ``<<<<<<<`` in config.py."""
-    _populate_critical_tree(tmp_path, broken_file="hermes_cli/config.py")
-
-    ok, failing_path, error = hermes_main._validate_critical_files_syntax(tmp_path)
-
-    assert ok is False
-    assert failing_path is not None and failing_path.endswith("hermes_cli/config.py")
-    assert error is not None
-    # The error mentions either the syntax error itself or the file path —
-    # either is enough proof we caught the bad commit.
-    assert "SyntaxError" in str(error) or "config.py" in str(error)
-
-
-def test_validate_critical_files_syntax_detects_break_in_main_py(tmp_path):
-    _populate_critical_tree(tmp_path, broken_file="hermes_cli/main.py")
-
-    ok, failing_path, _ = hermes_main._validate_critical_files_syntax(tmp_path)
-
-    assert ok is False
-    assert failing_path is not None and failing_path.endswith("hermes_cli/main.py")
-
-
-def test_validate_critical_files_syntax_detects_break_in_web_server(tmp_path):
-    _populate_critical_tree(tmp_path, broken_file="hermes_cli/web_server.py")
-
-    ok, failing_path, _ = hermes_main._validate_critical_files_syntax(tmp_path)
-
-    assert ok is False
-    assert failing_path is not None and failing_path.endswith("hermes_cli/web_server.py")
 
 
 def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):

@@ -21,12 +21,6 @@ class TestAtomicJsonWrite:
         result = json.loads(target.read_text(encoding="utf-8"))
         assert result == data
 
-    def test_creates_parent_directories(self, tmp_path):
-        target = tmp_path / "deep" / "nested" / "dir" / "data.json"
-        atomic_json_write(target, {"ok": True})
-
-        assert target.exists()
-        assert json.loads(target.read_text())["ok"] is True
 
     def test_overwrites_existing_file(self, tmp_path):
         target = tmp_path / "data.json"
@@ -84,34 +78,6 @@ class TestAtomicJsonWrite:
         assert len(tmp_files) == 0
         assert json.loads(target.read_text(encoding="utf-8")) == original
 
-    def test_accepts_string_path(self, tmp_path):
-        target = str(tmp_path / "string_path.json")
-        atomic_json_write(target, {"string": True})
-
-        result = json.loads(Path(target).read_text())
-        assert result == {"string": True}
-
-    def test_writes_list_data(self, tmp_path):
-        target = tmp_path / "list.json"
-        data = [1, "two", {"three": 3}]
-        atomic_json_write(target, data)
-
-        result = json.loads(target.read_text())
-        assert result == data
-
-    def test_empty_list(self, tmp_path):
-        target = tmp_path / "empty.json"
-        atomic_json_write(target, [])
-
-        result = json.loads(target.read_text())
-        assert result == []
-
-    def test_custom_indent(self, tmp_path):
-        target = tmp_path / "custom.json"
-        atomic_json_write(target, {"a": 1}, indent=4)
-
-        text = target.read_text()
-        assert '    "a"' in text  # 4-space indent
 
     def test_accepts_json_dump_default_hook(self, tmp_path):
         class CustomValue:

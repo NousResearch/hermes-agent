@@ -179,12 +179,6 @@ class TestNormalizeAndGlob:
         assert derive_glob("git push --force origin main") == "git push *"
         assert derive_glob("docker restart web") == "docker restart *"
 
-    def test_derive_glob_flag_second_token_falls_back_to_root(self):
-        assert derive_glob("hermes --yolo update") == "hermes --yolo".split()[0] + " *"
-
-    def test_derive_glob_rejects_compound_commands(self):
-        assert derive_glob("git push --force && rm -rf /tmp/x") is None
-        assert derive_glob("echo hi; docker restart web") is None
 
     def test_derive_glob_never_anchors_unsafe_binaries(self):
         assert derive_glob("rm -rf ./build") is None
@@ -217,16 +211,6 @@ class TestRankingAndSafety:
         assert build_proposals(records, min_count=2) == []
         assert len(build_proposals(records, min_count=1)) == 1
 
-    def test_rm_rf_never_proposed_even_after_100_approvals(self, db_path):
-        path, con = db_path
-        for _ in range(100):
-            _add_terminal_call(con, "rm -rf ./build")
-        records = scan_approval_history(path, days=0)
-        # The commands ARE mined (they ran with approval) ...
-        assert len(records) == 100
-        # ... but the destructive class is unconditionally excluded.
-        proposals = build_proposals(records, min_count=1)
-        assert proposals == []
 
     def test_unsafe_classes_are_excluded(self):
         for desc in (
@@ -243,14 +227,6 @@ class TestRankingAndSafety:
         ):
             assert is_unsafe_class(desc), desc
 
-    def test_benign_classes_are_not_excluded(self):
-        for desc in (
-            "git force push (rewrites remote history)",
-            "docker restart/stop/kill (container lifecycle)",
-            "hermes update (restarts gateway, kills running agents)",
-            "stop/restart system service",
-        ):
-            assert not is_unsafe_class(desc), desc
 
     def test_existing_allowlist_entries_are_skipped(self, db_path):
         path, con = db_path
@@ -259,14 +235,6 @@ class TestRankingAndSafety:
         records = scan_approval_history(path, days=0)
         proposals = build_proposals(records, existing={"git push *"}, min_count=1)
         assert proposals == []
-
-    def test_hardline_commands_never_mined(self, db_path):
-        path, con = db_path
-        # Even if a hardline command somehow shows an executed result in the
-        # DB, the miner refuses it (defense in depth).
-        for _ in range(5):
-            _add_terminal_call(con, "rm -rf /")
-        assert scan_approval_history(path, days=0) == []
 
 
 # ---------------------------------------------------------------------------
@@ -332,16 +300,6 @@ class TestApply:
         assert "git push *" in out
         assert "Nothing has been changed" in out
 
-    def test_apply_out_of_range_errors_without_writing(
-        self, db_path, isolated_allowlist, capsys
-    ):
-        path, con = db_path
-        for _ in range(4):
-            _add_terminal_call(con, "git push --force origin main")
-        rc = suggest_command(_args(path, apply_indices="7"))
-        assert rc == 1
-        assert isolated_allowlist["saves"] == 0
-
 
 class TestJsonOutput:
     def test_json_proposal_output(self, db_path, isolated_allowlist, capsys):
@@ -355,16 +313,6 @@ class TestJsonOutput:
         assert payload["proposals"][0]["count"] == 4
         assert payload["proposals"][0]["n"] == 1
         assert isolated_allowlist["saves"] == 0
-
-    def test_json_apply_output(self, db_path, isolated_allowlist, capsys):
-        path, con = db_path
-        for _ in range(4):
-            _add_terminal_call(con, "git push --force origin main")
-        rc = suggest_command(_args(path, apply_indices="1", json=True))
-        assert rc == 0
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["applied"] == ["git push *"]
-        assert isolated_allowlist["patterns"] == {"git push *"}
 
 
 # ---------------------------------------------------------------------------

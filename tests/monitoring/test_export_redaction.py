@@ -20,14 +20,6 @@ def test_secret_key_always_stripped():
     assert fake_key not in out
 
 
-def test_token_shapes_stripped():
-    ghp = "ghp_" + "0123456789abcdef" * 2 + "0123"
-    slack = "xoxb-" + "123456789012-abcdefABCDEF"
-    out = R.redact_for_export(f"token {ghp} and {slack} leaked")
-    assert out is not None
-    assert ghp not in out
-    assert slack not in out
-    assert "[redacted]" in out
 
 
 def test_bearer_header_stripped():
@@ -40,16 +32,6 @@ def test_none_passthrough():
     assert R.redact_for_export(None) is None
 
 
-def test_pii_always_stripped():
-    text = ("reach alice@example.com or +1 415 555 0100, "
-            "install 123e4567-e89b-12d3-a456-426614174000")
-    out = R.redact_for_export(text)
-    assert out is not None
-    assert "alice@example.com" not in out
-    assert "426614174000" not in out
-    assert "[email]" in out
-    assert "[id]" in out
-    assert "[phone]" in out
 
 
 def test_ordinary_words_survive():

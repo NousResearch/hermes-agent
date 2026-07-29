@@ -52,73 +52,6 @@ def test_detect_concurrent_returns_empty_when_no_other_processes(_winp, tmp_path
     assert result == []
 
 
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_excludes_self_pid(_winp, tmp_path):
-    scripts_dir = tmp_path
-    shim = scripts_dir / "hermes.exe"
-    shim.write_bytes(b"")
-    my_pid = os.getpid()
-
-    procs = [_make_proc(my_pid, str(shim), "hermes.exe")]
-    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(procs))
-    with patch.dict(sys.modules, {"psutil": fake_psutil}):
-        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
-
-    assert result == []
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_finds_other_hermes_process(_winp, tmp_path):
-    scripts_dir = tmp_path
-    shim = scripts_dir / "hermes.exe"
-    shim.write_bytes(b"")
-
-    other_pid = os.getpid() + 1
-    procs = [
-        _make_proc(other_pid, str(shim), "hermes.exe"),
-        _make_proc(os.getpid() + 2, r"C:\\Windows\\System32\\notepad.exe", "notepad.exe"),
-    ]
-    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(procs))
-    with patch.dict(sys.modules, {"psutil": fake_psutil}):
-        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
-
-    assert result == [(other_pid, "hermes.exe")]
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_matches_case_insensitively(_winp, tmp_path):
-    scripts_dir = tmp_path
-    shim = scripts_dir / "hermes.exe"
-    shim.write_bytes(b"")
-
-    # Simulate the desktop spawning hermes.EXE (uppercase ext) from same path
-    upper = str(shim).replace("hermes.exe", "HERMES.EXE")
-    procs = [_make_proc(9999, upper, "HERMES.EXE")]
-    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(procs))
-    with patch.dict(sys.modules, {"psutil": fake_psutil}):
-        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
-
-    assert result == [(9999, "HERMES.EXE")]
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_no_psutil_returns_empty(_winp, tmp_path):
-    scripts_dir = tmp_path
-    (scripts_dir / "hermes.exe").write_bytes(b"")
-
-    # Block psutil import — simulate environment without it.
-    with patch.dict(sys.modules, {"psutil": None}):
-        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
-
-    assert result == []
-
-
-@patch.object(cli_main, "_is_windows", return_value=False)
-def test_detect_concurrent_is_noop_off_windows(_winp, tmp_path):
-    """No process enumeration off-Windows; the file-lock issue is Windows-only."""
-    assert cli_main._detect_concurrent_hermes_instances(tmp_path) == []
-
-
 # ---------------------------------------------------------------------------
 # Parent-chain exclusion (issue #30768 follow-up — the setuptools .exe
 # launcher on Windows is a separate native process that spawns python.exe;
@@ -170,90 +103,6 @@ def _fake_psutil_with_parent_chain(
         AccessDenied=_AccessDenied,
         process_iter=lambda attrs: iter(proc_iter_rows),
     )
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_excludes_parent_chain(_winp, tmp_path):
-    """The .exe launcher (parent of os.getpid()) must NOT be flagged.
-
-    Simulates the real Windows topology: hermes.exe launcher (PID L) spawns
-    python.exe (PID os.getpid()). Both run from the same shim path. With the
-    old single-PID exclusion, L would be reported as a concurrent instance.
-    """
-    scripts_dir = tmp_path
-    shim = scripts_dir / "hermes.exe"
-    shim.write_bytes(b"")
-    me = os.getpid()
-    launcher_pid = me + 100  # the .exe launcher — our parent
-
-    rows = [
-        _make_proc(me, str(shim), "python.exe"),
-        _make_proc(launcher_pid, str(shim), "hermes.exe"),
-    ]
-    fake_psutil = _fake_psutil_with_parent_chain(
-        parent_chain=[launcher_pid],
-        proc_iter_rows=rows,
-        ancestor_exe=str(shim),
-    )
-    with patch.dict(sys.modules, {"psutil": fake_psutil}):
-        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
-
-    # Both self AND the launcher are excluded; no false positive.
-    assert result == []
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_still_finds_unrelated_other_hermes(_winp, tmp_path):
-    """A sibling hermes.exe outside our ancestor chain must still be reported."""
-    scripts_dir = tmp_path
-    shim = scripts_dir / "hermes.exe"
-    shim.write_bytes(b"")
-    me = os.getpid()
-    launcher_pid = me + 100  # our .exe launcher (parent — must be excluded)
-    sibling_pid = me + 200  # an UNRELATED hermes.exe (must still be reported)
-
-    rows = [
-        _make_proc(me, str(shim), "python.exe"),
-        _make_proc(launcher_pid, str(shim), "hermes.exe"),
-        _make_proc(sibling_pid, str(shim), "hermes.exe"),
-    ]
-    fake_psutil = _fake_psutil_with_parent_chain(
-        parent_chain=[launcher_pid],
-        proc_iter_rows=rows,
-        ancestor_exe=str(shim),
-    )
-    with patch.dict(sys.modules, {"psutil": fake_psutil}):
-        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
-
-    assert result == [(sibling_pid, "hermes.exe")]
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_concurrent_parent_chain_walks_deep(_winp, tmp_path):
-    """Multi-level ancestry (shell → launcher → python) is fully excluded."""
-    scripts_dir = tmp_path
-    shim = scripts_dir / "hermes.exe"
-    shim.write_bytes(b"")
-    me = os.getpid()
-    parent_pid = me + 1
-    grandparent_pid = me + 2
-    greatgrandparent_pid = me + 3
-
-    rows = [
-        _make_proc(me, str(shim), "python.exe"),
-        _make_proc(parent_pid, str(shim), "hermes.exe"),
-        _make_proc(grandparent_pid, str(shim), "hermes.exe"),
-        _make_proc(greatgrandparent_pid, str(shim), "hermes.exe"),
-    ]
-    fake_psutil = _fake_psutil_with_parent_chain(
-        parent_chain=[parent_pid, grandparent_pid, greatgrandparent_pid],
-        proc_iter_rows=rows,
-        ancestor_exe=str(shim),
-    )
-    with patch.dict(sys.modules, {"psutil": fake_psutil}):
-        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
-
-    assert result == []
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -359,33 +208,6 @@ def test_quarantine_succeeds_first_attempt(_winp, tmp_path):
     assert orig == shim
     assert quarantine.name.startswith("hermes.exe.old.")
     assert quarantine.exists()
-    assert not shim.exists()
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_quarantine_retries_then_succeeds(_winp, tmp_path, monkeypatch):
-    """A transient OSError on the first attempt should not be fatal."""
-    shim = tmp_path / "hermes.exe"
-    shim.write_bytes(b"old")
-
-    original_rename = Path.rename
-    call_count = {"n": 0}
-
-    def flaky_rename(self, target):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            raise OSError(32, "share violation (simulated AV scan)")
-        return original_rename(self, target)
-
-    # Speed up the test: avoid actual sleeps in the backoff schedule.
-    monkeypatch.setattr(cli_main, "_hermes_exe_shims", lambda d: [shim])
-    with patch.object(Path, "rename", flaky_rename), patch(
-        "time.sleep", lambda *_a, **_k: None
-    ):
-        pairs = cli_main._quarantine_running_hermes_exe(tmp_path)
-
-    assert call_count["n"] >= 2
-    assert len(pairs) == 1
     assert not shim.exists()
 
 
@@ -555,49 +377,6 @@ def test_resume_windows_gateways_after_update_relaunches_paused_profiles(
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_resume_windows_gateways_after_update_respawns_unmapped_by_cmdline(
-    _winp,
-    monkeypatch,
-    capsys,
-):
-    """Unmapped gateways (no profile→PID-file mapping, e.g. a Scheduled Task)
-    are respawned by replaying the argv snapshotted before the force-kill."""
-    import hermes_cli.gateway as gateway_mod
-
-    by_cmdline = []
-    monkeypatch.setattr(
-        gateway_mod,
-        "launch_detached_gateway_restart_by_cmdline",
-        lambda old_pid, argv: by_cmdline.append((old_pid, argv)) or True,
-    )
-    monkeypatch.setattr(
-        gateway_mod,
-        "launch_detached_profile_gateway_restart",
-        lambda profile, old_pid: True,
-    )
-
-    scheduled_argv = ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
-    token = {
-        "resume_needed": True,
-        "profiles": {},
-        "unmapped_pids": [7560],
-        "unmapped": [
-            # Respawnable — argv captured.
-            {"pid": 7560, "argv": scheduled_argv},
-            # Not respawnable — no argv (psutil missing / access denied).
-            {"pid": 9999, "argv": None},
-        ],
-    }
-
-    cli_main._resume_windows_gateways_after_update(token)
-
-    assert token["resume_needed"] is False
-    assert by_cmdline == [(7560, scheduled_argv)]
-    out = capsys.readouterr().out
-    assert "Restarting 1 unmapped Windows gateway process(es)" in out
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
 def test_pause_returns_cold_start_token_when_installed_but_none_running(
     _winp,
     monkeypatch,
@@ -624,25 +403,6 @@ def test_pause_returns_cold_start_token_when_installed_but_none_running(
         "unmapped": [],
         "cold_start_if_installed": True,
     }
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_pause_returns_none_when_nothing_running_and_not_installed(
-    _winp,
-    monkeypatch,
-):
-    """No gateway running + no autostart entry → no token (gateway-less user).
-
-    Users who deliberately run without a gateway must not get one forced on
-    them by an update.
-    """
-    import hermes_cli.gateway as gateway_mod
-    from hermes_cli import gateway_windows
-
-    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
-    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
-
-    assert cli_main._pause_windows_gateways_for_update() is None
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)

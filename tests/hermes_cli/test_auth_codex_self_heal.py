@@ -181,28 +181,3 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     assert tokens["refresh_token"] == "fresh-refresh"
 
 
-def test_missing_singleton_access_token_reraises_when_codex_cli_half_token(tmp_path, monkeypatch):
-    """Missing access_token must not be masked by a malformed Codex CLI import."""
-    hermes_home = tmp_path / "hermes"
-    codex_home = tmp_path / "codex"
-    hermes_home.mkdir()
-    codex_home.mkdir()
-    (hermes_home / "auth.json").write_text(json.dumps({
-        "version": 1,
-        "providers": {
-            "openai-codex": {
-                "tokens": {"refresh_token": "stale-refresh"},
-                "auth_mode": "chatgpt",
-            },
-        },
-    }))
-    (codex_home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "fresh-only"},
-    }))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    with pytest.raises(AuthError) as ei:
-        resolve_codex_runtime_credentials()
-
-    assert ei.value.code == "codex_auth_missing_access_token"

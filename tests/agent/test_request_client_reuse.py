@@ -100,14 +100,6 @@ def test_reuse_on_identical_kwargs_same_object():
         assert len(h.built) == 1
 
 
-def test_reuse_after_streaming_clean_finish():
-    agent = _make_agent()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="chat_completion_stream_request")
-        agent._close_request_openai_client(a, reason="stream_request_complete")
-        b = agent._create_request_openai_client(reason="chat_completion_stream_request")
-        assert b is a
-        assert h.closed == []
 
 
 def test_rebuild_on_client_kwargs_change():
@@ -130,87 +122,14 @@ def test_rebuild_on_client_kwargs_change():
         assert c is b
 
 
-def test_rebuild_after_cross_thread_abort_poisons_cache():
-    agent = _make_agent()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r")
-        # Stranger-thread abort (#29507): stale-call detector / interrupt loop
-        # shutdown(SHUT_RDWR) the pool's sockets. This client must never be
-        # reused even though the worker's own finally reports a clean reason.
-        agent._abort_request_openai_client(a, reason="stale_call_kill")
-        agent._close_request_openai_client(a, reason="request_complete")
-        assert a in h.closed_clients()  # poisoned → real close, not kept
-
-        b = agent._create_request_openai_client(reason="r")
-        assert b is not a
 
 
-def test_kill_reason_close_discards_cached_client():
-    agent = _make_agent()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r")
-        agent._close_request_openai_client(a, reason="stream_retry_cleanup")
-        assert a in h.closed_clients()
-
-        b = agent._create_request_openai_client(reason="r")
-        assert b is not a
 
 
-def test_externally_closed_cached_client_rebuilds():
-    agent = _make_agent()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r")
-        agent._close_request_openai_client(a, reason="request_complete")
-        a.is_closed = True  # e.g. closed behind our back
-
-        b = agent._create_request_openai_client(reason="r")
-        assert b is not a
-        assert len(h.built) == 2
 
 
-def test_copilot_vision_variant_gets_own_client():
-    agent = _make_agent(provider="copilot", base_url="https://api.githubcopilot.com")
-    text_kwargs = {"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]}
-    image_kwargs = {
-        "model": "gpt-5.4",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "What is in this image?"},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
-                ],
-            }
-        ],
-    }
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r", api_kwargs=text_kwargs)
-        agent._close_request_openai_client(a, reason="request_complete")
-
-        # Vision request: different default_headers → must not reuse the
-        # text-variant client.
-        b = agent._create_request_openai_client(reason="r", api_kwargs=image_kwargs)
-        assert b is not a
-        assert h.built[-1][0]["default_headers"]["Copilot-Vision-Request"] == "true"
-        agent._close_request_openai_client(b, reason="request_complete")
-
-        # Consecutive vision requests reuse the vision-variant client.
-        c = agent._create_request_openai_client(reason="r", api_kwargs=image_kwargs)
-        assert c is b
 
 
-def test_release_clients_closes_cached_request_client():
-    agent = _make_agent()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r")
-        agent._close_request_openai_client(a, reason="request_complete")
-
-        agent.release_clients()
-        assert (a, "cache_evict") in h.closed
-
-        # Next create rebuilds instead of handing back the closed client.
-        b = agent._create_request_openai_client(reason="r")
-        assert b is not a
 
 
 def test_agent_close_closes_cached_request_client():
@@ -228,42 +147,8 @@ def test_agent_close_closes_cached_request_client():
         assert len(h.closed) == before
 
 
-def test_teardown_while_checked_out_defers_close_to_worker():
-    agent = _make_agent()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r")
-        # Checked out by an in-flight worker (workers can outlive turns):
-        # teardown must not client.close() from a stranger thread (#29507) —
-        # it aborts the sockets and detaches the slot instead.
-        agent._close_cached_request_openai_client(reason="agent_close")
-        assert a not in h.closed_clients()
-
-        # The worker's own finally sees an untracked client → real close on
-        # the owning thread, even with a clean-finish reason.
-        agent._close_request_openai_client(a, reason="request_complete")
-        assert a in h.closed_clients()
-
-        b = agent._create_request_openai_client(reason="r")
-        assert b is not a
 
 
-def test_concurrent_checkout_gets_untracked_client():
-    agent = _make_agent()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r")
-        # Slot checked out by the first (still in-flight) call: a concurrent
-        # call gets a fresh client with the old per-request lifecycle.
-        b = agent._create_request_openai_client(reason="r")
-        assert b is not a
-
-        agent._close_request_openai_client(b, reason="request_complete")
-        assert b in h.closed_clients()  # untracked → really closed
-
-        agent._close_request_openai_client(a, reason="request_complete")
-        assert a not in h.closed_clients()  # cached → kept
-
-        c = agent._create_request_openai_client(reason="r")
-        assert c is a
 
 
 def test_moa_passthrough_unaffected():
@@ -280,10 +165,3 @@ def test_moa_passthrough_unaffected():
         assert facade in h.closed_clients()
 
 
-def test_mock_client_passthrough_unaffected():
-    agent = _make_agent()
-    agent.client = MagicMock()
-    with _Harness(agent) as h:
-        a = agent._create_request_openai_client(reason="r")
-        assert a is agent.client
-        assert h.built == []

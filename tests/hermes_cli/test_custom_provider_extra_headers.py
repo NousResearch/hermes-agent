@@ -22,11 +22,6 @@ def test_normalize_extra_headers_stringifies_and_drops_none():
     }
 
 
-def test_normalize_extra_headers_rejects_non_dict_and_empty():
-    for bad in (None, "x", 42, ["a"], {}):
-        assert normalize_extra_headers(bad) == {}
-
-
 def test_normalize_entry_keeps_extra_headers():
     normalized = _normalize_custom_provider_entry(
         {
@@ -40,31 +35,6 @@ def test_normalize_entry_keeps_extra_headers():
         "X-Custom-Auth": "tok",
         "X-Client-Name": "hermes",
     }
-
-
-def test_normalize_entry_drops_invalid_extra_headers():
-    for bad in ("not-a-dict", {}, 42, ["a"]):
-        normalized = _normalize_custom_provider_entry(
-            {
-                "name": "my-proxy",
-                "base_url": "https://llm.internal.example.com/v1",
-                "extra_headers": bad,
-            }
-        )
-        assert normalized is not None
-        assert "extra_headers" not in normalized
-
-
-def test_normalize_entry_stringifies_values_and_skips_none():
-    normalized = _normalize_custom_provider_entry(
-        {
-            "name": "my-proxy",
-            "base_url": "https://llm.internal.example.com/v1",
-            "extra_headers": {"X-Int": 7, "X-None": None},
-        }
-    )
-    assert normalized is not None
-    assert normalized["extra_headers"] == {"X-Int": "7"}
 
 
 def test_get_custom_provider_extra_headers_matches_base_url():

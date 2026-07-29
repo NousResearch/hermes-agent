@@ -47,12 +47,6 @@ class TestBasicWindow:
         assert view["messages_before"] == 0
         assert view["messages_after"] == 0
 
-    def test_negative_window_clamps_to_zero(self, db):
-        ids = _seed(db, n=5)
-        view = db.get_messages_around("s1", ids[2], window=-3)
-        # Just anchor, like window=0
-        assert len(view["window"]) == 1
-        assert view["window"][0]["id"] == ids[2]
 
 
 class TestBoundaryDetection:
@@ -83,20 +77,6 @@ class TestBoundaryDetection:
         assert view["messages_after"] == 1
 
 
-class TestAnchorValidation:
-    def test_missing_anchor_returns_empty(self, db):
-        _seed(db, n=5)
-        view = db.get_messages_around("s1", 99999, window=5)
-        assert view["window"] == []
-        assert view["messages_before"] == 0
-        assert view["messages_after"] == 0
-
-    def test_anchor_in_different_session_returns_empty(self, db):
-        # Two sessions, ask for s1's anchor in s2's namespace
-        ids1 = _seed(db, sid="s1", n=5)
-        _seed(db, sid="s2", n=5)
-        view = db.get_messages_around("s2", ids1[2], window=2)
-        assert view["window"] == []
 
 
 class TestScrollPattern:

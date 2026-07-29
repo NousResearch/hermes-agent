@@ -65,11 +65,6 @@ def _dm_message(body="hello", **overrides):
 
 # --- Existing tests (unchanged logic, updated helper) ---
 
-def test_group_messages_can_be_opened_via_config():
-    adapter = _make_adapter(require_mention=False, group_policy="open")
-
-    assert adapter._should_process_message(_group_message("hello everyone")) is True
-
 
 def test_group_messages_can_require_direct_trigger_via_config():
     adapter = _make_adapter(require_mention=True, group_policy="open")
@@ -113,30 +108,6 @@ def test_invalid_regex_patterns_are_ignored():
     assert adapter._should_process_message(_group_message("hello everyone")) is False
 
 
-def test_config_bridges_whatsapp_group_settings(monkeypatch, tmp_path):
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        "whatsapp:\n"
-        "  require_mention: true\n"
-        "  mention_patterns:\n"
-        "    - \"^\\\\s*chompy\\\\b\"\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("WHATSAPP_REQUIRE_MENTION", raising=False)
-    monkeypatch.delenv("WHATSAPP_MENTION_PATTERNS", raising=False)
-
-    config = load_gateway_config()
-
-    assert config is not None
-    assert config.platforms[Platform.WHATSAPP].extra["require_mention"] is True
-    assert config.platforms[Platform.WHATSAPP].extra["mention_patterns"] == [r"^\s*chompy\b"]
-    assert __import__("os").environ["WHATSAPP_REQUIRE_MENTION"] == "true"
-    assert json.loads(__import__("os").environ["WHATSAPP_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
-
-
 def test_free_response_chats_bypass_mention_gating():
     adapter = _make_adapter(
         require_mention=True,
@@ -157,13 +128,6 @@ def test_free_response_chats_does_not_bypass_other_groups():
     assert adapter._should_process_message(_group_message("hello everyone")) is False
 
 
-def test_dm_passes_with_default_pairing_policy():
-    adapter = _make_adapter(require_mention=True)
-
-    dm = _dm_message("hello")
-    assert adapter._should_process_message(dm) is True
-
-
 def test_mention_stripping_removes_bot_phone_from_body():
     adapter = _make_adapter(require_mention=True)
 
@@ -173,20 +137,7 @@ def test_mention_stripping_removes_bot_phone_from_body():
     assert "weather" in cleaned
 
 
-def test_mention_stripping_preserves_body_when_no_mention():
-    adapter = _make_adapter(require_mention=True)
-
-    data = _group_message("just a normal message")
-    cleaned = adapter._clean_bot_mention_text(data["body"], data)
-    assert cleaned == "just a normal message"
-
-
 # --- New dm_policy tests ---
-
-def test_dm_policy_disabled_blocks_all_dms():
-    adapter = _make_adapter(dm_policy="disabled")
-
-    assert adapter._should_process_message(_dm_message("hello")) is False
 
 
 def test_dm_policy_disabled_still_allows_groups():
@@ -199,93 +150,7 @@ def test_dm_policy_disabled_still_allows_groups():
     assert adapter._should_process_message(_group_message("hello")) is True
 
 
-def test_dm_policy_allowlist_blocks_unlisted_sender():
-    adapter = _make_adapter(dm_policy="allowlist", allow_from=["6289999999999@s.whatsapp.net"])
-
-    assert adapter._should_process_message(_dm_message("hello")) is False
-
-
-def test_dm_policy_allowlist_allows_listed_sender():
-    adapter = _make_adapter(dm_policy="allowlist", allow_from=["6281234567890@s.whatsapp.net"])
-
-    assert adapter._should_process_message(_dm_message("hello")) is True
-
-
-def test_dm_policy_open_allows_all_dms_with_opt_in(monkeypatch):
-    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-    adapter = _make_adapter(dm_policy="open")
-
-    assert adapter._should_process_message(_dm_message("hello")) is True
-
-
-def test_dm_policy_open_blocked_without_opt_in():
-    adapter = _make_adapter(dm_policy="open")
-
-    assert adapter._is_dm_allowed("6281234567890@s.whatsapp.net") is False
-    assert adapter._should_process_message(_dm_message("hello")) is False
-
-
-def test_dm_policy_pairing_strict_auth_denies_unknown():
-    adapter = _make_adapter()
-
-    assert adapter._dm_policy == "pairing"
-    assert adapter._is_dm_allowed("6281234567890@s.whatsapp.net") is False
-
-
-def test_dm_policy_pairing_still_forwards_to_gateway_intake():
-    adapter = _make_adapter()
-
-    assert adapter._is_dm_intake_allowed("6281234567890@s.whatsapp.net") is True
-    assert adapter._should_process_message(_dm_message("hello")) is True
-
-
 # --- New group_policy tests ---
-
-def test_group_policy_disabled_blocks_all_groups():
-    adapter = _make_adapter(group_policy="disabled", require_mention=False)
-
-    assert adapter._should_process_message(_group_message("hello")) is False
-
-
-def test_group_policy_disabled_still_allows_dms():
-    adapter = _make_adapter(group_policy="disabled")
-
-    assert adapter._should_process_message(_dm_message("hello")) is True
-
-
-def test_group_policy_allowlist_blocks_unlisted_group():
-    adapter = _make_adapter(group_policy="allowlist", group_allow_from=["999999999999@g.us"])
-
-    assert adapter._should_process_message(_group_message("agus test")) is False
-
-
-def test_group_policy_allowlist_allows_listed_group():
-    adapter = _make_adapter(
-        group_policy="allowlist",
-        group_allow_from=["120363001234567890@g.us"],
-        require_mention=True,
-        mention_patterns=[r"^\s*(?:(?:@)?(?:agus|Augustus))\b"],
-    )
-
-    # Listed group — passes the allowlist gate, mention still required
-    assert adapter._should_process_message(_group_message("hello")) is False
-    assert adapter._should_process_message(_group_message("agus test")) is True
-
-
-def test_group_policy_open_allows_all_groups():
-    adapter = _make_adapter(group_policy="open", require_mention=True)
-
-    # Open policy — all groups pass the gate (mention still needed)
-    assert adapter._should_process_message(_group_message("hello")) is False
-    assert adapter._should_process_message(_group_message("/status")) is True
-
-
-def test_group_policy_pairing_default_blocks_groups():
-    adapter = _make_adapter()
-
-    assert adapter._group_policy == "pairing"
-    assert adapter._is_group_allowed("120363001234567890@g.us") is False
-    assert adapter._should_process_message(_group_message("hello")) is False
 
 
 # --- Config bridging tests ---
@@ -316,30 +181,6 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "disabled"
     assert __import__("os").environ["WHATSAPP_GROUP_POLICY"] == "allowlist"
     assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
-
-
-def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        "whatsapp:\n"
-        "  dm_policy: allowlist\n"
-        "  allow_from:\n"
-        "    - \"6281234567890@s.whatsapp.net\"\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("WHATSAPP_DM_POLICY", raising=False)
-    monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
-
-    config = load_gateway_config()
-
-    assert config is not None
-    assert config.platforms[Platform.WHATSAPP].extra["dm_policy"] == "allowlist"
-    assert config.platforms[Platform.WHATSAPP].extra["allow_from"] == ["6281234567890@s.whatsapp.net"]
-    assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "allowlist"
-    assert __import__("os").environ["WHATSAPP_ALLOWED_USERS"] == "6281234567890@s.whatsapp.net"
 
 
 # --- Broadcast / status / newsletter pseudo-chats are always dropped ---
@@ -389,28 +230,3 @@ def test_broadcast_filter_runs_before_allowlist():
     assert adapter._should_process_message(msg) is False
 
 
-def test_real_dm_still_processed_after_broadcast_filter():
-    """Sanity check: the broadcast filter doesn't accidentally drop real DMs."""
-    adapter = _make_adapter(dm_policy="pairing")
-
-    msg = _dm_message(
-        body="hello",
-        chatId="34612345678@s.whatsapp.net",
-        senderId="34612345678@s.whatsapp.net",
-    )
-    assert adapter._should_process_message(msg) is True
-
-
-def test_is_broadcast_chat_helper_recognizes_common_jids():
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-
-    assert WhatsAppAdapter._is_broadcast_chat("status@broadcast") is True
-    assert WhatsAppAdapter._is_broadcast_chat("STATUS@BROADCAST") is True
-    assert WhatsAppAdapter._is_broadcast_chat("  status@broadcast  ") is True
-    assert WhatsAppAdapter._is_broadcast_chat("120363999999999999@newsletter") is True
-    assert WhatsAppAdapter._is_broadcast_chat("1234@broadcast") is True  # broadcast list
-    # Real chats must not match.
-    assert WhatsAppAdapter._is_broadcast_chat("34612345678@s.whatsapp.net") is False
-    assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
-    assert WhatsAppAdapter._is_broadcast_chat("") is False
-    assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]

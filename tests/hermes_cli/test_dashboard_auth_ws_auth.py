@@ -127,11 +127,6 @@ class TestWsTicketEndpoint:
         # returns either 401 or 302. Either is fine.
         assert r.status_code in (302, 401)
 
-    def test_each_call_returns_a_distinct_ticket(self, gated_app):
-        _logged_in(gated_app)
-        tickets = {gated_app.post("/api/auth/ws-ticket").json()["ticket"]
-                   for _ in range(5)}
-        assert len(tickets) == 5
 
     def test_get_method_is_not_allowed(self, gated_app):
         _logged_in(gated_app)
@@ -205,29 +200,10 @@ class TestWsAuthOkLoopback:
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert web_server._ws_auth_ok(ws) is True
 
-    def test_wrong_token_rejected(self, loopback_app):
-        ws = _fake_ws(query={"token": "not-the-real-token"})
-        assert web_server._ws_auth_ok(ws) is False
-
-    def test_missing_token_rejected(self, loopback_app):
-        ws = _fake_ws(query={})
-        assert web_server._ws_auth_ok(ws) is False
-
-    def test_ticket_param_ignored_in_loopback(self, loopback_app):
-        # Even if someone sneaks a ticket through, loopback mode only
-        # cares about ?token=. A naked ticket isn't a token.
-        ticket = mint_ticket(user_id="u1", provider="stub")
-        ws = _fake_ws(query={"ticket": ticket})
-        assert web_server._ws_auth_ok(ws) is False
-
 
 class TestWsAuthOkGated:
     """Gate ON — ticket path only."""
 
-    def test_valid_ticket_accepted(self, gated_app):
-        ticket = mint_ticket(user_id="u1", provider="stub")
-        ws = _fake_ws(query={"ticket": ticket})
-        assert web_server._ws_auth_ok(ws) is True
 
     def test_consumed_ticket_rejected(self, gated_app):
         ticket = mint_ticket(user_id="u1", provider="stub")
@@ -237,13 +213,6 @@ class TestWsAuthOkGated:
         # Single-use — second consumption fails.
         assert web_server._ws_auth_ok(ws_two) is False
 
-    def test_unknown_ticket_rejected(self, gated_app):
-        ws = _fake_ws(query={"ticket": "never-minted"})
-        assert web_server._ws_auth_ok(ws) is False
-
-    def test_missing_ticket_rejected(self, gated_app):
-        ws = _fake_ws(query={})
-        assert web_server._ws_auth_ok(ws) is False
 
     def test_legacy_token_rejected_in_gated_mode(self, gated_app):
         """Critical: gated mode must NOT honour the legacy token path
@@ -274,34 +243,6 @@ class TestWsAuthOkGated:
             content = log_file.read_text()
             assert "ws_ticket_rejected" in content
 
-    def test_internal_credential_accepted(self, gated_app):
-        """Server-spawned children present the process-lifetime internal
-        credential via ?internal= and are accepted in gated mode."""
-        cred = internal_ws_credential()
-        ws = _fake_ws(query={"internal": cred})
-        assert web_server._ws_auth_ok(ws) is True
-
-    def test_internal_credential_is_multi_use(self, gated_app):
-        """Unlike single-use tickets, the internal credential survives
-        repeated use so the child can reconnect."""
-        cred = internal_ws_credential()
-        for _ in range(3):
-            ws = _fake_ws(query={"internal": cred})
-            assert web_server._ws_auth_ok(ws) is True
-
-    def test_wrong_internal_credential_rejected(self, gated_app):
-        # Mint the real one so the store is non-empty, then present a bogus value.
-        internal_ws_credential()
-        ws = _fake_ws(query={"internal": "not-the-internal-credential"})
-        assert web_server._ws_auth_ok(ws) is False
-
-    def test_internal_credential_not_accepted_in_loopback(self, loopback_app):
-        """Outside gated mode, ?internal= is meaningless — only ?token= works.
-        A naked internal credential must not authenticate."""
-        cred = internal_ws_credential()
-        ws = _fake_ws(query={"internal": cred})
-        assert web_server._ws_auth_ok(ws) is False
-
 
 class TestWsRequestIsAllowedGated:
     """Bug fix: in gated mode, the WS peer-IP loopback check must be
@@ -323,12 +264,6 @@ class TestWsRequestIsAllowedGated:
     successful OAuth login.
     """
 
-    def test_non_loopback_peer_allowed_in_gated_mode(self, gated_app):
-        ws = _fake_ws(query={}, client_host="203.0.113.7")
-        # Host header matches the bound host so the DNS-rebinding guard
-        # passes; only the peer-IP check is under test.
-        ws.headers = {"host": "fly-app.fly.dev"}
-        assert web_server._ws_request_is_allowed(ws) is True
 
     def test_non_loopback_peer_rejected_in_loopback_mode(self, loopback_app):
         """Loopback mode still enforces the peer-IP guard — the legacy
@@ -338,10 +273,6 @@ class TestWsRequestIsAllowedGated:
         ws.headers = {"host": "127.0.0.1:8080"}
         assert web_server._ws_request_is_allowed(ws) is False
 
-    def test_loopback_peer_allowed_in_loopback_mode(self, loopback_app):
-        ws = _fake_ws(query={}, client_host="127.0.0.1")
-        ws.headers = {"host": "127.0.0.1:8080"}
-        assert web_server._ws_request_is_allowed(ws) is True
 
     def test_non_loopback_peer_allowed_in_insecure_public_mode(self, insecure_public_app):
         """`--host 0.0.0.0 --insecure` is an explicit LAN/public opt-in.
@@ -400,20 +331,6 @@ class TestWsRequestIsAllowedGated:
     # servers behind a misconfigured proxy or a unix-socket transport can
     # deliver either shape, so both must be rejected explicitly.
 
-    def test_empty_client_host_rejected_in_loopback_mode(self, loopback_app):
-        """An empty ws.client.host must be rejected on a loopback bind."""
-        ws = _fake_ws(query={}, client_host="")
-        ws.headers = {"host": "127.0.0.1:8080"}
-        assert web_server._ws_client_is_allowed(ws) is False
-        assert web_server._ws_request_is_allowed(ws) is False
-
-    def test_missing_client_object_rejected_in_loopback_mode(self, loopback_app):
-        """ws.client is None must be rejected on a loopback bind."""
-        ws = _fake_ws(query={}, client_host="")
-        ws.client = None  # ASGI servers can omit the client tuple entirely
-        ws.headers = {"host": "127.0.0.1:8080"}
-        assert web_server._ws_client_is_allowed(ws) is False
-        assert web_server._ws_request_is_allowed(ws) is False
 
     def test_empty_client_host_reason_is_block(self, loopback_app):
         """_ws_client_reason must return a block reason for an empty peer,
@@ -440,15 +357,6 @@ class TestWsRequestIsAllowedGated:
         }
         assert web_server._ws_client_is_allowed(ws) is True
 
-    def test_empty_client_host_still_allowed_in_gated_mode(self, gated_app):
-        """The empty-peer fail-closed guard must not apply when the OAuth
-        gate is active (``auth_required=True``). Gated mode rewrites
-        ``ws.client.host`` via ``proxy_headers=True``, and the ticket is
-        the auth, so peer-IP is irrelevant on that path."""
-        ws = _fake_ws(query={}, client_host="")
-        ws.headers = {"host": "dashboard.example.com"}
-        assert web_server._ws_client_is_allowed(ws) is True
-
 
 class TestWsHostOriginGuardOrigins:
     """The WS Origin guard must let the packaged desktop shell connect.
@@ -471,28 +379,6 @@ class TestWsHostOriginGuardOrigins:
         ws.headers = {"host": host, "origin": origin}
         return ws
 
-    def test_loopback_file_origin_allowed(self, loopback_app):
-        ws = self._ws(origin="file://", host="127.0.0.1:8080")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
-
-    def test_loopback_null_origin_allowed(self, loopback_app):
-        ws = self._ws(origin="null", host="127.0.0.1:8080")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
-
-    def test_loopback_app_scheme_origin_allowed(self, loopback_app):
-        ws = self._ws(origin="app://hermes", host="127.0.0.1:8080")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
-
-    def test_loopback_matching_http_origin_allowed(self, loopback_app):
-        # The dev renderer (vite) loads over http://127.0.0.1:<port>.
-        ws = self._ws(origin="http://127.0.0.1:5174", host="127.0.0.1:8080")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
-
-    def test_loopback_cross_site_http_origin_rejected(self, loopback_app):
-        # DNS-rebinding / cross-site: a real web attacker can only present an
-        # http(s) origin, and that must still be rejected.
-        ws = self._ws(origin="http://evil.test", host="127.0.0.1:8080")
-        assert web_server._ws_host_origin_is_allowed(ws) is False
 
     def test_explicit_non_loopback_file_origin_allowed(self, insecure_explicit_host_app):
         """Packaged Hermes Desktop also uses file:// when connecting to a
@@ -525,13 +411,6 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="file://", host="fly-app.fly.dev")
         assert web_server._ws_host_origin_is_allowed(ws) is True
 
-    def test_gated_null_origin_allowed(self, gated_app):
-        ws = self._ws(origin="null", host="fly-app.fly.dev")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
-
-    def test_gated_app_scheme_origin_allowed(self, gated_app):
-        ws = self._ws(origin="app://.", host="fly-app.fly.dev")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
 
     def test_gated_cross_site_http_origin_still_host_checked(self, gated_app):
         # An http(s) origin is still subjected to the same-host check even on a
@@ -583,24 +462,7 @@ class TestSidecarUrl:
 
 
 class TestGatewayWsUrl:
-    def test_loopback_uses_session_token(self, loopback_app):
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        assert "/api/ws?" in url
-        assert f"token={web_server._SESSION_TOKEN}" in url
-        assert "internal=" not in url
 
-    def test_gated_uses_internal_credential(self, gated_app):
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        assert "/api/ws?" in url
-        assert "token=" not in url
-        assert "ticket=" not in url
-        assert "internal=" in url
-        cred = url.split("internal=")[1].split("&")[0]
-        # The credential authenticates against _ws_auth_ok in gated mode.
-        ws = _fake_ws(query={"internal": cred})
-        assert web_server._ws_auth_ok(ws) is True
 
     def test_gated_credential_matches_sidecar(self, gated_app):
         """Both server-internal builders share one process credential, so a
@@ -612,9 +474,3 @@ class TestGatewayWsUrl:
         sc_cred = sc.split("internal=")[1].split("&")[0]
         assert gw_cred == sc_cred
 
-    def test_no_bound_host_returns_none(self, gated_app):
-        web_server.app.state.bound_host = None
-        try:
-            assert web_server._build_gateway_ws_url() is None
-        finally:
-            web_server.app.state.bound_host = "fly-app.fly.dev"

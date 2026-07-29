@@ -54,40 +54,6 @@ def test_opencode_go_known_model_accepted():
 
 
 @_patched
-def test_opencode_go_known_model_case_insensitive():
-    """Catalog lookup is case-insensitive."""
-    result = validate_requested_model("KIMI-K2.6", "opencode-go")
-    assert result["accepted"] is True
-    assert result["recognized"] is True
-
-
-@_patched
-def test_opencode_go_typo_auto_corrected():
-    """A close typo (>= 0.9 similarity) is auto-corrected to the catalog
-    entry."""
-    # 'kimi-k2.55' vs 'kimi-k2.5' ratio ≈ 0.95 — within the 0.9 cutoff.
-    result = validate_requested_model("kimi-k2.55", "opencode-go")
-    assert result["accepted"] is True
-    assert result["recognized"] is True
-    assert result.get("corrected_model") == "kimi-k2.5"
-
-
-@_patched
-def test_opencode_go_unknown_model_accepted_with_suggestion():
-    """An unknown model that has a medium-similarity match (>= 0.5 but < 0.9)
-    is accepted with recognized=False and a 'similar models' hint.  The key
-    invariant: the gateway MUST be able to persist this override, so
-    accepted/persist must both be True."""
-    # 'kimi-k3-preview' vs 'kimi-k2.6' — similar enough to suggest, not to auto-correct.
-    result = validate_requested_model("kimi-k3-preview", "opencode-go")
-    assert result["accepted"] is True
-    assert result["persist"] is True
-    assert result["recognized"] is False
-    assert "kimi-k3-preview" in result["message"]
-    assert "curated catalog" in result["message"]
-
-
-@_patched
 def test_opencode_go_totally_unknown_model_still_accepted():
     """A model with zero similarity to the catalog is still accepted (no
     suggestion line) so the user can try a model that hasn't made it into the

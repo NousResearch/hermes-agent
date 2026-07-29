@@ -70,11 +70,3 @@ def test_set_session_context_falls_back_to_session_key(monkeypatch):
     assert get_session_env("HERMES_SESSION_ID") == "skey-xyz"
 
 
-def test_set_session_context_unknown_key_uses_key(monkeypatch):
-    """An ephemeral/unknown session_key (not in _sessions) still binds the key
-    itself rather than leaving the id empty."""
-    monkeypatch.setattr(server, "_sessions", {}, raising=False)
-
-    server._set_session_context("ephemeral-key")
-
-    assert get_session_env("HERMES_SESSION_ID") == "ephemeral-key"

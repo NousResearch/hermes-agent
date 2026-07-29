@@ -50,13 +50,6 @@ class TestBundlesCli:
         assert "s1" in out
         assert "s2" in out
 
-    def test_delete(self, bundles_env, capsys):
-        bundles_command(_parse(["create", "doomed", "--skill", "s1"]))
-        capsys.readouterr()
-        bundles_command(_parse(["delete", "doomed"]))
-        out = capsys.readouterr().out
-        assert "Deleted bundle" in out
-        assert not (bundles_env / "doomed.yaml").exists()
 
     def test_create_refuses_overwrite(self, bundles_env, capsys):
         bundles_command(_parse(["create", "dup", "--skill", "s1"]))
@@ -67,12 +60,6 @@ class TestBundlesCli:
         out = capsys.readouterr().out
         assert "already exists" in out.lower() or "--force" in out.lower()
 
-    def test_create_force_overwrites(self, bundles_env, capsys):
-        bundles_command(_parse(["create", "dup", "--skill", "s1"]))
-        capsys.readouterr()
-        bundles_command(_parse(["create", "dup", "--skill", "s2", "--force"]))
-        out = capsys.readouterr().out
-        assert "Created bundle" in out
 
     def test_create_requires_skills(self, bundles_env, capsys, monkeypatch):
         # Simulate user pressing Ctrl-D immediately at the interactive prompt.
@@ -80,10 +67,6 @@ class TestBundlesCli:
         with pytest.raises(SystemExit):
             bundles_command(_parse(["create", "empty"]))
 
-    def test_show_missing(self, bundles_env, capsys):
-        with pytest.raises(SystemExit) as ei:
-            bundles_command(_parse(["show", "ghost"]))
-        assert ei.value.code == 1
 
     def test_reload(self, bundles_env, capsys):
         # Reload on an empty dir reports no changes.

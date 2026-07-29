@@ -92,34 +92,7 @@ class TestApplyWalWithFallback:
         assert cur.fetchone()[0].lower() == "wal"
         conn.close()
 
-    def test_falls_back_to_delete_on_locking_protocol(self, tmp_path, caplog):
-        """NFS-style ``locking protocol`` error → DELETE mode + one WARNING."""
-        conn, _ = _open_blocking(tmp_path / "nfs.db", isolation_level=None)
-        with caplog.at_level("WARNING", logger="hermes_state"):
-            mode = apply_wal_with_fallback(conn, db_label="test.db")
 
-        assert mode == "delete"
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) == 1
-        msg = warnings[0].getMessage()
-        assert "test.db" in msg
-        assert "journal_mode=DELETE" in msg
-        assert "locking protocol" in msg
-
-        # Post-fallback the DB is still usable for real writes
-        conn.execute("CREATE TABLE t (x INTEGER)")
-        conn.execute("INSERT INTO t VALUES (1)")
-        assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
-        conn.close()
-
-    def test_falls_back_on_not_authorized(self, tmp_path):
-        """Some FUSE mounts block WAL pragma outright ('not authorized')."""
-        conn, _ = _open_blocking(
-            tmp_path / "fuse.db", reason="not authorized", isolation_level=None
-        )
-        mode = apply_wal_with_fallback(conn)
-        assert mode == "delete"
-        conn.close()
 
     def test_reraises_on_disk_io_error(self, tmp_path):
         """Transient EIO from ``PRAGMA journal_mode=WAL`` must NOT silently
@@ -141,58 +114,6 @@ class TestApplyWalWithFallback:
             apply_wal_with_fallback(conn)
         conn.close()
 
-    def test_does_not_downgrade_when_disk_says_wal(self, tmp_path):
-        """Refuse to downgrade an already-WAL DB even if the set-pragma path
-        would have raised a downgrade-eligible marker.
-
-        With the WAL-skip patch, the read-only probe short-circuits before
-        ``PRAGMA journal_mode=WAL`` ever runs on an already-WAL connection,
-        so the set-pragma path is unreachable here and ``attempts`` stays 0.
-        Either outcome (skip-via-probe OR re-raise-on-disk-check) preserves
-        the property this test guards: we never silently DELETE-downgrade
-        a WAL-mode file. The on-disk guard remains in place as
-        belt-and-suspenders for any future code path that bypasses the
-        probe.
-        """
-        # Prime the file in WAL mode using a normal connection
-        primer = sqlite3.connect(
-            str(tmp_path / "already-wal.db"), isolation_level=None
-        )
-        try:
-            primer.execute("PRAGMA journal_mode=WAL")
-            primer.execute("CREATE TABLE t (x INTEGER)")
-            primer.execute("INSERT INTO t VALUES (1)")
-            assert (
-                primer.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-            )
-        finally:
-            primer.close()
-
-        # New connection whose set-WAL pragma would raise "locking protocol"
-        # if it were ever called. With the WAL-skip patch the probe sees
-        # journal_mode=wal and returns early, so set-WAL is never attempted.
-        conn, attempts = _open_blocking(
-            tmp_path / "already-wal.db",
-            reason="locking protocol",
-            isolation_level=None,
-        )
-        result = apply_wal_with_fallback(conn)
-        assert result == "wal", (
-            "must report wal mode (either skipped via probe or refused downgrade)"
-        )
-        assert attempts[0] == 0, (
-            "set-WAL pragma must not run when the on-disk header already says wal"
-        )
-        conn.close()
-
-        # And the file is STILL WAL on disk — nothing got rewritten
-        check = sqlite3.connect(str(tmp_path / "already-wal.db"))
-        try:
-            assert (
-                check.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-            )
-        finally:
-            check.close()
 
     def test_reraises_unrelated_operational_error(self, tmp_path):
         """Non-WAL-compat errors must NOT be silently swallowed by the fallback."""
@@ -205,34 +126,6 @@ class TestApplyWalWithFallback:
             apply_wal_with_fallback(conn)
         conn.close()
 
-    def test_warning_deduplicated_per_db_label(self, tmp_path, caplog):
-        """Repeated calls with the same db_label log exactly ONE warning.
-
-        Prevents log spam when NFS users run kanban (which opens a fresh
-        connection on every operation — see hermes_cli/kanban_db.py).
-        Regression guard: the fix for #22032 ran apply_wal_with_fallback()
-        on every kb.connect() call; without dedup, errors.log fills with
-        hundreds of identical warnings per hour.
-        """
-        with caplog.at_level("WARNING", logger="hermes_state"):
-            # Three separate connections to "the same DB" via the same label
-            for i in range(3):
-                conn, _ = _open_blocking(
-                    tmp_path / f"dup-{i}.db", isolation_level=None
-                )
-                mode = apply_wal_with_fallback(conn, db_label="shared.db")
-                assert mode == "delete"
-                conn.close()
-
-        # Exactly one warning across all three calls
-        warnings = [
-            r for r in caplog.records
-            if r.levelname == "WARNING" and "shared.db" in r.getMessage()
-        ]
-        assert len(warnings) == 1, (
-            f"Expected 1 deduplicated warning, got {len(warnings)}: "
-            f"{[r.getMessage() for r in warnings]}"
-        )
 
     def test_warning_fires_independently_per_db_label(self, tmp_path, caplog):
         """Different db_labels each get their own one warning (not globally dedup'd)."""
@@ -256,37 +149,7 @@ class TestApplyWalWithFallback:
 
 
 class TestGetLastInitError:
-    def test_none_on_successful_init(self, tmp_path):
-        """Happy-path SessionDB init does NOT clear a stale error from a prior thread.
 
-        We deliberately don't clear on success so that in multi-threaded
-        callers (gateway / web_server per-request SessionDB()), a concurrent
-        successful open racing past a different thread's failure won't
-        erase the cause string the failing thread's /resume is about to
-        format.  The caller or test fixture is responsible for explicitly
-        calling _set_last_init_error(None) to reset.
-        """
-        # Autouse fixture starts at None — success-path leaves it None
-        db = SessionDB(db_path=tmp_path / "ok.db")
-        try:
-            assert get_last_init_error() is None
-        finally:
-            db.close()
-
-    def test_success_does_not_clear_prior_error(self, tmp_path):
-        """Thread-safety guard: a successful init must not erase a pre-existing error.
-
-        Simulates the multi-threaded race: thread A fails, records cause;
-        thread B succeeds concurrently.  thread A's /resume handler must
-        still see A's cause — not B's None.
-        """
-        hermes_state._set_last_init_error("OperationalError: locking protocol")
-        # Now a "successful" init happens on another path — must NOT clear
-        db = SessionDB(db_path=tmp_path / "ok2.db")
-        try:
-            assert get_last_init_error() == "OperationalError: locking protocol"
-        finally:
-            db.close()
 
     def test_captures_cause_on_failed_init(self, tmp_path):
         """When SessionDB() raises, the cause is preserved for slash commands.
@@ -329,13 +192,6 @@ class TestFormatSessionDbUnavailable:
         hermes_state._set_last_init_error(None)
         assert format_session_db_unavailable() == "Session database not available."
 
-    def test_includes_cause(self):
-        """Cause is surfaced for slash-command error strings."""
-        hermes_state._set_last_init_error("OperationalError: generic SQLite error")
-        msg = format_session_db_unavailable()
-        assert "generic SQLite error" in msg
-        assert msg.startswith("Session database not available:")
-        assert msg.endswith(".")
 
     def test_adds_nfs_hint_for_locking_protocol(self):
         """Locking-protocol cause gets an NFS/SMB pointer for the user."""

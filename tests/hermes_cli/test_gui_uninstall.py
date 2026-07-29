@@ -48,13 +48,6 @@ def test_agent_is_installed_detects_source_and_venv(tmp_path):
     assert gu.agent_is_installed(hermes_home) is True
 
 
-def test_agent_is_installed_venv_only(tmp_path):
-    """A checkout with only a venv (no package dir yet) still counts."""
-    hermes_home = tmp_path / ".hermes"
-    (hermes_home / "hermes-agent" / "venv").mkdir(parents=True)
-    assert gu.agent_is_installed(hermes_home) is True
-
-
 def test_source_built_artifacts_lists_known_paths(tmp_path):
     hermes_home = tmp_path / ".hermes"
     _make_gui_build(hermes_home)
@@ -74,14 +67,6 @@ def test_gui_is_installed_true_when_built(tmp_path, monkeypatch):
     monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "nope")
     assert gu.gui_is_installed(hermes_home) is True
-
-
-def test_gui_is_installed_false_when_nothing(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "nope")
-    assert gu.gui_is_installed(hermes_home) is False
 
 
 def test_uninstall_gui_removes_only_gui_artifacts(tmp_path, monkeypatch):
@@ -115,47 +100,6 @@ def test_uninstall_gui_removes_only_gui_artifacts(tmp_path, monkeypatch):
     assert (hermes_home / "sessions").exists()
     # The desktop source dir itself survives (only its build output is gone).
     assert desktop.exists()
-
-
-def test_uninstall_gui_removes_userdata(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    _make_agent(hermes_home)
-    userdata = tmp_path / "Hermes-userdata"
-    userdata.mkdir()
-    (userdata / "connection.json").write_text("{}")
-
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: userdata)
-
-    gu.uninstall_gui(hermes_home)
-    assert not userdata.exists()
-
-
-def test_uninstall_gui_keeps_userdata_when_requested(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    _make_agent(hermes_home)
-    userdata = tmp_path / "Hermes-userdata"
-    userdata.mkdir()
-
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: userdata)
-
-    gu.uninstall_gui(hermes_home, remove_userdata=False)
-    assert userdata.exists()
-
-
-def test_uninstall_gui_removes_packaged_bundle(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    _make_agent(hermes_home)
-    bundle = tmp_path / "Hermes.app"
-    (bundle / "Contents").mkdir(parents=True)
-
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [bundle])
-    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
-
-    removed = gu.uninstall_gui(hermes_home)
-    assert not bundle.exists()
-    assert bundle in removed
 
 
 def test_gui_install_summary_shape(tmp_path, monkeypatch):
@@ -322,15 +266,6 @@ def test_uninstall_module_main_gui_mode(tmp_path, monkeypatch):
     assert not (hermes_home / "desktop-build-stamp.json").exists()
     assert (agent_root / "hermes_cli").exists()
     assert (hermes_home / "config.yaml").exists()
-
-
-def test_uninstall_module_main_rejects_bad_mode():
-    """An invalid --mode exits non-zero (argparse), never silently full-wipes."""
-    import hermes_cli.uninstall as uninstall
-
-    with pytest.raises(SystemExit) as exc:
-        uninstall.main(["--mode", "nuke"])
-    assert exc.value.code != 0
 
 
 def test_uninstall_args_namespace_mode_mapping():

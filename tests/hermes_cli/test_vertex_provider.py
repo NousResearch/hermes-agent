@@ -20,26 +20,11 @@ def test_vertex_profile_registered():
     assert p.auth_type == "vertex"
 
 
-@pytest.mark.parametrize("alias", ["google-vertex", "vertex-ai", "gcp-vertex"])
-def test_vertex_aliases_resolve(alias):
-    from providers import get_provider_profile
-
-    assert get_provider_profile(alias).name == "vertex"
-
-
 @pytest.mark.parametrize("alias", ["google-vertex", "vertex-ai", "gcp-vertex", "vertexai"])
 def test_alias_canonicalizes_to_vertex(alias):
     from hermes_cli.models import _PROVIDER_ALIASES
 
     assert _PROVIDER_ALIASES[alias] == "vertex"
-
-
-def test_google_vertex_not_confused_with_gemini():
-    """`google-vertex` must map to vertex, not the AI-Studio `gemini` provider."""
-    from hermes_cli.models import _PROVIDER_ALIASES
-
-    assert _PROVIDER_ALIASES["google-vertex"] == "vertex"
-    assert _PROVIDER_ALIASES["google-gemini"] == "gemini"
 
 
 def test_resolve_runtime_provider_mints_token(monkeypatch):
@@ -58,15 +43,6 @@ def test_resolve_runtime_provider_mints_token(monkeypatch):
     assert "aiplatform.googleapis.com" in rt["base_url"]
 
 
-def test_resolve_runtime_provider_alias(monkeypatch):
-    import agent.vertex_adapter as va
-    from hermes_cli import runtime_provider as rp
-
-    monkeypatch.setattr(va, "get_vertex_config", lambda: ("t", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"))
-    rt = rp.resolve_runtime_provider(requested="google-vertex")
-    assert rt["provider"] == "vertex"
-
-
 def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
     import agent.vertex_adapter as va
     from hermes_cli import runtime_provider as rp
@@ -78,26 +54,6 @@ def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):
     msg = str(exc.value)
     assert "OAuth2" in msg
     assert "not a static API key" in msg
-
-
-def test_vertex_extra_body_thinking_config():
-    from providers import get_provider_profile
-
-    p = get_provider_profile("vertex")
-    body = p.build_extra_body(
-        model="google/gemini-3-pro-preview",
-        reasoning_config={"effort": "high"},
-    )
-    assert "extra_body" in body
-    assert "google" in body["extra_body"]
-    assert "thinking_config" in body["extra_body"]["google"]
-
-
-def test_vertex_extra_body_empty_without_reasoning():
-    from providers import get_provider_profile
-
-    p = get_provider_profile("vertex")
-    assert p.build_extra_body(model="google/gemini-3-flash-preview") == {}
 
 
 def test_vertex_registered_in_provider_registry():

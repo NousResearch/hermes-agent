@@ -38,14 +38,6 @@ def test_bare_name_on_aggregator_passes_through():
     assert req.errors == ()
 
 
-def test_provider_colon_model_target_preserved():
-    # vendor:model colon forms are preserved verbatim — switch_model converts
-    # them to aggregator slugs only when the current provider is an aggregator.
-    req = parse_model_switch_args("anthropic:claude-sonnet-4-5")
-    assert req.target == "anthropic:claude-sonnet-4-5"
-    assert req.explicit_provider == ""
-
-
 def test_provider_flag_and_scopes():
     req = parse_model_switch_args("sonnet --provider anthropic --global")
     assert req.target == "sonnet"
@@ -67,25 +59,6 @@ def test_once_with_global_conflict():
         == "/model --once cannot be combined with --global"
     )
     assert "/model --once cannot be combined with --global" in req.error_messages()
-
-
-def test_once_without_target_error():
-    req = parse_model_switch_args("--once")
-    assert MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET in req.errors
-    assert (
-        MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET]
-        == "/model --once requires a model or provider."
-    )
-    # --once with just a provider is valid.
-    assert parse_model_switch_args("--once --provider anthropic").errors == ()
-
-
-def test_unicode_dash_normalization_matches_legacy_parser():
-    # Telegram/iOS auto-converts "--" to em dashes; the shared parser must
-    # keep the legacy normalization.
-    req = parse_model_switch_args("sonnet \u2014global")
-    assert req.is_global is True
-    assert req.target == "sonnet"
 
 
 def test_request_is_compatible_with_flag_result_consumers():

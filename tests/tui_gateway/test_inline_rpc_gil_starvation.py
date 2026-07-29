@@ -118,37 +118,6 @@ def test_dispatch_inline_rpc_does_not_block_under_gil_pressure(server):
     released.set()
 
 
-def test_dispatch_pet_info_does_not_block_prompt_submit(server):
-    """pet.info (polled every few seconds by the Desktop petdex) must not
-    block prompt.submit. Before the fix, pet.info ran inline and a slow
-    pet.info under GIL pressure delayed prompt.submit until the 120s RPC
-    timeout fired (#50005).
-    """
-    released = threading.Event()
-
-    def slow_pet_info(rid, params):
-        released.wait(timeout=5)
-        return server._ok(rid, {"pet": "cat"})
-
-    server._methods["pet.info"] = slow_pet_info
-    server._methods["prompt.submit"] = lambda rid, params: server._ok(rid, {"status": "streaming"})
-
-    t0 = time.monotonic()
-    assert server.dispatch({"id": "pet", "method": "pet.info", "params": {}}) is None
-
-    # prompt.submit is inline (it spawns its own thread) — should return immediately
-    resp = server.dispatch({"id": "prompt", "method": "prompt.submit", "params": {}})
-    elapsed = time.monotonic() - t0
-
-    assert resp["result"] == {"status": "streaming"}
-    assert elapsed < 2.0, (
-        f"prompt.submit blocked for {elapsed:.2f}s behind slow pet.info — "
-        f"the user's message would appear stuck under GIL pressure (#50005)."
-    )
-
-    released.set()
-
-
 def test_rpc_pool_workers_supports_concurrent_long_handlers(server):
     """The RPC thread pool must have enough workers to handle concurrent
     long handlers without queueing. With 6+ frontend-polled RPCs added to

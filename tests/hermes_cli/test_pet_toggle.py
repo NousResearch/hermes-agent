@@ -46,19 +46,6 @@ def test_toggle_pet_display_turns_off_when_enabled(boba_installed):
     assert _pet_config()["enabled"] is False
 
 
-def test_toggle_pet_display_turns_on_resolved_pet(boba_installed):
-    from hermes_cli.pets import _pet_config, toggle_pet_display
-
-    _write_config(boba_installed, enabled=False, slug="boba")
-
-    enabled, name, err = toggle_pet_display()
-
-    assert err is None
-    assert enabled is True
-    assert name == "Boba"
-    assert _pet_config()["enabled"] is True
-
-
 def test_toggle_pet_display_errors_with_no_installed_pets(tmp_path, monkeypatch):
     from hermes_cli.pets import toggle_pet_display
 

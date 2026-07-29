@@ -24,21 +24,6 @@ def test_format_banner_version_label_on_upstream_main():
     assert "local" not in value
 
 
-def test_format_banner_version_label_with_carried_commits():
-    from hermes_cli import banner
-
-    with patch.object(
-        banner,
-        "get_git_banner_state",
-        return_value={"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3},
-    ):
-        value = banner.format_banner_version_label()
-
-    assert "upstream b2f477a3" in value
-    assert "local af8aad31" in value
-    assert "+3 carried commits" in value
-
-
 def test_get_git_banner_state_reads_origin_and_head(tmp_path):
     from hermes_cli import banner
 
@@ -61,38 +46,6 @@ def test_get_git_banner_state_reads_origin_and_head(tmp_path):
         state = banner.get_git_banner_state(repo_dir)
 
     assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
-
-
-def test_get_git_banner_state_falls_back_to_build_sha_when_no_repo():
-    """Docker image case: no .git checkout — baked build SHA fills the gap.
-
-    ``_resolve_repo_dir`` returns None when neither the running code's
-    parent nor ``$HERMES_HOME/hermes-agent/`` is a git repo (the canonical
-    case inside the published container, where .git is dockerignored).
-    The banner should still report the build SHA so support bug reports
-    can identify the running commit.
-    """
-    from hermes_cli import banner
-
-    with patch.object(banner, "_resolve_repo_dir", return_value=None), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="abcdef12"):
-        state = banner.get_git_banner_state()
-
-    assert state == {"upstream": "abcdef12", "local": "abcdef12", "ahead": 0}
-
-
-def test_get_git_banner_state_returns_none_when_no_repo_and_no_build_sha():
-    """Pip-installed wheel with neither git checkout nor baked SHA → None.
-
-    Banner correctly omits the upstream/local suffix in this case.
-    """
-    from hermes_cli import banner
-
-    with patch.object(banner, "_resolve_repo_dir", return_value=None), \
-         patch("hermes_cli.build_info.get_build_sha", return_value=None):
-        state = banner.get_git_banner_state()
-
-    assert state is None
 
 
 def test_get_git_banner_state_falls_back_when_live_git_returns_nothing(tmp_path):

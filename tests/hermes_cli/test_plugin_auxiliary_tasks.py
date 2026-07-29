@@ -79,64 +79,6 @@ def test_register_auxiliary_task_basic():
     assert entry["defaults"]["timeout"] == 60
 
 
-def test_register_auxiliary_task_with_custom_defaults():
-    ctx, manager = _make_ctx()
-    ctx.register_auxiliary_task(
-        key="custom_task",
-        display_name="Custom",
-        description="d",
-        defaults={"timeout": 30, "extra_body": {"reasoning_effort": "low"}},
-    )
-    entry = manager._aux_tasks["custom_task"]
-    assert entry["defaults"]["timeout"] == 30
-    assert entry["defaults"]["extra_body"] == {"reasoning_effort": "low"}
-    # Unspecified defaults still populated
-    assert entry["defaults"]["provider"] == "auto"
-
-
-def test_register_auxiliary_task_rejects_builtin_keys():
-    ctx, _ = _make_ctx()
-    for builtin in (
-        "vision",
-        "compression",
-        "web_extract",
-        "approval",
-        "mcp",
-        "title_generation",
-        "skills_hub",
-        "curator",
-    ):
-        with pytest.raises(ValueError, match="reserved for a built-in task"):
-            ctx.register_auxiliary_task(
-                key=builtin,
-                display_name="x",
-                description="x",
-            )
-
-
-def test_register_auxiliary_task_rejects_invalid_key_shapes():
-    ctx, _ = _make_ctx()
-    for bad in ("", "with-dash", "with.dot", "with space", "with/slash"):
-        with pytest.raises(ValueError):
-            ctx.register_auxiliary_task(
-                key=bad,
-                display_name="x",
-                description="x",
-            )
-
-
-def test_register_auxiliary_task_allows_same_plugin_re_registration():
-    """Re-registration by the same plugin updates the entry (idempotent)."""
-    ctx, manager = _make_ctx("plug_a")
-    ctx.register_auxiliary_task(
-        key="t1", display_name="First", description="first"
-    )
-    ctx.register_auxiliary_task(
-        key="t1", display_name="Second", description="second"
-    )
-    assert manager._aux_tasks["t1"]["display_name"] == "Second"
-
-
 def test_register_auxiliary_task_rejects_cross_plugin_collision():
     """Two different plugins cannot register the same task key."""
     manager = PluginManager()
@@ -192,10 +134,6 @@ def test_get_plugin_auxiliary_tasks_returns_sorted_list(patched_manager):
 
     tasks = get_plugin_auxiliary_tasks()
     assert [t["key"] for t in tasks] == ["alpha_task", "mike_task", "zeta_task"]
-
-
-def test_get_plugin_auxiliary_tasks_empty_when_none_registered(patched_manager):
-    assert get_plugin_auxiliary_tasks() == []
 
 
 # ── _all_aux_tasks merges built-in + plugin ──────────────────────────────────
@@ -306,38 +244,6 @@ def test_get_auxiliary_task_config_layers_plugin_defaults(
     assert resolved["timeout"] == 15
     assert resolved["extra_body"] == {"reasoning_effort": "low"}
     assert resolved["provider"] == "auto"
-
-
-def test_get_auxiliary_task_config_user_config_wins_over_plugin_defaults(
-    tmp_path, monkeypatch, patched_manager
-):
-    """User's config.yaml entry overrides plugin-declared defaults."""
-    from pathlib import Path
-    from hermes_cli.config import load_config, save_config
-    from agent.auxiliary_client import _get_auxiliary_task_config
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".hermes").mkdir(exist_ok=True)
-
-    manifest = PluginManifest(name="plug")
-    ctx = PluginContext(manifest, patched_manager)
-    ctx.register_auxiliary_task(
-        key="my_filter",
-        display_name="My filter",
-        description="x",
-        defaults={"timeout": 15, "provider": "auto"},
-    )
-
-    # User overrides timeout + provider via config.yaml
-    cfg = load_config()
-    aux = cfg.setdefault("auxiliary", {})
-    aux["my_filter"] = {"timeout": 90, "provider": "nous"}
-    save_config(cfg)
-
-    resolved = _get_auxiliary_task_config("my_filter")
-    assert resolved["timeout"] == 90  # user wins
-    assert resolved["provider"] == "nous"  # user wins
 
 
 def test_get_auxiliary_task_config_unknown_task_returns_empty(

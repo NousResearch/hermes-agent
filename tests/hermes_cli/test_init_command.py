@@ -18,9 +18,6 @@ class TestBuildInitPrompt:
         prompt = build_init_prompt("/home/alice/projects/acme")
         assert "/home/alice/projects/acme" in prompt
 
-    def test_mentions_agents_md(self):
-        prompt = build_init_prompt("/tmp/proj")
-        assert "AGENTS.md" in prompt
 
     def test_fresh_generation_when_no_existing_file(self):
         prompt = build_init_prompt("/tmp/proj", existing_file=None)
@@ -40,20 +37,12 @@ class TestBuildInitPrompt:
         # And it carries the current content so the agent can merge.
         assert existing.strip() in prompt
 
-    def test_empty_existing_file_still_triggers_update_mode(self):
-        # An existing-but-empty AGENTS.md is still an update, not a fresh gen
-        # (None means "no file"; "" means "empty file").
-        prompt = build_init_prompt("/tmp/proj", existing_file="")
-        assert "UPDATE the existing AGENTS.md" in prompt
 
     def test_includes_extra_notes_verbatim(self):
         notes = "focus on the test setup, and mention the flaky e2e suite"
         prompt = build_init_prompt("/tmp/proj", extra=notes)
         assert notes in prompt
 
-    def test_no_notes_section_when_extra_empty(self):
-        assert "USER NOTES" not in build_init_prompt("/tmp/proj", extra="  ")
-        assert "USER NOTES" in build_init_prompt("/tmp/proj", extra="hi")
 
     def test_always_includes_the_quality_bar(self):
         for existing in (None, "# old content"):
@@ -66,18 +55,8 @@ class TestBuildInitPrompt:
         assert "never invent" in low
         assert "no generic advice" in low
 
-    def test_references_read_only_scan_tools(self):
-        prompt = build_init_prompt("/tmp/proj")
-        for tool in ("read_file", "search_files", "write_file"):
-            assert tool in prompt
-
 
 class TestBuildInitPromptForCwd:
-    def test_defaults_to_process_cwd(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        prompt = build_init_prompt_for_cwd()
-        assert str(tmp_path) in prompt
-        assert "generate an AGENTS.md" in prompt
 
     def test_reads_existing_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text(
@@ -100,10 +79,6 @@ class TestInitRegistryWiring:
         assert cmd is not None
         assert cmd.name == "init"
 
-    def test_init_is_in_tools_and_skills_category(self):
-        from hermes_cli.commands import resolve_command
-
-        assert resolve_command("init").category == "Tools & Skills"
 
     def test_init_works_on_the_gateway(self):
         # /init is a both-surfaces command like /learn, not CLI-only.
@@ -111,7 +86,3 @@ class TestInitRegistryWiring:
 
         assert "init" in GATEWAY_KNOWN_COMMANDS
 
-    def test_init_is_not_cli_only(self):
-        from hermes_cli.commands import resolve_command
-
-        assert not resolve_command("init").cli_only

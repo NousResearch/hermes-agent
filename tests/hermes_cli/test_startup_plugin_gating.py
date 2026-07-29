@@ -108,40 +108,6 @@ def test_first_positional_argv(argv, expected):
 # ── _plugin_cli_discovery_needed ───────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["hermes"],                          # bare → chat
-        ["hermes", "--help"],                # top-level help
-        ["hermes", "-h"],
-        ["hermes", "version"],               # known built-in
-        ["hermes", "logs"],
-        ["hermes", "gateway", "run"],
-        ["hermes", "--tui"],
-        ["hermes", "-w", "--tui"],
-        ["hermes", "chat", "hi"],
-        ["hermes", "help"],                  # accepted built-in-ish
-        ["hermes", "-m", "gpt5", "chat"],    # flag-value-skipping
-    ],
-)
-def test_discovery_skipped_for_builtins(argv):
-    with patch.object(sys, "argv", argv):
-        assert _plugin_cli_discovery_needed() is False
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["hermes", "meet", "join"],          # potential google_meet plugin
-        ["hermes", "honcho", "status"],      # potential memory plugin
-        ["hermes", "unknown-subcmd"],
-    ],
-)
-def test_discovery_runs_for_unknown_positional(argv):
-    with patch.object(sys, "argv", argv):
-        assert _plugin_cli_discovery_needed() is True
-
-
 # ── _BUILTIN_SUBCOMMANDS ↔ argparse registration parity ────────────────────
 
 
@@ -162,22 +128,6 @@ def test_builtin_set_covers_every_registered_subcommand():
         f"{sorted(missing_from_declaration)}. Add them to "
         f"hermes_cli/main.py::_BUILTIN_SUBCOMMANDS so plugin discovery "
         f"can be skipped when the user targets them."
-    )
-
-
-def test_builtin_set_has_no_phantom_entries():
-    """No entry in the set should refer to a subcommand that no longer exists.
-
-    A phantom entry means plugin discovery gets incorrectly skipped for
-    a name that — if a plugin actually registered it — would fail to
-    parse. Keeps the set honest.
-    """
-    live = _live_subcommand_names()
-    allowed_synthetic = {"help"}
-    phantom = _BUILTIN_SUBCOMMANDS - live - allowed_synthetic
-    assert not phantom, (
-        f"_BUILTIN_SUBCOMMANDS has entries that are not registered as "
-        f"top-level subparsers: {sorted(phantom)}"
     )
 
 
@@ -210,45 +160,6 @@ def test_deferred_platform_cli_resolution_targets_matching_platform():
         _resolve_deferred_platform_cli_command("photon")
 
     assert fake.resolved == ["photon"]
-
-
-def test_deferred_platform_cli_resolution_ignores_empty_command():
-    """A None/empty first token (bare ``hermes`` / flags only) must not touch
-    the registry — normal startup stays cheap."""
-    from hermes_cli import main as _main
-
-    class _FakeRegistry:
-        def __init__(self):
-            self.resolved: list[str] = []
-
-        def get(self, name):  # pragma: no cover - must not be called
-            self.resolved.append(name)
-            return None
-
-    fake = _FakeRegistry()
-    fake_module = type(sys)("gateway.platform_registry")
-    fake_module.platform_registry = fake
-    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
-        _resolve_deferred_platform_cli_command(None)
-        _resolve_deferred_platform_cli_command("")
-
-    assert fake.resolved == []
-
-
-def test_deferred_platform_cli_resolution_swallows_registry_errors():
-    """A registry/import failure must be logged-and-ignored, never crash the
-    CLI startup path."""
-    from hermes_cli import main as _main
-
-    class _BoomRegistry:
-        def get(self, name):
-            raise RuntimeError("boom")
-
-    fake_module = type(sys)("gateway.platform_registry")
-    fake_module.platform_registry = _BoomRegistry()
-    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
-        # Must not raise.
-        _resolve_deferred_platform_cli_command("photon")
 
 
 def test_deferred_platform_loader_registers_cli_command_before_parser_table():

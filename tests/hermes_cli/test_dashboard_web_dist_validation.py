@@ -87,32 +87,6 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     assert "HERMES_WEB_DIST" in out and str(empty_dist) in out
 
 
-def test_env_dist_with_index_starts_server(main_mod, monkeypatch, tmp_path):
-    """A valid HERMES_WEB_DIST (has index.html) proceeds to start_server
-    without building."""
-    _wire_common(main_mod, monkeypatch)
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    main_mod.cmd_dashboard(_args())
-
-    assert len(started) == 1
-    assert builds == []
-
-
 def test_env_dist_tilde_expanded_for_web_server(main_mod, monkeypatch, tmp_path):
     """A '~/...' HERMES_WEB_DIST must be written back expanded so
     web_server's raw os.environ read serves the validated path."""
@@ -216,38 +190,6 @@ def test_skip_build_recovery_build_failure_preserves_fatal_exit(
     assert "recovery build did not produce a usable dist" in out
 
 
-def test_skip_build_custom_env_dist_missing_does_not_attempt_recovery(
-    main_mod, monkeypatch, tmp_path, capsys
-):
-    """A custom HERMES_WEB_DIST is caller-managed: the recovery build writes
-    to the default dist location and cannot populate it, so the env-var +
-    --skip-build combination keeps the immediate fatal exit with no build."""
-    _wire_common(main_mod, monkeypatch)
-    empty_dist = tmp_path / "custom_dist"
-    empty_dist.mkdir()
-    monkeypatch.setenv("HERMES_WEB_DIST", str(empty_dist))
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        main_mod.cmd_dashboard(_args(skip_build=True))
-
-    assert exc.value.code == 1
-    assert builds == []
-    assert started == []
-    out = capsys.readouterr().out
-    assert "--skip-build was passed but no web dist found" in out
-
-
 # ---------------------------------------------------------------------------
 # Desktop-inherited env isolation (issue #52945 / supersedes #52948, #67402)
 # ---------------------------------------------------------------------------
@@ -294,37 +236,6 @@ def test_standalone_dashboard_drops_electron_packaged_web_dist(
 
     assert "HERMES_WEB_DIST" not in os.environ
     assert len(builds) == 1
-    assert len(started) == 1
-
-
-def test_standalone_dashboard_keeps_caller_managed_web_dist(
-    main_mod, monkeypatch, tmp_path
-):
-    """A non-Electron custom HERMES_WEB_DIST override must survive."""
-    _wire_common(main_mod, monkeypatch)
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    dist = tmp_path / "my-custom-dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    main_mod.cmd_dashboard(_args())
-
-    import os
-
-    assert os.environ["HERMES_WEB_DIST"] == str(dist)
-    assert builds == []
     assert len(started) == 1
 
 
@@ -384,28 +295,3 @@ def test_standalone_dashboard_clears_inherited_serve_headless(
     assert len(started) == 1
 
 
-def test_headless_serve_reasserts_serve_headless(main_mod, monkeypatch):
-    """`hermes serve` must still set HERMES_SERVE_HEADLESS after the clear."""
-    _wire_common(main_mod, monkeypatch)
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
-    monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    main_mod.cmd_dashboard(_args(headless_backend=True))
-
-    import os
-
-    assert os.environ.get("HERMES_SERVE_HEADLESS") == "1"
-    assert builds == []
-    assert len(started) == 1

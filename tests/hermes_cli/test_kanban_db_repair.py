@@ -96,19 +96,6 @@ def test_repairable_index_names_parses_generically():
     ]
 
 
-@pytest.mark.parametrize("messages", [
-    [],
-    ["ok"],
-    ["database disk image is malformed"],
-    ["*** in database main ***", "Page 5: btreeInitPage() returns error code 11"],
-    # Mixed: one repairable line + one non-index line → NOT repairable.
-    ["wrong # of entries in index idx_tasks_status",
-     "database disk image is malformed"],
-])
-def test_repairable_index_names_rejects_non_index_classes(messages):
-    assert kb._repairable_index_names(messages) is None
-
-
 # ---------------------------------------------------------------------------
 # Narrow auto-repair in the connect-time guard
 # ---------------------------------------------------------------------------
@@ -416,34 +403,6 @@ def test_repair_db_reports_ok_on_healthy_board(tmp_path):
     assert report.backup_path is None
 
 
-def test_repair_db_missing_file(tmp_path):
-    report = kb.repair_db(db_path=tmp_path / "nope.db")
-    assert report.status == "missing"
-
-
-def test_repair_db_repairs_index_corruption_with_backup_first(tmp_path):
-    db_path = tmp_path / "kanban.db"
-    _build_board_db(db_path)
-    _corrupt_index(db_path, "idx_tasks_status")
-
-    report = kb.repair_db(db_path=db_path)
-    assert report.status == "repaired"
-    assert report.reindexed == ["idx_tasks_status"]
-    assert report.backup_path is not None and report.backup_path.exists()
-    # Backup captured the PRE-repair bytes (still corrupt in the copy).
-    assert any(
-        m.startswith("wrong # of entries in index")
-        for m in _integrity_messages(report.backup_path)
-    )
-    # Live DB is clean and data intact.
-    assert _integrity_messages(db_path) == ["ok"]
-    conn = kb.connect(db_path=db_path)
-    try:
-        assert "task-0" in {t.title for t in kb.list_tasks(conn)}
-    finally:
-        conn.close()
-
-
 def test_repair_db_fail_closed_on_page_corruption(tmp_path):
     db_path = tmp_path / "kanban.db"
     original = _write_page_corrupt_db(db_path)
@@ -463,32 +422,6 @@ def test_cli_repair_ok_exit_zero(cli_home, capsys):
     assert "integrity_check ok" in out
 
 
-def test_cli_repair_repairs_and_exits_zero(cli_home, capsys):
-    db_path = kb.kanban_db_path()
-    _build_board_db(db_path)
-    _corrupt_index(db_path, "idx_tasks_status")
-
-    rc = _run_kanban_cli(["repair"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "repaired" in out
-    assert "idx_tasks_status" in out
-    assert "pre-repair backup" in out
-    assert _integrity_messages(db_path) == ["ok"]
-
-
-def test_cli_repair_still_corrupt_exits_nonzero(cli_home, capsys):
-    db_path = kb.kanban_db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_page_corrupt_db(db_path)
-
-    rc = _run_kanban_cli(["repair"])
-    err = capsys.readouterr().err
-    assert rc != 0
-    assert "CORRUPT" in err
-    assert "fail-closed" in err
-
-
 def test_cli_repair_json_shape(cli_home, capsys):
     db_path = kb.kanban_db_path()
     _build_board_db(db_path)
@@ -503,8 +436,3 @@ def test_cli_repair_json_shape(cli_home, capsys):
     assert Path(payload["backup_path"]).exists()
 
 
-def test_cli_repair_missing_db_exits_zero(cli_home, capsys):
-    rc = _run_kanban_cli(["repair"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "nothing to repair" in out

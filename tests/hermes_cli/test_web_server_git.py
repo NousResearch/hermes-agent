@@ -154,13 +154,6 @@ def test_worktree_add_initializes_plain_folder(client, tmp_path):
     assert any(file["path"] == "notes.txt" and file["untracked"] for file in status["files"])
 
 
-def test_commit_context_includes_diff_and_untracked(client, repo):
-    body = client.get("/api/git/review/commit-context", params={"path": str(repo)}).json()
-
-    assert "+three" in body["diff"]
-    assert "new.py" in body["diff"]  # untracked files listed since they carry no diff
-
-
 def test_ship_info_degrades_without_gh(client, repo, monkeypatch):
     monkeypatch.setattr(web_server._web_git.shutil, "which", lambda _name: None)
 

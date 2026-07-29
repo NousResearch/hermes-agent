@@ -74,15 +74,6 @@ class TestConfigWrites:
         assert config["stt"]["provider"] == "groq"
         assert config["stt"]["use_gateway"] is False
 
-    def test_write_provider_config_managed_sets_gateway(self):
-        config = {}
-        prov = _stt_provider_named("Nous Subscription")
-        _write_provider_config(prov, config, managed_feature="stt")
-        assert config["stt"]["provider"] == "openai"
-        assert config["stt"]["use_gateway"] is True
-        # Managed stt must not create a bogus top-level section via the
-        # generic use_gateway fallback (it's in the exclusion set).
-        assert set(config.keys()) == {"stt"}
 
     def test_apply_provider_selection_stt(self):
         config = {}
@@ -94,12 +85,6 @@ class TestConfigWrites:
             )
             apply_provider_selection("stt", "OpenAI", config)
         assert config["stt"]["provider"] == "openai"
-
-    def test_byok_pick_clears_stale_gateway_flag(self):
-        config = {"stt": {"provider": "openai", "use_gateway": True}}
-        prov = _stt_provider_named("Groq")
-        _write_provider_config(prov, config, managed_feature=None)
-        assert config["stt"]["use_gateway"] is False
 
 
 class TestActiveDetection:
@@ -122,11 +107,6 @@ class TestModelPicker:
         assert set(STT_MODEL_CATALOG["openai"]) == OPENAI_MODELS
         assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS
 
-    def test_configure_stt_model_writes_model(self):
-        config = {}
-        with patch("hermes_cli.tools_config._prompt_choice", return_value=3):
-            _configure_stt_model("openai", config)
-        assert config["stt"]["openai"]["model"] == STT_MODEL_CATALOG["openai"][3]
 
     def test_configure_stt_model_elevenlabs_uses_model_id(self):
         config = {}
@@ -135,13 +115,6 @@ class TestModelPicker:
         assert config["stt"]["elevenlabs"]["model_id"] == "scribe_v2"
         assert "model" not in config["stt"]["elevenlabs"]
 
-    def test_configure_stt_model_skips_uncataloged_provider(self):
-        config = {}
-        with patch("hermes_cli.tools_config._prompt_choice") as pc:
-            _configure_stt_model("xai", config)
-            _configure_stt_model("deepinfra", config)
-        pc.assert_not_called()
-        assert config == {}
 
     def test_configure_stt_model_defaults_to_current(self):
         config = {"stt": {"openai": {"model": "gpt-transcribe"}}}

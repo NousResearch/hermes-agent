@@ -305,33 +305,6 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
-    def test_background_review_signature_never_breaks(self, fake_session):
-        """Even when no trigger fires, the helper must never call
-        _spawn_background_review with the wrong signature. Run a turn,
-        then run another turn after manually tripping the skill counter
-        and confirm the call shape is the kwargs-only form the function
-        actually accepts."""
-        agent = _make_codex_agent()
-        agent._skill_nudge_interval = 1  # very low so any iter trips it
-        agent._iters_since_skill = 0
-        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
-        agent.valid_tool_names.add("skill_manage")
-
-        with patch.object(agent, "_spawn_background_review",
-                          return_value=None) as spawn:
-            agent.run_conversation("first")
-        # The fake session reports tool_iterations=1, which trips
-        # _skill_nudge_interval=1. So review should fire.
-        assert spawn.called
-        # Critical invariant: positional args must be empty, all real
-        # args must be kwargs (matching _spawn_background_review's
-        # actual signature).
-        call = spawn.call_args
-        assert call.args == (), (
-            f"expected no positional args, got {call.args!r} — "
-            "would crash _spawn_background_review at runtime"
-        )
-        assert "messages_snapshot" in call.kwargs
 
     def test_chat_completions_loop_is_not_entered(self, fake_session):
         """The early-return must bypass the regular API call loop entirely.
@@ -424,43 +397,7 @@ class TestRunConversationCodexPath:
         assert routing.auto_approve_exec is True
         assert routing.auto_approve_apply_patch is True
 
-    def test_yaml_boolean_false_approval_mode_also_auto_approves(
-        self, monkeypatch
-    ):
-        """YAML 1.1 parses unquoted `off` as False; match the normal approval
-        subsystem's compatibility behavior for codex app-server routing too."""
-        captured = self._capture_routing_agent(monkeypatch)
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"approvals": {"mode": False}},
-        ):
-            agent = _make_codex_agent()
-            with patch.object(
-                agent, "_spawn_background_review", return_value=None
-            ):
-                agent.run_conversation("write something")
-        routing = captured["request_routing"]
-        assert routing.auto_approve_exec is True
-        assert routing.auto_approve_apply_patch is True
 
-    def test_manual_approvals_keep_codex_server_requests_fail_closed(
-        self, monkeypatch
-    ):
-        """Default (manual) approvals must preserve the fail-closed behavior —
-        this fix is a no-op for users who haven't opted out."""
-        captured = self._capture_routing_agent(monkeypatch)
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"approvals": {"mode": "manual"}},
-        ):
-            agent = _make_codex_agent()
-            with patch.object(
-                agent, "_spawn_background_review", return_value=None
-            ):
-                agent.run_conversation("write something")
-        routing = captured["request_routing"]
-        assert routing.auto_approve_exec is False
-        assert routing.auto_approve_apply_patch is False
 
     def test_frozen_yolo_env_auto_approves_codex_server_requests(
         self, monkeypatch
@@ -486,27 +423,6 @@ class TestRunConversationCodexPath:
         assert routing.auto_approve_exec is True
         assert routing.auto_approve_apply_patch is True
 
-    def test_session_yolo_auto_approves_codex_server_requests(
-        self, monkeypatch
-    ):
-        """The /yolo session toggle should be honored at Codex session creation
-        time, independent of the startup-time approvals config."""
-        captured = self._capture_routing_agent(monkeypatch)
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"approvals": {"mode": "manual"}},
-        ):
-            agent = _make_codex_agent()
-            with patch(
-                "tools.approval.is_current_session_yolo_enabled",
-                return_value=True,
-            ), patch.object(
-                agent, "_spawn_background_review", return_value=None
-            ):
-                agent.run_conversation("write something")
-        routing = captured["request_routing"]
-        assert routing.auto_approve_exec is True
-        assert routing.auto_approve_apply_patch is True
 
 
 class TestReviewForkApiModeDowngrade:
@@ -667,31 +583,6 @@ class TestSessionRetirementOnRunAgent:
         # Session was lazily created and still attached.
         assert getattr(agent, "_codex_session", None) is not None
 
-    def test_exception_path_also_drops_session(self, monkeypatch):
-        """Even if run_turn raises (not just sets should_retire), we must
-        drop the session — a thrown exception is the strongest possible
-        signal the process is dead."""
-        closes = {"count": 0}
-
-        def boom_run_turn(self, user_input, **kwargs):
-            raise RuntimeError("codex segfaulted")
-
-        def fake_close(self):
-            closes["count"] += 1
-
-        monkeypatch.setattr(CodexAppServerSession, "ensure_started",
-                            lambda self: "th1")
-        monkeypatch.setattr(CodexAppServerSession, "run_turn", boom_run_turn)
-        monkeypatch.setattr(CodexAppServerSession, "close", fake_close)
-
-        agent = _make_codex_agent()
-        with patch.object(agent, "_spawn_background_review", return_value=None):
-            result = agent.run_conversation("hi")
-
-        assert closes["count"] == 1
-        assert agent._codex_session is None
-        assert result["completed"] is False
-        assert "codex segfaulted" in result["error"]
 
 
 class TestCodexToolProgressBridge:

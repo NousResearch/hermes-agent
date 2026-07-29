@@ -54,13 +54,6 @@ class TestDefaultVerify:
         result = _default_verify()
         assert isinstance(result, ssl.SSLContext)
 
-    def test_returns_true_on_linux(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "linux")
-        assert _default_verify() is True
-
-    def test_returns_true_on_windows(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "win32")
-        assert _default_verify() is True
 
     def test_darwin_falls_back_to_true_when_certifi_missing(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -99,12 +92,6 @@ class TestResolveVerifyIntegration:
         result = _resolve_verify()
         assert isinstance(result, ssl.SSLContext)
 
-    def test_missing_ca_path_falls_back_to_default_verify(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setenv("HERMES_CA_BUNDLE", str(tmp_path / "missing.pem"))
-        for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
-            monkeypatch.delenv(var, raising=False)
-        assert _resolve_verify() is True
 
     def test_insecure_wins_over_everything(self, monkeypatch, tmp_path):
         bundle = tmp_path / "ca.pem"

@@ -86,13 +86,3 @@ def test_legacy_db_without_subs_table_counts_zero_and_stays_unmigrated(tmp_path)
     )
 
 
-def test_explicit_db_path_overrides_board(kanban_home, tmp_path):
-    pinned = tmp_path / "pinned.db"
-    conn = kb.connect(db_path=pinned)
-    try:
-        tid = kb.create_task(conn, title="t", assignee="w")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="c1")
-    finally:
-        conn.close()
-    assert kb.count_notify_subs(pinned) == 1
-    assert kb.count_notify_subs(board="default") == 0

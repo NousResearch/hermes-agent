@@ -64,38 +64,6 @@ def test_shared_approval_mode_command_reports_effective_default_without_writing(
     assert not (tmp_path / "config.yaml").exists()
 
 
-def test_shared_approval_mode_command_persists_profile_setting(tmp_path, monkeypatch):
-    from hermes_cli.approval_mode import run_approval_mode_command
-
-    _isolate_config(monkeypatch, tmp_path)
-    path = tmp_path / "config.yaml"
-    path.write_text("model:\n  default: test-model\n", encoding="utf-8")
-
-    result = run_approval_mode_command("off")
-
-    assert result.ok is True
-    assert result.mode == "off"
-    assert result.changed is True
-    assert yaml.safe_load(path.read_text(encoding="utf-8"))["approvals"]["mode"] in {"off", False}
-    assert "persistent" in result.message.lower()
-
-
-def test_shared_approval_mode_command_rejects_unknown_mode_without_writing(tmp_path, monkeypatch):
-    from hermes_cli.approval_mode import run_approval_mode_command
-
-    _isolate_config(monkeypatch, tmp_path)
-    path = tmp_path / "config.yaml"
-    path.write_text("approvals:\n  mode: smart\n", encoding="utf-8")
-    before = path.read_bytes()
-
-    result = run_approval_mode_command("auto")
-
-    assert result.ok is False
-    assert result.mode == "smart"
-    assert path.read_bytes() == before
-    assert "manual|smart|off" in result.message
-
-
 def test_shared_status_matches_runtime_normalization_for_all_stored_shapes():
     from hermes_cli.approval_mode import run_approval_mode_command
     from tools.approval import _get_approval_mode

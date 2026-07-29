@@ -10698,6 +10698,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
+
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
         if session.get("running"):
@@ -10719,6 +10721,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    assert session is not None
     # Safety net: if the turn's run thread is already gone but `running` stayed
     # stuck (a crash/desync that skipped the run loop's `finally`), force-clear it
     # so the session can't be permanently bricked at 4009 "session busy" — every
@@ -10732,6 +10735,7 @@ def _(rid, params: dict) -> dict:
     if should_interrupt and hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
     with session["history_lock"]:
+        active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
     if not run_thread_alive:
@@ -10755,6 +10759,9 @@ def _(rid, params: dict) -> dict:
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     except Exception:
         pass
+    # The local agent accepted the cooperative interrupt. Retire the recovery
+    # marker before ACK rather than waiting for the run thread's finally block.
+    _retire_turn_marker(session, active_marker_key)
     return _ok(rid, {"status": "interrupted"})
 
 
@@ -12011,7 +12018,17 @@ def _run_prompt_submit(
         marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
         marker_text = session.pop("_auto_continue_prompt", None) or text
         if isinstance(marker_text, str) and marker_text.strip():
+            # Publish the original key before the disk write so an interrupt
+            # racing startup can retire it even if compression rotates the
+            # session key later. The post-write cancel check closes the inverse
+            # race where Stop lands first and therefore clears no file yet.
+            with session["history_lock"]:
+                session["_active_turn_marker_key"] = marker_key
             record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+            with session["history_lock"]:
+                marker_cancelled = bool(session.get("_turn_cancel_requested"))
+            if marker_cancelled:
+                clear_turn_marker(marker_home, marker_key)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -12622,6 +12639,9 @@ def _run_prompt_submit(
             # Backstop for turns that never reached a terminal frame (the
             # frame paths retire the marker as they emit).
             _retire_turn_marker(session, marker_key)
+            with session["history_lock"]:
+                if session.get("_active_turn_marker_key") == marker_key:
+                    session.pop("_active_turn_marker_key", None)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, agent)
 

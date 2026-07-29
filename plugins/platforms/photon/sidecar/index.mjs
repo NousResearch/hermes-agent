@@ -278,7 +278,10 @@ const app = await Spectrum({
   telemetry,
 });
 
-const MESSAGE_EFFECTS = imessage.effect.message;
+// Effect-name → native effect id map. Optional chaining: an SDK build
+// without the iMessage effect surface (or a test stub) must not crash the
+// sidecar at import — /send-effect then rejects with "unsupported effect".
+const MESSAGE_EFFECTS = imessage?.effect?.message || {};
 
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.

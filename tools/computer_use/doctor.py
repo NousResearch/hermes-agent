@@ -25,7 +25,6 @@ import json
 import os
 import platform as _platform_mod
 import re
-import shutil
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple

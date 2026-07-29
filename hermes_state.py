@@ -16,7 +16,6 @@ Key design decisions:
 
 import asyncio
 import atexit
-import contextlib
 import json
 import logging
 import os

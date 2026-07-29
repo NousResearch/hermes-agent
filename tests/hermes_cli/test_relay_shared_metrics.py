@@ -237,27 +237,31 @@ def test_package_schema_matches_the_tool_contract():
 
 
 @pytest.mark.parametrize(
-    ("name", "expected"),
+    ("toolset", "expected"),
     [
         ("", "unknown"),
-        ("read_file", "file"),
+        ("file", "file"),
         ("terminal", "terminal"),
-        ("execute_code", "code_execution"),
-        ("delegate_task", "delegation"),
-        ("skill_manage", "skill"),
-        ("browser_navigate", "browser"),
-        ("image_generate", "media"),
-        ("ha_call_service", "home_automation"),
-        ("kanban_create", "planning"),
-        ("project_switch", "project"),
+        ("code_execution", "code_execution"),
+        ("delegation", "delegation"),
+        ("skills", "skill"),
+        ("browser-cdp", "browser"),
+        ("image_gen", "media"),
+        ("homeassistant", "home_automation"),
+        ("kanban", "planning"),
+        ("project", "project"),
         ("discord", "communication"),
-        ("feishu_doc_read", "communication"),
-        ("mcp__github__get_issue", "mcp"),
-        ("private_plugin_tool", "other"),
+        ("feishu_doc", "communication"),
+        ("mcp-github", "mcp"),
+        ("private_plugin", "other"),
     ],
 )
-def test_tool_category_is_bounded(name, expected):
-    assert tool_category({"tool_name": name}) == expected
+def test_tool_category_uses_bounded_runtime_toolsets(toolset, expected):
+    assert tool_category({"toolset": toolset}) == expected
+
+
+def test_tool_category_does_not_classify_raw_tool_names():
+    assert tool_category({"tool_name": "read_file"}) == "unknown"
 
 
 @pytest.mark.parametrize(

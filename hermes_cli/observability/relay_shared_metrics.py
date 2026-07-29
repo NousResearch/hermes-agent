@@ -371,7 +371,7 @@ class _Runtime:
             return
         outcome = tool_approval_outcome(event)
         tool_call_id = str(event.get("tool_call_id") or "")
-        attribution = "tool_call" if tool_call_id else "unattributed"
+        attribution = "unattributed"
         with session.lock:
             if session.closing:
                 return
@@ -389,6 +389,7 @@ class _Runtime:
                     tool_call = matches[0] if len(matches) == 1 else None
                 if tool_call is not None:
                     tool_call.approval_outcome = outcome
+                    attribution = "tool_call"
             self._run_in_task(
                 task,
                 self.relay.scope.event,
@@ -967,9 +968,9 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         elif hook_name == "pre_api_request":
             runtime.start_model_call(kwargs)
         elif hook_name == "pre_tool_call":
-            runtime.start_tool_call(kwargs)
+            runtime.start_tool_call(_with_runtime_toolset(kwargs))
         elif hook_name == "post_tool_call":
-            runtime.record_tool_call(kwargs)
+            runtime.record_tool_call(_with_runtime_toolset(kwargs))
         elif hook_name == "post_approval_response":
             runtime.record_approval(kwargs)
         elif hook_name == "post_api_request":
@@ -988,6 +989,22 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         logger.warning(
             "Hermes shared metrics hook failed: %s", hook_name, exc_info=True
         )
+
+
+def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
+    """Attach the toolset already declared by Hermes's runtime registry."""
+    if event.get("toolset"):
+        return event
+    tool_name = str(event.get("tool_name") or "")
+    if not tool_name:
+        return event
+    try:
+        from tools.registry import registry
+
+        toolset = registry.get_toolset_for_tool(tool_name)
+    except Exception:
+        toolset = None
+    return {**event, "toolset": toolset or "other"}
 
 
 def prepare_session_start() -> None:

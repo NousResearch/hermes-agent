@@ -147,20 +147,6 @@ TOOL_LATENCY_BUCKETS: frozenset[str] = frozenset({
 })
 TOOL_RETRY_BUCKETS: frozenset[str] = COUNT_BUCKETS | frozenset({"unknown"})
 
-_TOOL_NAMES_BY_CATEGORY: dict[str, frozenset[str]] = {
-    "code_execution": frozenset({"execute_code"}),
-    "communication": frozenset({"discord", "email", "meet"}),
-    "computer_use": frozenset({"computer_use"}),
-    "delegation": frozenset({"delegate_task"}),
-    "file": frozenset({"patch", "read_file", "search_files", "write_file"}),
-    "memory": frozenset({"memory", "session_search"}),
-    "planning": frozenset({"clarify", "todo"}),
-    "scheduler": frozenset({"cronjob"}),
-    "skill": frozenset({"skill_manage", "skill_view", "skills_list"}),
-    "terminal": frozenset({"close_terminal", "process", "read_terminal", "terminal"}),
-    "web": frozenset({"web_extract", "web_search", "x_search"}),
-}
-
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     TASK_STARTED_METRIC: {
         "entrypoint": TASK_ENTRYPOINTS,
@@ -491,26 +477,33 @@ def count_bucket(count: int) -> str:
 
 
 def tool_category(kwargs: dict[str, Any]) -> str:
-    """Map a raw Hermes tool name to a stable low-cardinality category."""
-    name = str(kwargs.get("tool_name") or "").strip().lower()
-    if not name:
+    """Map Hermes registry toolset metadata to a low-cardinality category."""
+    toolset = str(kwargs.get("toolset") or "").strip().lower()
+    if not toolset:
         return "unknown"
-    if name.startswith(("mcp.", "mcp_", "mcp__")):
+    if toolset in TOOL_CATEGORIES:
+        return toolset
+    if toolset.startswith("mcp"):
         return "mcp"
-    for category, names in _TOOL_NAMES_BY_CATEGORY.items():
-        if name in names:
-            return category
-    if name.startswith("browser_"):
+    if toolset.startswith("browser"):
         return "browser"
-    if name.startswith(("vision_", "image_", "video_", "text_to_speech")):
+    if toolset.startswith(("image", "tts", "video", "vision")):
         return "media"
-    if name.startswith("ha_"):
+    if toolset.startswith("homeassistant"):
         return "home_automation"
-    if name.startswith("kanban_"):
+    if toolset in {"clarify", "kanban", "todo"}:
         return "planning"
-    if name.startswith("project_"):
-        return "project"
-    if name.startswith(("discord_", "email_", "feishu_", "slack_", "sms_", "yb_")):
+    if toolset == "session_search":
+        return "memory"
+    if toolset == "cronjob":
+        return "scheduler"
+    if toolset == "skills":
+        return "skill"
+    if toolset == "x_search":
+        return "web"
+    if toolset.startswith(
+        ("discord", "email", "feishu", "hermes-yuanbao", "slack", "sms")
+    ):
         return "communication"
     return "other"
 

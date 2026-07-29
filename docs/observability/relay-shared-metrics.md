@@ -91,7 +91,10 @@ conversation session during context compression.
 Each tool invocation is represented by a Relay tool lifecycle named
 `hermes.tool_call`. The terminal counter contains only bounded tool category,
 outcome, approval outcome, latency, and explicit retry-count buckets. Hermes
-does not infer retries from repeated tool names or adjacent calls; when the
+derives the category from the toolset already declared in its runtime registry;
+custom and unrecognized toolsets collapse to `other` rather than exporting
+tool or plugin names. Hermes does not infer retries from repeated tool names or
+adjacent calls; when the
 hook does not provide an explicit retry relationship, the retry bucket is
 `unknown`. Approval decisions are emitted as `hermes.tool_approval` marks and
 recorded as attributed to a tool call or explicitly `unattributed`. Tool names,

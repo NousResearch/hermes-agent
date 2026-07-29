@@ -252,6 +252,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         **base,
         tool_call_id="sensitive-tool-call",
         tool_name="terminal",
+        toolset="terminal",
         args={"command": "sensitive-command"},
     )
     lifecycle.invoke_hook(
@@ -267,6 +268,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         **base,
         tool_call_id="sensitive-tool-call",
         tool_name="terminal",
+        toolset="terminal",
         args={"command": "sensitive-command"},
         result={"output": "sensitive-tool-result"},
         status="ok",
@@ -2875,6 +2877,85 @@ def test_approval_without_tool_context_is_counted_as_unattributed(direct_runtime
         "attribution": "unattributed",
         "outcome": "denied",
     }
+
+
+def test_approval_with_unmatched_tool_id_is_counted_as_unattributed(direct_runtime):
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "post_approval_response",
+        **base,
+        tool_call_id="spoofed-tool-call",
+        choice="deny",
+        command="must-not-pass",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=False,
+        failed=True,
+        interrupted=False,
+        turn_exit_reason="approval_denied",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [approval] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.tool_approval"
+    ]
+    assert approval[2]["data"] == {
+        "attribution": "unattributed",
+        "outcome": "denied",
+    }
+
+
+def test_tool_category_comes_from_runtime_registry_metadata(
+    direct_runtime,
+    monkeypatch,
+):
+    from tools.registry import registry
+
+    monkeypatch.setattr(
+        registry,
+        "get_toolset_for_tool",
+        lambda name: "terminal" if name == "runtime_only_tool" else None,
+    )
+    base = {
+        "session_id": "s1",
+        "task_id": "t1",
+        "turn_id": "turn-1",
+        "platform": "cli",
+    }
+    lifecycle.invoke_hook("pre_llm_call", **base)
+    lifecycle.invoke_hook(
+        "post_tool_call",
+        **base,
+        tool_call_id="tool-1",
+        tool_name="runtime_only_tool",
+        result={"output": "private"},
+        status="ok",
+    )
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id="s1")
+
+    [tool_end] = [
+        event for event in direct_runtime.events if event[0] == "tool.call_end"
+    ]
+    assert tool_end[2]["tool_category"] == "terminal"
 
 
 def test_task_terminal_counts_explicit_retry_with_new_request_id(direct_runtime):

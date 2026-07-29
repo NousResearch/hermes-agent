@@ -1143,7 +1143,7 @@ stt:
   #   model: "whisper-large-v3-turbo"
   #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
   openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
     language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602

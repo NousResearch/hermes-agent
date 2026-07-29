@@ -38,6 +38,16 @@ class FakeAgent:
         return {"final_response": final, "messages": messages}
 
 
+class InterruptingAgent(FakeAgent):
+    def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
+        self.runs.append(user_message)
+        return {
+            "final_response": None,
+            "interrupted": True,
+            "messages": list(conversation_history or []),
+        }
+
+
 class CaptureConn:
     def __init__(self):
         self.updates = []
@@ -258,3 +268,26 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
     assert state.queued_prompts == []
     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(agent_messages) >= 2
+
+
+@pytest.mark.asyncio
+async def test_acp_interrupted_none_final_response_does_not_crash():
+    fake = InterruptingAgent()
+    manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+    conn = CaptureConn()
+    acp_agent.on_connect(conn)
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="start then interrupt")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == ["start then interrupt"]
+    assert [
+        update
+        for _sid, update in conn.updates
+        if getattr(update, "session_update", None) == "agent_message_chunk"
+    ] == []

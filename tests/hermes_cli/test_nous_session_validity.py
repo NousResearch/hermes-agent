@@ -154,3 +154,77 @@ def test_provider_state_exception_is_unknown(monkeypatch):
     _block_live_auth(monkeypatch)
 
     assert get_nous_session_validity() == NOUS_SESSION_UNKNOWN
+
+
+# ── get_nous_auth_status_local — refresh-free display snapshot ──
+
+
+def test_local_status_logged_in_with_usable_jwt_never_refreshes(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "get_provider_auth_state",
+        lambda provider: {
+            "access_token": _invoke_jwt(),
+            "refresh_token": "rt",
+            "scope": auth.DEFAULT_NOUS_SCOPE,
+            "portal_base_url": "https://portal.example",
+        },
+    )
+    _block_live_auth(monkeypatch)
+
+    status = auth.get_nous_auth_status_local()
+    assert status["logged_in"] is True
+    assert status["source"] == "auth_store_local"
+    assert status["portal_base_url"] == "https://portal.example"
+
+
+def test_local_status_logged_in_via_refresh_token_when_jwt_expired(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "get_provider_auth_state",
+        lambda provider: {
+            "access_token": _invoke_jwt(seconds=-60),
+            "refresh_token": "rt",
+            "scope": auth.DEFAULT_NOUS_SCOPE,
+        },
+    )
+    _block_live_auth(monkeypatch)
+
+    # Runtime can still refresh — display should not claim logged-out.
+    assert auth.get_nous_auth_status_local()["logged_in"] is True
+
+
+def test_local_status_not_logged_in_after_terminal_quarantine(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "get_provider_auth_state",
+        lambda provider: {
+            "last_auth_error": {
+                "relogin_required": True,
+                "code": "invalid_grant",
+            },
+        },
+    )
+    _block_live_auth(monkeypatch)
+
+    status = auth.get_nous_auth_status_local()
+    assert status["logged_in"] is False
+    assert status["relogin_required"] is True
+    assert status["error_code"] == "invalid_grant"
+
+
+def test_local_status_repeated_polling_never_uses_live_auth(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "get_provider_auth_state",
+        lambda provider: {
+            "access_token": _invoke_jwt(),
+            "refresh_token": "rt",
+            "scope": auth.DEFAULT_NOUS_SCOPE,
+        },
+    )
+    _block_live_auth(monkeypatch)
+
+    assert all(
+        auth.get_nous_auth_status_local()["logged_in"] for _ in range(10)
+    )

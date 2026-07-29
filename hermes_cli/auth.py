@@ -6519,6 +6519,69 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
     return _snapshot_nous_pool_status()
 
 
+def get_nous_auth_status_local() -> Dict[str, Any]:
+    """Refresh-free Nous auth snapshot for read-only display surfaces.
+
+    Unlike :func:`get_nous_auth_status`, this NEVER calls
+    ``resolve_nous_runtime_credentials()`` and therefore never performs an
+    OAuth refresh POST or consumes a single-use refresh token. It reports the
+    persisted auth-store state, classifying the access token with a local
+    invoke-JWT decode only.
+
+    Use this from status panels, doctor checks, and polled dashboard
+    endpoints. Explicit auth actions (login flows, portal operations that
+    need a live credential) should keep using ``get_nous_auth_status()``.
+
+    ``logged_in`` here means "a persisted login exists that the runtime can
+    use or refresh": a currently-usable invoke JWT, or a refresh token that
+    has not been terminally quarantined. It does not prove the refresh token
+    is still accepted server-side — only a live resolve can do that.
+    """
+    try:
+        state = get_provider_auth_state("nous")
+    except Exception:
+        state = None
+
+    if not state:
+        return _snapshot_nous_pool_status()
+
+    access_token = state.get("access_token")
+    jwt_reason = _nous_invoke_jwt_status(
+        access_token,
+        scope=state.get("scope"),
+        expires_at=state.get("expires_at"),
+    )
+    last_err = state.get("last_auth_error")
+    terminal = bool(
+        isinstance(last_err, dict)
+        and last_err.get("relogin_required")
+        and not (access_token or state.get("refresh_token"))
+    )
+    logged_in = (jwt_reason is None) or (
+        bool(state.get("refresh_token")) and not terminal
+    )
+
+    status: Dict[str, Any] = {
+        "logged_in": logged_in,
+        "portal_base_url": state.get("portal_base_url"),
+        "inference_base_url": state.get("inference_base_url"),
+        "access_token": access_token,
+        "access_expires_at": state.get("expires_at"),
+        "agent_key_expires_at": state.get("agent_key_expires_at"),
+        "has_refresh_token": bool(state.get("refresh_token")),
+        "inference_credential_present": bool(
+            access_token or state.get("agent_key")
+        ),
+        "credential_source": "auth_store",
+        "source": "auth_store_local",
+    }
+    if terminal and isinstance(last_err, dict):
+        status["relogin_required"] = True
+        status["error_code"] = last_err.get("code")
+        status["error"] = last_err.get("message") or "re-login required"
+    return status
+
+
 # Enum values reported on the dashboard /api/status as ``nous_session_valid``.
 # NAS's health sweep re-mints the bootstrap session ONLY on "terminal"; "valid"
 # and "unknown" are no-ops. Keep this set small and stable — NAS parses it with

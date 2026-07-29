@@ -195,12 +195,14 @@ def show_status(args):
 
     try:
         from hermes_cli.auth import (
-            get_nous_auth_status,
+            get_nous_auth_status_local,
             get_codex_auth_status,
             get_qwen_auth_status,
             get_minimax_oauth_auth_status,
         )
-        nous_status = get_nous_auth_status()
+        # Read-only display: use the refresh-free snapshot so `hermes status`
+        # never performs an OAuth refresh or burns a single-use refresh token.
+        nous_status = get_nous_auth_status_local()
         codex_status = get_codex_auth_status()
         qwen_status = get_qwen_auth_status()
         minimax_status = get_minimax_oauth_auth_status()

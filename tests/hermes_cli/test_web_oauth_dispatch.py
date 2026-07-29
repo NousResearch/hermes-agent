@@ -867,7 +867,7 @@ def test_status_hardcoded_branch_wins_over_generic_fallback():
     import hermes_cli.web_server as ws
 
     with patch(
-        "hermes_cli.auth.get_nous_auth_status",
+        "hermes_cli.auth.get_nous_auth_status_local",
         return_value={"logged_in": True, "portal_base_url": "https://portal.test"},
     ):
         out = ws._resolve_provider_status("nous", None)

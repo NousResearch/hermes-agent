@@ -1356,12 +1356,14 @@ def run_doctor(args):
 
     try:
         from hermes_cli.auth import (
-            get_nous_auth_status,
+            get_nous_auth_status_local,
             get_codex_auth_status,
             get_minimax_oauth_auth_status,
         )
 
-        nous_status = get_nous_auth_status()
+        # Read-only display: refresh-free snapshot — doctor must never
+        # trigger an OAuth refresh as a side effect of a health check.
+        nous_status = get_nous_auth_status_local()
         if nous_status.get("logged_in"):
             check_ok("Nous Portal auth", "(logged in)")
         else:

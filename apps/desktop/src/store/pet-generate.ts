@@ -6,7 +6,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { type PetInfo } from '@/store/pet'
-import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
+import { applyAdoptedPet, type GatewayRequest, petRpc } from '@/store/pet-gallery'
 /**
  * Feature store for the "generate a pet" flow (Cmd-K → Pets → Generate).
  *
@@ -132,7 +132,7 @@ export function markRemixConfirmed(): void {
 /** Probe whether generation is possible (a reference-capable backend exists). */
 export async function checkPetGenAvailable(request: GatewayRequest): Promise<void> {
   try {
-    const res = await request<{ available: boolean; providers?: PetGenProvider[] }>('pet.generate.status')
+    const res = await petRpc<{ available: boolean; providers?: PetGenProvider[] }>(request, 'pet.generate.status')
     $petGenAvailable.set(Boolean(res?.available))
     const providers = res?.providers ?? []
     $petGenProviders.set(providers)
@@ -212,7 +212,7 @@ export function cleanupPetGenOnClose(request: GatewayRequest): void {
   const preview = $petGenPreview.get()
 
   if ((status === 'preview' || status === 'adopting') && preview?.slug) {
-    void request('pet.remove', { slug: preview.slug }).catch(() => {})
+    void petRpc(request, 'pet.remove', { slug: preview.slug }).catch(() => {})
     resetPetGen()
   }
 }
@@ -354,7 +354,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
   const preview = $petGenPreview.get()
 
   if (preview?.slug) {
-    await request('pet.remove', { slug: preview.slug }).catch(() => {})
+    await petRpc(request, 'pet.remove', { slug: preview.slug }).catch(() => {})
   }
 
   $petGenStatus.set('generating')
@@ -403,7 +403,8 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
     }) ?? (() => {})
 
   try {
-    const result = await request<{ ok: boolean; token: string; drafts: PetDraft[] }>(
+    const result = await petRpc<{ ok: boolean; token: string; drafts: PetDraft[] }>(
+      request,
       'pet.generate',
       {
         prompt,
@@ -519,7 +520,8 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
       }) ?? (() => {})
 
   try {
-    const result = await request<{ ok: boolean; slug: string; displayName: string; pet?: PetInfo }>(
+    const result = await petRpc<{ ok: boolean; slug: string; displayName: string; pet?: PetInfo }>(
+      request,
       'pet.hatch',
       {
         token,
@@ -538,7 +540,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
     // Stopped mid-hatch: the server created the pet anyway, so delete it.
     if (!hatch.isCurrent(hatchRunId)) {
       if (result?.slug) {
-        void request('pet.remove', { slug: result.slug }).catch(() => {})
+        void petRpc(request, 'pet.remove', { slug: result.slug }).catch(() => {})
       }
 
       return false
@@ -603,7 +605,7 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     let adoptSlug = preview.slug
 
     if (finalName && finalName !== preview.displayName) {
-      const renamed = await request<{ ok: boolean; slug: string }>('pet.rename', {
+      const renamed = await petRpc<{ ok: boolean; slug: string }>(request, 'pet.rename', {
         slug: preview.slug,
         name: finalName
       }).catch(() => null)
@@ -613,7 +615,7 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
       }
     }
 
-    const result = await request<{ ok: boolean; slug: string; displayName: string }>('pet.select', {
+    const result = await petRpc<{ ok: boolean; slug: string; displayName: string }>(request, 'pet.select', {
       slug: adoptSlug
     })
 
@@ -643,7 +645,7 @@ export async function discardHatched(request: GatewayRequest): Promise<void> {
   const preview = $petGenPreview.get()
 
   if (preview?.slug) {
-    await request('pet.remove', { slug: preview.slug }).catch(() => {})
+    await petRpc(request, 'pet.remove', { slug: preview.slug }).catch(() => {})
   }
 
   $petGenPreview.set(null)

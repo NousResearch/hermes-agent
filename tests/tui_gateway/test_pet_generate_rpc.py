@@ -224,6 +224,98 @@ def test_pet_sprite_payload_includes_concrete_row_counts():
     assert payload["framesByState"]["run"] == 6
 
 
+def test_pet_generate_status_scoped_to_active_profile(monkeypatch, tmp_path):
+    """pet.generate.status must resolve credentials under the selected profile.
+
+    Every other pet.* RPC (pet.select, pet.info, ...) carries ``@_profile_scoped``
+    so a desktop session "switched" to profile X reads/writes X's HERMES_HOME.
+    pet.generate.status resolved the image-gen provider from the launch
+    profile's config instead, so the generate overlay could report "available"
+    (or the wrong provider list) for a profile that never configured one.
+    """
+    from hermes_constants import get_hermes_home
+
+    profile_home = tmp_path / "profiles" / "beta"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default"))
+    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "beta" else None)
+
+    seen = []
+
+    def fake_resolve_provider(*, require_references=True, prefer=None):
+        from agent.pet.generate.imagegen import GenerationError
+
+        seen.append(str(get_hermes_home()))
+        raise GenerationError("no provider")
+
+    monkeypatch.setattr("agent.pet.generate.imagegen.resolve_provider", fake_resolve_provider)
+    monkeypatch.setattr("agent.pet.generate.imagegen.list_sprite_providers", lambda: (seen.append(str(get_hermes_home())) or []))
+
+    server._methods["pet.generate.status"]("r1", {"profile": "beta"})
+
+    assert seen == [str(profile_home), str(profile_home)]
+
+
+def test_pet_generate_stages_drafts_under_active_profile_home(monkeypatch, tmp_path):
+    """pet.generate must stage drafts under the selected profile's cache dir.
+
+    ``_pet_gen_root()``'s own docstring says its staging dir is profile-scoped,
+    but the handler lacked ``@_profile_scoped`` so it always resolved to the
+    launch profile's HERMES_HOME regardless of the caller's active profile.
+    """
+    import agent.pet.generate as gen
+
+    profile_home = tmp_path / "profiles" / "beta"
+    profile_home.mkdir(parents=True)
+    launch_home = tmp_path / "default"
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "beta" else None)
+    monkeypatch.setattr(gen, "generate_base_drafts", _fake_drafts_factory(tmp_path))
+
+    resp = server._methods["pet.generate"]("r1", {"prompt": "a fox", "profile": "beta"})
+    result = resp["result"]
+    assert result["ok"]
+
+    staged = profile_home / "cache" / "pet-gen" / result["token"] / "draft-0.png"
+    assert staged.is_file()
+    assert not (launch_home / "cache" / "pet-gen" / result["token"]).exists()
+
+
+def test_pet_hatch_installs_pet_under_active_profile_home(monkeypatch, tmp_path):
+    """pet.hatch must install the new pet under the selected profile's pets dir.
+
+    Without ``@_profile_scoped``, a pet hatched while a secondary profile is
+    active landed in the LAUNCH profile's ``pets/`` directory. The subsequent
+    (correctly profile-scoped) ``pet.select`` then can't find the slug in the
+    active profile's store — the "just created" pet is unadoptable.
+    """
+    import agent.pet.generate as gen
+
+    profile_home = tmp_path / "profiles" / "beta"
+    profile_home.mkdir(parents=True)
+    launch_home = tmp_path / "default"
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "beta" else None)
+
+    captured = {}
+    monkeypatch.setattr(gen, "generate_base_drafts", _fake_drafts_factory(tmp_path))
+    monkeypatch.setattr(gen, "hatch_pet", _fake_hatch_factory(captured))
+
+    token = server._methods["pet.generate"](
+        "r1", {"prompt": "a fox", "profile": "beta"}
+    )["result"]["token"]
+
+    resp = server._methods["pet.hatch"](
+        "r2",
+        {"token": token, "index": 0, "name": "Beta Fox", "profile": "beta"},
+    )
+    result = resp["result"]
+    assert result["ok"]
+
+    assert (profile_home / "pets" / "beta-fox").is_dir()
+    assert not (launch_home / "pets" / "beta-fox").exists()
+
+
 def test_pet_info_meta_avoids_full_payload(monkeypatch):
     import hermes_cli.config as cli_config
     from agent.pet import constants, store

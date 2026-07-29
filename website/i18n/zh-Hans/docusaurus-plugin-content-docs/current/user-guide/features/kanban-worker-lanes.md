@@ -100,7 +100,7 @@ profile 通道的特化形态：orchestrator 是一个 Hermes profile，其工�
 
 通道作者无需重新实现以下逻辑：
 
-- **Claim TTL 过期** — 已 claim 但从未心跳/完成/阻塞的 worker 在 `DEFAULT_CLAIM_TTL_SECONDS`（默认 15 分钟）后被回收——但仅当 worker 进程确实已死亡时。存活的 worker（慢速模型在一次无工具调用的 LLM 调用中耗时 20 分钟以上）会获得 claim *延期*而非被终止；只有 PID 已消亡时才会被回收。
+- **Claim TTL 过期** — 已 claim 但从未心跳/完成/阻塞的 worker 在 `DEFAULT_CLAIM_TTL_SECONDS`（默认 2 小时）后被回收。同时，超过 1 小时没有心跳会触发独立的进度停滞保护。认领 TTL 到期但仍存活的 worker 仍会被延长认领而不是被杀死；只有死亡的 PID 才会被回收，而 heartbeat 已停滞的存活 worker 仍会按卡死处理。这与 `max_runtime_seconds` 和 `dispatch_stale_timeout_seconds` 相互独立。
 - **Worker 崩溃** — 宿主本地 PID 已消失的 worker 由 `detect_crashed_workers` 检测并回收；任务的 `consecutive_failures` 递增，断路器触发时可能自动阻塞。
 - **运行级重试** — 任务重试时（post-block、post-crash、post-reclaim），worker 可在终止工具上使用 `expected_run_id` 参数，在自身运行已被取代时快速失败。
 - **每任务最大运行时间** — `task.max_runtime_seconds` 对每次运行的挂钟时间进行硬性限制，与 PID 存活状态无关。可捕获真正死锁的 worker——否则存活 PID 延期机制会让其持续运行。

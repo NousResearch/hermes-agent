@@ -453,6 +453,46 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         assert killed == [signal.SIGTERM]
 
 
+def test_default_claim_ttl_sets_two_hour_expiry(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="default lease", assignee="worker")
+        before = int(time.time())
+        claimed = kb.claim_task(conn, task_id, claimer="test:worker")
+        after = int(time.time())
+
+        assert claimed is not None
+        assert claimed.claim_expires is not None
+        assert before + 2 * 60 * 60 <= claimed.claim_expires <= after + 2 * 60 * 60
+
+
+def test_fresh_retry_resets_prior_run_heartbeat(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="retry heartbeat", assignee="worker")
+        first = kb.claim_task(conn, task_id, claimer="test:worker")
+        assert first is not None
+        old_heartbeat = int(time.time()) - (
+            kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS + 10
+        )
+        conn.execute(
+            "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+            (old_heartbeat, task_id),
+        )
+        assert kb.reclaim_task(conn, task_id, reason="retry test") is True
+
+        second = kb.claim_task(conn, task_id, claimer="test:worker")
+        assert second is not None
+        assert second.last_heartbeat_at is not None
+        assert second.last_heartbeat_at > old_heartbeat
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        assert kb.release_stale_claims(conn, signal_fn=lambda *_args: None) == 0
+        refreshed = kb.get_task(conn, task_id)
+        assert refreshed is not None
+        assert refreshed.status == "running"
+
+
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
     kanban_home, monkeypatch,
 ):

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,30 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     kc.run_slash(f"claim {tid}")
     assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
+def test_claim_cli_default_and_explicit_ttl(kanban_home):
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    default_args = parser.parse_args(["kanban", "claim", "t_default"])
+    assert default_args.ttl == kb.DEFAULT_CLAIM_TTL_SECONDS == 2 * 60 * 60
+
+    out = kc.run_slash("create 'explicit ttl' --assignee worker")
+    import re
+    match = re.search(r"(t_[a-f0-9]+)", out)
+    assert match is not None
+    task_id = match.group(1)
+    before = int(time.time())
+    assert "Claimed" in kc.run_slash(f"claim {task_id} --ttl 37")
+    after = int(time.time())
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.claim_expires is not None
+    assert before + 37 <= task.claim_expires <= after + 37
 
 
 def test_run_slash_json_output(kanban_home):

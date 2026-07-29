@@ -100,7 +100,7 @@ The historical issue for this is [#19931](https://github.com/NousResearch/hermes
 
 So lane authors don't have to reimplement these:
 
-- **Stale claim TTL** — a worker that claims and then never heartbeats / completes / blocks gets reclaimed after `DEFAULT_CLAIM_TTL_SECONDS` (15 min default) — but only if the worker process has actually died. A live worker (slow model spending 20+ min in one tool-free LLM call) gets the claim *extended* instead of killed; only a dead PID is reclaimed.
+- **Stale claim TTL** — a worker that claims and then never heartbeats / completes / blocks gets reclaimed after `DEFAULT_CLAIM_TTL_SECONDS` (2 hours by default). Independently, a heartbeat older than one hour is treated as a stale-progress backstop. A live worker whose claim TTL expires is still extended instead of killed; only a dead PID is reclaimed, while a live worker with a stale heartbeat is still treated as wedged. This remains separate from `max_runtime_seconds` and `dispatch_stale_timeout_seconds`.
 - **Crashed worker** — a worker whose host-local PID has vanished is detected by `detect_crashed_workers` and reaped; the task increments `consecutive_failures` and may auto-block when the breaker trips.
 - **Run-level retry** — when a task is retried (post-block, post-crash, post-reclaim), the worker can use the `expected_run_id` parameter on terminating tools to fail fast if its own run was already superseded.
 - **Per-task max runtime** — `task.max_runtime_seconds` hard-caps wall-clock time per run, regardless of PID liveness. Catches genuinely-deadlocked workers that the live-PID extension would otherwise keep running.

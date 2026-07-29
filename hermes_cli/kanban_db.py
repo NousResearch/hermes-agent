@@ -186,13 +186,11 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
-# A running task's claim is valid for 15 minutes by default; after that the
-# next dispatcher tick reclaims it. Workers that outlive this window should
-# call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
-# workloads either finish within 15m, set a longer claim explicitly, or use
-# ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` to raise the default claim window for
-# long single-call MCP workflows.
-DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+# A running task's claim is valid for two hours by default; after that the
+# next dispatcher tick reclaims it. Workers should still call
+# ``heartbeat_claim(task_id)`` periodically, because the independent
+# heartbeat-staleness backstop remains one hour.
+DEFAULT_CLAIM_TTL_SECONDS = 2 * 60 * 60
 
 # If a worker's PID is still alive but its ``last_heartbeat_at`` is
 # older than this when ``release_stale_claims`` runs, treat the worker
@@ -241,9 +239,8 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
 # Grace period after a task transitions to ``running`` during which
 # ``detect_crashed_workers`` skips the ``_pid_alive`` check. Covers the
 # fork() → /proc-visibility window where liveness can transiently report
-# False for a freshly-spawned worker. The 15-minute claim TTL still
-# catches genuinely-crashed workers; this only suppresses false positives
-# during the launch window.
+# False for a freshly-spawned worker. The claim TTL catches genuinely-crashed
+# workers; this only suppresses false positives during the launch window.
 DEFAULT_CRASH_GRACE_SECONDS = 30
 
 
@@ -4092,6 +4089,11 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        prior_run = conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        heartbeat_at = now if prior_run else None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4143,12 +4145,13 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   last_heartbeat_at = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, heartbeat_at, now, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -4164,8 +4167,8 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                last_heartbeat_at, started_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4174,6 +4177,7 @@ def claim_task(
                 lock,
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
+                heartbeat_at,
                 now,
             ),
         )
@@ -4221,18 +4225,20 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        heartbeat_at = now
         cur = conn.execute(
             """
             UPDATE tasks
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   last_heartbeat_at = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, now, now, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -4246,8 +4252,8 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                last_heartbeat_at, started_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -4256,6 +4262,7 @@ def claim_review_task(
                 lock,
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
+                heartbeat_at,
                 now,
             ),
         )
@@ -4282,8 +4289,8 @@ def heartbeat_claim(
 ) -> bool:
     """Extend a running claim.  Returns True if we still own it.
 
-    Workers that know they'll exceed 15 minutes should call this every
-    few minutes to keep ownership.
+    Workers should call this periodically to keep ownership and publish
+    observable progress before the one-hour heartbeat-staleness backstop.
     """
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
@@ -4340,9 +4347,11 @@ def release_stale_claims(
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
         "FROM tasks "
-        "WHERE status = 'running' AND claim_expires IS NOT NULL "
-        "  AND claim_expires < ?",
-        (now,),
+        "WHERE status = 'running' AND ("
+        "  (claim_expires IS NOT NULL AND claim_expires < ?) OR "
+        "  (last_heartbeat_at IS NOT NULL AND last_heartbeat_at <= ?)"
+        ")",
+        (now, now - DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS),
     ).fetchall()
     for row in stale:
         lock = row["claim_lock"] or ""
@@ -4369,8 +4378,12 @@ def release_stale_claims(
                     "WHERE id = ? AND status = 'running' "
                     "  AND claim_lock IS ? "
                     "  AND claim_expires IS NOT NULL "
-                    "  AND claim_expires < ?",
-                    (new_expires, row["id"], row["claim_lock"], now),
+                    "  AND claim_expires < ? "
+                    "  AND (last_heartbeat_at IS NULL OR last_heartbeat_at > ?)",
+                    (
+                        new_expires, row["id"], row["claim_lock"], now,
+                        now - DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS,
+                    ),
                 )
                 if cur.rowcount != 1:
                     continue
@@ -4414,8 +4427,14 @@ def release_stale_claims(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                "AND ("
+                "  (claim_expires IS NOT NULL AND claim_expires < ?) OR "
+                "  (last_heartbeat_at IS NOT NULL AND last_heartbeat_at <= ?)"
+                ")",
+                (
+                    row["id"], row["claim_lock"], now,
+                    now - DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS,
+                ),
             )
             if cur.rowcount != 1:
                 continue

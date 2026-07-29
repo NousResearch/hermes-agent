@@ -325,6 +325,14 @@ class TestSessionResetPolicy:
         assert policy.idle_minutes == 1440
         assert policy.bg_process_max_age_hours == 24
 
+    def test_both_mode_daily_and_idle_policy(self):
+        policy = SessionResetPolicy.from_dict(
+            {"mode": "both", "at_hour": 4, "idle_minutes": 1440}
+        )
+        assert policy.mode == "both"
+        assert policy.at_hour == 4
+        assert policy.idle_minutes == 1440
+
     def test_from_dict_treats_null_values_as_defaults(self):
         restored = SessionResetPolicy.from_dict(
             {"mode": None, "at_hour": None, "idle_minutes": None,

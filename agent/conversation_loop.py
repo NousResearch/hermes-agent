@@ -1198,6 +1198,7 @@ def run_conversation(
     failed = False
     codex_ack_continuations = 0
     length_continue_retries = 0
+    empty_length_compression_attempted = False
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
@@ -2893,6 +2894,65 @@ def run_conversation(
                                 f"(may re-hit filter)...",
                                 force=True,
                             )
+
+                        # A provider-reported length stop with no visible
+                        # content is context/output starvation, not a partial
+                        # answer. Appending a synthetic continuation prompt
+                        # makes the next request larger and repeats the same
+                        # failure. Compact once per user turn, then stop with
+                        # an actionable clean-session instruction.
+                        _empty_length_content = not (
+                            agent._strip_think_blocks(_trunc_content or "").strip()
+                        )
+                        _is_partial_stream_stub = (
+                            getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
+                        )
+                        if (
+                            not _trunc_has_tool_calls
+                            and _empty_length_content
+                            and not _is_partial_stream_stub
+                        ):
+                            if (
+                                not empty_length_compression_attempted
+                                and agent.compression_enabled
+                            ):
+                                empty_length_compression_attempted = True
+                                try:
+                                    messages, active_system_prompt = agent._compress_context(
+                                        messages,
+                                        system_message,
+                                        approx_tokens=request_pressure_tokens,
+                                        task_id=effective_task_id,
+                                    )
+                                except Exception as exc:
+                                    logger.warning(
+                                        "%sEmpty-length recovery compression failed: %s",
+                                        agent.log_prefix,
+                                        exc,
+                                    )
+                                else:
+                                    conversation_history = conversation_history_after_compression(
+                                        agent, messages
+                                    )
+                                    _retry.restart_with_compressed_messages = True
+                                    break
+
+                            recovery_text = (
+                                "Hermes could not produce a response because this "
+                                "conversation has exhausted the model context. "
+                                "Send /new to start a clean session."
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": recovery_text,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": recovery_text,
+                            }
+
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
                             # An EMPTY partial-stream stub (stream dropped

@@ -6042,24 +6042,66 @@ class TestRunConversation:
         assert "Thinking Budget Exhausted" in result["final_response"]
         assert "/thinkon" in result["final_response"]
 
-    def test_length_empty_content_without_think_tags_retries_normally(self, agent):
-        """When finish_reason='length' and content is None but no think tags,
-        fall through to normal continuation retry (not thinking-exhaustion)."""
+    def test_length_empty_content_compresses_once_then_recovers(self, agent):
+        """An empty length completion compacts instead of making the request larger."""
         self._setup_agent(agent)
-        resp = _mock_response(content=None, finish_reason="length")
-        agent.client.chat.completions.create.return_value = resp
+        agent.compression_enabled = True
+        empty = _mock_response(content=None, finish_reason="length")
+        recovered = _mock_response(
+            content="Recovered after compression",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [empty, recovered]
 
         with (
+            patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
             result = agent.run_conversation("hello")
 
-        # Without think tags, the agent should attempt continuation retries
-        # (up to 4), not immediately fire thinking-exhaustion.
-        assert result["api_calls"] == 4
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after compression"
+        assert agent.client.chat.completions.create.call_count == 2
+        mock_compress.assert_called_once()
+        second_messages = (
+            agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        )
+        assert all(
+            "previous response was truncated"
+            not in str(message.get("content", "")).lower()
+            for message in second_messages
+        )
+
+    def test_length_empty_content_after_compression_requests_new_session(self, agent):
+        """A second empty completion stops after one compaction and recommends /new."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        empty = _mock_response(content=None, finish_reason="length")
+        agent.client.chat.completions.create.side_effect = [empty, empty]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello")
+
         assert result["completed"] is False
+        assert agent.client.chat.completions.create.call_count == 2
+        assert "/new" in result["final_response"]
+        assert "truncated by the output length limit" not in str(result["messages"])
+        mock_compress.assert_called_once()
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)

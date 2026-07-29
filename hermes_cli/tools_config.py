@@ -1002,6 +1002,7 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
     # multi-minute silent reinstall on every update. An explicit
     # `hermes computer-use install --upgrade` falls through and re-runs the
     # installer as before.
+    confirmed_version = None
     if binary:
         _state = None
         try:
@@ -1025,6 +1026,19 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
                 "    Force a refresh with: hermes computer-use install --upgrade"
             )
             return True
+        if _state is not None and _state.get("update_available"):
+            # Pin the installer to the release check-update just confirmed.
+            # `latest_version` comes from the GitHub Releases API, so its
+            # assets are published — unlike the installer script's baked
+            # version on `main`, which Release Please bumps in the release
+            # PR *before* the release assets exist. Installing unpinned in
+            # that window 404s (observed: baked 0.14.0 vs latest published
+            # 0.13.1). Malformed values are ignored → unpinned fallback.
+            import re as _re
+
+            _latest = str(_state.get("latest_version") or "").strip().lstrip("vV")
+            if _re.fullmatch(r"\d+(\.\d+)*", _latest):
+                confirmed_version = _latest
 
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
@@ -1039,7 +1053,9 @@ def install_cua_driver(upgrade: bool = False, require_confirmed_update: bool = F
     else:
         before = ""
 
-    ok = _run_cua_driver_installer(label="Refreshing", verbose=False)
+    ok = _run_cua_driver_installer(
+        label="Refreshing", verbose=False, pin_version=confirmed_version
+    )
     if ok and before:
         try:
             after = subprocess.run(
@@ -1226,7 +1242,11 @@ def _clear_stale_cua_install_lock() -> None:
         logger.debug("stale cua install lock check failed: %s", e)
 
 
-def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
+def _run_cua_driver_installer(
+    label: str = "Installing",
+    verbose: bool = True,
+    pin_version: Optional[str] = None,
+) -> bool:
     """Run the upstream cua-driver installer for this platform.
 
     The scripts are idempotent: they always download the latest release, so
@@ -1235,6 +1255,13 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     * macOS / Linux → ``curl -fsSL …/install.sh | /bin/bash``.
     * Windows       → ``powershell -NoProfile -ExecutionPolicy Bypass -Command
       "irm …/install.ps1 | iex"``.
+
+    ``pin_version`` (e.g. ``"0.13.1"``) is exported as
+    ``CUA_DRIVER_RS_VERSION`` so the installer downloads that exact release
+    instead of its baked-in default. The baked version on upstream ``main``
+    is bumped by Release Please *before* the release assets are published,
+    so an unpinned run inside that window fails with a 404; pinning to the
+    version ``check-update`` confirmed sidesteps the race entirely.
     """
     import platform as _plat
     import shutil
@@ -1305,6 +1332,12 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     else:
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
+
+    installer_env = _cua_driver_env()
+    if pin_version:
+        # Both upstream installers (install.sh and install.ps1) honour
+        # CUA_DRIVER_RS_VERSION over their baked default.
+        installer_env["CUA_DRIVER_RS_VERSION"] = pin_version
 
     # A previous timed-out install can leave the upstream installer's
     # concurrent-install lock behind; clear it when provably stale so the
@@ -1378,7 +1411,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         # keep streaming live.
         if verbose:
             proc = subprocess.Popen(
-                install_cmd, shell=use_shell, env=_cua_driver_env(),
+                install_cmd, shell=use_shell, env=installer_env,
                 creationflags=_post_setup_no_window_flags(streams_to_console=True),
                 **popen_kwargs
             )
@@ -1393,7 +1426,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
             )
         else:
             proc = subprocess.Popen(
-                install_cmd, shell=use_shell, env=_cua_driver_env(),
+                install_cmd, shell=use_shell, env=installer_env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=_post_setup_no_window_flags(),

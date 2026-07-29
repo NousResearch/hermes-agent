@@ -38,6 +38,26 @@ class TestChatCompletionsBasic:
         )
         assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
 
+    @pytest.mark.parametrize(
+        "model",
+        ["nvidia/z-ai/glm-5.2", "z-ai/glm-5-2", "fireworks/glm-5p2"],
+    )
+    def test_glm52_ultra_uses_max_wire_effort(self, transport, model):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("nous")
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            supports_reasoning=True,
+            provider_profile=profile,
+            provider_name="nous",
+            base_url=profile.base_url,
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
+
     def test_convert_tools_identity(self, transport):
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
         assert transport.convert_tools(tools) is tools

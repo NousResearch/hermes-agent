@@ -198,4 +198,4 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   }
 }
 
-export { canImportHermesCli, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS, resolveProbeTimeoutMs, shouldTrustHermesOverride, verifyHermesCli }
+export { canImportHermesCli, DEFAULT_PROBE_TIMEOUT_MS, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, resolveProbeTimeoutMs, shouldTrustHermesOverride, verifyHermesCli }

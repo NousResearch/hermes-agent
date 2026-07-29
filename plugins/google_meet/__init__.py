@@ -48,18 +48,56 @@ _TOOLS = (
 
 
 def _on_session_end(**kwargs) -> None:
-    """Best-effort cleanup — if a meet bot is still running when the session
-    ends, leave the call so we don't orphan a headless Chromium.
+    """Per-turn hook placeholder.
 
-    No-ops when nothing is active. Swallows all exceptions — session end must
+    Hermes core fires ``on_session_end`` after every ``run_conversation`` call,
+    so it must not control Meet call lifetime.
+    """
+
+
+def _should_stop_owned_bot(status: dict, ending_session_id: str) -> bool:
+    if not status.get("ok") or not status.get("alive"):
+        return False
+    if status.get("persistAfterSession"):
+        return False
+    active_session_id = str(status.get("sessionId") or "").strip()
+    if not ending_session_id or not active_session_id:
+        return False
+    return ending_session_id == active_session_id
+
+
+def _on_session_finalize(**kwargs) -> None:
+    """Best-effort cleanup at real session boundaries.
+
+    No-ops when nothing is active. Swallows all exceptions — finalization must
     not fail because the bot cleanup hit an edge case.
     """
+    ending_session_id = str(kwargs.get("session_id") or "").strip()
     try:
         status = pm.status()
-        if status.get("ok") and status.get("alive"):
+        if _should_stop_owned_bot(status, ending_session_id):
             pm.stop(reason="session ended")
     except Exception as e:  # pragma: no cover — defensive
-        logger.debug("google_meet on_session_end cleanup failed: %s", e)
+        logger.debug("google_meet local session finalize cleanup failed: %s", e)
+
+    try:
+        from plugins.google_meet.node.client import NodeClient
+        from plugins.google_meet.node.registry import NodeRegistry
+
+        for node in NodeRegistry().list_all():
+            try:
+                client = NodeClient(node["url"], node["token"], timeout=2.0)
+                status = client.status()
+                if _should_stop_owned_bot(status, ending_session_id):
+                    client.stop(reason="session ended")
+            except Exception as e:
+                logger.debug(
+                    "google_meet remote session finalize cleanup failed for node=%s: %s",
+                    node.get("name"),
+                    e,
+                )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("google_meet remote cleanup enumeration failed: %s", e)
 
 
 def register(ctx) -> None:
@@ -100,4 +138,4 @@ def register(ctx) -> None:
         ),
     )
 
-    ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("on_session_finalize", _on_session_finalize)

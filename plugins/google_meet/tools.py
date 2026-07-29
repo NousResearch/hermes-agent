@@ -14,8 +14,11 @@ Tools:
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+from hermes_constants import get_hermes_home
 from plugins.google_meet import process_manager as pm
 
 
@@ -43,6 +46,23 @@ def check_meet_requirements() -> bool:
     except ImportError:
         return False
     return True
+
+
+def _default_auth_state() -> Optional[str]:
+    """Return the saved local Meet auth state path when one is available."""
+    path = Path(get_hermes_home()) / "workspace" / "meetings" / "auth.json"
+    return str(path) if path.is_file() else None
+
+
+def _resolve_duration(raw: Any) -> Optional[str]:
+    """Resolve the bot's auto-leave duration.
+
+    An explicit value always wins. Omitted duration means the bot stays until
+    meet_leave or session-end cleanup stops it.
+    """
+    if raw:
+        return str(raw)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +135,25 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Optional max duration before auto-leave (e.g. '30m', "
-                    "'2h', '90s'). Omit to stay until meet_leave is called."
+                    "'2h', '90s'). Omit to stay until meet_leave is called "
+                    "or Hermes session-end cleanup stops the bot."
+                ),
+            },
+            "persist_after_session": {
+                "type": "boolean",
+                "description": (
+                    "Default false. When false, Hermes session-end cleanup "
+                    "leaves the call even if duration is set. Set true only "
+                    "when the user explicitly wants the bot to remain after "
+                    "the current Hermes session ends."
+                ),
+            },
+            "use_auth_state": {
+                "type": "boolean",
+                "description": (
+                    "Default false. Set true to explicitly reuse the saved "
+                    "Google Meet auth state from the local Hermes meetings "
+                    "workspace instead of joining as the configured guest."
                 ),
             },
             "headed": {
@@ -177,6 +215,14 @@ MEET_TRANSCRIPT_SCHEMA: Dict[str, Any] = {
                 ),
                 "minimum": 1,
             },
+            "include_finished": {
+                "type": "boolean",
+                "description": (
+                    "Default false. Set true to explicitly read the most recent "
+                    "finished meeting transcript owned by the current Hermes "
+                    "session when no meeting is active."
+                ),
+            },
             "node": {"type": "string"},
         },
         "additionalProperties": False,
@@ -233,6 +279,14 @@ def _err(msg: str, **extra) -> str:
     return _json({"success": False, "error": msg, **extra})
 
 
+def _context_session_id(context: Dict[str, Any]) -> Optional[str]:
+    raw = context.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    if not raw:
+        return None
+    session_id = str(raw).strip()
+    return session_id or None
+
+
 def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     url = (args.get("url") or "").strip()
     if not url:
@@ -242,6 +296,11 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         return _err(f"mode must be 'transcribe' or 'realtime' (got {mode!r})")
 
     node = args.get("node")
+    if node and bool(args.get("use_auth_state", False)):
+        return _err(
+            "use_auth_state is local-only for meet_join with this PR; "
+            "remote nodes must manage Google auth state on the node host"
+        )
     try:
         client, node_name = _resolve_node_client(node)
     except RuntimeError as e:
@@ -253,9 +312,11 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
             res = client.start_bot(
                 url=url,
                 guest_name=str(args.get("guest_name") or "Hermes Agent"),
-                duration=str(args.get("duration")) if args.get("duration") else None,
+                duration=_resolve_duration(args.get("duration")),
+                persist_after_session=bool(args.get("persist_after_session", False)),
                 headed=bool(args.get("headed", False)),
                 mode=mode,
+                session_id=_context_session_id(_kw),
             )
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
@@ -272,8 +333,11 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         url=url,
         headed=bool(args.get("headed", False)),
         guest_name=str(args.get("guest_name") or "Hermes Agent"),
-        duration=str(args.get("duration")) if args.get("duration") else None,
+        duration=_resolve_duration(args.get("duration")),
+        persist_after_session=bool(args.get("persist_after_session", False)),
+        auth_state=_default_auth_state() if bool(args.get("use_auth_state", False)) else None,
         mode=mode,
+        session_id=_context_session_id(_kw),
     )
     return _json({"success": bool(res.get("ok")), **res})
 
@@ -295,6 +359,7 @@ def handle_meet_status(args: Dict[str, Any], **_kw) -> str:
 
 def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
     last = args.get("last")
+    include_finished = bool(args.get("include_finished", False))
     try:
         last_i = int(last) if last is not None else None
         if last_i is not None and last_i < 1:
@@ -307,11 +372,19 @@ def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
         return _err(str(e))
     if client is not None:
         try:
-            res = client.transcript(last=last_i)
+            res = client.transcript(
+                last=last_i,
+                include_finished=include_finished,
+                session_id=_context_session_id(_kw),
+            )
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
             return _err(f"remote node transcript failed: {e}", node=node_name)
-    res = pm.transcript(last=last_i)
+    res = pm.transcript(
+        last=last_i,
+        include_finished=include_finished,
+        session_id=_context_session_id(_kw),
+    )
     return _json({"success": bool(res.get("ok")), **res})
 
 

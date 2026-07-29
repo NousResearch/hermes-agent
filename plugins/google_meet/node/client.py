@@ -75,29 +75,43 @@ class NodeClient:
         url: str,
         guest_name: str = "Hermes Agent",
         duration: Optional[str] = None,
+        persist_after_session: bool = False,
         headed: bool = False,
         mode: str = "transcribe",
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "url": url,
             "guest_name": guest_name,
             "headed": bool(headed),
             "mode": mode,
+            "persist_after_session": bool(persist_after_session),
         }
         if duration is not None:
             payload["duration"] = duration
+        if session_id:
+            payload["session_id"] = session_id
         return self._rpc("start_bot", payload)
 
-    def stop(self) -> Dict[str, Any]:
-        return self._rpc("stop", {})
+    def stop(self, reason: str = "requested") -> Dict[str, Any]:
+        return self._rpc("stop", {"reason": str(reason or "requested")})
 
     def status(self) -> Dict[str, Any]:
         return self._rpc("status", {})
 
-    def transcript(self, last: Optional[int] = None) -> Dict[str, Any]:
+    def transcript(
+        self,
+        last: Optional[int] = None,
+        include_finished: bool = False,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {}
         if last is not None:
             payload["last"] = int(last)
+        if include_finished:
+            payload["include_finished"] = True
+        if session_id:
+            payload["session_id"] = session_id
         return self._rpc("transcript", payload)
 
     def say(self, text: str) -> Dict[str, Any]:

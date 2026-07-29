@@ -125,7 +125,8 @@ class NodeServer:
                 kwargs = {
                     k: payload[k]
                     for k in ("url", "guest_name", "duration", "headed",
-                              "auth_state", "session_id", "out_dir")
+                              "persist_after_session", "auth_state",
+                              "session_id", "out_dir", "mode")
                     if k in payload
                 }
                 if "url" not in kwargs:
@@ -140,28 +141,15 @@ class NodeServer:
                 return _proto.make_response(req_id, pm.status())
             if t == "transcript":
                 last = payload.get("last")
-                result = pm.transcript(last=last)
+                result = pm.transcript(
+                    last=last,
+                    include_finished=bool(payload.get("include_finished", False)),
+                    session_id=payload.get("session_id"),
+                )
                 return _proto.make_response(req_id, result)
             if t == "say":
-                # v2 wiring: enqueue into say_queue.jsonl inside the
-                # active meeting's out_dir when present. The bot-side
-                # consumer is v3+ (for v1 this is a stub returning ok).
                 text = payload.get("text", "")
-                active = pm._read_active()  # type: ignore[attr-defined]
-                enqueued = False
-                if active and active.get("out_dir"):
-                    queue = Path(active["out_dir"]) / "say_queue.jsonl"
-                    try:
-                        queue.parent.mkdir(parents=True, exist_ok=True)
-                        with queue.open("a", encoding="utf-8") as fh:
-                            fh.write(json.dumps({"text": text, "ts": time.time()}) + "\n")
-                        enqueued = True
-                    except OSError:
-                        enqueued = False
-                return _proto.make_response(
-                    req_id,
-                    {"ok": True, "enqueued": enqueued, "text": text},
-                )
+                return _proto.make_response(req_id, pm.enqueue_say(text))
         except Exception as exc:  # noqa: BLE001 — surface any pm crash to client
             return _proto.make_error(req_id, f"{type(exc).__name__}: {exc}")
 

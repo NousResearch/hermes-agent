@@ -5349,6 +5349,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         if self._needs_defrag():
             self._defrag_rolling_summary(messages, exchange_start, compress_end)
             result = self._splice_micro_compact_result(messages, exchange_start, compress_end)
+            self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
             self._sync_micro_compact_to_db(result)
             self._micro_compact_consecutive_failures = 0
             self._micro_compact_last_failure_cursor = -1
@@ -5408,6 +5409,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._micro_compact_last_failure_cursor = -1
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end)
+        self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
         self._sync_micro_compact_to_db(result)
         self._emit_micro_compaction_telemetry(
             outcome="absorbed",
@@ -5419,6 +5421,29 @@ This compaction should PRIORITISE preserving all information related to the focu
             duration_ms=_elapsed_ms(),
         )
         return result
+
+    def _cursor_after_splice(
+        self,
+        result: List[Dict[str, Any]],
+        fallback: int,
+    ) -> int:
+        """Cursor position just past the summary marker in *result*.
+
+        The cursor must be derived from the spliced list, never carried over
+        from pre-splice indices. A splice collapses the absorbed span (an
+        assistant plus its tool results -- often several messages) into a
+        single marker, and may also drop a superseded marker further back, so
+        every index after it shifts. Reusing the old ``exchange_end`` left the
+        cursor pointing into the middle of a *later* exchange's tool group;
+        the next pass then walked forward to the following assistant and
+        skipped that exchange entirely, so roughly half the work silently
+        never happened on tool-bearing conversations.
+        """
+        for idx in range(len(result) - 1, -1, -1):
+            entry = result[idx]
+            if isinstance(entry, dict) and entry.get(COMPRESSED_SUMMARY_METADATA_KEY):
+                return idx + 1
+        return fallback
 
     def _emit_micro_compaction_telemetry(
         self,

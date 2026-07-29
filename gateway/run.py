@@ -17102,6 +17102,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         model=agent_result.get("model"),
                     )
                 )
+                _footer_fast_mode = (
+                    self._resolve_session_service_tier(source=source) == "priority"
+                )
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
@@ -17110,6 +17113,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                     reasoning_effort=_footer_reasoning_effort,
+                    fast_mode=_footer_fast_mode,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

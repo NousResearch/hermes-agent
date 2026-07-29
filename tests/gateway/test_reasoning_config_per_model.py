@@ -156,3 +156,35 @@ class TestGatewaySessionEffectiveModel:
         assert ast.dump(model_keyword) == ast.dump(
             ast.parse('agent_result.get("model")', mode="eval").body
         )
+
+    def test_runtime_footer_uses_session_service_tier(self):
+        """The fast icon follows the effective session-scoped /fast override."""
+        tree = ast.parse(
+            textwrap.dedent(
+                inspect.getsource(gateway_run.GatewayRunner._handle_message_with_agent)
+            )
+        )
+        footer_tier_calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(
+                isinstance(target, ast.Name) and target.id == "_footer_fast_mode"
+                for target in node.targets
+            ):
+                continue
+            footer_tier_calls.extend(
+                call
+                for call in ast.walk(node.value)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_resolve_session_service_tier"
+            )
+        assert len(footer_tier_calls) == 1
+        source_keyword = next(
+            (kw.value for kw in footer_tier_calls[0].keywords if kw.arg == "source"),
+            None,
+        )
+        assert ast.dump(source_keyword) == ast.dump(
+            ast.parse("source", mode="eval").body
+        )

@@ -739,10 +739,36 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return tool_error(error_msg)
 
 
+def _sanitize_extract_headers(headers: Any) -> Optional[Dict[str, str]]:
+    """Coerce a caller-supplied ``headers`` value into a clean str→str map.
+
+    The tool schema already declares an object of strings, but tool arguments
+    arrive from a model and can't be trusted to match: drop non-mapping input,
+    skip pairs whose key or value isn't a string, and reject blank/control
+    characters in either (a stray newline is a header-injection primitive).
+    Returns ``None`` when nothing usable remains, so the caller omits the
+    argument entirely rather than forwarding an empty dict.
+    """
+    if not isinstance(headers, dict):
+        return None
+    cleaned: Dict[str, str] = {}
+    for key, value in headers.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        name = key.strip()
+        if not name or any(c in key for c in "\r\n\x00") or any(
+            c in value for c in "\r\n\x00"
+        ):
+            continue
+        cleaned[name] = value
+    return cleaned or None
+
+
 async def web_extract_tool(
     urls: List[Any],
     format: str = None,
     char_limit: Optional[int] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -761,8 +787,16 @@ async def web_extract_tool(
         format (str): Desired output format ("markdown" or "html", optional)
         char_limit (Optional[int]): Per-page char budget sent to the model
             (default: web.extract_char_limit or 15000). Larger pages truncate.
+        headers (Optional[Dict[str, str]]): Optional HTTP request headers to
+            send with the fetch (e.g. a descriptive ``User-Agent``, a
+            ``Referer``, or an ``Authorization`` header for a partner
+            endpoint). Only the Firecrawl backend forwards these today; other
+            backends ignore them. Omitted entirely when unset, so default
+            behavior is unchanged.
 
-    Security: URLs are checked for embedded secrets before fetching.
+    Security: URLs are checked for embedded secrets before fetching, and
+    private/internal hosts are SSRF-filtered before any header reaches a
+    backend, so caller-supplied headers only ever accompany public fetches.
 
     Returns:
         str: JSON string with a ``results`` list; each entry has
@@ -930,16 +964,25 @@ async def web_extract_tool(
                 "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
             )
 
+            # Only forward well-formed string→string header pairs, and only
+            # when the caller actually supplied some. Passing ``{}`` / ``None``
+            # keeps the argument absent so backends that don't read headers see
+            # exactly their previous call shape.
+            extract_kwargs: Dict[str, Any] = {"format": format}
+            safe_headers = _sanitize_extract_headers(headers)
+            if safe_headers:
+                extract_kwargs["headers"] = safe_headers
+
             # Async-or-sync dispatch: parallel + firecrawl have async
             # extract(); exa + tavily are sync.
             import inspect
             if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
+                results = await provider.extract(safe_urls, **extract_kwargs)
             else:
                 # Run sync extract() in a thread so we don't block the
                 # event loop on network I/O.
                 results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+                    lambda: provider.extract(safe_urls, **extract_kwargs)
                 )
 
         # Reconstruct the original input order across invalid, blocked, and
@@ -1204,6 +1247,11 @@ WEB_EXTRACT_SCHEMA = {
                 "type": "integer",
                 "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline.",
                 "minimum": 2000
+            },
+            "headers": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Optional HTTP request headers to send with the fetch (e.g. a descriptive User-Agent, a Referer, or an Authorization header for a partner endpoint). Currently applied by the Firecrawl backend."
             }
         },
         "required": ["urls"]
@@ -1228,6 +1276,7 @@ registry.register(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
         "markdown",
         char_limit=args.get("char_limit"),
+        headers=args.get("headers"),
     ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),

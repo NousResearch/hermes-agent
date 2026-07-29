@@ -20,6 +20,18 @@ export type OpenSessionIntent = 'in-place' | 'tab' | 'window'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
+/**
+ * Is the main tab holding a conversation worth preserving?
+ *
+ * A loaded chat may still be mid-turn, so replacing it with something else
+ * throws away work the user can see. A blank draft has nothing to lose, which
+ * is what lets the sidebar "+" take the cheaper main path instead of stacking
+ * a tab nobody asked for.
+ */
+export function mainChatOccupied(activeSessionId: null | string, selectedStoredSessionId: null | string): boolean {
+  return Boolean(activeSessionId || selectedStoredSessionId)
+}
+
 /** Read modifiers the way session rows do — meta OR ctrl for tab, +shift for window. */
 export function openSessionIntentFromModifiers(
   event?: null | { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }

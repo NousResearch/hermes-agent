@@ -411,6 +411,7 @@ export const coreCommands: SlashCommand[] = [
 
       if (shouldUseTerminalClipboard) {
         writeOsc52Clipboard(target.text)
+
         return sys('sent OSC52 copy sequence (terminal support required)')
       }
 

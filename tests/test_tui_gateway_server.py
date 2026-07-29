@@ -14555,6 +14555,9 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
     def default_listen(should_stop, capture=False, on_trigger=None, **_kw):
         return None if capture else False
 
+    def default_fd_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+        return None
+
     monkeypatch.setitem(
         sys.modules,
         "tools.tts_tool",
@@ -14572,9 +14575,13 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
         types.SimpleNamespace(
             stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
             listen_for_speech=listen or default_listen,
+            full_duplex_listen=listen or default_fd_listen,
+            is_audio_output_active=lambda: False,
             transcribe_recording=transcribe or (lambda path, model=None: {"success": True, "transcript": ""}),
         ),
     )
+    # Fresh listener slot per test — the arm is idempotent per process.
+    monkeypatch.setattr(server, "_fd_listener_active", False)
     return started
 
 
@@ -14680,9 +14687,8 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     wav = tmp_path / "barge.wav"
     wav.write_bytes(b"RIFF")
 
-    def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
-        assert capture is True
-        on_trigger()  # playback cut happens at detection, not after endpointing
+    def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+        on_trigger("playback")  # playback cut happens at detection
         return str(wav)
 
     _fake_tts_modules(
@@ -14692,11 +14698,7 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     )
 
     server._tts_stream_begin()
-    with server._tts_stream_lock:
-        state = server._tts_stream_state
-    assert state is not None
-    assert state["stop"].wait(5.0)  # grace period (2s) + fake_listen + margin
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and wav.exists():
         time.sleep(0.01)  # unlink (finally) runs after the transcript emit
     assert ("voice.interrupted", None) in events
@@ -14704,6 +14706,100 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     assert not wav.exists()  # capture temp file cleaned up
     assert ts.take_speech_interrupted() is True  # VAD cut latches the model note
     server._tts_stream_stop()
+
+
+def test_full_duplex_generation_phase_interrupts_running_turn(monkeypatch, tmp_path):
+    """Speech DURING LLM generation (no TTS audio yet) must interrupt the
+    in-flight agent turn via the same seam session.interrupt uses, and the
+    captured interjection is emitted as voice.transcript. This is the
+    half-duplex gap: previously no listener existed until playback started."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+
+    wav = tmp_path / "interject.wav"
+    wav.write_bytes(b"RIFF")
+
+    interrupted = threading.Event()
+    fake_agent = types.SimpleNamespace(interrupt=lambda: interrupted.set())
+    fake_session = {"running": True, "agent": fake_agent}
+    monkeypatch.setattr(server, "_sessions", {"sid-fd": fake_session})
+
+    def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+        assert is_playing is not None and is_playing() is False  # generation phase
+        on_trigger("generation")
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {"success": True, "transcript": "wait, try another way"},
+    )
+
+    server._arm_full_duplex_listener()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and wav.exists():
+        time.sleep(0.01)
+    assert interrupted.is_set()  # the running turn was interrupted
+    assert ("voice.interrupted", None) in events
+    assert ("voice.transcript", {"text": "wait, try another way"}) in events
+    assert not wav.exists()
+
+
+def test_full_duplex_stop_phrase_mid_generation_ends_voice_chat(monkeypatch, tmp_path):
+    """Bare 'stop' during generation = interrupt the turn AND end the voice
+    chat ('stop everything'), emitted as the explicit stop_phrase signal."""
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+
+    wav = tmp_path / "stop.wav"
+    wav.write_bytes(b"RIFF")
+
+    interrupted = threading.Event()
+    fake_agent = types.SimpleNamespace(interrupt=lambda: interrupted.set())
+    monkeypatch.setattr(
+        server, "_sessions", {"sid-fd": {"running": True, "agent": fake_agent}}
+    )
+
+    def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+        on_trigger("generation")
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {"success": True, "transcript": "stop"},
+    )
+    # is_voice_stop_phrase lives in the faked tools.voice_mode namespace.
+    sys.modules["tools.voice_mode"].is_voice_stop_phrase = (
+        lambda text: text.strip().lower() == "stop"
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(stop_continuous=lambda **_kw: None, speak_text=lambda *a, **k: None),
+    )
+
+    server._arm_full_duplex_listener()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and wav.exists():
+        time.sleep(0.01)
+    assert interrupted.is_set()
+    assert ("voice.transcript", {"stop_phrase": True, "text": "stop"}) in events
+    assert os.environ.get("HERMES_VOICE") == "0"  # voice chat ended
 
 
 def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_path):
@@ -14746,10 +14842,9 @@ def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_p
         types.SimpleNamespace(speak_text=fake_speak_text),
     )
 
-    def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
-        assert capture is True
+    def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
         speak_started.wait(5)
-        on_trigger()  # user talks over the reply → cut now
+        on_trigger("playback")  # user talks over the reply → cut now
         return str(wav)
 
     _fake_tts_modules(

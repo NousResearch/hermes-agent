@@ -1457,6 +1457,200 @@ class TestVoiceBargeCaptureSubmit:
 
 
 # ============================================================================
+# Full-duplex agent-turn listener — CLI phase behaviour
+# ============================================================================
+
+
+class TestVoiceFullDuplexListener:
+    """_voice_full_duplex_listener: one mic for the whole turn. Generation-
+    phase speech interrupts the in-flight agent turn; playback-phase speech
+    cuts TTS; the capture is submitted either way."""
+
+    def _cli(self, monkeypatch, *, listen, voice_cfg=None, **overrides):
+        cli = _make_voice_cli(
+            _voice_mode=True, _voice_continuous=True, **overrides
+        )
+        cli.agent = None
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": dict(voice_cfg or {"barge_in": True})},
+        )
+        monkeypatch.setattr("tools.voice_mode.full_duplex_listen", listen)
+        monkeypatch.setattr("tools.voice_mode.is_audio_output_active", lambda: False)
+        monkeypatch.setattr("tools.voice_mode.stop_playback", lambda: None)
+        return cli
+
+    def test_generation_trip_interrupts_agent_and_submits(self, monkeypatch, tmp_path):
+        """Speech during generation → agent.interrupt() (the same seam the
+        typed interrupt uses) + pending TTS pipeline cut + capture queued."""
+        wav = tmp_path / "fd.wav"
+        wav.write_bytes(b"RIFF")
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            on_trigger("generation")
+            return str(wav)
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
+        interrupted = threading.Event()
+        cli.agent = SimpleNamespace(interrupt=lambda: interrupted.set())
+        pipe_stop = threading.Event()
+        cli._voice_tts_stop = pipe_stop
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "actually wait"},
+        )
+
+        cli._voice_full_duplex_listener()
+
+        assert interrupted.is_set()
+        assert pipe_stop.is_set()  # stale reply's TTS can never play
+        from cli import _VoiceInputMessage
+        queued = cli._pending_input.get_nowait()
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "actually wait"
+        assert not cli._voice_barge_capture.is_set()
+
+    def test_playback_trip_cuts_tts_without_interrupting_agent(self, monkeypatch, tmp_path):
+        """Speech during playback → pipeline stop + stop_playback; the agent
+        (already finished) is NOT interrupted."""
+        wav = tmp_path / "fd.wav"
+        wav.write_bytes(b"RIFF")
+        stops = []
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            on_trigger("playback")
+            return str(wav)
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=False)
+        interrupted = threading.Event()
+        cli.agent = SimpleNamespace(interrupt=lambda: interrupted.set())
+        pipe_stop = threading.Event()
+        cli._voice_tts_stop = pipe_stop
+        monkeypatch.setattr("tools.voice_mode.stop_playback", lambda: stops.append(True))
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "hang on"},
+        )
+
+        cli._voice_full_duplex_listener()
+
+        assert not interrupted.is_set()
+        assert pipe_stop.is_set()
+        assert stops == [True]
+        assert str(cli._pending_input.get_nowait()) == "hang on"
+
+    def test_listener_arms_at_submit_and_survives_into_playback(self, monkeypatch):
+        """Lifecycle: should_stop is False during generation AND during
+        pending TTS (survives the phase transition — no re-arm race), and
+        True once the turn is fully done."""
+        probes = {}
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            # generation: agent running, TTS not started
+            probes["generation"] = should_stop()
+            # transition: agent done, TTS still pending
+            cli._agent_running = False
+            cli._voice_tts_done.clear()
+            probes["playback_pending"] = should_stop()
+            # turn fully done
+            cli._voice_tts_done.set()
+            probes["done"] = should_stop()
+            return None
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
+        cli._voice_tts_done.set()
+
+        cli._voice_full_duplex_listener()
+
+        assert probes["generation"] is False
+        assert probes["playback_pending"] is False  # same listener spans phases
+        assert probes["done"] is True
+
+    def test_double_arm_refused(self, monkeypatch):
+        """Only one listener may own the mic per turn — the second arm is a
+        no-op (the fallback speak path arms as a safety net)."""
+        calls = []
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            calls.append(True)
+            return None
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=False)
+        cli._voice_fd_active = threading.Event()
+        cli._voice_fd_active.set()  # a listener already owns the mic
+
+        cli._voice_full_duplex_listener()
+        assert calls == []
+
+    def test_config_multiplier_and_grace_forwarded(self, monkeypatch):
+        seen = {}
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None,
+                        multiplier=None, grace_ms=None, **_kw):
+            seen["multiplier"] = multiplier
+            seen["grace_ms"] = grace_ms
+            return None
+
+        cli = self._cli(
+            monkeypatch,
+            listen=fake_listen,
+            voice_cfg={
+                "barge_in": True,
+                "barge_in_threshold_multiplier": 4.5,
+                "barge_in_grace_seconds": 1.0,
+            },
+            _agent_running=False,
+        )
+        cli._voice_full_duplex_listener()
+        assert seen["multiplier"] == 4.5
+        assert seen["grace_ms"] == 1000
+
+    def test_barge_in_disabled_never_opens_mic(self, monkeypatch):
+        calls = []
+
+        def fake_listen(*a, **k):
+            calls.append(True)
+            return None
+
+        cli = self._cli(
+            monkeypatch, listen=fake_listen,
+            voice_cfg={"barge_in": False}, _agent_running=True,
+        )
+        cli._voice_full_duplex_listener()
+        assert calls == []
+
+    def test_stop_phrase_mid_generation_interrupts_and_ends_chat(self, monkeypatch, tmp_path):
+        """Bare 'stop' during generation = stop everything: the turn is
+        interrupted at trip time AND the voice chat is disabled."""
+        wav = tmp_path / "fd.wav"
+        wav.write_bytes(b"RIFF")
+
+        def fake_listen(should_stop, is_playing=None, on_trigger=None, **_kw):
+            on_trigger("generation")
+            return str(wav)
+
+        cli = self._cli(monkeypatch, listen=fake_listen, _agent_running=True)
+        interrupted = threading.Event()
+        cli.agent = SimpleNamespace(interrupt=lambda: interrupted.set())
+        disabled = []
+        cli._disable_voice_mode = lambda: disabled.append(True)
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "stop"},
+        )
+        monkeypatch.setattr(
+            "tools.voice_mode.is_voice_stop_phrase",
+            lambda text: text.strip().lower() == "stop",
+        )
+
+        cli._voice_full_duplex_listener()
+
+        assert interrupted.is_set()   # turn interrupted at trip
+        assert disabled == [True]     # chat ended by the stop phrase
+        assert cli._pending_input.empty()  # stop phrase never reaches the agent
+
+
+# ============================================================================
 # Typed stop phrase — typing "stop" during a voice chat ends it
 # ============================================================================
 class TestTypedVoiceStop:
@@ -1505,21 +1699,19 @@ class TestTypedVoiceStop:
 
 
 # ============================================================================
-# Fallback (whole-file) TTS path arms the spoken barge-in monitor
+# Fallback (whole-file) TTS path arms the full-duplex listener
 # ============================================================================
 
 class TestFallbackSpeakArmsBargeMonitor:
-    """_voice_speak_response_async must arm _voice_barge_in_monitor in
-    continuous voice mode. Previously ONLY the streaming pipeline armed the
-    monitor (chat() gate), so when streaming TTS couldn't start the whole-file
-    fallback speech was uninterruptible by voice — Teknium's "speaking over
-    the agent does nothing" report on the non-streaming path."""
+    """_voice_speak_response_async must arm _voice_full_duplex_listener in
+    continuous voice mode. This is the safety net for speak calls outside a
+    chat turn — the primary arm happens at utterance-submit in chat()."""
 
     def _cli(self, **overrides):
         cli = _make_voice_cli(**overrides)
         cli._monitor_calls = []
-        cli._voice_barge_in_monitor = (
-            lambda stop_event: cli._monitor_calls.append(stop_event)
+        cli._voice_full_duplex_listener = (
+            lambda: cli._monitor_calls.append(True)
         )
         cli._voice_speak_response = lambda text: None
         return cli
@@ -1533,7 +1725,6 @@ class TestFallbackSpeakArmsBargeMonitor:
         cli._voice_speak_response_async("a reply")
         self._drain_threads()
         assert len(cli._monitor_calls) == 1
-        assert isinstance(cli._monitor_calls[0], threading.Event)
 
     def test_no_monitor_outside_continuous_mode(self):
         cli = self._cli(_voice_mode=True, _voice_tts=True, _voice_continuous=False)

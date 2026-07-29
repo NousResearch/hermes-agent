@@ -1892,6 +1892,245 @@ def listen_for_speech(
 
 
 # ============================================================================
+# Full-duplex agent-turn listener
+# ============================================================================
+#
+# One listener for the WHOLE agent turn in continuous voice mode: armed the
+# moment an utterance is submitted, disarmed when the turn is fully done
+# (response + TTS finished). It replaces the scattered per-playback barge
+# monitors, which had two class-level failures:
+#
+#   1. HALF-DUPLEX GAP: the monitor only spawned when TTS playback started,
+#      so during LLM generation (seconds to minutes) there was NO microphone
+#      listener at all — the user could not interject by voice.
+#   2. PLAYBACK DEAFNESS: the monitor calibrated its noise floor WHILE the
+#      speaker was already blasting TTS, baking speaker bleed into the floor;
+#      with an 8x multiplier the trigger became unreachable for normal speech,
+#      and requiring a full second of strictly CONSECUTIVE 30ms blocks above
+#      trigger meant any intra-word dip reset the counter.
+#
+# This listener calibrates against the QUIET room at turn start (before any
+# playback exists), freezes that baseline through playback (never calibrating
+# against its own speaker bleed), and trips on a windowed majority of blocks
+# instead of a strict consecutive run.
+
+# Minimum trigger while TTS audio is flowing. Speaker bleed reaching the mic
+# through air at conversational volume is typically well under this (a few
+# hundred RMS at arm's length; ~1000-1400 with loud speakers close to the
+# mic), while direct speech at normal distance measures 3000-8000 RMS.
+PLAYBACK_MIN_TRIGGER = 1500.0
+
+# Absolute trigger ceiling — a noisy room must never push the trigger above
+# what normal speech (3000-8000 RMS) can reach.
+TRIGGER_CEILING = 4000.0
+
+# Default trigger multiplier over the quiet-room floor. The old 8x default
+# only made sense when the floor was (wrongly) calibrated against active TTS
+# bleed; against a genuine quiet-room baseline (typically 50-300 RMS) the
+# synthetic-frame tests show 3x separates speech from ambient cleanly while
+# staying reachable (300 RMS floor * 3 = 900 trigger vs 3000+ RMS speech).
+DEFAULT_BARGE_MULTIPLIER = 3.0
+
+
+def _voice_debug_enabled() -> bool:
+    return os.environ.get("HERMES_VOICE_DEBUG", "").strip() == "1"
+
+
+def _vad_log(msg: str) -> None:
+    """VAD decision-point diagnostic — always logger.debug, plus stderr when
+    HERMES_VOICE_DEBUG=1 so live hardware tuning doesn't need a log tail."""
+    logger.debug(msg)
+    if _voice_debug_enabled():
+        try:
+            print(f"[voice-vad] {msg}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+
+def full_duplex_listen(
+    should_stop: Callable[[], bool],
+    is_playing: Optional[Callable[[], bool]] = None,
+    on_trigger: Optional[Callable[[str], None]] = None,
+    multiplier: Optional[float] = None,
+    sustained_ms: int = 300,
+    calibration_ms: int = 450,
+    grace_ms: int = 500,
+    pre_roll_ms: int = 1200,
+    endpoint_silence_ms: int = 1250,
+    max_utterance_ms: int = 30_000,
+) -> Optional[str]:
+    """Listen across an ENTIRE agent turn; return the captured interruption.
+
+    Runs from utterance-submit to turn-complete. Two phases, decided per
+    30ms block by *is_playing* (usually ``is_audio_output_active``):
+
+    * ``generation`` — no TTS audio flowing. The room is quiet; the first
+      *calibration_ms* establish the noise floor (pre-playback calibration).
+      Trigger = quiet_floor x *multiplier* (clamped to a sane minimum), i.e.
+      ordinary speech detection.
+    * ``playback`` — TTS audio flowing. The quiet baseline is HELD (never
+      recalibrated against speaker bleed); the trigger is additionally
+      clamped up to ``PLAYBACK_MIN_TRIGGER`` so bleed alone can't trip it,
+      and a *grace_ms* window after playback first starts suppresses trips
+      from the playback onset transient.
+
+    Detection is a windowed majority — >=80% of the last *sustained_ms*
+    worth of blocks above trigger (with the current block above) — so
+    intra-word energy dips don't reset progress the way the old strictly-
+    consecutive counter did.
+
+    On detection ``on_trigger(phase)`` fires (cut TTS / interrupt the turn),
+    then capture continues from the rolling *pre_roll_ms* buffer until
+    *endpoint_silence_ms* of quiet, and the WAV path is returned. Returns
+    ``None`` when *should_stop* ends the turn without speech.
+    """
+    try:
+        sd, np = _import_audio()
+    except (ImportError, OSError):
+        return None
+
+    from collections import deque
+
+    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    calib_blocks = max(1, calibration_ms // 30)
+    trip_blocks = max(1, sustained_ms // 30)
+    trip_needed = max(1, int(round(trip_blocks * 0.8)))
+    grace_blocks = max(0, grace_ms // 30)
+    endpoint_blocks = max(1, endpoint_silence_ms // 30)
+    max_blocks = max(1, max_utterance_ms // 30)
+    mult = float(multiplier) if multiplier else DEFAULT_BARGE_MULTIPLIER
+
+    ambient: "deque[float]" = deque(maxlen=100)  # ~3s of quiet-phase RMS
+    pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
+    recent_above: "deque[bool]" = deque(maxlen=trip_blocks)
+    quiet_floor = float(SILENCE_RMS_THRESHOLD)
+    floor_locked = False
+    playing_prev = False
+    playback_seen = False
+    grace_remaining = 0
+    blocks_since_playback = 10_000
+    block_idx = 0
+
+    try:
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block
+        ) as stream:
+            while not should_stop():
+                data, _ = stream.read(block)
+                rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                pre_roll.append(data.copy())
+                block_idx += 1
+
+                playing = bool(is_playing()) if is_playing is not None else False
+
+                # Pre-playback calibration: the listener arms at utterance
+                # submit, before any TTS exists, so the first calib_blocks
+                # sample the actual quiet room — NOT speaker bleed.
+                if not floor_locked:
+                    if not playing:
+                        ambient.append(rms)
+                    if len(ambient) >= calib_blocks or playing:
+                        pct90 = (
+                            float(np.percentile(list(ambient), 90))
+                            if ambient
+                            else float(SILENCE_RMS_THRESHOLD)
+                        )
+                        quiet_floor = max(pct90, float(SILENCE_RMS_THRESHOLD))
+                        floor_locked = True
+                        _vad_log(
+                            f"calibrated quiet floor={quiet_floor:.0f} "
+                            f"(pct90={pct90:.0f}, {len(ambient)} blocks, "
+                            f"mult={mult:g})"
+                        )
+                    if not floor_locked:
+                        continue
+
+                # Playback phase transitions: grace only when playback starts
+                # after a real gap (>=1s), so inter-sentence flapping of the
+                # audio-active flag can't chain grace windows together and
+                # swallow a genuine interjection.
+                if playing and not playing_prev:
+                    if not playback_seen or blocks_since_playback > 33:
+                        grace_remaining = grace_blocks
+                        _vad_log(
+                            f"playback started (block={block_idx}) — "
+                            f"grace {grace_blocks * 30}ms"
+                        )
+                    playback_seen = True
+                playing_prev = playing
+                blocks_since_playback = 0 if playing else blocks_since_playback + 1
+
+                # Trigger: quiet baseline x multiplier, phase-clamped.
+                trigger = quiet_floor * mult
+                if playing:
+                    trigger = max(trigger, PLAYBACK_MIN_TRIGGER)
+                else:
+                    trigger = max(trigger, float(SILENCE_RMS_THRESHOLD) * 2)
+                trigger = min(trigger, TRIGGER_CEILING)
+
+                # Keep the quiet floor current with ambient drift — but ONLY
+                # while nothing is playing (never absorb speaker bleed) and
+                # the block isn't speech.
+                if not playing and rms < trigger:
+                    ambient.append(rms)
+                    if ambient:
+                        quiet_floor = max(
+                            float(np.percentile(list(ambient), 90)),
+                            float(SILENCE_RMS_THRESHOLD),
+                        )
+
+                above = rms >= trigger
+                if above and grace_remaining > 0:
+                    _vad_log(
+                        f"grace suppression: block={block_idx} rms={rms:.0f} "
+                        f"trigger={trigger:.0f} ({grace_remaining} blocks left)"
+                    )
+                    above = False
+                if grace_remaining > 0:
+                    grace_remaining -= 1
+
+                recent_above.append(above)
+                if rms >= trigger * 0.5:
+                    _vad_log(
+                        f"block={block_idx} rms={rms:.0f} floor={quiet_floor:.0f} "
+                        f"trigger={trigger:.0f} above={above} "
+                        f"window={sum(recent_above)}/{trip_needed} "
+                        f"phase={'playback' if playing else 'generation'}"
+                    )
+
+                if not (above and sum(recent_above) >= trip_needed):
+                    continue
+
+                phase = "playback" if playing else "generation"
+                _vad_log(
+                    f"TRIPPED ({phase}): block={block_idx} rms={rms:.0f} "
+                    f"floor={quiet_floor:.0f} trigger={trigger:.0f} "
+                    f"window={sum(recent_above)}/{len(recent_above)}"
+                )
+                if on_trigger:
+                    try:
+                        on_trigger(phase)
+                    except Exception as e:
+                        logger.debug("full-duplex trigger callback failed: %s", e)
+
+                # Capture until the user goes quiet. Playback was cut by
+                # on_trigger, so plain silence endpointing works.
+                frames: List[Any] = list(pre_roll)
+                quiet = 0
+                for _ in range(max_blocks):
+                    data, _ = stream.read(block)
+                    frames.append(data.copy())
+                    rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                    quiet = quiet + 1 if rms < SILENCE_RMS_THRESHOLD else 0
+                    if quiet >= endpoint_blocks:
+                        break
+                return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+    except Exception as e:
+        logger.debug("Full-duplex listener failed: %s", e)
+    return None
+
+
+# ============================================================================
 # Requirements check
 # ============================================================================
 def _check_plugin_stt_provider(provider: str) -> bool:

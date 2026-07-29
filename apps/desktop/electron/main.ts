@@ -6282,8 +6282,10 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
 
     return tokens
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+
     rememberLog(
-      `[native-oauth] failed to load stored tokens for ${baseUrl}: ${(error as Error).message}`
+      `[native-oauth] failed to load stored tokens for ${baseUrl}: ${detail}`
     )
 
     return null

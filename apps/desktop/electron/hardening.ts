@@ -12,6 +12,10 @@ const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const DATA_URL_READ_DEFAULT_MAX_MB = 16
 const DATA_URL_READ_MIN_MAX_MB = 1
 const DATA_URL_READ_MAX_MAX_MB = 4096
+// Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
+// reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
+// after base64 + framing. Preview stays on the Settings-configurable path.
+const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 function clampDataUrlReadMaxMb(value) {
@@ -324,7 +328,26 @@ async function resolveReadableFileForIpc(
   return { realPath, resolvedPath, stat }
 }
 
+async function readFileDataUrlForIpc(
+  filePath,
+  options: {
+    purpose?: string
+    baseDir?: fs.PathOrFileDescriptor
+    fs?: typeof fs
+    blockSensitive?: boolean
+    maxBytes?: number
+    mimeType: string
+  }
+): Promise<string> {
+  const fsImpl = options.fs || fs
+  const { resolvedPath } = await resolveReadableFileForIpc(filePath, options)
+  const data = await fsImpl.promises.readFile(resolvedPath)
+
+  return `data:${options.mimeType};base64,${data.toString('base64')}`
+}
+
 export {
+  ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,
@@ -332,6 +355,7 @@ export {
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,

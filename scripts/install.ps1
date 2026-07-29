@@ -1761,6 +1761,13 @@ function Install-Repository {
     # next `hermes update` checkout aborts on a "dirty" tree the user never
     # touched (see the update path above).
     git -c windows.appendAtomically=false config core.autocrlf false 2>$null
+    # `clone --depth 1 --branch $Branch` implies --single-branch, which pins
+    # remote.origin.fetch to that one branch: `git fetch origin <other>` then
+    # updates FETCH_HEAD but never creates origin/<other>, so other branches
+    # are invisible to `git branch -r` / `gh pr checkout` and `hermes update
+    # --branch` fails. Restore the wildcard -- every fetch we issue names its
+    # branch, so nothing extra gets downloaded.
+    git -c windows.appendAtomically=false remote set-branches origin '*' 2>$null
 
     # Post-clone pin: when a clone (or ZIP-fallback init) just landed us on
     # $Branch's tip, honour the higher-precedence $Commit / $Tag by checking

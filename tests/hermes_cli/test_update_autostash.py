@@ -852,6 +852,24 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     assert ["git", "fetch", "origin"] not in recorded
 
 
+def test_cmd_update_widens_remote_branches_before_fetching(monkeypatch, tmp_path):
+    """Installer checkouts are single-branch, so a scoped `git fetch origin
+    <branch>` never creates origin/<branch> and `--branch <other>` fails the
+    checkout as missing. Widen the refspec first — free, since the fetch that
+    follows still names its branch."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    widen = ["git", "remote", "set-branches", "origin", "*"]
+    assert widen in recorded
+    assert recorded.index(widen) < recorded.index(["git", "fetch", "origin", "main"])
+
+
 # ---------------------------------------------------------------------------
 # Fetch failure — friendly error messages
 # ---------------------------------------------------------------------------

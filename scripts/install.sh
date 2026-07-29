@@ -305,6 +305,22 @@ EOF
     log_info "Discarded npm lockfile churn (${dirty_count} file(s))"
 }
 
+# `git clone --depth 1 --branch main` implies --single-branch, which pins
+# remote.origin.fetch to main alone. On such a checkout `git fetch origin <b>`
+# updates FETCH_HEAD but never creates origin/<b>, so other branches are
+# invisible to `git branch -r` and `gh pr checkout`, and `hermes update
+# --branch <b>` fails with "does not exist locally or on origin".
+#
+# Restoring the wildcard costs nothing: every fetch the installer and the CLI
+# issue names its branch, and git only walks the full refspec on a bare
+# `git fetch`. Also heals checkouts an older installer already narrowed.
+widen_remote_branches() {
+    local repo="${1:-$INSTALL_DIR}"
+    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+    git -C "$repo" remote set-branches origin '*' 2>/dev/null || true
+}
+
 emit_manifest() {
     # Stage-Desktop is included only with --include-desktop, mirroring
     # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
@@ -1210,11 +1226,11 @@ clone_repo() {
                 autostash_ref="stash@{0}"
             fi
 
-            # Fetch only the target branch. A bare `git fetch origin` pulls
-            # every ref, and this repo carries thousands of auto-generated
-            # branches — on a non-single-branch checkout that turns each update
-            # into a multi-minute download that can stall the installer.
-            git remote set-branches origin "$BRANCH" 2>/dev/null || true
+            widen_remote_branches "$INSTALL_DIR"
+            # Naming the branch is what keeps the fetch cheap: a bare
+            # `git fetch origin` pulls every ref, and this repo carries
+            # thousands of branches, which turns each update into a
+            # multi-minute download that can stall the installer.
             git fetch origin "$BRANCH"
             git checkout "$BRANCH"
             # Managed installs should follow origin/$BRANCH exactly. If the
@@ -1304,6 +1320,7 @@ EOF
                 exit 1
             fi
         fi
+        widen_remote_branches "$INSTALL_DIR"
     fi
 
     cd "$INSTALL_DIR"

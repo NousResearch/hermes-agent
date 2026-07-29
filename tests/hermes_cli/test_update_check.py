@@ -125,7 +125,7 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
         result = banner._check_via_local_git(repo_dir)
 
     assert result == 1
-    assert ["git", "fetch", "origin", "--quiet"] not in calls
+    assert not any(cmd[:2] == ["git", "fetch"] for cmd in calls)
 
 
 def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
@@ -165,8 +165,10 @@ def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
         result = banner._check_via_local_git(repo_dir)
 
     assert result == banner.UPDATE_AVAILABLE_NO_COUNT
-    # The shallow fetch must preserve the boundary (--depth 1), not unshallow.
-    assert ["git", "fetch", "origin", "--depth", "1", "--quiet"] in calls
+    # The shallow fetch must preserve the boundary (--depth 1), not unshallow,
+    # and must name main so a checkout that can see every branch doesn't pull
+    # them all on startup.
+    assert ["git", "fetch", "origin", "main", "--depth", "1", "--quiet"] in calls
 
 
 def test_check_via_local_git_shallow_clone_up_to_date(tmp_path):

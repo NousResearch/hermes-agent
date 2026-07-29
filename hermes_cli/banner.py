@@ -219,7 +219,11 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     is_shallow = shallow == "true"
 
     try:
-        fetch_args = ["git", "fetch", "origin"]
+        # Name the branch. A bare `git fetch origin` walks the configured
+        # refspec; on a checkout that can see all of this repo's branches
+        # that is hundreds of MB, behind a 10s timeout, on every startup.
+        # Naming main keeps it to one ref whatever remote.origin.fetch says.
+        fetch_args = ["git", "fetch", "origin", "main"]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")

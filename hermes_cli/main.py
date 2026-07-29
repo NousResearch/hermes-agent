@@ -10965,6 +10965,27 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _widen_remote_branches(git_cmd: list) -> None:
+    """Let the checkout resolve branches other than the one it was cloned on.
+
+    Installer checkouts come from ``git clone --depth 1 --branch main``, which
+    implies ``--single-branch`` and pins ``remote.origin.fetch`` to main. Our
+    scoped ``git fetch origin <branch>`` then updates FETCH_HEAD but never
+    creates ``origin/<branch>``, so ``--branch <other>`` reports the branch as
+    missing from a remote that plainly has it.
+
+    Restoring the wildcard costs no bandwidth — every fetch we issue names its
+    branch, and git only walks the full refspec on a bare ``git fetch``.
+    Best-effort: a failure here just leaves the checkout as it was.
+    """
+    subprocess.run(
+        git_cmd + ["remote", "set-branches", "origin", "*"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -11021,6 +11042,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         == "true"
     )
     depth_args = ["--depth", "1"] if is_shallow else []
+    _widen_remote_branches(git_cmd)
 
     if branch == "main":
         print("→ Fetching from upstream...")
@@ -12324,6 +12346,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _resolve_update_branch(args)
+        _widen_remote_branches(git_cmd)
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(

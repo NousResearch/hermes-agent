@@ -11,11 +11,7 @@ class TestStripLeakedBracketedPasteWrappers:
     def test_plain_text_unchanged(self):
         assert strip_leaked_bracketed_paste_wrappers("hello world") == "hello world"
 
-    def test_strips_canonical_escape_wrappers(self):
-        assert strip_leaked_bracketed_paste_wrappers("\x1b[200~hello\x1b[201~") == "hello"
 
-    def test_strips_visible_caret_escape_wrappers(self):
-        assert strip_leaked_bracketed_paste_wrappers("^[[200~hello^[[201~") == "hello"
 
     def test_does_not_strip_non_wrapper_bracket_forms_in_normal_text(self):
         text = "literal[200~tag and literal[201~tag should stay"

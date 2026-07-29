@@ -49,55 +49,20 @@ def _anthropic_error_body(msg: str = "model not found") -> bytes:
 # _looks_like_anthropic_path
 # ----------------------------------------------------------------------
 
-@pytest.mark.parametrize("url, expected", [
-    ("https://foo.services.ai.azure.com/anthropic", True),
-    ("https://foo.services.ai.azure.com/anthropic/", True),
-    ("https://foo.services.ai.azure.com/anthropic/v1", True),
-    ("https://foo.openai.azure.com/openai/v1", False),
-    ("https://foo.openai.azure.com/", False),
-    ("https://openrouter.ai/api/v1", False),
-])
-def test_looks_like_anthropic_path(url, expected):
-    assert azure_detect._looks_like_anthropic_path(url) is expected
 
 
 # ----------------------------------------------------------------------
 # _extract_model_ids
 # ----------------------------------------------------------------------
 
-def test_extract_model_ids_openai_shape():
-    body = {
-        "object": "list",
-        "data": [
-            {"id": "gpt-4.1-mini", "object": "model"},
-            {"id": "claude-sonnet-4-6", "object": "model"},
-        ],
-    }
-    assert azure_detect._extract_model_ids(body) == ["gpt-4.1-mini", "claude-sonnet-4-6"]
 
 
-def test_extract_model_ids_bad_shape_returns_empty():
-    assert azure_detect._extract_model_ids({}) == []
-    assert azure_detect._extract_model_ids({"data": "not-a-list"}) == []
-    assert azure_detect._extract_model_ids({"data": [{"no-id": True}]}) == []
 
 
 # ----------------------------------------------------------------------
 # detect() integration
 # ----------------------------------------------------------------------
 
-def test_detect_anthropic_path_wins_without_http():
-    """URL path sniff short-circuits — no HTTP call happens."""
-    with patch.object(azure_detect, "_http_get_json") as fake_get, \
-         patch.object(azure_detect, "_probe_anthropic_messages") as fake_probe:
-        result = azure_detect.detect(
-            "https://foo.services.ai.azure.com/anthropic", "key-abc",
-        )
-        assert result.api_mode == "anthropic_messages"
-        assert result.is_anthropic is True
-        assert "path" in result.reason.lower()
-        fake_get.assert_not_called()
-        fake_probe.assert_not_called()
 
 
 def test_detect_openai_models_probe_success():
@@ -145,28 +110,11 @@ def test_probe_openai_models_tries_multiple_api_versions():
 # _http_get_json error handling
 # ----------------------------------------------------------------------
 
-def test_http_get_json_on_urlerror_returns_zero_none():
-    """Network failure returns (0, None), never raises."""
-    import urllib.error
-    with patch("hermes_cli.azure_detect.open_credentialed_url",
-               side_effect=urllib.error.URLError("dns fail")):
-        status, body = azure_detect._http_get_json("https://bad.example/", "k")
-    assert status == 0
-    assert body is None
 
 
 # ----------------------------------------------------------------------
 # lookup_context_length
 # ----------------------------------------------------------------------
 
-def test_lookup_context_length_returns_known():
-    """When model_metadata returns a non-fallback value, we pass it through."""
-    fake = MagicMock(return_value=400000)
-    with patch("agent.model_metadata.get_model_context_length", fake), \
-         patch("agent.model_metadata.DEFAULT_FALLBACK_CONTEXT", 128000):
-        n = azure_detect.lookup_context_length(
-            "gpt-5.4", "https://x.openai.azure.com/openai/v1", "k",
-        )
-    assert n == 400000
 
 

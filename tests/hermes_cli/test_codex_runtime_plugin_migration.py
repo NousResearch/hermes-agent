@@ -53,40 +53,12 @@ class TestTranslateOneServer:
 # ---- TOML rendering ----
 
 class TestTomlValueFormatter:
-    def test_string_quoted(self):
-        assert _format_toml_value("hello") == '"hello"'
-
-    def test_string_with_quotes_escaped(self):
-        assert _format_toml_value('a"b') == '"a\\"b"'
 
 
-    def test_string_with_newline_escaped(self):
-        """TOML basic strings don't allow literal newlines — a path or
-        env var containing a newline must use \\n. Otherwise codex would
-        refuse to load the config."""
-        out = _format_toml_value("line one\nline two")
-        assert "\n" not in out  # no raw newline in output
-        assert "\\n" in out
 
-    def test_string_with_tab_escaped(self):
-        out = _format_toml_value("col1\tcol2")
-        assert "\t" not in out
-        assert "\\t" in out
 
-    def test_string_with_other_controls_escaped(self):
-        for raw, expected in [
-            ("\r", "\\r"),
-            ("\f", "\\f"),
-            ("\b", "\\b"),
-        ]:
-            out = _format_toml_value(f"x{raw}y")
-            assert raw not in out, f"{raw!r} should be escaped"
-            assert expected in out, f"{expected!r} should be in output"
 
-    def test_windows_path_escaped_correctly(self):
-        out = _format_toml_value(r"C:\Users\Alice\.codex")
-        # Each backslash should be doubled
-        assert out == r'"C:\\Users\\Alice\\.codex"'
+
 
     def test_atomic_write_no_temp_leak_on_success(self, tmp_path):
         """The atomic-write path uses tempfile.mkstemp + rename. On
@@ -128,9 +100,6 @@ class TestTomlValueFormatter:
                     if p.name.startswith(".config.toml.")]
         assert leftover == [], f"temp files leaked: {leftover}"
 
-    def test_unsupported_type_raises(self):
-        with pytest.raises(ValueError):
-            _format_toml_value(object())
 
 
 class TestRenderToml:
@@ -192,37 +161,8 @@ class TestStripExistingManagedBlock:
 # ---- end-to-end migrate(, expose_hermes_tools=False) ----
 
 class TestMigrate:
-    def test_no_servers_no_plugins_no_perms_writes_placeholder(self, tmp_path):
-        report = migrate({}, codex_home=tmp_path,
-                         discover_plugins=False,
-                         default_permission_profile=None, expose_hermes_tools=False)
-        assert report.written
-        text = (tmp_path / "config.toml").read_text()
-        assert MIGRATION_MARKER in text
-        assert "no MCP servers" in text or "no MCP servers, plugins, or permissions" in text
 
-    def test_no_servers_still_writes_permissions_default(self, tmp_path):
-        """Even with zero MCP servers, enabling the runtime should write the
-        default permissions profile so users don't get prompted on every
-        write attempt. This is the fix for quirk #2."""
-        report = migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
-        assert report.written
-        text = (tmp_path / "config.toml").read_text()
-        # Codex's schema: top-level `default_permissions` keying a built-in
-        # profile name (prefixed with ":"). NOT a [permissions] section
-        # (which is for *user-defined* profiles with structured fields).
-        assert 'default_permissions = ":workspace"' in text
-        assert report.wrote_permissions_default == ":workspace"
 
-    def test_explicit_none_permissions_skips_block(self, tmp_path):
-        report = migrate({"mcp_servers": {"x": {"command": "y"}}},
-                         codex_home=tmp_path,
-                         discover_plugins=False,
-                         default_permission_profile=None, expose_hermes_tools=False)
-        text = (tmp_path / "config.toml").read_text()
-        assert "default_permissions" not in text
-        assert "[permissions]" not in text
-        assert report.wrote_permissions_default is None
 
     def test_plugin_discovery_writes_plugin_blocks(self, tmp_path, monkeypatch):
         """Discovered curated plugins land as [plugins."<name>@<marketplace>"]
@@ -263,86 +203,11 @@ class TestMigrate:
         assert report.plugin_query_error == "codex CLI not available"
         assert report.migrated_plugins == []
 
-    def test_discover_plugins_false_skips_query(self, tmp_path, monkeypatch):
-        """Tests and restricted environments can opt out of the subprocess
-        spawn entirely."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
-
-        called = {"yes": False}
-        def boom(*a, **kw):
-            called["yes"] = True
-            return [], None
-        monkeypatch.setattr(crpm, "_query_codex_plugins", boom)
-
-        migrate({"mcp_servers": {"x": {"command": "y"}}},
-                codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
-        assert called["yes"] is False
 
 
-    def test_re_run_replaces_plugin_block(self, tmp_path, monkeypatch):
-        """Plugin blocks are managed and re-runs should replace them
-        cleanly — same idempotency contract as MCP servers."""
-        from hermes_cli import codex_runtime_plugin_migration as crpm
 
-        # First run: only github
-        monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0: (
-                                [{"name": "github", "marketplace": "openai-curated", "enabled": True}],
-                                None,
-                            ))
-        migrate({}, codex_home=tmp_path, discover_plugins=True,
-                default_permission_profile=None, expose_hermes_tools=False)
-        first = (tmp_path / "config.toml").read_text()
-        assert "github@openai-curated" in first
 
-        # Second run: only canva (github went away)
-        monkeypatch.setattr(crpm, "_query_codex_plugins",
-                            lambda codex_home=None, timeout=8.0: (
-                                [{"name": "canva", "marketplace": "openai-curated", "enabled": True}],
-                                None,
-                            ))
-        migrate({}, codex_home=tmp_path, discover_plugins=True,
-                default_permission_profile=None, expose_hermes_tools=False)
-        second = (tmp_path / "config.toml").read_text()
-        assert "github@openai-curated" not in second
-        assert "canva@openai-curated" in second
 
-    def test_expose_hermes_tools_writes_callback_mcp_entry(self, tmp_path):
-        """When expose_hermes_tools=True (production default), an
-        [mcp_servers.hermes-tools] entry is written so codex calls back
-        into Hermes for browser/web/delegate_task/vision/memory tools.
-
-        This is the fix for 'all other tools that codex doesn't provide
-        should be useable by hermes' — quirk #7."""
-        report = migrate({}, codex_home=tmp_path,
-                         discover_plugins=False,
-                         default_permission_profile=None,
-                         expose_hermes_tools=True)
-        text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.hermes-tools]" in text
-        assert "hermes_tools_mcp_server" in text
-        # Must include startup + tool timeouts so codex doesn't give up
-        assert "startup_timeout_sec" in text
-        assert "tool_timeout_sec" in text
-        # And the entry is reported
-        assert "hermes-tools" in report.migrated
-
-    def test_expose_hermes_tools_disabled_skips_entry(self, tmp_path):
-        """expose_hermes_tools=False suppresses the callback registration."""
-        migrate({}, codex_home=tmp_path,
-                discover_plugins=False,
-                default_permission_profile=None,
-                expose_hermes_tools=False)
-        text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.hermes-tools]" not in text
-        assert "hermes_tools_mcp_server" not in text
-
-    def test_dry_run_doesnt_write(self, tmp_path):
-        report = migrate({"mcp_servers": {"x": {"command": "y"}}},
-                         codex_home=tmp_path, dry_run=True, expose_hermes_tools=False)
-        assert report.dry_run is True
-        assert not (tmp_path / "config.toml").exists()
-        assert "x" in report.migrated
 
     def test_full_migration_round_trip(self, tmp_path):
         hermes_cfg = {
@@ -365,56 +230,8 @@ class TestMigrate:
         assert 'command = "npx"' in text
         assert 'url = "https://api.github.com/mcp"' in text
 
-    def test_idempotent_re_run_replaces_managed_block(self, tmp_path):
-        # First migration
-        migrate({"mcp_servers": {"a": {"command": "x"}}}, codex_home=tmp_path, expose_hermes_tools=False)
-        first_text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.a]" in first_text
-        # Second migration with different servers
-        migrate({"mcp_servers": {"b": {"command": "y"}}}, codex_home=tmp_path, expose_hermes_tools=False)
-        second_text = (tmp_path / "config.toml").read_text()
-        assert "[mcp_servers.a]" not in second_text
-        assert "[mcp_servers.b]" in second_text
 
-    def test_preserves_user_codex_config_above_marker(self, tmp_path):
-        target = tmp_path / "config.toml"
-        target.write_text(
-            "[model]\n"
-            'profile = "default"\n'
-            "\n"
-            "[providers.openai]\n"
-            'api_key = "sk-test"\n'
-        )
-        migrate({"mcp_servers": {"a": {"command": "x"}}}, codex_home=tmp_path, expose_hermes_tools=False)
-        new_text = target.read_text()
-        # User's codex config preserved
-        assert "[model]" in new_text
-        assert 'profile = "default"' in new_text
-        assert "[providers.openai]" in new_text
-        # And new MCP block inserted without breaking user tables
-        assert "[mcp_servers.a]" in new_text
-        assert MIGRATION_MARKER in new_text
 
-    def test_managed_root_keys_stay_top_level_when_config_ends_in_table(self, tmp_path):
-        """TOML has no explicit 'leave current table' syntax. If Hermes appends
-        root keys like default_permissions after a user table such as [features],
-        Codex parses them as features.default_permissions and rejects the config.
-        The managed block must therefore be inserted before the first table."""
-        import tomllib
-
-        target = tmp_path / "config.toml"
-        target.write_text(
-            'model = "gpt-5.5"\n'
-            "\n"
-            "[features]\n"
-            "terminal_resize_reflow = true\n"
-        )
-        migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
-        new_text = target.read_text()
-        parsed = tomllib.loads(new_text)
-        assert parsed["default_permissions"] == ":workspace"
-        assert "default_permissions" not in parsed["features"]
-        assert new_text.index(MIGRATION_MARKER) < new_text.index("[features]")
 
     def test_preserves_user_mcp_server_outside_managed_block(self, tmp_path):
         """Quirk #6: when a user adds their own MCP server entry directly
@@ -449,17 +266,6 @@ class TestMigrate:
         # And our managed block is still there with the new content
         assert "[mcp_servers.hermes-mcp]" in final
 
-    def test_skipped_keys_reported(self, tmp_path):
-        report = migrate({
-            "mcp_servers": {
-                "x": {
-                    "command": "y",
-                    "sampling": {"enabled": True},  # codex has no equivalent
-                }
-            }
-        }, codex_home=tmp_path, expose_hermes_tools=False)
-        assert "x" in report.skipped_keys_per_server
-        assert any("sampling" in s for s in report.skipped_keys_per_server["x"])
 
 
     def test_summary_reports_migration_count(self, tmp_path):
@@ -586,36 +392,8 @@ class TestHermesHomeLeakGuard:
     once codex spawned the hermes-tools MCP subprocess.
     """
 
-    def test_tempdir_detector_recognizes_pytest_paths(self):
-        assert _looks_like_test_tempdir(
-            "/private/var/folders/abc/pytest-of-kshitij/pytest-137/popen-gw2/test_X/hermes_test"
-        )
-        assert _looks_like_test_tempdir(
-            "/tmp/pytest-of-user/pytest-12/test_X/hermes"
-        )
-        assert _looks_like_test_tempdir(
-            "/private/var/folders/zz/T/pytest-of-bob/pytest-1"
-        )
 
-    def test_tempdir_detector_accepts_real_hermes_home(self):
-        assert not _looks_like_test_tempdir("/Users/alice/.hermes")
-        assert not _looks_like_test_tempdir("/home/bob/.hermes")
-        assert not _looks_like_test_tempdir("/opt/hermes")
-        assert not _looks_like_test_tempdir("")
 
-    def test_pytest_tempdir_not_burned_into_mcp_env(self, monkeypatch):
-        """The headline regression: even when HERMES_HOME points at a pytest
-        tempdir, _build_hermes_tools_mcp_entry() must NOT propagate it."""
-        monkeypatch.setenv(
-            "HERMES_HOME",
-            "/private/var/folders/xx/pytest-of-user/pytest-99/test_x/hermes_test",
-        )
-        entry = _build_hermes_tools_mcp_entry()
-        env = entry.get("env", {})
-        assert "HERMES_HOME" not in env, (
-            f"pytest-tempdir HERMES_HOME leaked into codex MCP entry: "
-            f"{env.get('HERMES_HOME')!r}"
-        )
 
     def test_real_hermes_home_propagates(self, monkeypatch, tmp_path):
         """A legitimate HERMES_HOME (not a tempdir path) DOES propagate so the

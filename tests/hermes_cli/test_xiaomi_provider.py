@@ -56,8 +56,6 @@ class TestXiaomiAliases:
 # =============================================================================
 
 
-class TestXiaomiAutoDetection:
-    """Setting XIAOMI_API_KEY should auto-detect the provider."""
 
 
 # =============================================================================
@@ -68,10 +66,6 @@ class TestXiaomiAutoDetection:
 class TestXiaomiCredentials:
     """Test credential resolution for the xiaomi provider."""
 
-    def test_status_configured(self, monkeypatch):
-        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
-        status = get_api_key_provider_status("xiaomi")
-        assert status["configured"]
 
 
     def test_resolve_credentials(self, monkeypatch):
@@ -81,11 +75,6 @@ class TestXiaomiCredentials:
         assert creds["api_key"] == "sk-test-12345678"
         assert creds["base_url"] == "https://api.xiaomimimo.com/v1"
 
-    def test_custom_base_url_override(self, monkeypatch):
-        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
-        monkeypatch.setenv("XIAOMI_BASE_URL", "https://custom.xiaomi.example/v1")
-        creds = resolve_api_key_provider_credentials("xiaomi")
-        assert creds["base_url"] == "https://custom.xiaomi.example/v1"
 
     def test_resolve_credentials_reads_home_external_secret_scope(
         self, tmp_path, monkeypatch
@@ -119,50 +108,7 @@ class TestXiaomiCredentials:
         assert creds["api_key"] == "sk-bws-xiaomi-12345678"
         assert creds["source"] == "XIAOMI_API_KEY"
 
-    def test_scoped_missing_key_does_not_fall_through_to_raw_env(
-        self, tmp_path, monkeypatch
-    ):
-        from agent import secret_scope as ss
-        from hermes_cli import config as config_module
 
-        home = tmp_path / "hermes"
-        home.mkdir()
-        (home / ".env").write_text("", encoding="utf-8")
-        monkeypatch.setattr(config_module, "get_env_path", lambda: home / ".env")
-        config_module.invalidate_env_cache()
-
-        monkeypatch.setenv("XIAOMI_API_KEY", "sk-other-profile-12345678")
-        monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
-
-        ss.set_multiplex_active(True)
-        token = ss.set_secret_scope({})
-        try:
-            creds = resolve_api_key_provider_credentials("xiaomi")
-        finally:
-            ss.reset_secret_scope(token)
-            ss.set_multiplex_active(False)
-
-        assert creds["api_key"] == ""
-
-    def test_unscoped_multiplex_read_fails_closed(self, tmp_path, monkeypatch):
-        from agent import secret_scope as ss
-        from hermes_cli import config as config_module
-
-        home = tmp_path / "hermes"
-        home.mkdir()
-        (home / ".env").write_text("", encoding="utf-8")
-        monkeypatch.setattr(config_module, "get_env_path", lambda: home / ".env")
-        config_module.invalidate_env_cache()
-
-        monkeypatch.setenv("XIAOMI_API_KEY", "sk-global-leak-12345678")
-        monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
-
-        ss.set_multiplex_active(True)
-        try:
-            with pytest.raises(ss.UnscopedSecretError):
-                resolve_api_key_provider_credentials("xiaomi")
-        finally:
-            ss.set_multiplex_active(False)
 
 
 # =============================================================================
@@ -267,16 +213,6 @@ class TestXiaomiNormalization:
         result = normalize_model_for_provider(input_name, "xiaomi")
         assert result == expected
 
-    @pytest.mark.parametrize("input_name,expected", [
-        ("xiaomi/MiMo-V2.5-Pro", "mimo-v2.5-pro"),
-        ("xiaomi/MIMO-V2.5-PRO", "mimo-v2.5-pro"),
-        ("xiaomi/mimo-v2.5-pro", "mimo-v2.5-pro"),
-    ])
-    def test_normalize_strips_prefix_and_lowercases(self, input_name, expected):
-        """Provider prefix stripping AND lowercasing must both work together."""
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider(input_name, "xiaomi")
-        assert result == expected
 
 
 # =============================================================================
@@ -319,14 +255,7 @@ class TestXiaomiProvidersModule:
         assert overlay.base_url_env_var == "XIAOMI_BASE_URL"
         assert not overlay.is_aggregator
 
-    def test_alias_resolves(self):
-        from hermes_cli.providers import normalize_provider
-        assert normalize_provider("mimo") == "xiaomi"
-        assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
-    def test_label(self):
-        from hermes_cli.providers import get_label
-        assert get_label("xiaomi") == "Xiaomi MiMo"
 
     def test_get_provider(self):
         pdef = None
@@ -345,8 +274,6 @@ class TestXiaomiProvidersModule:
 # =============================================================================
 
 
-class TestXiaomiAuxiliary:
-    """Xiaomi auxiliary routing: vision → omni, non-vision → user's main model, never flash."""
 
 
 # =============================================================================

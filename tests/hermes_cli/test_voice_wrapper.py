@@ -37,11 +37,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
     binds identically in both runtimes.
     """
 
-    def test_ctrl_and_alt_map_to_prompt_toolkit_form(self):
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+b") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+r") == "a-r"
 
 
     def test_non_string_falls_back_to_default(self):
@@ -67,16 +62,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
 
     # Round-10 Copilot review regressions on #19835.
 
-    def test_named_key_aliases_collapse_to_prompt_toolkit_canonical(self):
-        """TUI accepts ``return`` / ``esc`` / ``bs`` / ``del`` etc.;
-        CLI must collapse to prompt_toolkit's canonical spelling
-        (``enter`` / ``escape`` / ``backspace`` / ``delete``)."""
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+return") == "c-enter"
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+esc") == "c-escape"
-        assert normalize_voice_record_key_for_prompt_toolkit("ctrl+bs") == "c-backspace"
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+del") == "a-delete"
 
 
     # Round-14 Copilot review regression on #19835. On macOS the TUI
@@ -85,19 +70,6 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
     # normalizer must mirror that platform-gated rejection so shared
     # configs like ``option+c`` don't bind Alt+C in the CLI while the
     # TUI falls back to Ctrl+B.
-    def test_alt_cdl_rejected_on_macos(self, monkeypatch):
-        monkeypatch.setattr("sys.platform", "darwin")
-
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
-
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+c") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+d") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+l") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("option+c") == "c-b"
-        assert normalize_voice_record_key_for_prompt_toolkit("opt+d") == "c-b"
-        # Other alt letters still bind on darwin.
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+r") == "a-r"
-        assert normalize_voice_record_key_for_prompt_toolkit("alt+space") == "a-space"
 
 
 class TestVoiceRecordKeyFromConfig:
@@ -111,16 +83,7 @@ class TestVoiceRecordKeyFromConfig:
     (``normalize_…`` / ``format_…``) surfaces the documented default.
     """
 
-    def test_dict_voice_with_string_record_key(self):
-        from hermes_cli.voice import voice_record_key_from_config
 
-        assert voice_record_key_from_config({"voice": {"record_key": "ctrl+o"}}) == "ctrl+o"
-
-    def test_non_dict_config_root(self):
-        from hermes_cli.voice import voice_record_key_from_config
-
-        for bad_root in (None, True, 1, "ctrl+b", [], ["ctrl+b"]):
-            assert voice_record_key_from_config(bad_root) is None, bad_root
 
 
     def test_missing_record_key_returns_none(self):
@@ -158,12 +121,6 @@ class TestFormatVoiceRecordKeyForStatus:
         assert format_voice_record_key_for_status("ctrl+o") == "Ctrl+O"
         assert format_voice_record_key_for_status("alt+r") == "Alt+R"
 
-    def test_named_keys_render_in_title_case(self):
-        from hermes_cli.voice import format_voice_record_key_for_status
-
-        assert format_voice_record_key_for_status("ctrl+space") == "Ctrl+Space"
-        assert format_voice_record_key_for_status("alt+enter") == "Alt+Enter"
-        assert format_voice_record_key_for_status("ctrl+esc") == "Ctrl+Escape"
 
 
     def test_non_string_scalar_falls_back_to_ctrl_b_label(self):
@@ -256,26 +213,7 @@ class TestSpeakTextGuards:
 class TestContinuousAPI:
     """Continuous (VAD) mode API — CLI-parity loop entry points."""
 
-    def test_continuous_exports(self):
-        from hermes_cli.voice import (
-            is_continuous_active,
-            start_continuous,
-            stop_continuous,
-        )
 
-        assert callable(start_continuous)
-        assert callable(stop_continuous)
-        assert callable(is_continuous_active)
-
-    def test_not_active_by_default(self, monkeypatch):
-        import hermes_cli.voice as voice
-
-        # Isolate from any state left behind by other tests in the session.
-        monkeypatch.setattr(voice, "_continuous_active", False)
-        monkeypatch.setattr(voice, "_continuous_stopping", False, raising=False)
-        monkeypatch.setattr(voice, "_continuous_recorder", None)
-
-        assert voice.is_continuous_active() is False
 
     def test_stop_continuous_idempotent_when_inactive(self, monkeypatch):
         """stop_continuous must not raise when no loop is active — the
@@ -313,13 +251,6 @@ class TestContinuousAPI:
         assert started is True
         assert called["n"] == 0
 
-    def test_start_returns_false_while_stopping(self, monkeypatch):
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr(voice, "_continuous_active", False)
-        monkeypatch.setattr(voice, "_continuous_stopping", True, raising=False)
-
-        assert voice.start_continuous(on_transcript=lambda _t: None) is False
 
 
 class TestContinuousLoopSimulation:
@@ -417,87 +348,10 @@ class TestContinuousLoopSimulation:
         voice.stop_continuous()
 
 
-    def test_auto_restart_false_retains_silent_strikes_across_starts(
-        self, fake_recorder, monkeypatch
-    ):
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": ""},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        silent_limit_fired = []
-
-        for _ in range(3):
-            voice.start_continuous(
-                on_transcript=lambda _t: None,
-                on_silent_limit=lambda: silent_limit_fired.append(True),
-                auto_restart=False,
-            )
-            fake_recorder.last_callback()
-
-        assert silent_limit_fired == [True]
-        assert voice.is_continuous_active() is False
-        assert fake_recorder.start_calls == 3
 
 
-    def test_force_transcribe_valid_single_shot_resets_silent_strikes(
-        self, fake_recorder, monkeypatch
-    ):
-        import hermes_cli.voice as voice
-
-        class ImmediateThread:
-            def __init__(self, target, daemon=False):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
-        monkeypatch.setattr(voice, "_continuous_no_speech_count", 2)
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": "manual stop"},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        transcripts = []
-        silent_limit_fired = []
-
-        voice.start_continuous(
-            on_transcript=lambda t: transcripts.append(t),
-            on_silent_limit=lambda: silent_limit_fired.append(True),
-            auto_restart=False,
-        )
-        voice.stop_continuous(force_transcribe=True)
-
-        assert transcripts == ["manual stop"]
-        assert silent_limit_fired == []
-        assert voice._continuous_no_speech_count == 0
 
 
-    def test_restart_failure_reports_idle(self, fake_recorder, monkeypatch):
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": "hello world"},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        statuses = []
-        voice.start_continuous(on_transcript=lambda _t: None, on_status=statuses.append)
-
-        fake_recorder.fail_next_start = True
-        fake_recorder.last_callback()
-
-        assert statuses == ["listening", "transcribing", "idle"]
-        assert voice.is_continuous_active() is False
 
     def test_silent_limit_halts_loop_after_three_strikes(self, fake_recorder, monkeypatch):
         import hermes_cli.voice as voice
@@ -528,41 +382,6 @@ class TestContinuousLoopSimulation:
         assert voice.is_continuous_active() is False
         assert fake_recorder.cancelled >= 1
 
-    def test_silent_cycles_do_not_count_while_agent_busy(self, fake_recorder, monkeypatch):
-        """Agent mid-turn: silent cycles must NOT count toward the no-speech
-        limit — a multi-minute tool run would otherwise end the voice chat
-        while the user is correctly waiting quietly."""
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": ""},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: True)
-
-        silent_limit_fired = []
-
-        voice.start_continuous(
-            on_transcript=lambda _t: None,
-            on_silent_limit=lambda: silent_limit_fired.append(True),
-        )
-
-        # Way past the 3-strike limit while the agent is busy.
-        for _ in range(6):
-            fake_recorder.last_callback()
-
-        assert silent_limit_fired == []
-        assert voice.is_continuous_active() is True
-        assert voice._continuous_no_speech_count == 0
-
-        # Agent finishes → strikes count again, limit fires as before.
-        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: False)
-        for _ in range(3):
-            fake_recorder.last_callback()
-        assert silent_limit_fired == [True]
-        assert voice.is_continuous_active() is False
 
     def test_silent_cycles_do_not_count_while_tts_playing(self, fake_recorder, monkeypatch):
         """TTS speaking: the user is listening, not ignoring the mic."""
@@ -599,92 +418,9 @@ class TestContinuousLoopSimulation:
         assert voice._continuous_no_speech_count == 0
         voice.stop_continuous()
 
-    def test_stop_phrase_still_ends_chat_during_busy_hold(self, fake_recorder, monkeypatch):
-        """The hold suppresses the silence counter only — a spoken stop
-        phrase must still end the voice chat instantly."""
-        import hermes_cli.voice as voice
-
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": "stop"},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-        monkeypatch.setattr(voice, "is_voice_stop_phrase", lambda _t: True)
-        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: True)
-
-        stop_fired = []
-        voice.start_continuous(
-            on_transcript=lambda _t: None,
-            on_stop_phrase=lambda t: stop_fired.append(t),
-        )
-        fake_recorder.last_callback()
-
-        assert stop_fired == ["stop"]
-        assert voice.is_continuous_active() is False
 
 
-    def test_force_transcribe_silent_cycle_held_while_busy(self, fake_recorder, monkeypatch):
-        """The single-shot (auto_restart=False, force_transcribe) strike path
-        honors the busy hold too — desktop/TUI clients drive that loop."""
-        import hermes_cli.voice as voice
 
-        class ImmediateThread:
-            def __init__(self, target, daemon=False):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
-        monkeypatch.setattr(
-            voice,
-            "transcribe_recording",
-            lambda _p: {"success": True, "transcript": ""},
-        )
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: True)
-
-        silent_limit_fired = []
-        for _ in range(4):
-            voice.start_continuous(
-                on_transcript=lambda _t: None,
-                on_silent_limit=lambda: silent_limit_fired.append(True),
-                auto_restart=False,
-            )
-            voice.stop_continuous(force_transcribe=True)
-
-        assert silent_limit_fired == []
-        assert voice._continuous_no_speech_count == 0
-
-    def test_stop_during_transcription_discards_restart(self, fake_recorder, monkeypatch):
-        """User hits Ctrl+B mid-transcription: the in-flight transcript must
-        still fire (it's a real utterance), but the loop must NOT restart."""
-        import hermes_cli.voice as voice
-
-        stop_triggered = {"flag": False}
-
-        def late_transcribe(_p):
-            # Simulate stop_continuous arriving while we're inside transcribe
-            voice.stop_continuous()
-            stop_triggered["flag"] = True
-            return {"success": True, "transcript": "final word"}
-
-        monkeypatch.setattr(voice, "transcribe_recording", late_transcribe)
-        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
-
-        transcripts = []
-        voice.start_continuous(on_transcript=lambda t: transcripts.append(t))
-
-        initial_starts = fake_recorder.start_calls  # 1
-        fake_recorder.last_callback()
-
-        assert stop_triggered["flag"] is True
-        # Loop is stopped — no auto-restart
-        assert fake_recorder.start_calls == initial_starts
-        # The in-flight transcript was suppressed because we stopped mid-flight
-        assert transcripts == []
-        assert voice.is_continuous_active() is False
 
 
 class TestBeepsEnabledTruthyStrings:

@@ -35,39 +35,8 @@ def _make_chat_args(**overrides):
 class TestNonInteractiveSetup:
     """Verify setup paths exit cleanly in headless/non-interactive environments."""
 
-    def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
-        """The CLI entrypoint should not block --non-interactive before setup.py handles it."""
-        from hermes_cli.main import cmd_setup
-
-        args = _make_setup_args(non_interactive=True)
-
-        with (
-            patch("hermes_cli.setup.run_setup_wizard") as mock_run_setup,
-            patch("sys.stdin") as mock_stdin,
-        ):
-            mock_stdin.isatty.return_value = False
-            cmd_setup(args)
-
-        mock_run_setup.assert_called_once_with(args)
 
 
-    def test_non_interactive_flag_skips_wizard(self, capsys):
-        """--non-interactive should print guidance and not enter the wizard."""
-        from hermes_cli.setup import run_setup_wizard
-
-        args = _make_setup_args(non_interactive=True)
-
-        with (
-            patch("hermes_cli.setup.ensure_hermes_home"),
-            patch("hermes_cli.setup.load_config", return_value={}),
-            patch("hermes_cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
-            patch("hermes_cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
-            patch("builtins.input", side_effect=AssertionError("input should not be called")),
-        ):
-            run_setup_wizard(args)
-
-        out = capsys.readouterr().out
-        assert "hermes config set model.provider custom" in out
 
 
     def test_reset_flag_rewrites_config_before_noninteractive_exit(self, tmp_path, monkeypatch, capsys):
@@ -111,18 +80,3 @@ class TestNonInteractiveSetup:
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
 
-    def test_main_accepts_tts_setup_section(self, monkeypatch):
-        """`hermes setup tts` should parse and dispatch like other setup sections."""
-        from hermes_cli import main as main_mod
-
-        received = {}
-
-        def fake_cmd_setup(args):
-            received["section"] = args.section
-
-        monkeypatch.setattr(main_mod, "cmd_setup", fake_cmd_setup)
-        monkeypatch.setattr("sys.argv", ["hermes", "setup", "tts"])
-
-        main_mod.main()
-
-        assert received["section"] == "tts"

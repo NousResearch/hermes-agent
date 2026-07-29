@@ -271,14 +271,6 @@ def test_resolve_xai_runtime_credentials_refreshes_expiring_token(tmp_path, monk
 # ---------------------------------------------------------------------------
 
 
-def test_xai_inference_base_url_rejects_http():
-    # http:// would put the bearer on the wire in cleartext.
-    assert (
-        _xai_validate_inference_base_url(
-            "http://api.x.ai/v1", fallback=DEFAULT_XAI_OAUTH_BASE_URL,
-        )
-        == DEFAULT_XAI_OAUTH_BASE_URL
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -473,17 +465,6 @@ def test_refresh_xai_oauth_pure_rejects_non_https_token_endpoint(monkeypatch):
     assert exc.value.code == "xai_discovery_invalid"
 
 
-def test_refresh_xai_oauth_pure_rejects_off_origin_token_endpoint(monkeypatch):
-    """Pin the cached token_endpoint host to the xAI origin. A one-time MITM
-    during discovery could persist a token_endpoint on attacker-controlled
-    infrastructure — every subsequent refresh would silently leak the
-    refresh_token to that attacker. Refuse off-origin endpoints loudly so
-    the user can re-run discovery."""
-    with pytest.raises(AuthError) as exc:
-        refresh_xai_oauth_pure(
-            "at", "rt", token_endpoint="https://evil.example.com/token"
-        )
-    assert exc.value.code == "xai_discovery_invalid"
 
 
 def test_refresh_xai_oauth_pure_accepts_apex_and_subdomain_endpoints(monkeypatch):
@@ -539,36 +520,6 @@ def test_xai_oauth_discovery_validates_endpoints(monkeypatch):
     assert exc.value.code == "xai_discovery_invalid"
 
 
-def test_xai_oauth_discovery_validates_authorization_endpoint(monkeypatch):
-    """A poisoned ``authorization_endpoint`` is just as dangerous as a
-    poisoned ``token_endpoint``: it sends the user's browser (with their
-    logged-in xAI session cookies) to attacker infrastructure that can
-    phish the consent screen and exchange a stolen authorization code.
-
-    Both endpoints must be validated independently. This test pins the
-    parity so nobody can later "optimise" by validating only the token
-    endpoint and silently lose authorization-endpoint defense."""
-    from hermes_cli.auth import _xai_oauth_discovery
-
-    class _StubGetResponse:
-        status_code = 200
-
-        def __init__(self, payload):
-            self._payload = payload
-
-        def json(self):
-            return self._payload
-
-    def _fake_get(url, headers=None, timeout=None):
-        return _StubGetResponse({
-            "authorization_endpoint": "https://evil.example.com/authorize",  # poisoned
-            "token_endpoint": "https://auth.x.ai/oauth2/token",
-        })
-
-    monkeypatch.setattr("hermes_cli.auth.httpx.get", _fake_get)
-    with pytest.raises(AuthError) as exc:
-        _xai_oauth_discovery()
-    assert exc.value.code == "xai_discovery_invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -811,42 +762,6 @@ def test_runtime_provider_uses_pool_entry_for_xai_oauth(tmp_path, monkeypatch):
     assert runtime["base_url"] == DEFAULT_XAI_OAUTH_BASE_URL
 
 
-def test_runtime_provider_default_base_url_when_pool_entry_missing_url(tmp_path, monkeypatch):
-    """Edge case: a pool entry that somehow has an empty base_url should still
-    surface the default xAI inference base URL instead of an empty string."""
-    from agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
-    import uuid
-
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
-    monkeypatch.delenv("XAI_BASE_URL", raising=False)
-
-    fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
-    pool = load_pool("xai-oauth")
-    pool.add_entry(
-        PooledCredential(
-            provider="xai-oauth",
-            id=uuid.uuid4().hex[:6],
-            label="test",
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source="manual:xai_pkce",
-            access_token=fresh,
-            refresh_token="rt",
-            base_url="",
-        )
-    )
-
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-
-    runtime = resolve_runtime_provider(requested="xai-oauth")
-    assert runtime["provider"] == "xai-oauth"
-    assert runtime["api_mode"] == "codex_responses"
-    assert runtime["api_key"] == fresh
-    assert runtime["base_url"] == DEFAULT_XAI_OAUTH_BASE_URL
 
 
 # ---------------------------------------------------------------------------

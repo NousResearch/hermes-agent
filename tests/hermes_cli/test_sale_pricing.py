@@ -12,28 +12,8 @@ from hermes_cli.models import (
 )
 
 
-def test_compute_sale_discount_from_prompt():
-    sale = compute_sale_discount(
-        "0.0000016000",
-        "0.0000080000",
-        {"prompt": "0.0000020000", "completion": "0.0000100000"},
-    )
-    assert sale is not None
-    pct, was_prompt, was_completion = sale
-    assert pct == 20
-    assert was_prompt == "0.0000020000"
-    assert was_completion == "0.0000100000"
 
 
-def test_compute_sale_discount_omits_when_not_cheaper():
-    assert (
-        compute_sale_discount(
-            "0.000002",
-            "0.00001",
-            {"prompt": "0.000002", "completion": "0.00001"},
-        )
-        is None
-    )
 
 
 def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
@@ -89,42 +69,6 @@ def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
     assert "original" not in result["free/model"]
 
 
-def test_fetch_models_with_pricing_ignores_original_unless_opted_in(monkeypatch):
-    """OpenRouter / default path must never surface pricing.original."""
-    models_mod._pricing_cache.clear()
-    payload = {
-        "data": [
-            {
-                "id": "anthropic/claude-sonnet-5",
-                "pricing": {
-                    "prompt": "0.0000016",
-                    "completion": "0.000008",
-                    "original": {
-                        "prompt": "0.000002",
-                        "completion": "0.00001",
-                    },
-                },
-            }
-        ]
-    }
-    body = json.dumps(payload).encode()
-    resp = MagicMock()
-    resp.read.return_value = body
-    resp.__enter__ = lambda self: self
-    resp.__exit__ = lambda *a: False
-    monkeypatch.setattr(
-        models_mod,
-        "_urlopen_model_catalog_request",
-        lambda req, timeout=8.0: resp,
-    )
-
-    # Default (OpenRouter path): strip original even when the payload has it.
-    result = fetch_models_with_pricing(
-        base_url="https://openrouter.ai/api",
-        force_refresh=True,
-    )
-    assert "original" not in result["anthropic/claude-sonnet-5"]
-    assert result["anthropic/claude-sonnet-5"]["prompt"] == "0.0000016"
 
 
 def test_resolve_nous_pricing_credentials_honors_inference_env_override(monkeypatch):

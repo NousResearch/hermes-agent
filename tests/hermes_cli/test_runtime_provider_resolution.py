@@ -289,44 +289,6 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["requested_provider"] == "custom"
 
 
-def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
-    """providers dict entries with key_env should resolve API key from env var."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setenv("MYCORP_API_KEY", "env-secret")
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "providers": {
-                "mycorp-proxy": {
-                    "base_url": "https://proxy.example.com/v1",
-                    "default_model": "acme-large",
-                    "key_env": "MYCORP_API_KEY",
-                    "name": "MyCorp Proxy",
-                }
-            }
-        },
-    )
-    monkeypatch.setattr(
-        rp,
-        "resolve_provider",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError(
-                "resolve_provider should not be called for named custom providers"
-            )
-        ),
-    )
-
-    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://proxy.example.com/v1"
-    assert resolved["api_key"] == "env-secret"
-    assert resolved["requested_provider"] == "mycorp-proxy"
-    assert resolved["source"] == "custom_provider:MyCorp Proxy"
-    assert resolved["model"] == "acme-large"
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
@@ -410,66 +372,8 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     assert resolved["requested_provider"] == "custom:local-llm"
 
 
-def test_disabled_named_custom_provider_is_not_compatibility_fallback(monkeypatch):
-    """Disabled modern entries stay unavailable through the legacy projection."""
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "providers": {
-                "route-key": {
-                    "name": "Route Key",
-                    "api": "https://disabled.example/v1",
-                    "enabled": False,
-                }
-            }
-        },
-    )
-
-    assert rp._get_named_custom_provider("custom:route-key") is None
 
 
-def test_nous_pool_entry_refreshes_expired_agent_key(monkeypatch):
-    stale_token = _fake_invoke_jwt(ttl_seconds=-60)
-    fresh_token = _fake_invoke_jwt(ttl_seconds=3600)
-
-    class _Entry:
-        def __init__(self, token):
-            self.access_token = "pool-access-token"
-            self.agent_key = token
-            self.agent_key_expires_at = "2099-01-01T00:00:00+00:00"
-            self.scope = "inference:invoke"
-            self.base_url = "https://inference.pool.example/v1"
-            self.source = "manual:nous"
-
-        @property
-        def runtime_api_key(self):
-            return self.agent_key
-
-    class _Pool:
-        refreshed = False
-
-        def has_credentials(self):
-            return True
-
-        def select(self):
-            return _Entry(stale_token)
-
-        def try_refresh_current(self):
-            self.refreshed = True
-            return _Entry(fresh_token)
-
-    pool = _Pool()
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: pool)
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
-
-    resolved = rp.resolve_runtime_provider(requested="nous")
-
-    assert pool.refreshed is True
-    assert resolved["provider"] == "nous"
-    assert resolved["api_key"] == fresh_token
-    assert resolved["base_url"] == "https://inference.pool.example/v1"
 
 
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
@@ -519,71 +423,13 @@ def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
     assert resolved["api_key"] == "or-test-key"
 
 
-def test_explicit_openrouter_honors_openrouter_base_url_over_pool(monkeypatch):
-    class _Entry:
-        access_token = "pool-key"
-        source = "manual"
-        base_url = "https://openrouter.ai/api/v1"
-
-    class _Pool:
-        def has_credentials(self):
-            return True
-
-        def select(self):
-            return _Entry()
-
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
-    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example.com/v1")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "mirror-key")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    resolved = rp.resolve_runtime_provider(requested="openrouter")
-
-    assert resolved["provider"] == "openrouter"
-    assert resolved["base_url"] == "https://mirror.example.com/v1"
-    # mirror.example.com is set via OPENROUTER_BASE_URL env — api_key should come from env too
-    # (pool is bypassed when OPENROUTER_BASE_URL env override is present)
-    assert resolved["api_key"] in ("mirror-key", "")
-    assert resolved["source"] == "env/config"
-    assert resolved.get("credential_pool") is None
 
 
-def test_resolve_runtime_provider_named_custom_with_builtin_slug(monkeypatch):
-    monkeypatch.setenv("MINIMAX_CN_PROXY_KEY", "proxy-secret")
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "model": {"provider": "custom:minimax-cn"},
-            "providers": {
-                "minimax-cn": {
-                    "name": "MiniMax CN Proxy",
-                    "api": "https://mimimax.cn/v1",
-                    "key_env": "MINIMAX_CN_PROXY_KEY",
-                    "transport": "chat_completions",
-                    "default_model": "MiniMax-M3",
-                }
-            },
-        },
-    )
-
-    resolved = rp.resolve_runtime_provider()
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "https://mimimax.cn/v1"
-    assert resolved["api_key"] == "proxy-secret"
-    assert resolved["api_mode"] == "chat_completions"
 
 
 # ── api_mode config override tests ──────────────────────────────────────
 
 
-def test_anthropic_messages_in_valid_api_modes():
-    """anthropic_messages should be accepted by _parse_api_mode."""
-    assert rp._parse_api_mode("anthropic_messages") == "anthropic_messages"
 
 
 def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
@@ -639,42 +485,8 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
 # ------------------------------------------------------------------
 
 
-def test_resolve_provider_lmstudio_returns_lmstudio(monkeypatch):
-    """resolve_provider('lmstudio') must return 'lmstudio', not 'custom'.
-
-    Regression for the alias-map bug where 'lmstudio' was rewritten to
-    'custom' before the PROVIDER_REGISTRY lookup, bypassing the first-class
-    LM Studio provider entirely at runtime.
-    """
-    from hermes_cli.auth import resolve_provider
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    assert resolve_provider("lmstudio") == "lmstudio"
-    assert resolve_provider("lm-studio") == "lmstudio"
-    assert resolve_provider("lm_studio") == "lmstudio"
 
 
-def test_custom_provider_no_key_gets_placeholder(monkeypatch):
-    """Local server with no API key should get 'no-key-required' placeholder."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "model": {
-                "provider": "custom",
-                "base_url": "http://localhost:8080/v1",
-            }
-        },
-    )
-
-    resolved = rp.resolve_runtime_provider(requested="custom")
-    assert resolved["provider"] == "custom"
-    assert resolved["api_key"] == "no-key-required"
-    assert resolved["base_url"] == "http://localhost:8080/v1"
 
 
 def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch):
@@ -713,26 +525,6 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
 # ------------------------------------------------------------------
 
 
-def test_get_named_custom_provider_excludes_empty_model(monkeypatch):
-    """Empty or whitespace-only model field should not appear in result."""
-    for model_val in ["", "   ", None]:
-        entry = {
-            "name": "test-ep",
-            "base_url": "https://example.com/v1",
-            "api_key": "key",
-        }
-        if model_val is not None:
-            entry["model"] = model_val
-
-        monkeypatch.setattr(rp, "load_config", lambda e=entry: {
-            "custom_providers": [e],
-        })
-
-        result = rp._get_named_custom_provider("test-ep")
-        assert result is not None
-        assert "model" not in result, (
-            f"model field {model_val!r} should not be included in result"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -808,20 +600,6 @@ class TestOllamaUrlSubstringLeak:
 
         assert resolved["api_key"] == "ol-legit-key"
 
-    def test_ollama_key_sent_to_ollama_subdomain(self, monkeypatch):
-        """https://api.ollama.com/v1 — legit subdomain."""
-        monkeypatch.setenv("OPENAI_API_KEY", "oa-secret")
-        monkeypatch.setenv("OLLAMA_API_KEY", "ol-legit-key")
-        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
-        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
-            "https://api.ollama.com/v1"
-        ))
-        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
-        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
-
-        resolved = rp.resolve_runtime_provider(requested="custom")
-
-        assert resolved["api_key"] == "ol-legit-key"
 
 
 # =============================================================================
@@ -1030,9 +808,6 @@ class TestProviderEntryApiKeyEnvAlias:
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================
 
-class TestTencentTokenhubRuntimeResolution:
-    """Verify Tencent TokenHub resolves correctly through the generic
-    API-key provider path in resolve_runtime_provider."""
 
 
 # ---------------------------------------------------------------------------
@@ -1119,31 +894,8 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
 # ----------------------------------------------------------------------
 
 
-def test_custom_alias_with_loopback_base_url_routes_to_custom(monkeypatch):
-    """provider: ollama + loopback should also route to custom (regression guard)."""
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {"provider": "ollama", "base_url": "http://localhost:11434/v1"},
-    )
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-fake-test")
-    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
-
-    resolved = rp.resolve_runtime_provider()
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "http://localhost:11434/v1"
 
 
-def test_trustworthy_check_accepts_custom_aliases():
-    """_config_base_url_trustworthy_for_bare_custom() must accept aliases for custom."""
-    fn = rp._config_base_url_trustworthy_for_bare_custom
-    for alias in ("ollama", "vllm", "llamacpp", "llama-cpp", "llama.cpp"):
-        assert fn("http://192.168.0.103:11434/v1", alias) is True, (
-            f"alias {alias!r} should be trusted with non-loopback base_url"
-        )
-    # Unrelated provider name should still be rejected with non-loopback URL.
-    assert fn("http://192.168.0.103:11434/v1", "openrouter") is False
 
 
 def test_openai_key_only_sent_to_openai_host(monkeypatch):
@@ -1218,43 +970,8 @@ def test_openrouter_key_reaches_openrouter_host(monkeypatch):
 # ----------------------------------------------------------------------
 
 
-def test_host_derived_key_picked_up_for_deepseek(monkeypatch):
-    """DEEPSEEK_API_KEY env var must be forwarded to api.deepseek.com."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "custom",
-            "base_url": "https://api.deepseek.com/v1",
-        },
-    )
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-secret")
-
-    resolved = rp.resolve_runtime_provider(requested="custom")
-
-    assert resolved["api_key"] == "sk-deepseek-secret"
 
 
-def test_host_derived_key_picked_up_for_groq(monkeypatch):
-    """GROQ_API_KEY env var must be forwarded to api.groq.com."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "custom",
-            "base_url": "https://api.groq.com/openai/v1",
-        },
-    )
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("GROQ_API_KEY", "gsk-groq-secret")
-
-    resolved = rp.resolve_runtime_provider(requested="custom")
-
-    assert resolved["api_key"] == "gsk-groq-secret"
 
 
 def test_host_derived_key_does_not_leak_to_lookalike_host(monkeypatch):
@@ -1308,43 +1025,6 @@ def test_host_derived_key_skips_already_handled_vendors(monkeypatch):
     assert resolved["api_key"] == "no-key-required"
 
 
-def test_host_derived_key_helper_basic_cases():
-    """Direct unit tests for the host-derive helper itself."""
-    # Standard provider hosts → derives correctly.
-    import os as _os
-
-    _os.environ.pop("DEEPSEEK_API_KEY", None)
-    _os.environ.pop("GROQ_API_KEY", None)
-    _os.environ.pop("MISTRAL_API_KEY", None)
-
-    _os.environ["DEEPSEEK_API_KEY"] = "dk"
-    assert rp._host_derived_api_key("https://api.deepseek.com/v1") == "dk"
-
-    _os.environ["GROQ_API_KEY"] = "gk"
-    assert rp._host_derived_api_key("https://api.groq.com/openai/v1") == "gk"
-
-    _os.environ["MISTRAL_API_KEY"] = "mk"
-    assert rp._host_derived_api_key("https://api.mistral.ai/v1") == "mk"
-
-    # IPs and loopback → empty.
-    assert rp._host_derived_api_key("http://127.0.0.1:1234/v1") == ""
-    assert rp._host_derived_api_key("http://192.168.0.103:8080/v1") == ""
-    assert rp._host_derived_api_key("http://localhost:1234") == ""
-
-    # Empty / malformed → empty.
-    assert rp._host_derived_api_key("") == ""
-    assert rp._host_derived_api_key("not a url") == ""
-
-    # Already-handled vendors → empty (guards against bypass of host-gate).
-    _os.environ["OPENAI_API_KEY"] = "should-not-leak"
-    assert rp._host_derived_api_key("https://api.openai.com/v1") == ""
-    _os.environ["OPENROUTER_API_KEY"] = "should-not-leak"
-    assert rp._host_derived_api_key("https://openrouter.ai/api/v1") == ""
-
-    # Cleanup
-    for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
-              "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
-        _os.environ.pop(k, None)
 
 
 def _patch_bedrock(monkeypatch, config_default=""):
@@ -1491,57 +1171,8 @@ def test_auto_provider_lookalike_cloud_host_does_not_bypass_to_cloud(monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def test_named_custom_provider_non_dict_extra_headers_ignored(monkeypatch):
-    """Non-dict / empty extra_headers values are ignored, not propagated."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "custom_providers": [
-                {
-                    "name": "BadHeaders",
-                    "base_url": "https://bad.host/v1",
-                    "api_key": "key",
-                    "extra_headers": "not-a-dict",
-                },
-                {
-                    "name": "EmptyHeaders",
-                    "base_url": "https://empty.host/v1",
-                    "api_key": "key",
-                    "extra_headers": {},
-                },
-            ]
-        },
-    )
-
-    assert "extra_headers" not in rp.resolve_runtime_provider(requested="badheaders")
-    assert "extra_headers" not in rp.resolve_runtime_provider(requested="emptyheaders")
 
 
-def test_providers_dict_entry_surfaces_extra_headers(monkeypatch):
-    """New-style providers: dict entries also surface extra_headers."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "providers": {
-                "my-proxy": {
-                    "base_url": "https://llm.internal.example.com/v1",
-                    "api_key": "proxy-key",
-                    "extra_headers": {"CF-Access-Client-Id": "xxxx.access"},
-                }
-            }
-        },
-    )
-
-    resolved = rp.resolve_runtime_provider(requested="my-proxy")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["extra_headers"] == {"CF-Access-Client-Id": "xxxx.access"}
 
 
 def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeypatch):

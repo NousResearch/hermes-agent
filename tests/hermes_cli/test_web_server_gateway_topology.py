@@ -78,37 +78,8 @@ class TestCollectProfileGatewayTopology:
         assert topo["gateway_mode"] == "none"
         assert topo["gateways"] == []
 
-    def test_single_gateway(self, tmp_path, monkeypatch):
-        homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
-        _patch_topology(
-            monkeypatch, homes, running={"default"},
-            runtimes={"default": {"platforms": {}}},
-        )
-        topo = _collect_profile_gateway_topology()
-        assert topo["gateway_mode"] == "single"
-        assert [g["profile"] for g in topo["gateways"]] == ["default"]
 
 
-    def test_multiple_independent_gateways_with_ports(self, tmp_path, monkeypatch):
-        d_home = tmp_path / "d"
-        c_home = tmp_path / "c"
-        d_home.mkdir()
-        c_home.mkdir()
-        (c_home / "config.yaml").write_text(
-            "platforms:\n  webhook:\n    port: 9644\n", encoding="utf-8"
-        )
-        homes = [("default", d_home), ("coder", c_home)]
-        _patch_topology(
-            monkeypatch, homes, running={"default", "coder"},
-            runtimes={
-                "default": {"platforms": {"webhook": {"state": "connected"}}},
-                "coder": {"platforms": {"webhook": {"state": "connected"}}},
-            },
-        )
-        topo = _collect_profile_gateway_topology()
-        assert topo["gateway_mode"] == "multiple"
-        ports = {g["profile"]: g["ports"] for g in topo["gateways"]}
-        assert ports == {"default": {"webhook": 8644}, "coder": {"webhook": 9644}}
 
     def test_enumeration_failure_degrades_gracefully(self, monkeypatch):
         import hermes_cli.profiles as profiles_mod

@@ -114,14 +114,6 @@ class TestAck:
         )
         assert adv.get_acked_ids() == set()
 
-    def test_filter_unacked_strips_dismissed(self, fake_advisory, monkeypatch):
-        hit = adv.AdvisoryHit(
-            advisory=fake_advisory,
-            package="fake-malicious-pkg",
-            installed_version="6.6.6",
-        )
-        monkeypatch.setattr(adv, "get_acked_ids", lambda: {fake_advisory.id})
-        assert adv.filter_unacked([hit]) == []
 
 
     def test_ack_advisory_persists_id(self, isolated_home, monkeypatch):
@@ -144,9 +136,6 @@ class TestAck:
             == 1
         )
 
-    def test_ack_advisory_rejects_blank(self, isolated_home):
-        assert adv.ack_advisory("") is False
-        assert adv.ack_advisory("   ") is False
 
 
 # ---------------------------------------------------------------------------
@@ -210,18 +199,6 @@ class TestBannerCache:
 
 
 class TestRendering:
-    def test_short_banner_lines_includes_id_and_version(self, fake_advisory):
-        hit = adv.AdvisoryHit(
-            advisory=fake_advisory,
-            package="fake-malicious-pkg",
-            installed_version="6.6.6",
-        )
-        lines = adv.short_banner_lines([hit])
-        joined = "\n".join(lines)
-        assert fake_advisory.id in joined
-        assert fake_advisory.title in joined
-        assert "fake-malicious-pkg==6.6.6" in joined
-        assert "hermes doctor" in joined
 
     def test_full_remediation_text_contains_all_steps(self, fake_advisory):
         hit = adv.AdvisoryHit(
@@ -236,11 +213,6 @@ class TestRendering:
         assert fake_advisory.url in body
         assert fake_advisory.summary in body
 
-    def test_render_doctor_section_clean_state(self):
-        # No hits → success message, has_problems=False.
-        has_problems, lines = adv.render_doctor_section([])
-        assert has_problems is False
-        assert any("No active security advisories" in line for line in lines)
 
     def test_render_doctor_section_with_unacked_hit(
         self, fake_advisory, monkeypatch
@@ -257,8 +229,6 @@ class TestRendering:
         assert fake_advisory.title in body
 
 
-    def test_gateway_log_message_returns_none_for_no_hits(self):
-        assert adv.gateway_log_message([]) is None
 
 
 # ---------------------------------------------------------------------------

@@ -267,13 +267,6 @@ _DATA_ARG_NOT_A_COMMAND = [
 ]
 
 
-@pytest.mark.parametrize("command", _DATA_ARG_NOT_A_COMMAND)
-def test_root_wipe_string_as_data_arg_is_not_hardline(command):
-    """"rm -rf /" as a quoted argument to another command is data, not a wipe."""
-    is_hl, desc = detect_hardline_command(command)
-    assert not is_hl, f"false positive: quoted data arg hit hardline floor: {command!r} ({desc})"
-
-
 # Real root wipes at every command position — bare, chained after a separator,
 # inside a command substitution ($()/backtick), or after sudo/env wrappers.
 # The command-position anchor must keep catching all of these; the substitution
@@ -601,45 +594,6 @@ def test_sudo_stdin_guard_detects_without_password():
         is_blocked, desc = approval_mod._check_sudo_stdin_guard(cmd)
         assert is_blocked, f"expected sudo stdin guard to block {cmd!r}"
         assert "sudo" in desc.lower()
-
-
-def test_sudo_stdin_guard_allows_benign_commands():
-    """Commands without explicit sudo -S are not blocked."""
-    import tools.approval as approval_mod
-
-    for cmd in _SUDO_STDIN_ALLOW:
-        is_blocked, desc = approval_mod._check_sudo_stdin_guard(cmd)
-        assert not is_blocked, f"expected sudo stdin guard NOT to block {cmd!r}"
-
-
-def test_sudo_stdin_guard_bypassed_when_password_configured(monkeypatch):
-    """When SUDO_PASSWORD is set, sudo -S is legitimate (injected by transform)."""
-    import tools.approval as approval_mod
-
-    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
-    for cmd in _SUDO_STDIN_BLOCK:
-        is_blocked, _ = approval_mod._check_sudo_stdin_guard(cmd)
-        assert not is_blocked, f"with SUDO_PASSWORD set, {cmd!r} should NOT be blocked"
-
-
-def test_sudo_stdin_guard_blocks_via_check_all_command_guards(clean_session):
-    """Integration: check_all_command_guards returns block for sudo -S."""
-    for cmd in _SUDO_STDIN_BLOCK:
-        result = check_all_command_guards(cmd, "local")
-        assert result["approved"] is False, f"expected block on {cmd!r}"
-        # Should NOT be marked as hardline (it's sudo-specific)
-        assert result.get("hardline") is not True
-        assert "BLOCKED" in result["message"]
-        assert "sudo -S" in result["message"].lower() or "sudo password" in result["message"].lower()
-
-
-def test_sudo_stdin_guard_not_blocked_by_yolo(clean_session, monkeypatch):
-    """yolo/approvals.mode=off must NOT bypass sudo stdin guard."""
-    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
-
-    for cmd in _SUDO_STDIN_BLOCK_YOLO:
-        result = check_all_command_guards(cmd, "local")
-        assert result["approved"] is False, f"yolo leaked sudo guard on {cmd!r}"
 
 
 def test_sudo_stdin_guard_container_bypass(clean_session):

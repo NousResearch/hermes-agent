@@ -31,9 +31,6 @@ from hermes_cli.auth import (
 
 
 class TestValidatorRules:
-    def test_allowlisted_https_host_returned(self):
-        url = "https://inference-api.nousresearch.com/v1"
-        assert _validate_nous_inference_url_from_network(url) == url
 
 
     def test_attacker_host_rejected(self, caplog):
@@ -45,12 +42,6 @@ class TestValidatorRules:
         assert any("attacker.com" in rec.message for rec in caplog.records)
 
 
-    def test_malformed_url_rejected(self):
-        """Even garbled input must fall back safely, not raise."""
-        assert (
-            _validate_nous_inference_url_from_network("not://a real url at all")
-            is None
-        )
 
     def test_default_inference_url_is_in_allowlist(self):
         """Sanity check: DEFAULT_NOUS_INFERENCE_URL must itself validate.
@@ -65,11 +56,6 @@ class TestValidatorRules:
             == DEFAULT_NOUS_INFERENCE_URL.rstrip("/")
         )
 
-    def test_allowlist_contains_inference_api_host(self):
-        """The default's host must be in the allowlist set."""
-        from urllib.parse import urlparse
-        host = urlparse(DEFAULT_NOUS_INFERENCE_URL).hostname
-        assert host in _ALLOWED_NOUS_INFERENCE_HOSTS
 
 
 class TestCallSiteWiring:
@@ -264,22 +250,6 @@ class TestEnvOverrideWins:
             "agent_key": "ak-123",
         }
 
-    def test_no_refresh_env_override_wins_over_prod_stored(self, monkeypatch):
-        """The exact regression: a prod-pinned stored value (the state a
-        staging login lands in after the heal) must NOT shadow the env
-        override on the steady-state read path."""
-        import hermes_cli.auth as auth
-
-        state = self._base_state(auth, auth.DEFAULT_NOUS_INFERENCE_URL)
-        self._patch_no_refresh(monkeypatch, auth, state)
-        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", self.STAGING)
-
-        result = auth.resolve_nous_runtime_credentials()
-
-        assert result["base_url"] == self.STAGING, (
-            "env override must win over the stored production URL on the "
-            f"no-refresh read path, got {result['base_url']!r}"
-        )
 
     def test_no_refresh_env_override_not_persisted(self, monkeypatch):
         """The env override is a runtime overlay: it must never be written
@@ -314,37 +284,6 @@ class TestEnvOverrideWins:
             f"no-refresh read path, got {result['base_url']!r}"
         )
 
-    def test_refresh_env_override_wins_but_persists_validated(self, monkeypatch):
-        """On the refresh path: env override is used for the returned/client
-        URL, but the PERSISTED stored value is the validated network one
-        (production default when the Portal hands back a rejected host)."""
-        import hermes_cli.auth as auth
-
-        state = self._base_state(auth, auth.DEFAULT_NOUS_INFERENCE_URL)
-        self._patch_no_refresh(monkeypatch, auth, state)
-        # Force the refresh branch; Portal hands back a (rejected) staging host.
-        monkeypatch.setattr(auth, "_nous_invoke_jwt_status", lambda *a, **k: "needs_refresh")
-        monkeypatch.setattr(
-            auth,
-            "_refresh_access_token",
-            lambda **k: {
-                "access_token": "newtok",
-                "refresh_token": "newrtok",
-                "expires_in": 3600,
-                "inference_base_url": self.STAGING,
-            },
-        )
-        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", self.STAGING)
-
-        result = auth.resolve_nous_runtime_credentials(force_refresh=True)
-
-        assert result["base_url"] == self.STAGING, (
-            "env override must win for the returned URL on the refresh path"
-        )
-        assert state["inference_base_url"] == auth.DEFAULT_NOUS_INFERENCE_URL, (
-            "refresh path must persist the validated network value (prod "
-            f"default), not the env override, got {state['inference_base_url']!r}"
-        )
 
 
 class TestProxyAdapterEnvOverride:

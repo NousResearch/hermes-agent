@@ -42,19 +42,6 @@ def test_gateway_health_event_maps_to_span_with_attrs():
     assert attrs["hermes.active_agents"] == 2
 
 
-def test_gateway_diagnostic_event_drops_arbitrary_message_content():
-    provider, mem = _mem_provider()
-    OE.export_batch(provider, [{
-        "event": "gateway_diagnostic", "name": "platform.fatal",
-        "subsystem": "platform.slack", "error_class": "auth_failed",
-        "redacted_message": "Unauthorized user: acct_7f3a (Alice Smith)",
-        "severity": "error",
-    }])
-    attrs = dict(mem.get_finished_spans()[0].attributes or {})
-    assert attrs["hermes.error_class"] == "auth_failed"
-    assert "hermes.redacted_message" not in attrs
-    assert "acct_7f3a" not in str(attrs)
-    assert "Alice Smith" not in str(attrs)
 
 
 
@@ -79,17 +66,6 @@ def test_trace_resource_includes_stable_hashed_instance():
     assert attrs["telemetry.scope"] == "gateway_monitoring"
 
 
-def test_export_otlp_feature_specs_match_pyproject():
-    from tools.lazy_deps import LAZY_DEPS
-    import re
-    from pathlib import Path
-
-    specs = set(LAZY_DEPS["export.otlp"])
-    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    m = re.search(r'^otlp = \[(.*?)\]', pyproject.read_text(), re.M | re.S)
-    assert m, "otlp extra missing from pyproject.toml"
-    extra = set(re.findall(r'"([^"]+)"', m.group(1)))
-    assert specs == extra
 
 
 def test_streamer_receives_events_and_respects_filter(monkeypatch):

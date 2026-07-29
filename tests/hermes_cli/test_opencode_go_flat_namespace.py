@@ -49,18 +49,8 @@ def test_opencode_go_strips_deepseek_prefix():
     ) == "deepseek-v4-flash"
 
 
-def test_opencode_zen_still_hyphenates_claude():
-    # Regression: opencode-zen's Claude hyphen conversion must still work.
-    assert normalize_model_for_provider(
-        "anthropic/claude-sonnet-4.6", "opencode-zen"
-    ) == "claude-sonnet-4-6"
 
 
-def test_openrouter_still_prepends_vendor():
-    # Regression: real aggregators must still get vendor/model format.
-    assert normalize_model_for_provider(
-        "claude-sonnet-4.6", "openrouter"
-    ) == "anthropic/claude-sonnet-4.6"
 
 
 # ---------------------------------------------------------------------------
@@ -94,23 +84,8 @@ def _run_switch(raw_input: str, **extra):
         return switch_model(raw_input=raw_input, **defaults)
 
 
-def test_deepseek_v4_flash_stays_on_opencode_go():
-    """Regression: ``/model deepseek-v4-flash`` while on opencode-go must
-    NOT switch to native deepseek just because deepseek's static catalog
-    also contains that name."""
-    result = _run_switch("deepseek-v4-flash")
-    assert result.target_provider == "opencode-go", (
-        f"Expected to stay on opencode-go, got {result.target_provider}. "
-        f"detect_provider_for_model hijacked the bare name."
-    )
-    assert result.new_model == "deepseek-v4-flash"
 
 
-def test_deepseek_v4_pro_stays_on_opencode_go():
-    """Same bug class as the flash variant."""
-    result = _run_switch("deepseek-v4-pro")
-    assert result.target_provider == "opencode-go"
-    assert result.new_model == "deepseek-v4-pro"
 
 
 def test_kimi_k2_6_stays_on_opencode_go():

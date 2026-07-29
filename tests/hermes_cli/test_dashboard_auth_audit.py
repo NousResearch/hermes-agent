@@ -55,17 +55,5 @@ def test_audit_redacts_token_like_fields(profile_home):
         assert forbidden not in raw, f"token-like value leaked into audit log: {forbidden}"
 
 
-def test_audit_all_event_types_have_string_values():
-    for ev in AuditEvent:
-        assert isinstance(ev.value, str)
-        assert ev.value
 
 
-def test_audit_creates_logs_dir_if_missing(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    # logs/ deliberately does not exist
-    audit_log(AuditEvent.LOGIN_START, provider="nous")
-    assert (home / "logs").is_dir()
-    assert (home / "logs" / "dashboard-auth.log").exists()

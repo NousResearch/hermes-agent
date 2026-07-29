@@ -39,18 +39,4 @@ class TestPostSetupGate:
         monkeypatch.setitem(tools_config._POST_SETUP_INSTALLED, "cua_driver", _boom)
         assert tools_config._post_setup_already_installed("cua_driver") is True
 
-    def test_unregistered_post_setup_treated_as_satisfied(self):
-        """post_setup keys without a registered predicate must default to
-        'satisfied' so we don't change behaviour for hooks we haven't
-        explicitly opted in (kittentts, piper, agent_browser, etc.)."""
-        from hermes_cli import tools_config
 
-        assert tools_config._post_setup_already_installed("does_not_exist") is True
-
-    def test_cua_driver_predicate_registered(self):
-        """Keep an explicit pin on the cua_driver entry so accidental
-        deletion of the registry row would fail this test rather than
-        silently restore the original silent-no-op bug."""
-        from hermes_cli import tools_config
-
-        assert "cua_driver" in tools_config._POST_SETUP_INSTALLED

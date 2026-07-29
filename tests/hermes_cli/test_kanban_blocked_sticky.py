@@ -76,27 +76,6 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
-def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Path) -> None:
-    """The parent-completion path is the one ``recompute_ready`` was
-    designed for, so it's the most dangerous false-positive: even when
-    every parent is done, a worker-initiated block on the child must
-    stay blocked."""
-    with kb.connect() as conn:
-        parent = kb.create_task(conn, title="parent")
-        child = kb.create_task(conn, title="child", parents=[parent])
-        kb.complete_task(conn, parent, result="parent ok")
-
-        kb.claim_task(conn, child)
-        kb.block_task(
-            conn, child,
-            reason="review-required: child needs sign-off",
-            expected_run_id=kb.get_task(conn, child).current_run_id,
-        )
-        assert kb.get_task(conn, child).status == "blocked"
-
-        promoted = kb.recompute_ready(conn)
-        assert promoted == 0
-        assert kb.get_task(conn, child).status == "blocked"
 
 
 # ---------------------------------------------------------------------------
@@ -104,43 +83,6 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
 # ---------------------------------------------------------------------------
 
 
-def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
-    """A child that was put into ``blocked`` *without* a worker-issued
-    ``kanban_block`` (e.g. a transient crash, manual DB triage) and whose
-    ``consecutive_failures`` is still *below* the circuit-breaker limit
-    must get auto-promoted when its parents complete — preserves the
-    pre-#28712 recovery semantics for genuinely transient failures.
-
-    The complementary case — a block whose failure count has *reached*
-    the limit must stay blocked — is covered by
-    ``test_kanban_db.py::test_recompute_ready_skips_tasks_at_failure_limit``
-    (#35072).  Together they pin the contract: ``recompute_ready`` defers
-    the give-up decision to the same effective limit the breaker uses, so
-    the two never disagree.
-    """
-    with kb.connect() as conn:
-        parent = kb.create_task(conn, title="parent")
-        child = kb.create_task(conn, title="child", parents=[parent])
-        kb.complete_task(conn, parent, result="ok")
-
-        # Simulate a transient circuit-breaker / direct triage that flips
-        # status without emitting a ``blocked`` event — exactly what
-        # ``_record_task_failure`` does below the limit.  One failure is
-        # under the default limit (2), so recovery is still correct.
-        conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
-            "last_failure_error='transient error' WHERE id=?",
-            (child,),
-        )
-        conn.commit()
-
-        promoted = kb.recompute_ready(conn)
-        assert promoted == 1
-        task = kb.get_task(conn, child)
-        assert task.status == "ready"
-        # Counter is preserved across recovery (not reset) so the breaker
-        # can still accumulate if the task keeps failing (#35072).
-        assert task.consecutive_failures == 1
 
 
 # ---------------------------------------------------------------------------

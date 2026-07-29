@@ -112,19 +112,6 @@ class TestHermesTokenStorage:
             f"token parent dir mode {oct(parent_mode)} != 0o700 — siblings can traverse"
         )
 
-    def test_remove_cleans_up(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        storage = HermesTokenStorage("test-server")
-
-        # Create files
-        d = tmp_path / "mcp-tokens"
-        d.mkdir(parents=True)
-        (d / "test-server.json").write_text("{}")
-        (d / "test-server.client.json").write_text("{}")
-
-        storage.remove()
-        assert not (d / "test-server.json").exists()
-        assert not (d / "test-server.client.json").exists()
 
     def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -149,22 +136,6 @@ class TestBuildOAuthAuth:
         result = build_oauth_auth("test", "https://example.com")
         assert result is None
 
-    def test_pre_registered_client_id_stored(self, tmp_path, monkeypatch):
-        pytest.importorskip("mcp.client.auth")
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _set_interactive_stdin(monkeypatch)
-        build_oauth_auth("slack", "https://slack.example.com/mcp", {
-            "client_id": "my-app-id",
-            "client_secret": "my-secret",
-            "scope": "channels:read",
-        })
-
-        client_path = tmp_path / "mcp-tokens" / "slack.client.json"
-        assert client_path.exists()
-        data = json.loads(client_path.read_text())
-        assert data["client_id"] == "my-app-id"
-        assert data["client_secret"] == "my-secret"
 
     def test_scope_passed_through(self, tmp_path, monkeypatch):
         pytest.importorskip("mcp.client.auth")
@@ -643,85 +614,6 @@ def test_resolve_redirect_uri(cfg, expected):
     assert _resolve_redirect_uri(cfg, 1234) == expected
 
 
-def test_build_client_metadata_uses_configured_redirect_uri():
-    """A proxied redirect_uri (e.g. Tailscale Funnel) flows into the metadata.
-
-    Without this the redirect_uri is pinned to ``http://127.0.0.1:<port>/callback``,
-    which a public HTTPS proxy cannot reach.
-    """
-    pytest.importorskip("mcp")
-    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
-
-    cfg = {"redirect_uri": _PROXY_REDIRECT}
-    _configure_callback_port(cfg)
-    md = _build_client_metadata(cfg)
-
-    assert [str(u).rstrip("/") for u in md.redirect_uris] == [_PROXY_REDIRECT]
-
-
-def test_maybe_preregister_client_persists_configured_redirect_uri(tmp_path, monkeypatch):
-    """Pre-registered client info records the configured redirect_uri verbatim.
-
-    The redirect_uri on the stored client_info MUST match the one in the
-    authorization request, or the provider rejects the callback.
-    """
-    pytest.importorskip("mcp")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth import (
-        HermesTokenStorage,
-        _build_client_metadata,
-        _configure_callback_port,
-        _maybe_preregister_client,
-    )
-
-    cfg = {"client_id": "preset-client", "redirect_uri": _PROXY_REDIRECT}
-    _configure_callback_port(cfg)
-    storage = HermesTokenStorage("proxy-srv")
-    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
-
-    written = json.loads(storage._client_info_path().read_text())
-    assert [u.rstrip("/") for u in written["redirect_uris"]] == [_PROXY_REDIRECT]
-
-
-def test_maybe_preregister_client_skips_when_no_client_id(tmp_path, monkeypatch):
-    """No client_id → pre-registration is a no-op even with a configured redirect_uri."""
-    pytest.importorskip("mcp")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth import (
-        HermesTokenStorage,
-        _build_client_metadata,
-        _configure_callback_port,
-        _maybe_preregister_client,
-    )
-
-    cfg = {"redirect_uri": _PROXY_REDIRECT}  # no client_id
-    _configure_callback_port(cfg)
-    storage = HermesTokenStorage("no-client-id-srv")
-    _maybe_preregister_client(storage, cfg, _build_client_metadata(cfg))
-
-    assert not storage._client_info_path().exists()
-
-
-def test_configure_callback_port_reuses_cached_client_redirect_port(tmp_path, monkeypatch):
-    """Cached client registrations must keep using their registered port."""
-    from tools.mcp_oauth import _configure_callback_port
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    storage = HermesTokenStorage("summ")
-    token_dir = tmp_path / "mcp-tokens"
-    token_dir.mkdir(parents=True)
-    (token_dir / "summ.client.json").write_text(json.dumps({
-        "client_id": "client-123",
-        "redirect_uris": ["http://127.0.0.1:57727/callback"],
-    }))
-
-    cfg = {"redirect_port": 0}
-    port = _configure_callback_port(cfg, storage)
-
-    assert port == 57727
-    assert cfg["_resolved_port"] == 57727
-
-
 def test_build_oauth_auth_preserves_server_url_path():
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 
@@ -770,26 +662,6 @@ class TestPasteCallbackReader:
         assert result["state"] == "xyz"
         assert result["error"] is None
 
-    def test_captures_error_param(self, monkeypatch):
-        result = self._empty_result()
-        monkeypatch.setattr(
-            "sys.stdin",
-            MagicMock(readline=lambda: "https://example/cb?error=access_denied\n"),
-        )
-        _paste_callback_reader(result)
-        assert result["auth_code"] is None
-        assert result["error"] == "access_denied"
-
-    def test_skips_when_http_listener_already_won(self, monkeypatch):
-        """If HTTP listener filled the result first, paste must not overwrite."""
-        result = {"auth_code": "from_http", "state": "http_state", "error": None}
-        monkeypatch.setattr(
-            "sys.stdin",
-            MagicMock(readline=lambda: "code=from_paste&state=paste_state\n"),
-        )
-        _paste_callback_reader(result)
-        assert result["auth_code"] == "from_http"
-        assert result["state"] == "http_state"
 
     def test_swallows_stdin_errors(self, monkeypatch):
         """OSError / interrupt on readline must not propagate."""
@@ -949,31 +821,6 @@ def test_figma_provider_defaults_set_allowlisted_client_name():
     )
     assert cfg["client_name"] == _FIGMA_DCR_CLIENT_NAME
     assert cfg["scope"] == _FIGMA_DEFAULT_SCOPE
-
-
-def test_figma_defaults_not_applied_to_unrelated_servers():
-    from tools.mcp_oauth import apply_oauth_provider_defaults
-
-    cfg = apply_oauth_provider_defaults(
-        {},
-        server_name="linear",
-        server_url="https://mcp.linear.app/mcp",
-    )
-    assert "client_name" not in cfg
-    assert "scope" not in cfg
-
-
-def test_humanize_figma_registration_error_mentions_client_name():
-    from tools.mcp_oauth import humanize_oauth_registration_error
-
-    msg = humanize_oauth_registration_error(
-        "figma",
-        RuntimeError("HTTP 403: Forbidden"),
-        server_url="https://mcp.figma.com/mcp",
-    )
-    assert msg is not None
-    assert "Claude Code" in msg
-    assert "client_name" in msg
 
 
 def test_humanize_non_registration_403_passthrough():

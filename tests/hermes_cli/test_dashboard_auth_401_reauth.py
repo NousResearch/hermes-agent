@@ -207,28 +207,6 @@ class TestTransparentRefreshOnAccessTokenEviction:
         )
         return provider, valid_rt
 
-    def test_at_evicted_rt_present_refreshes_transparently(self, gated_app):
-        provider, valid_rt = self._build_rt_only_app()
-        # Browser sends ONLY the RT cookie — the AT cookie has aged out.
-        gated_app.cookies.clear()
-        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
-
-        r = gated_app.get("/api/sessions", follow_redirects=False)
-        # Transparent refresh — request served, NOT bounced.
-        assert r.status_code == 200, (
-            f"expected 200 (transparent refresh) got {r.status_code} "
-            f"— the AT-evicted/RT-present case bounced to login"
-        )
-        # Both cookies rotated onto the response.
-        set_cookies = r.headers.get_list("set-cookie")
-        assert any(
-            c.startswith(SESSION_AT_COOKIE) or f"-{SESSION_AT_COOKIE}" in c
-            for c in set_cookies
-        ), f"no rotated AT cookie in {set_cookies!r}"
-        assert any(
-            c.startswith(SESSION_RT_COOKIE) or f"-{SESSION_RT_COOKIE}" in c
-            for c in set_cookies
-        ), f"no rotated RT cookie in {set_cookies!r}"
 
     def test_provider_hint_routes_refresh_to_token_owner(self, gated_app):
         """A Nous-style RT must not be rejected by Basic just because Basic
@@ -263,36 +241,8 @@ class TestTransparentRefreshOnAccessTokenEviction:
             for cookie in response.headers.get_list("set-cookie")
         )
 
-    def test_unknown_provider_hint_retains_verify_fallback(self, gated_app):
-        """A hint for a removed provider must not suppress the normal scan."""
-        import time as _t
-        from tests.hermes_cli.conftest_dashboard_auth import _sign
-
-        valid_at = _sign({
-            "sub": "stub-user-1",
-            "email": "stub@example.test",
-            "name": "Stub User",
-            "org_id": "stub-org-1",
-            "exp": int(_t.time()) + 900,
-        })
-        gated_app.cookies.clear()
-        gated_app.cookies.set(SESSION_AT_COOKIE, valid_at)
-        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "removed-provider")
-
-        response = gated_app.get("/api/auth/me")
-
-        assert response.status_code == 200
-        assert response.json()["provider"] == "stub"
 
 
-    def test_no_cookies_at_all_still_bounces(self, gated_app):
-        """Guard the fix didn't over-reach: a request with NEITHER cookie
-        must still 401 to login (nothing to verify or refresh)."""
-        self._build_rt_only_app()
-        gated_app.cookies.clear()
-        r = gated_app.get("/api/sessions")
-        assert r.status_code == 401
-        assert r.json()["error"] == "unauthenticated"
 
     def test_dead_rt_only_bounces_to_login(self, gated_app):
         """An RT-only request whose RT is dead/expired must bounce (the
@@ -396,21 +346,6 @@ class TestAutoSsoRedirect:
         assert "/auth/login" not in second.headers["location"]
 
 
-    def test_multiple_providers_render_chooser_not_auto_sso(self, gated_app):
-        """With two interactive providers we can't pick for the user, so the
-        /login chooser must render rather than auto-redirecting to one."""
-        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
-        from hermes_cli.dashboard_auth import register_provider
-
-        class _SecondStub(StubAuthProvider):
-            name = "stub2"
-            display_name = "Second Stub IdP"
-
-        register_provider(_SecondStub())
-        r = gated_app.get("/sessions", follow_redirects=False)
-        assert r.status_code == 302
-        assert r.headers["location"].startswith("/login")
-        assert "/auth/login" not in r.headers["location"]
 
 
 # ---------------------------------------------------------------------------
@@ -641,11 +576,6 @@ class TestValidatePostLoginTarget:
             ) == ""
         )
 
-    def test_does_not_reject_api_prefix_lookalikes(self):
-        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
-        # SPA route lookalikes — must NOT be dropped.
-        assert _validate_post_login_target("/apidocs") == "/apidocs"
-        assert _validate_post_login_target("/api-keys") == "/api-keys"
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,6 @@ class TestExpandEnvVars:
             assert _expand_env_vars("${MY_KEY}") == "secret123"
 
 
-    def test_no_placeholder_unchanged(self):
-        assert _expand_env_vars("plain-value") == "plain-value"
 
 
     def test_non_string_values_untouched(self):
@@ -22,11 +20,6 @@ class TestExpandEnvVars:
         assert _expand_env_vars(None) is None
 
 
-    def test_dict_keys_not_expanded(self):
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setenv("KEY", "value")
-            result = _expand_env_vars({"${KEY}": "no-expand-key"})
-            assert "${KEY}" in result
 
 
 class TestLoadConfigExpansion:

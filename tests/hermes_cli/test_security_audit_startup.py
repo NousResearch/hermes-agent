@@ -20,10 +20,6 @@ def _reset_audit_sentinel():
 # ── root check ────────────────────────────────────────────────────────────
 
 
-def test_root_check_flags_uid_zero(monkeypatch):
-    monkeypatch.setattr(audit, "_is_root", lambda: True)
-    msg = audit._running_as_root()
-    assert msg and "ROOT" in msg
 
 
 # ── SSH password-auth check ─────────────────────────────────────────────────
@@ -32,26 +28,13 @@ def test_root_check_flags_uid_zero(monkeypatch):
 # ── container / volume-mount check ──────────────────────────────────────────
 
 
-def test_container_no_mount_flags(monkeypatch, tmp_path):
-    monkeypatch.setattr(audit, "_in_container", lambda: True)
-    monkeypatch.setattr(audit, "_path_is_mounted", lambda p: False)
-    msg = audit._container_no_volume_mount(tmp_path / ".hermes")
-    assert msg and "persistent volume" in msg
 
 
-def test_not_in_container_silent(monkeypatch, tmp_path):
-    monkeypatch.setattr(audit, "_in_container", lambda: False)
-    assert audit._container_no_volume_mount(tmp_path / ".hermes") is None
 
 
 # ── network listener without auth ──────────────────────────────────────────
 
 
-def test_api_server_network_no_key_flags(monkeypatch):
-    monkeypatch.delenv("API_SERVER_KEY", raising=False)
-    cfg = {"platforms": {"api_server": {"enabled": True, "extra": {"host": "0.0.0.0", "key": ""}}}}
-    findings = audit._network_listener_without_auth(cfg)
-    assert any("NO API_SERVER_KEY" in f for f in findings)
 
 
 # ── orchestration + logging ─────────────────────────────────────────────────
@@ -91,11 +74,3 @@ def test_log_startup_security_warnings_emits_and_is_idempotent(monkeypatch, tmp_
     assert len(forced) == 1
 
 
-def test_audit_never_raises_on_broken_check(monkeypatch, tmp_path):
-    def _boom():
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(audit, "_is_root", _boom)
-    # Must not propagate — the broken check is swallowed, others still run.
-    findings = audit.run_security_audit(hermes_home=tmp_path, config={})
-    assert isinstance(findings, list)

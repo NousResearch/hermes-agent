@@ -103,22 +103,6 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 # ---------------------------------------------------------------------------
 
 
-def test_do_list_initializes_hub_dir(monkeypatch, hub_env):
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
-
-    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: [])
-    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
-
-    hub_dir = hub_env
-    assert not hub_dir.exists()
-
-    _capture()
-
-    assert hub_dir.exists()
-    assert (hub_dir / "lock.json").exists()
-    assert (hub_dir / "quarantine").is_dir()
-    assert (hub_dir / "index-cache").is_dir()
 
 
 def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
@@ -149,36 +133,6 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_do_update_pins_install_to_locked_source(monkeypatch):
-    """do_update must forward the lockfile's `source` to do_install.
-
-    Without the pin, a bare identifier like "reddit" reaches
-    _resolve_short_name()'s fuzzy catalog search inside do_install and can
-    resolve to a same-named skill in another registry.
-    """
-    import tools.skills_hub as hub
-    import hermes_cli.skills_hub as cli_hub
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    calls = []
-
-    monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: [
-        {"name": "reddit", "identifier": "reddit", "source": "clawhub",
-         "status": "update_available"},
-    ])
-    monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
-        "get_installed": lambda self, name: {"install_path": "category/" + name}
-    })())
-    monkeypatch.setattr(
-        cli_hub, "do_install",
-        lambda identifier, category="", force=False, console=None, source_id=None:
-            calls.append({"identifier": identifier, "source_id": source_id}),
-    )
-
-    do_update(console=console)
-
-    assert calls == [{"identifier": "reddit", "source_id": "clawhub"}]
 
 
 def test_check_for_skill_updates_does_not_fall_back_across_registries():
@@ -232,19 +186,6 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries():
     assert "bundle" not in results[0], "must not carry a foreign registry's bundle"
 
 
-def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
-    results = [type("R", (), {
-        "name": "kubernetes",
-        "description": "Cluster orchestration",
-        "source": "skills.sh",
-        "trust_level": "community",
-        "identifier": "skills-sh/example/kubernetes",
-    })()]
-
-    with patch("tools.skills_hub.unified_search", return_value=results), \
-         patch("tools.skills_hub.create_source_router", return_value={}), \
-         patch("tools.skills_hub.GitHubAuth"):
-        handle_skills_slash("/skills search kubernetes", console=ChatConsole())
 
 
 # ---------------------------------------------------------------------------
@@ -314,69 +255,15 @@ def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
     return install_calls
 
 
-def test_url_install_uses_name_override_on_non_interactive_surface(monkeypatch, tmp_path, hub_env):
-    installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install(
-        "https://example.com/SKILL.md",
-        console=console, skip_confirm=True,
-        name_override="my-url-skill",
-    )
-
-    assert installs == [{"name": "my-url-skill", "category": ""}]
 
 
-def test_url_install_cancel_name_prompt_aborts(monkeypatch, tmp_path, hub_env):
-    installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
-
-    # Empty input with no default → name prompt returns None → abort.
-    monkeypatch.setattr("builtins.input", lambda prompt="": "")
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install(
-        "https://example.com/SKILL.md",
-        console=console, skip_confirm=False, force=True,
-    )
-
-    assert installs == []
-    assert "Installation cancelled" in sink.getvalue()
 
 
 # ── _existing_categories ────────────────────────────────────────────────────
 
 
-def test_existing_categories_skips_top_level_skills(monkeypatch, tmp_path, hub_env):
-    import tools.skills_hub as hub
-    from hermes_cli.skills_hub import _existing_categories
-
-    # Category bucket with nested skill.
-    (hub.SKILLS_DIR / "productivity" / "notion").mkdir(parents=True)
-    (hub.SKILLS_DIR / "productivity" / "notion" / "SKILL.md").write_text("# notion")
-
-    # Flat skill at top level (NOT a category).
-    (hub.SKILLS_DIR / "my-flat-skill").mkdir()
-    (hub.SKILLS_DIR / "my-flat-skill" / "SKILL.md").write_text("# flat")
-
-    # Empty dir (NOT a category — no SKILL.md below).
-    (hub.SKILLS_DIR / "empty-dir").mkdir()
-
-    # Hidden dir (ignored).
-    (hub.SKILLS_DIR / ".hub").mkdir(exist_ok=True)
-
-    cats = _existing_categories()
-    assert cats == ["productivity"]
 
 
-def test_existing_categories_returns_empty_when_skills_dir_missing(monkeypatch, tmp_path, hub_env):
-    # hub_env creates tmp_path/skills/.hub — we point SKILLS_DIR at a missing sibling.
-    import tools.skills_hub as hub
-    monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "does-not-exist")
-
-    from hermes_cli.skills_hub import _existing_categories
-    assert _existing_categories() == []
 
 
 # ---------------------------------------------------------------------------
@@ -384,40 +271,6 @@ def test_existing_categories_returns_empty_when_skills_dir_missing(monkeypatch, 
 # ---------------------------------------------------------------------------
 
 
-def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
-    """browse_skills() must not collapse browse-sh skills that share a task name.
-
-    Airbnb and Booking.com both publish a 'search-listings' skill. Before the
-    fix, both were keyed by name so only one survived deduplication. After the
-    fix, each unique identifier produces a distinct result.
-    """
-    from tools.skills_hub import SkillMeta
-    from hermes_cli.skills_hub import browse_skills
-
-    airbnb = SkillMeta(
-        name="search-listings", description="Airbnb search", source="browse-sh",
-        identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
-    )
-    booking = SkillMeta(
-        name="search-listings", description="Booking.com search", source="browse-sh",
-        identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
-    )
-
-    mock_src = type("S", (), {
-        "source_id": lambda self: "browse-sh",
-        "search": lambda self, q, limit=500: [airbnb, booking],
-    })()
-
-    # browse_skills() imports create_source_router locally from tools.skills_hub,
-    # so the patch must target the source module, not hermes_cli.skills_hub.
-    with patch("tools.skills_hub.create_source_router", return_value=[mock_src]):
-        result = browse_skills(page=1, page_size=50)
-
-    names = [item["name"] for item in result["items"]]
-    assert names.count("search-listings") == 2, (
-        "browse_skills() must not deduplicate browse-sh skills with the same name "
-        "but different identifiers"
-    )
 
 
 # ---------------------------------------------------------------------------

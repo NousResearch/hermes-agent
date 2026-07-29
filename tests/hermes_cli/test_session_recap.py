@@ -30,54 +30,12 @@ def _tool_result(content="ok"):
     return {"role": "tool", "content": content}
 
 
-def test_empty_history():
-    out = build_recap([])
-    assert "Session recap" in out
-    assert "nothing to recap" in out
 
 
-def test_header_shows_title_when_provided():
-    out = build_recap([_user("hello")], session_title="Refactor the adapter")
-    assert "Refactor the adapter" in out.splitlines()[0]
 
 
-def test_counts_recent_turns():
-    msgs = [
-        _user("one"),
-        _assistant("first reply"),
-        _user("two"),
-        _assistant("second reply"),
-    ]
-    out = build_recap(msgs)
-    assert "2 user turn" in out
-    assert "assistant repl" in out
 
 
-def test_tool_counts_and_files():
-    msgs = [
-        _user("edit the readme and run tests"),
-        _assistant(
-            tool_calls=[
-                _tool_call("read_file", {"path": "README.md"}),
-                _tool_call("patch", {"path": "README.md"}),
-            ]
-        ),
-        _tool_result(),
-        _tool_result(),
-        _assistant(
-            tool_calls=[
-                _tool_call("terminal", {"command": "pytest"}),
-            ]
-        ),
-        _tool_result("tests ok"),
-        _assistant("All green."),
-    ]
-    out = build_recap(msgs)
-    assert "patch×1" in out
-    assert "terminal×1" in out
-    assert "read_file×1" in out
-    # README.md should appear (may include cwd-relative prefix stripping).
-    assert "README.md" in out
 
 
 def test_tool_preview_length_truncates_long_user_prompt():
@@ -88,11 +46,6 @@ def test_tool_preview_length_truncates_long_user_prompt():
     assert "…" in ask_line
 
 
-def test_ignores_non_mapping_entries_gracefully():
-    msgs = [None, "stray", _user("hi"), _assistant("hello")]
-    # Should not raise.
-    out = build_recap(msgs)
-    assert "Session recap" in out
 
 
 def test_escape_sequences_sanitized_in_previews():

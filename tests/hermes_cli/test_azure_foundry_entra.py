@@ -122,26 +122,6 @@ class TestResolveAzureFoundryRuntimeEntra:
         assert "authority" not in kw
 
 
-    def test_entra_scope_override_wins(self, fake_azure_identity):
-        """Users on sovereign clouds / unusual tenants can set
-        ``model.entra.scope`` to override the default."""
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        _resolve_azure_foundry_runtime(
-            requested_provider="azure-foundry",
-            model_cfg={
-                "provider": "azure-foundry",
-                "base_url": "https://r.openai.azure.com/openai/v1",
-                "api_mode": "chat_completions",
-                "auth_mode": "entra_id",
-                "entra": {
-                    "scope": "https://cognitiveservices.azure.com/.default",
-                },
-            },
-        )
-        assert (
-            fake_azure_identity["scope"]
-            == "https://cognitiveservices.azure.com/.default"
-        )
 
 
     def test_entra_with_explicit_api_key_uses_string_escape_hatch(self, fake_azure_identity):

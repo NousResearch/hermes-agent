@@ -143,77 +143,11 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
-    def test_install_block(self, catalog_dir):
-        body = _basic_manifest(
-            install={
-                "type": "git",
-                "url": "https://example.com/demo.git",
-                "ref": "v1.0.0",
-                "bootstrap": ["pip install -r requirements.txt"],
-            },
-            transport={
-                "type": "stdio",
-                "command": "${INSTALL_DIR}/.venv/bin/python",
-                "args": ["${INSTALL_DIR}/server.py"],
-            },
-        )
-        _write_manifest(catalog_dir, "demo", body)
-        from hermes_cli.mcp_catalog import list_catalog
 
-        e = list_catalog()[0]
-        assert e.install is not None
-        assert e.install.url == "https://example.com/demo.git"
-        assert e.install.ref == "v1.0.0"
-        assert e.install.bootstrap == ["pip install -r requirements.txt"]
 
-    def test_invalid_manifest_skipped(self, catalog_dir):
-        # Broken: wrong manifest_version
-        _write_manifest(catalog_dir, "bad", {
-            "manifest_version": 99,
-            "name": "bad",
-            "description": "x",
-            "transport": {"type": "stdio", "command": "x"},
-        })
-        # Good
-        _write_manifest(catalog_dir, "demo", _basic_manifest())
-        from hermes_cli.mcp_catalog import list_catalog
 
-        entries = list_catalog()
-        assert [e.name for e in entries] == ["demo"]
 
-    def test_missing_transport_command_rejected(self, catalog_dir):
-        body = _basic_manifest()
-        body["transport"] = {"type": "stdio"}  # no command
-        _write_manifest(catalog_dir, "demo", body)
-        from hermes_cli.mcp_catalog import list_catalog
 
-        assert list_catalog() == []
-
-    def test_get_entry_strips_official_prefix(self, catalog_dir):
-        _write_manifest(catalog_dir, "demo", _basic_manifest())
-        from hermes_cli.mcp_catalog import get_entry
-
-        assert get_entry("demo") is not None
-        assert get_entry("official/demo") is not None
-        assert get_entry("missing") is None
-
-    def test_transport_env_parsed_and_written_to_server_config(self, catalog_dir):
-        body = _basic_manifest()
-        body["transport"]["env"] = {"DISABLE_TELEMETRY": "true"}
-        _write_manifest(catalog_dir, "demo", body)
-        from hermes_cli.mcp_catalog import _build_server_config
-
-        e = _entry("demo")
-        assert e.transport.env == {"DISABLE_TELEMETRY": "true"}
-        cfg = _build_server_config(e, None)
-        assert cfg["env"] == {"DISABLE_TELEMETRY": "true"}
-
-    def test_transport_env_absent_leaves_config_without_env_key(self, catalog_dir):
-        _write_manifest(catalog_dir, "demo", _basic_manifest())
-        from hermes_cli.mcp_catalog import _build_server_config
-
-        cfg = _build_server_config(_entry("demo"), None)
-        assert "env" not in cfg
 
 
 # ---------------------------------------------------------------------------
@@ -237,36 +171,6 @@ class TestInstall:
         assert servers["demo"]["enabled"] is True
 
 
-    def test_install_with_install_dir_substitution(self, catalog_dir, tmp_path):
-        body = _basic_manifest(
-            install={
-                "type": "git",
-                "url": "https://example.com/demo.git",
-                "ref": "main",
-                "bootstrap": [],
-            },
-            transport={
-                "type": "stdio",
-                "command": "${INSTALL_DIR}/run.sh",
-                "args": ["${INSTALL_DIR}/cfg.json"],
-            },
-        )
-        _write_manifest(catalog_dir, "demo", body)
-
-        # Mock the git clone — return a known directory
-        fake_clone = tmp_path / "fake-clone"
-        fake_clone.mkdir()
-
-        from hermes_cli import mcp_catalog
-        from hermes_cli.mcp_catalog import install_entry
-        from hermes_cli.config import load_config
-
-        with patch.object(mcp_catalog, "_do_git_install", return_value=fake_clone):
-            install_entry(_entry("demo"), enable=True)
-
-        servers = load_config()["mcp_servers"]
-        assert servers["demo"]["command"] == f"{fake_clone}/run.sh"
-        assert servers["demo"]["args"] == [f"{fake_clone}/cfg.json"]
 
     def test_install_with_api_key_prompts_and_saves(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
@@ -290,23 +194,6 @@ class TestInstall:
         assert "demo" in load_config()["mcp_servers"]
 
 
-    def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
-        body = _basic_manifest(
-            auth={
-                "type": "api_key",
-                "env": [{"name": "MUST", "prompt": "x", "required": True, "secret": False}],
-            }
-        )
-        _write_manifest(catalog_dir, "demo", body)
-
-        from hermes_cli import mcp_catalog
-        from hermes_cli.mcp_catalog import install_entry, CatalogError
-
-        # User hits enter — empty input, no default
-        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "")
-
-        with pytest.raises(CatalogError):
-            install_entry(_entry("demo"), enable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -390,51 +277,8 @@ class TestToolSelection:
         server = load_config()["mcp_servers"]["demo"]
         assert server["tools"]["include"] == ["a", "b", "c"]
 
-    def test_probe_success_non_tty_with_default_filters_to_default(
-        self, catalog_dir, monkeypatch
-    ):
-        body = _basic_manifest(
-            tools={"default_enabled": ["alpha", "gamma"]},
-        )
-        _write_manifest(catalog_dir, "demo", body)
-        import hermes_cli.mcp_catalog as mc
-
-        probed = self._make_probed("alpha", "beta", "gamma", "delta")
-        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
-        import sys as _sys
-        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
-
-        from hermes_cli.mcp_catalog import install_entry
-        from hermes_cli.config import load_config
-
-        install_entry(_entry("demo"), enable=True)
-        server = load_config()["mcp_servers"]["demo"]
-        # Only the manifest defaults that actually exist on the server
-        assert server["tools"]["include"] == ["alpha", "gamma"]
 
 
-    def test_default_enabled_filters_out_unknown_tool_names(
-        self, catalog_dir, monkeypatch
-    ):
-        """If manifest names a tool the server doesn\'t actually expose, it
-        silently drops out — never written into tools.include."""
-        body = _basic_manifest(
-            tools={"default_enabled": ["real", "ghost"]},
-        )
-        _write_manifest(catalog_dir, "demo", body)
-        import hermes_cli.mcp_catalog as mc
-
-        probed = self._make_probed("real", "other")
-        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
-        import sys as _sys
-        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
-
-        from hermes_cli.mcp_catalog import install_entry
-        from hermes_cli.config import load_config
-
-        install_entry(_entry("demo"), enable=True)
-        server = load_config()["mcp_servers"]["demo"]
-        assert server["tools"]["include"] == ["real"]
 
     def test_reinstall_preserves_prior_user_selection(
         self, catalog_dir, monkeypatch

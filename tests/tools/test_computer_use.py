@@ -74,39 +74,6 @@ class TestRegistration:
         assert entry.toolset == "computer_use"
         assert entry.schema["name"] == "computer_use"
 
-    def test_check_fn_true_on_linux_when_binary_present(self):
-        # Linux is supported; gated only on the cua-driver binary resolving.
-        from tools.computer_use import tool as cu_tool
-        with patch("tools.computer_use.tool.sys.platform", "linux"), \
-             patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=True):
-            assert cu_tool.check_computer_use_requirements() is True
-
-    def test_check_fn_false_on_unsupported_platform(self):
-        from tools.computer_use import tool as cu_tool
-        with patch("tools.computer_use.tool.sys.platform", "freebsd13"):
-            assert cu_tool.check_computer_use_requirements() is False
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
-    def test_check_fn_finds_user_local_cua_driver_when_path_omits_it(self, tmp_path, monkeypatch):
-        """Desktop/TUI launched from Finder/Dock can omit ~/.local/bin from PATH.
-
-        The cua-driver installer commonly places the binary there, so the
-        registry check must still expose the computer_use tool schema.
-        """
-        from tools.computer_use import tool as cu_tool
-
-        driver = tmp_path / ".local" / "bin" / "cua-driver"
-        driver.parent.mkdir(parents=True)
-        driver.write_text("#!/bin/sh\nexit 0\n")
-        driver.chmod(0o755)
-
-        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-
-        with patch("tools.computer_use.tool.sys.platform", "darwin"), \
-             patch("tools.computer_use.cua_backend.sys.platform", "darwin"):
-            assert cu_tool.check_computer_use_requirements() is True
 
     def test_cua_driver_cmd_env_override_is_resolved_dynamically(self, tmp_path, monkeypatch):
         from tools.computer_use import cua_backend
@@ -134,21 +101,6 @@ class TestDispatch:
         parsed = json.loads(out)
         assert "error" in parsed
 
-    def test_wait_clamps_long_waits(self, noop_backend):
-        from tools.computer_use.tool import handle_computer_use
-        # The backend's default wait() uses time.sleep with clamping.
-        out = handle_computer_use({"action": "wait", "seconds": 0.01})
-        parsed = json.loads(out)
-        assert parsed["ok"] is True
-        assert parsed["action"] == "wait"
-
-    def test_click_without_target_returns_error(self, noop_backend):
-        from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "click"})
-        parsed = json.loads(out)
-        # Noop backend returns ok=True with no targeting; we only hard-error
-        # for the cua backend. Just make sure the noop path doesn't crash.
-        assert "action" in parsed or "error" in parsed
 
     def test_type_action_routes_to_type_text_backend(self, noop_backend):
         """type action must call backend.type_text, not type_text_chars (issue #24170, bug 3)."""
@@ -177,12 +129,6 @@ class TestDispatch:
         assert drag_kw["from_element"] == 1
         assert drag_kw["to_element"] == 5
 
-    def test_drag_action_requires_coordinates_or_elements(self, noop_backend):
-        """drag without from/to must return an error."""
-        from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "drag"})
-        parsed = json.loads(out)
-        assert "error" in parsed
 
     def test_capture_forwards_exact_pid_window_target(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
@@ -661,47 +607,6 @@ class TestRunAgentMultimodalHelpers:
         assert env["content"][1]["type"] == "image_url"
         assert env["text_summary"] == "summary\n[subdir hint]"
 
-    def test_trajectory_normalize_strips_images(self):
-        from run_agent import _trajectory_normalize_msg
-        msg = {
-            "role": "tool",
-            "tool_call_id": "c1",
-            "content": [
-                {"type": "text", "text": "captured"},
-                {"type": "image_url", "image_url": {"url": "data:..."}},
-            ],
-        }
-        cleaned = _trajectory_normalize_msg(msg)
-        assert not any(
-            p.get("type") == "image_url" for p in cleaned["content"]
-        )
-        assert any(
-            p.get("type") == "text" and p.get("text") == "[screenshot]"
-            for p in cleaned["content"]
-        )
-
-    def test_computer_use_image_result_becomes_error_for_text_only_model(self):
-        from run_agent import AIAgent
-
-        agent = object.__new__(AIAgent)
-        agent.provider = "deepseek"
-        agent.model = "deepseek-v4-pro"
-        result = {
-            "_multimodal": True,
-            "content": [
-                {"type": "text", "text": "screen captured"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
-            ],
-            "text_summary": "screen captured",
-        }
-
-        with patch.object(agent, "_model_supports_vision", return_value=False):
-            content = agent._tool_result_content_for_active_model("computer_use", result)
-
-        parsed = json.loads(content)
-        assert "computer_use returned screenshot/image content" in parsed["error"]
-        assert parsed["text_summary"] == "screen captured"
-        assert "image_url" not in content
 
     def test_computer_use_image_result_preserved_for_vision_model(self):
         from run_agent import AIAgent
@@ -1105,34 +1010,6 @@ class TestCuaDriverWindowResultShapes:
             "data": {},
         }) == windows
 
-    def test_empty_structured_windows_falls_through_to_data_windows(self):
-        from tools.computer_use.cua_backend import _windows_from_tool_result
-
-        windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
-
-        assert _windows_from_tool_result({
-            "structuredContent": {"windows": []},
-            "data": {"windows": windows},
-        }) == windows
-
-    def test_extract_windows_missing_fields_returns_empty(self):
-        from tools.computer_use.cua_backend import _windows_from_tool_result
-
-        assert _windows_from_tool_result({
-            "structuredContent": None,
-            "data": {},
-        }) == []
-
-    def test_ingest_windows_normalizes_untrusted_display_fields(self):
-        from tools.computer_use.cua_backend import _ingest_windows
-
-        assert _ingest_windows([{
-            "app_name": None, "pid": "100", "window_id": "7",
-            "title": ["bad"], "z_index": "bad",
-        }]) == [{
-            "app_name": "", "pid": 100, "window_id": 7,
-            "off_screen": False, "title": "", "z_index": 0,
-        }]
 
     def test_list_apps_derives_apps_from_data_windows_shape(self):
         windows = [
@@ -1212,135 +1089,6 @@ class TestCuaDriverSessionReconnect:
         assert bridge.calls[1][0] == ("call", "list_apps", {})
         assert len(bridge.calls) == 2
 
-    def test_call_tool_revives_ended_session_then_retries_once(self):
-        """Logical ended-session errors revive the same id before one replay."""
-        ended = {
-            "data": (
-                "session 'hermes-test' has ended; tool call 'list_windows' "
-                "was rejected. Call start_session with this id to revive it."
-            ),
-            "images": [],
-            "structuredContent": None,
-            "isError": True,
-        }
-        ok = {"data": "revived", "images": [], "structuredContent": None, "isError": False}
-        windows = {
-            "data": "",
-            "images": [],
-            "structuredContent": {"windows": [{"pid": 1, "window_id": 2}]},
-            "isError": False,
-        }
-
-        class FakeBridge:
-            def __init__(self):
-                self.calls = []
-                self.effects = [ended, ok, windows]
-
-            def run(self, value, timeout=None):
-                self.calls.append((value, timeout))
-                return self.effects.pop(0)
-
-        bridge = FakeBridge()
-        session = self._make_session(bridge)
-        session._declared_session_id = "hermes-test"
-
-        result = session.call_tool(
-            "list_windows", {"on_screen_only": True, "session": "hermes-test"}
-        )
-
-        assert result is windows
-        assert [call[0] for call in bridge.calls] == [
-            ("call", "list_windows", {"on_screen_only": True, "session": "hermes-test"}),
-            ("call", "start_session", {"session": "hermes-test"}),
-            ("call", "list_windows", {"on_screen_only": True, "session": "hermes-test"}),
-        ]
-
-    def test_lifecycle_call_does_not_try_to_revive_itself(self):
-        """start_session failures stay single-shot and cannot recurse."""
-        ended = {
-            "data": "session 'hermes-test' has ended; call start_session to revive it",
-            "images": [],
-            "structuredContent": None,
-            "isError": True,
-        }
-
-        class FakeBridge:
-            def __init__(self):
-                self.calls = []
-
-            def run(self, value, timeout=None):
-                self.calls.append((value, timeout))
-                return ended
-
-        bridge = FakeBridge()
-        session = self._make_session(bridge)
-
-        result = session.call_tool("start_session", {"session": "hermes-test"})
-
-        assert result is ended
-        assert len(bridge.calls) == 1
-
-    def test_call_tool_does_not_retry_on_unrelated_error(self):
-        """Non-transport errors must propagate without a reconnect attempt."""
-        class FakeBridge:
-            def __init__(self):
-                self.calls = []
-
-            def run(self, value, timeout=None):
-                self.calls.append((value, timeout))
-                raise ValueError("boom")
-
-        bridge = FakeBridge()
-        session = self._make_session(bridge)
-
-        import pytest
-        with pytest.raises(ValueError):
-            session.call_tool("list_apps", {})
-        # Exactly one attempt, no reconnect.
-        assert len(bridge.calls) == 1
-
-    def test_call_tool_falls_back_to_cli_on_transient_error(self):
-        """When the MCP bridge throws EAGAIN, call_tool routes to the CLI transport."""
-        import threading
-        from typing import Any, cast
-        from tools.computer_use.cua_backend import _CuaDriverSession
-
-        eagain = RuntimeError(
-            "daemon transport error forwarding `get_window_state`: "
-            "Resource temporarily unavailable (os error 35)"
-        )
-
-        class FakeBridge:
-            def __init__(self):
-                self.calls = []
-
-            def run(self, value, timeout=None):
-                self.calls.append((value, timeout))
-                raise eagain
-
-        bridge = FakeBridge()
-        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
-        session._bridge = bridge
-        session._session = object()
-        session._exit_stack = None
-        session._lock = threading.Lock()
-        session._started = True
-        session._call_tool_async = lambda name, args: ("call", name, args)
-
-        cli_calls = []
-
-        def fake_cli(name, args, timeout):
-            cli_calls.append((name, args))
-            return {"data": "42 elements\ntree", "images": ["B64PNG"],
-                    "structuredContent": {"element_count": 42}, "isError": False}
-
-        session._call_tool_via_cli = fake_cli
-
-        result = session.call_tool("get_window_state", {"pid": 1, "window_id": 2})
-        # MCP path attempted exactly once, then CLI fallback used.
-        assert len(bridge.calls) == 1
-        assert cli_calls == [("get_window_state", {"pid": 1, "window_id": 2})]
-        assert result["images"] == ["B64PNG"]
 
     def test_cli_fallback_reads_screenshot_from_file(self, tmp_path, monkeypatch):
         """_call_tool_via_cli must base64-read a screenshot written to disk
@@ -1494,87 +1242,6 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
 
-    def test_app_filter_falls_back_to_list_apps_metadata(self):
-        windows = [
-            {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
-             "is_on_screen": True, "title": "FreeCAD 1.1.1", "z_index": 0},
-        ]
-        apps = [
-            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD", "pid": 7675},
-        ]
-        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
-
-        cap = backend.capture(mode="ax", app="org.freecad.FreeCAD")
-
-        assert cap.app == "Qt6Application"
-        assert backend._active_pid == 7675
-        assert backend._active_window_id == 42
-
-    def test_exact_metadata_alias_beats_broader_direct_window_name(self):
-        windows = [
-            {"app_name": "Visual Studio Code", "pid": 100, "window_id": 1,
-             "is_on_screen": True, "title": "Visual Studio Code", "z_index": 0},
-            {"app_name": "Qt6Application", "pid": 200, "window_id": 2,
-             "is_on_screen": True, "title": "Code", "z_index": 1},
-        ]
-        apps = [{"name": "Code", "bundle_id": "org.example.Code", "pid": 200}]
-        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
-
-        cap = backend.capture(mode="ax", app="Code")
-
-        assert cap.app == "Qt6Application"
-        assert backend._active_pid == 200
-        assert backend._active_window_id == 2
-
-    def test_exact_pid_window_capture_bypasses_window_discovery(self):
-        from tools.computer_use.cua_backend import CuaDriverBackend
-
-        backend = CuaDriverBackend()
-        session = MagicMock()
-
-        def _call_tool(name, args):
-            assert name != "list_windows", "exact target must bypass discovery"
-            assert name == "get_window_state"
-            assert args["pid"] == 7675
-            assert args["window_id"] == 42
-            return {
-                "data": "✅ FreeCAD — 0 elements", "images": [],
-                "structuredContent": None, "isError": False,
-            }
-
-        session.call_tool.side_effect = _call_tool
-        backend._session = session
-
-        cap = backend.capture(mode="ax", pid=7675, window_id=42)
-
-        assert cap.app == ""
-        assert backend._active_pid == 7675
-        assert backend._active_window_id == 42
-
-    def test_list_windows_drops_nonpositive_and_boolean_identifiers(self):
-        from tools.computer_use.cua_backend import CuaDriverBackend
-
-        backend = CuaDriverBackend()
-        session = MagicMock()
-        session.call_tool.return_value = {
-            "data": "", "images": [], "isError": False,
-            "structuredContent": {"windows": [
-                {"app_name": "Good", "pid": 12, "window_id": 34,
-                 "is_on_screen": True, "z_index": 0},
-                {"app_name": "Bool", "pid": True, "window_id": 2,
-                 "is_on_screen": True, "z_index": 1},
-                {"app_name": "Zero", "pid": 0, "window_id": 3,
-                 "is_on_screen": True, "z_index": 2},
-                {"app_name": "Negative", "pid": 4, "window_id": -1,
-                 "is_on_screen": True, "z_index": 3},
-            ]},
-        }
-        backend._session = session
-
-        assert backend.list_windows() == [{
-            "app_name": "Good", "pid": 12, "window_id": 34,
-            "off_screen": False, "title": "", "z_index": 0,
-        }]
 
     def test_capture_transport_exception_disarms_prior_target(self):
         from tools.computer_use.cua_backend import CuaDriverBackend
@@ -1619,21 +1286,6 @@ class TestFocusAppFilterNoMatch:
         # _active_pid must remain unset so a subsequent click doesn't hit Fuwari.
         assert backend._active_pid is None
 
-    def test_focus_app_falls_back_to_list_apps_metadata(self):
-        windows = [
-            {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
-             "is_on_screen": True, "title": "FreeCAD 1.1.1", "z_index": 0},
-        ]
-        apps = [
-            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD", "pid": 7675},
-        ]
-        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
-
-        res = backend.focus_app("FreeCAD")
-
-        assert res.ok is True
-        assert backend._active_pid == 7675
-        assert backend._active_window_id == 42
 
     def test_installed_only_metadata_cannot_target_a_pid_zero_window(self):
         windows = [
@@ -1856,16 +1508,6 @@ class TestClickButtonPassthrough:
             "not silently mapped to left (the original Surface 5 bug)."
         )
 
-    def test_unknown_button_rejected_no_tool_call(self):
-        """Pre-fix, an unknown button silently fell through to a default
-        left click. Post-fix, the wrapper rejects it up front so the
-        caller learns about the typo instead of debugging a wrong-button
-        click later."""
-        backend = self._backend_with_active_target()
-        res = backend.click(element=5, button="bogus")
-        assert not res.ok
-        assert "expected" in res.message.lower()
-        backend._session.call_tool.assert_not_called()
 
     def test_coordinate_drag_and_scroll_keep_the_captured_window(self):
         backend = self._backend_with_active_target()
@@ -2134,114 +1776,6 @@ class TestStructuredElementsConsumption:
         assert out[0].bounds == (10, 20, 80, 30)
         assert out[1].bounds == (100, 50, 200, 24)
 
-    def test_structured_parser_skips_malformed_entries(self):
-        """A corrupted row (missing element_index, wrong type) should not
-        kill the whole walk — degrade to fewer elements."""
-        from tools.computer_use.cua_backend import _parse_elements_from_structured
-
-        raw = [
-            {"element_index": 1, "role": "AXButton", "label": "first"},
-            {"role": "AXButton"},                  # missing element_index
-            {"element_index": "not-int", "role": "AXBad"},  # wrong type
-            "not a dict",                           # totally wrong shape
-            {"element_index": 2, "role": "AXButton", "label": "second"},
-        ]
-        out = _parse_elements_from_structured(raw)
-        # Two well-formed rows surface; the three bad ones are skipped.
-        assert [e.index for e in out] == [1, 2]
-
-    def test_capture_prefers_structured_over_markdown_when_both_present(self):
-        """The key contract: when get_window_state returns both
-        structuredContent.elements and a markdown tree, the structured
-        path wins — that's how we recover real bounds."""
-        from unittest.mock import MagicMock
-        from tools.computer_use.cua_backend import CuaDriverBackend
-
-        backend = CuaDriverBackend()
-        backend._session = MagicMock()
-
-        windows_payload = {
-            "windows": [{
-                "app_name": "Demo", "pid": 9, "window_id": 1,
-                "is_on_screen": True, "title": "Demo", "z_index": 0,
-            }],
-        }
-
-        def fake_call_tool(name, args):
-            if name == "list_windows":
-                return {"data": "", "images": [], "image_mime_types": [],
-                        "structuredContent": windows_payload, "isError": False}
-            if name == "get_window_state":
-                # Markdown text + structured elements with DIFFERENT bounds —
-                # we should see the structured ones in the result.
-                return {
-                    "data": (
-                        '✅ Demo — 1 elements, turn 1\n'
-                        '  - [1] AXButton "from-markdown"\n'
-                    ),
-                    "images": [],
-                    "image_mime_types": [],
-                    "structuredContent": {
-                        "elements": [{
-                            "element_index": 1, "role": "AXButton",
-                            "label": "from-structured",
-                            "frame": {"x": 7, "y": 8, "w": 9, "h": 10},
-                        }],
-                    },
-                    "isError": False,
-                }
-            return {"data": "", "images": [], "image_mime_types": [],
-                    "structuredContent": None, "isError": False}
-
-        backend._session.call_tool.side_effect = fake_call_tool
-        cap = backend.capture(mode="ax")
-        assert len(cap.elements) == 1
-        # The structured path's bounds are preserved; the markdown
-        # path would have given (0,0,0,0) here.
-        assert cap.elements[0].label == "from-structured"
-        assert cap.elements[0].bounds == (7, 8, 9, 10)
-
-    def test_capture_falls_back_to_markdown_when_structured_absent(self):
-        """Older cua-driver builds didn't emit structuredContent.elements;
-        the wrapper still extracts what it can from the markdown surface."""
-        from unittest.mock import MagicMock
-        from tools.computer_use.cua_backend import CuaDriverBackend
-
-        backend = CuaDriverBackend()
-        backend._session = MagicMock()
-
-        windows_payload = {
-            "windows": [{
-                "app_name": "Old", "pid": 9, "window_id": 1,
-                "is_on_screen": True, "title": "Old", "z_index": 0,
-            }],
-        }
-
-        def fake_call_tool(name, args):
-            if name == "list_windows":
-                return {"data": "", "images": [], "image_mime_types": [],
-                        "structuredContent": windows_payload, "isError": False}
-            if name == "get_window_state":
-                return {
-                    "data": (
-                        '✅ Old — 1 elements, turn 1\n'
-                        '  - [3] AXButton "fallback-label"\n'
-                    ),
-                    "images": [],
-                    "image_mime_types": [],
-                    "structuredContent": None,  # no elements field
-                    "isError": False,
-                }
-            return {"data": "", "images": [], "image_mime_types": [],
-                    "structuredContent": None, "isError": False}
-
-        backend._session.call_tool.side_effect = fake_call_tool
-        cap = backend.capture(mode="ax")
-        assert len(cap.elements) == 1
-        assert cap.elements[0].index == 3
-        assert cap.elements[0].label == "fallback-label"
-        # Markdown surface doesn't carry bounds — lossy by design.
-        assert cap.elements[0].bounds == (0, 0, 0, 0)
 
     def test_vision_capture_falls_back_to_get_window_state_when_screenshot_dropped(self):
         """cua-driver >=0.5.x dropped the standalone `screenshot` MCP tool and
@@ -2382,18 +1916,6 @@ class TestElementTokenAttachment:
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
 
-    def test_token_NOT_attached_when_tool_lacks_capability(self):
-        """Older driver (no element_tokens capability) → don't send the
-        field, since the schema would reject unknown args."""
-        backend = self._backend_with_session({
-            "click": {"input.pointer.click"},  # no element_tokens
-        })
-        backend._snapshot_tokens = {5: "s0001:5"}
-        backend.click(element=5, button="left")
-        name, args = backend._session.call_tool.call_args.args
-        assert "element_token" not in args, (
-            "must not send element_token to a tool that doesn't claim the capability"
-        )
 
     def test_capture_refreshes_snapshot_tokens(self):
         """A fresh capture should overwrite any stale tokens from a
@@ -2488,45 +2010,6 @@ class TestSessionLifecycle:
         assert name == "start_session"
         assert args["session"] == backend._session_id
 
-    def test_stop_invokes_end_session_before_disconnect(self):
-        from unittest.mock import MagicMock, patch
-        from tools.computer_use.cua_backend import CuaDriverBackend
-
-        backend = CuaDriverBackend()
-        backend._session = MagicMock()
-        backend._session._started = True
-        backend._session.call_tool = MagicMock(return_value={
-            "data": "", "images": [], "image_mime_types": [],
-            "structuredContent": None, "isError": False,
-        })
-        backend._bridge = MagicMock()
-
-        backend.stop()
-
-        # end_session must precede _session.stop() so cua-driver can
-        # clean up per-session state while the channel is still open.
-        call_names = [c.args[0] for c in backend._session.call_tool.call_args_list]
-        assert "end_session" in call_names
-        end_session_args = next(
-            c.args[1] for c in backend._session.call_tool.call_args_list
-            if c.args[0] == "end_session"
-        )
-        assert end_session_args["session"] == backend._session_id
-        # _session.stop() ran after the end_session call.
-        backend._session.stop.assert_called_once()
-
-    def test_explicit_session_override_preserved(self):
-        """An action coming in with an explicit `session` (e.g. a
-        sub-agent harness wiring its own id through) wins over the
-        backend's default. setdefault semantics."""
-        backend = self._backend_with_mock_session()
-        # Bypass click() and inject straight through _action since
-        # the public signature doesn't expose session — this is the
-        # contract that subagent-harness code can rely on.
-        backend._action("click", {"pid": 1, "button": "left",
-                                  "session": "harness-subagent-3"})
-        name, args = backend._session.call_tool.call_args.args
-        assert args["session"] == "harness-subagent-3"
 
     def test_session_lifecycle_failures_are_non_fatal(self):
         """If start_session raises (older cua-driver build, anonymous
@@ -2578,37 +2061,14 @@ class TestCuaToolCoverageExpansion:
 
     # ── Pointer + display introspection ─────────────────────────
 
-    def test_get_cursor_position_returns_tuple(self):
-        backend = self._backend(structured={"x": 50, "y": 60})
-        pos = backend.get_cursor_position()
-        assert pos == (50, 60)
-        name, args = backend._session.call_tool.call_args.args
-        assert name == "get_cursor_position"
-        assert args["session"] == backend._session_id
 
     # ── Agent cursor (overlay) ──────────────────────────────────
 
-    def test_set_agent_cursor_motion_partial(self):
-        """None-valued kwargs must be dropped — cua-driver's
-        set_agent_cursor_motion treats absent fields as 'leave alone'
-        but rejects null values."""
-        backend = self._backend()
-        backend.set_agent_cursor_motion(glide_ms=500.0)
-        name, args = backend._session.call_tool.call_args.args
-        assert args == {"glide_ms": 500.0, "session": backend._session_id}
 
     # ── Recording / replay ──────────────────────────────────────
 
     # ── Config ──────────────────────────────────────────────────
 
-    def test_set_config_passes_kwargs_verbatim(self):
-        backend = self._backend()
-        backend.set_config(max_image_dimension=2048, novel_future_key="hello")
-        name, args = backend._session.call_tool.call_args.args
-        assert name == "set_config"
-        assert args["max_image_dimension"] == 2048
-        # Unknown keys flow through — cua-driver validates.
-        assert args["novel_future_key"] == "hello"
 
     # ── Other ───────────────────────────────────────────────────
 

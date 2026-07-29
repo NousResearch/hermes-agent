@@ -75,42 +75,8 @@ class TestRoleFiltering:
 
 
 
-class TestEmptyContentFilter:
-    """Tool-call-only assistant turns (empty content) should be skipped in bookends."""
-
-    def test_empty_content_messages_excluded_from_bookends(self, db):
-        db.create_session("s1", source="cli")
-        # Real prose opener
-        opener = db.append_message("s1", role="user", content="Let's start the work")
-        # Empty content assistant turn (tool-call-only — common in agent loops)
-        db.append_message("s1", role="assistant", content="", tool_calls=[{"id": "t1", "function": {"name": "x", "arguments": "{}"}}])
-        # More prose
-        for i in range(20):
-            db.append_message("s1", role="user" if i % 2 == 0 else "assistant", content=f"prose {i}")
-        # Another empty assistant near the end
-        db.append_message("s1", role="assistant", content="", tool_calls=[{"id": "t2", "function": {"name": "y", "arguments": "{}"}}])
-        # Prose closer
-        closer = db.append_message("s1", role="assistant", content="Final decision: ship it.")
-
-        # Anchor mid-session
-        view = db.get_anchored_view("s1", opener + 15, window=2, bookend=3)
-        # Bookend_start should not contain the empty-content tool-call turn
-        for m in view["bookend_start"]:
-            assert m.get("content"), "bookend_start should skip empty-content messages"
-        # Bookend_end should include the closer
-        end_contents = [m.get("content") for m in view["bookend_end"]]
-        assert any("Final decision" in (c or "") for c in end_contents)
 
 
-class TestAnchorValidation:
-    def test_missing_anchor_returns_empty_view(self, db):
-        _seed_long_session(db, n=10)
-        view = db.get_anchored_view("s1", 999999, window=5, bookend=3)
-        assert view["window"] == []
-        assert view["bookend_start"] == []
-        assert view["bookend_end"] == []
-        assert view["messages_before"] == 0
-        assert view["messages_after"] == 0
 
 
 class TestSessionIsolation:

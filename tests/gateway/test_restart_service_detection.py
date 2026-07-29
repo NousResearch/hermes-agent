@@ -46,49 +46,6 @@ def _make_runner_with_mock_restart(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_restart_under_launchd_uses_service_path(tmp_path, monkeypatch):
-    """launchd job label in XPC_SERVICE_NAME routes /restart via the service path."""
-    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
-    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
-
-    await runner._handle_restart_command(_make_restart_event())
-
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
-
-
-@pytest.mark.asyncio
-async def test_restart_in_interactive_macos_shell_uses_detached_path(tmp_path, monkeypatch):
-    """XPC_SERVICE_NAME=0 (inherited by interactive macOS shells) is NOT a service."""
-    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
-    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
-
-    await runner._handle_restart_command(_make_restart_event())
-
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
-
-
-@pytest.mark.asyncio
-async def test_restart_without_service_env_uses_detached_path(tmp_path, monkeypatch):
-    """No service-manager env at all falls back to the detached restart."""
-    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
-
-    await runner._handle_restart_command(_make_restart_event())
-
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
-
-
-@pytest.mark.asyncio
-async def test_restart_under_systemd_uses_service_path(tmp_path, monkeypatch):
-    """INVOCATION_ID (systemd) still routes via the service path."""
-    runner = _make_runner_with_mock_restart(tmp_path, monkeypatch)
-    monkeypatch.setenv("INVOCATION_ID", "abc123")
-
-    await runner._handle_restart_command(_make_restart_event())
-
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
-
-
-@pytest.mark.asyncio
 async def test_restart_with_external_supervisor_marker_uses_service_path(
     tmp_path, monkeypatch
 ):

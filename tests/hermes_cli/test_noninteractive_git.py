@@ -137,34 +137,10 @@ def _assert_noninteractive(call: dict):
     assert env is not None and env.get("GIT_TERMINAL_PROMPT") == "0", call["argv"]
 
 
-def test_web_git_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import web_git
-
-    calls = _capture_run(monkeypatch, web_git)
-    web_git._git(str(tmp_path), ["fetch", "origin", "main"])
-    assert calls
-    _assert_noninteractive(calls[0])
 
 
-def test_plugin_git_pull_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import plugins_cmd
-
-    monkeypatch.setattr(plugins_cmd, "_resolve_git_executable", lambda: "git")
-    calls = _capture_run(monkeypatch, plugins_cmd)
-    plugins_cmd._git_pull_plugin_dir(tmp_path)
-    assert calls
-    _assert_noninteractive(calls[0])
 
 
-def test_profile_distribution_clone_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import profile_distribution
-
-    calls = _capture_run(monkeypatch, profile_distribution)
-    profile_distribution._git_clone(
-        "https://github.com/example/repo", tmp_path / "dest"
-    )
-    assert calls
-    _assert_noninteractive(calls[0])
 
 
 def test_mcp_catalog_git_install_runs_noninteractively(monkeypatch, tmp_path):

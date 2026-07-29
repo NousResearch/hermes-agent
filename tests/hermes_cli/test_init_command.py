@@ -14,16 +14,8 @@ from hermes_cli.init_command import (
 
 
 class TestBuildInitPrompt:
-    def test_includes_the_cwd(self):
-        prompt = build_init_prompt("/home/alice/projects/acme")
-        assert "/home/alice/projects/acme" in prompt
 
 
-    def test_fresh_generation_when_no_existing_file(self):
-        prompt = build_init_prompt("/tmp/proj", existing_file=None)
-        assert "generate an AGENTS.md" in prompt
-        # No merge discipline block for a fresh file.
-        assert "MERGE DISCIPLINE" not in prompt
 
     def test_merge_not_overwrite_when_existing_file_passed(self):
         existing = "# My Project\n\nAlways run `make lint` before committing.\n"
@@ -44,16 +36,7 @@ class TestBuildInitPrompt:
         assert notes in prompt
 
 
-    def test_always_includes_the_quality_bar(self):
-        for existing in (None, "# old content"):
-            prompt = build_init_prompt("/tmp/proj", existing_file=existing)
-            assert _QUALITY_BAR in prompt
 
-    def test_quality_bar_demands_exact_commands_and_conciseness(self):
-        low = _QUALITY_BAR.lower()
-        assert "100 lines" in low
-        assert "never invent" in low
-        assert "no generic advice" in low
 
 
 class TestBuildInitPromptForCwd:

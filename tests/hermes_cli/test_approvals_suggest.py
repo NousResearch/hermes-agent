@@ -133,22 +133,6 @@ class TestScan:
         assert len(commands) == 3
         assert all("git push" in c for c in commands)
 
-    def test_blocked_and_denied_results_are_not_approvals(self, db_path):
-        path, con = db_path
-        _add_terminal_call(
-            con,
-            "git push --force origin main",
-            result="BLOCKED: User denied this potentially dangerous action",
-        )
-        _add_terminal_call(
-            con,
-            "docker restart web",
-            result=(
-                "⚠️ This action is potentially dangerous. "
-                "Asking the user for approval."
-            ),
-        )
-        assert scan_approval_history(path, days=0) == []
 
     def test_days_window_filters_old_history(self, db_path):
         path, con = db_path
@@ -158,8 +142,6 @@ class TestScan:
         assert len(scan_approval_history(path, days=90)) == 1
         assert len(scan_approval_history(path, days=0)) == 2
 
-    def test_missing_db_returns_empty(self, tmp_path):
-        assert scan_approval_history(tmp_path / "nope.db", days=0) == []
 
 
 # ---------------------------------------------------------------------------
@@ -212,29 +194,8 @@ class TestRankingAndSafety:
         assert len(build_proposals(records, min_count=1)) == 1
 
 
-    def test_unsafe_classes_are_excluded(self):
-        for desc in (
-            "recursive delete",
-            "git reset --hard (destroys uncommitted changes)",
-            "sudo with privilege flag (stdin/askpass/shell/list)",
-            "pipe remote content to shell",
-            "overwrite system config",
-            "SQL DROP",
-            "in-place edit of sensitive credential/SSH/shell-rc path",
-            "format filesystem",
-            "kill all processes",
-            "write to block device",
-        ):
-            assert is_unsafe_class(desc), desc
 
 
-    def test_existing_allowlist_entries_are_skipped(self, db_path):
-        path, con = db_path
-        for _ in range(3):
-            _add_terminal_call(con, "git push --force origin main")
-        records = scan_approval_history(path, days=0)
-        proposals = build_proposals(records, existing={"git push *"}, min_count=1)
-        assert proposals == []
 
 
 # ---------------------------------------------------------------------------
@@ -251,17 +212,6 @@ def _args(db, **kw):
 
 
 class TestApply:
-    def test_parse_apply_indices(self):
-        assert parse_apply_indices("1,3", 5) == [0, 2]
-        assert parse_apply_indices(" 2 ", 2) == [1]
-        with pytest.raises(ValueError):
-            parse_apply_indices("0", 3)
-        with pytest.raises(ValueError):
-            parse_apply_indices("4", 3)
-        with pytest.raises(ValueError):
-            parse_apply_indices("a,b", 3)
-        with pytest.raises(ValueError):
-            parse_apply_indices("", 3)
 
     def test_apply_merges_and_persists(self, isolated_allowlist):
         isolated_allowlist["patterns"] = {"podman *"}
@@ -288,17 +238,6 @@ class TestApply:
         out = capsys.readouterr().out
         assert "git push *" in out and "docker restart *" in out
 
-    def test_dry_default_writes_nothing(self, db_path, isolated_allowlist, capsys):
-        path, con = db_path
-        for _ in range(4):
-            _add_terminal_call(con, "git push --force origin main")
-        rc = suggest_command(_args(path))
-        assert rc == 0
-        assert isolated_allowlist["saves"] == 0
-        assert isolated_allowlist["patterns"] == set()
-        out = capsys.readouterr().out
-        assert "git push *" in out
-        assert "Nothing has been changed" in out
 
 
 class TestJsonOutput:

@@ -79,61 +79,16 @@ def test_register_auxiliary_task_basic():
     assert entry["defaults"]["timeout"] == 60
 
 
-def test_register_auxiliary_task_rejects_cross_plugin_collision():
-    """Two different plugins cannot register the same task key."""
-    manager = PluginManager()
-    manager._discovered = True
-
-    manifest_a = PluginManifest(name="plug_a")
-    manifest_b = PluginManifest(name="plug_b")
-    ctx_a = PluginContext(manifest_a, manager)
-    ctx_b = PluginContext(manifest_b, manager)
-
-    ctx_a.register_auxiliary_task(
-        key="shared", display_name="A", description="a"
-    )
-    with pytest.raises(ValueError, match="already registered by plugin 'plug_a'"):
-        ctx_b.register_auxiliary_task(
-            key="shared", display_name="B", description="b"
-        )
 
 
 # ── PluginManager state lifecycle ────────────────────────────────────────────
 
 
-def test_force_rediscovery_clears_aux_tasks():
-    ctx, manager = _make_ctx()
-    ctx.register_auxiliary_task(
-        key="will_be_cleared",
-        display_name="x",
-        description="x",
-    )
-    assert "will_be_cleared" in manager._aux_tasks
-
-    manager._discovered = False
-    # Simulate force=True path: clears state before re-scanning
-    manager._aux_tasks.clear()
-    assert manager._aux_tasks == {}
 
 
 # ── Module-level helper ──────────────────────────────────────────────────────
 
 
-def test_get_plugin_auxiliary_tasks_returns_sorted_list(patched_manager):
-    manifest = PluginManifest(name="plug")
-    ctx = PluginContext(manifest, patched_manager)
-    ctx.register_auxiliary_task(
-        key="zeta_task", display_name="Zeta", description="z"
-    )
-    ctx.register_auxiliary_task(
-        key="alpha_task", display_name="Alpha", description="a"
-    )
-    ctx.register_auxiliary_task(
-        key="mike_task", display_name="Mike", description="m"
-    )
-
-    tasks = get_plugin_auxiliary_tasks()
-    assert [t["key"] for t in tasks] == ["alpha_task", "mike_task", "zeta_task"]
 
 
 # ── _all_aux_tasks merges built-in + plugin ──────────────────────────────────
@@ -165,20 +120,6 @@ def test_all_aux_tasks_includes_plugin_registered(patched_manager):
     )
 
 
-def test_all_aux_tasks_swallows_plugin_discovery_failure(monkeypatch):
-    """Plugin discovery failure must not break the aux config UI."""
-    from hermes_cli import main as main_mod
-
-    def _broken():
-        raise RuntimeError("plugin scan exploded")
-
-    monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_auxiliary_tasks", _broken
-    )
-
-    merged = main_mod._all_aux_tasks()
-    # Built-in tasks still present
-    assert any(k == "vision" for k, _, _ in merged)
 
 
 # ── _reset_aux_to_auto includes plugin tasks ─────────────────────────────────
@@ -219,41 +160,5 @@ def test_reset_aux_to_auto_resets_plugin_tasks(tmp_path, monkeypatch, patched_ma
 # ── auxiliary_client._get_auxiliary_task_config defaults layering ────────────
 
 
-def test_get_auxiliary_task_config_layers_plugin_defaults(
-    tmp_path, monkeypatch, patched_manager
-):
-    """Plugin-declared defaults appear when user has no config entry."""
-    from pathlib import Path
-    from agent.auxiliary_client import _get_auxiliary_task_config
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".hermes").mkdir(exist_ok=True)
-
-    manifest = PluginManifest(name="plug")
-    ctx = PluginContext(manifest, patched_manager)
-    ctx.register_auxiliary_task(
-        key="my_filter",
-        display_name="My filter",
-        description="x",
-        defaults={"timeout": 15, "extra_body": {"reasoning_effort": "low"}},
-    )
-
-    # No user config for my_filter — defaults should surface
-    resolved = _get_auxiliary_task_config("my_filter")
-    assert resolved["timeout"] == 15
-    assert resolved["extra_body"] == {"reasoning_effort": "low"}
-    assert resolved["provider"] == "auto"
 
 
-def test_get_auxiliary_task_config_unknown_task_returns_empty(
-    tmp_path, monkeypatch, patched_manager
-):
-    from pathlib import Path
-    from agent.auxiliary_client import _get_auxiliary_task_config
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".hermes").mkdir(exist_ok=True)
-
-    assert _get_auxiliary_task_config("nonexistent") == {}

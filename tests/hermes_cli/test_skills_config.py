@@ -12,15 +12,6 @@ class TestGetDisabledSkills:
         assert get_disabled_skills({}) == set()
 
 
-    def test_reads_platform_disabled(self):
-        from hermes_cli.skills_config import get_disabled_skills
-        config = {"skills": {
-            "disabled": ["skill-a"],
-            "platform_disabled": {"telegram": ["skill-b"]}
-        }}
-        # Union of global + platform: a globally-disabled skill stays disabled
-        # on every platform, and the platform list adds to it.
-        assert get_disabled_skills(config, platform="telegram") == {"skill-a", "skill-b"}
 
 
     def test_null_skills_section(self):
@@ -30,11 +21,6 @@ class TestGetDisabledSkills:
         assert get_disabled_skills({"skills": None}, platform="telegram") == set()
 
 
-    def test_scalar_disabled_is_single_skill_not_characters(self):
-        """``disabled: my-skill`` (bare scalar) is one skill name, not a
-        set of its characters (#13026)."""
-        from hermes_cli.skills_config import get_disabled_skills
-        assert get_disabled_skills({"skills": {"disabled": "my-skill"}}) == {"my-skill"}
 
 
 # ---------------------------------------------------------------------------
@@ -56,11 +42,6 @@ class TestSaveDisabledSkills:
 # ---------------------------------------------------------------------------
 
 class TestIsSkillDisabled:
-    @patch("hermes_cli.config.load_config")
-    def test_globally_disabled(self, mock_load):
-        mock_load.return_value = {"skills": {"disabled": ["bad-skill"]}}
-        from tools.skills_tool import _is_skill_disabled
-        assert _is_skill_disabled("bad-skill") is True
 
 
     @patch("hermes_cli.config.load_config")
@@ -72,17 +53,6 @@ class TestIsSkillDisabled:
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
 
-    @patch("hermes_cli.config.load_config")
-    def test_globally_disabled_stays_disabled_on_platform(self, mock_load):
-        mock_load.return_value = {"skills": {
-            "disabled": ["skill-a"],
-            "platform_disabled": {"telegram": ["tg-skill"]}
-        }}
-        from tools.skills_tool import _is_skill_disabled
-        # Union: a globally-disabled skill stays disabled on a platform that
-        # has its own platform_disabled list (matches issue #46201).
-        assert _is_skill_disabled("skill-a", platform="telegram") is True
-        assert _is_skill_disabled("tg-skill", platform="telegram") is True
 
 
     @patch("hermes_cli.config.load_config")

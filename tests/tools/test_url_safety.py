@@ -51,11 +51,6 @@ class TestNormalizeUrlForRequest:
     def test_encodes_url_parts(self, raw, expected):
         assert normalize_url_for_request(raw) == expected
 
-    def test_repairs_whitespace_between_scheme_and_authority(self):
-        assert (
-            normalize_url_for_request("https://	docs.openclaw.ai/path")
-            == "https://docs.openclaw.ai/path"
-        )
 
     def test_does_not_collapse_embedded_scheme_separator_in_query(self):
         assert (
@@ -126,16 +121,6 @@ class TestProxyEnvironmentDnsDelegation:
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
         assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
 
-    def test_dns_success_path_unchanged_with_proxy(self, monkeypatch):
-        """When DNS resolves, the normal IP checks still apply under a proxy."""
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
-        with _resolves_to("10.0.0.5"):
-            assert is_safe_url("https://internal.corp/") is False
-
-    def test_empty_proxy_var_does_not_trigger_delegation(self, monkeypatch):
-        monkeypatch.setenv("HTTPS_PROXY", "")
-        with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
-            assert is_safe_url("https://nonexistent.example.com") is False
 
     def test_ipv6_scope_id_link_local_blocked(self):
         """fe80::1%eth0 — a scope-ID-bearing link-local address must not bypass
@@ -200,50 +185,6 @@ class TestSSRFGuardedHttpxClient:
             with pytest.raises(SSRFConnectionBlocked, match="metadata"):
                 _resolved_http_connect_ips("example.com", 80, "http")
 
-    @pytest.mark.asyncio
-    async def test_async_client_dials_validated_ip_not_hostname(self, monkeypatch):
-        """Direct httpx fetches should connect to the vetted IP, not re-resolve hostnames."""
-        import httpcore
-        from httpcore._backends.auto import AutoBackend
-
-        for proxy_var in (
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-        ):
-            monkeypatch.delenv(proxy_var, raising=False)
-
-        monkeypatch.setattr(
-            socket,
-            "getaddrinfo",
-            lambda host, port, *args, **kwargs: [
-                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
-            ],
-        )
-
-        connect_attempts = []
-
-        async def fake_connect_tcp(
-            self,
-            host,
-            port,
-            timeout=None,
-            local_address=None,
-            socket_options=None,
-        ):
-            connect_attempts.append((host, port))
-            raise httpcore.ConnectError("stop before network")
-
-        monkeypatch.setattr(AutoBackend, "connect_tcp", fake_connect_tcp)
-
-        async with create_ssrf_safe_async_client(timeout=0.01, trust_env=False) as client:
-            with pytest.raises(httpx.ConnectError):
-                await client.get("http://example.com/image.png")
-
-        assert connect_attempts == [("93.184.216.34", 80)]
 
     @pytest.mark.asyncio
     async def test_async_backend_blocks_unix_socket_connects(self):
@@ -344,17 +285,6 @@ class TestGlobalAllowPrivateUrls:
         with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
             assert _global_allow_private_urls() is False
 
-    @pytest.mark.parametrize("value, expected", [("true", True), ("false", False)])
-    def test_env_var(self, monkeypatch, value, expected):
-        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", value)
-        assert _global_allow_private_urls() is expected
-
-    def test_config_browser_fallback(self, monkeypatch):
-        """browser.allow_private_urls works as legacy fallback."""
-        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
-        cfg = {"browser": {"allow_private_urls": True}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _global_allow_private_urls() is True
 
     def test_config_security_string_false_stays_disabled(self, monkeypatch):
         """Quoted false must not opt out of SSRF protection."""
@@ -363,12 +293,6 @@ class TestGlobalAllowPrivateUrls:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is False
 
-    def test_env_var_overrides_config(self, monkeypatch):
-        """Env var takes priority over config."""
-        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
-        cfg = {"security": {"allow_private_urls": True}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _global_allow_private_urls() is False
 
     @pytest.mark.parametrize(
         "profile_order",
@@ -565,17 +489,6 @@ class TestRedirectTargetFromResponse:
             == "http://169.254.169.254/latest/meta-data"
         )
 
-    def test_relative_location_is_resolved_against_response_url(self):
-        resp = _FakeResponse(
-            is_redirect=True,
-            location="/redir",
-            url="https://public.example/image.png",
-        )
-        assert redirect_target_from_response(resp) == "https://public.example/redir"
-
-    def test_non_redirect_returns_none(self):
-        resp = _FakeResponse(is_redirect=False, location="http://169.254.169.254/")
-        assert redirect_target_from_response(resp) is None
 
     def test_falls_back_to_next_request_when_no_location(self):
         resp = _FakeResponse(

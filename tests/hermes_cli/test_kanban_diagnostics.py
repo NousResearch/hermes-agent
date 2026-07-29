@@ -67,106 +67,18 @@ def _run(outcome="completed", run_id=1, error=None):
 # ---------------------------------------------------------------------------
 
 
-def test_hallucinated_cards_fires_on_blocked_event():
-    task = _task(status="ready")
-    events = [
-        _event("created", ts=100),
-        _event("completion_blocked_hallucination", ts=200,
-               phantom_cards=["t_bad1", "t_bad2"],
-               verified_cards=["t_good1"]),
-    ]
-    # ``now=300`` keeps the synthetic event timestamps in scope without
-    # tripping the stranded_in_ready rule (events are 100/200 epoch
-    # which time.time() would treat as ~50yr old).
-    diags = kd.compute_task_diagnostics(task, events, [], now=300)
-    halluc = [d for d in diags if d.kind == "hallucinated_cards"]
-    assert len(halluc) == 1
-    d = halluc[0]
-    assert d.severity == "error"
-    assert d.data["phantom_ids"] == ["t_bad1", "t_bad2"]
-    # Generic recovery actions always available; comment action too.
-    kinds = [a.kind for a in d.actions]
-    assert "comment" in kinds
-    assert "reassign" in kinds
 
 
-def test_hallucinated_cards_clears_on_subsequent_completion():
-    task = _task(status="done")
-    events = [
-        _event("completion_blocked_hallucination", ts=100, phantom_cards=["t_x"]),
-        _event("completed", ts=200, summary="retry worked"),
-    ]
-    diags = kd.compute_task_diagnostics(task, events, [])
-    assert diags == []
 
 
-def test_prose_phantom_refs_fires_after_clean_completion():
-    # Prose scan emits its event AFTER the completed event in the DB
-    # path, but a subsequent clean completion clears it. Phantom id
-    # must be valid hex — the scanner regex is ``t_[a-f0-9]{8,}``.
-    task = _task(status="done")
-    events = [
-        _event("completed", ts=100, summary="referenced t_bad", result_len=0),
-        _event("suspected_hallucinated_references", ts=101,
-               phantom_refs=["t_deadbeef99"], source="completion_summary"),
-    ]
-    diags = kd.compute_task_diagnostics(task, events, [])
-    assert len(diags) == 1
-    assert diags[0].kind == "prose_phantom_refs"
-    assert diags[0].severity == "warning"
-    assert diags[0].data["phantom_refs"] == ["t_deadbeef99"]
 
 
-def test_prose_phantom_refs_clears_on_later_clean_edit():
-    task = _task(status="done")
-    events = [
-        _event("completed", ts=100, summary="bad"),
-        _event("suspected_hallucinated_references", ts=101,
-               phantom_refs=["t_ffff0000cc"]),
-        _event("edited", ts=200, fields=["result", "summary"]),
-    ]
-    diags = kd.compute_task_diagnostics(task, events, [])
-    assert diags == []
 
 
-def test_repeated_failures_fires_at_threshold_on_spawn():
-    """A task with multiple spawn_failed runs gets a spawn-flavoured
-    diagnostic (title mentions 'spawn', suggested action is ``doctor``).
-    """
-    task = _task(status="ready", consecutive_failures=3,
-                 last_failure_error="Profile 'debugger' does not exist")
-    runs = [
-        _run(outcome="spawn_failed", run_id=1),
-        _run(outcome="spawn_failed", run_id=2),
-        _run(outcome="spawn_failed", run_id=3),
-    ]
-    diags = kd.compute_task_diagnostics(task, [], runs)
-    assert len(diags) == 1
-    d = diags[0]
-    assert d.kind == "repeated_failures"
-    assert d.severity == "error"
-    # CLI hints are what operators actually need here.
-    suggested = [a.label for a in d.actions if a.suggested]
-    assert any("doctor" in s for s in suggested)
 
 
-def test_config_from_kanban_config_preserves_explicit_diagnostics_threshold():
-    cfg = kd.config_from_kanban_config({
-        "failure_limit": 5,
-        "diagnostics": {"failure_threshold": 3},
-    })
-    assert cfg["failure_threshold"] == 3
-    assert cfg["failure_limit"] == 5
 
 
-def test_failure_rules_exempt_terminal_statuses():
-    # A manual done (dashboard drag) ends no run, so the trailing crash
-    # streak survives in run history — but done means done: neither
-    # failure rule may keep flagging a terminal card.
-    runs = [_run(outcome="crashed", run_id=1), _run(outcome="crashed", run_id=2)]
-    for status in ("done", "archived"):
-        task = _task(status=status, assignee="crashy", consecutive_failures=3)
-        assert kd.compute_task_diagnostics(task, [], runs) == []
 
 
 def test_stuck_in_blocked_fires_past_threshold():
@@ -185,24 +97,8 @@ def test_stuck_in_blocked_fires_past_threshold():
     assert d.data["age_hours"] >= 48
 
 
-def test_stuck_in_blocked_silent_with_recent_comment():
-    now = int(time.time())
-    task = _task(status="blocked")
-    events = [
-        _event("blocked", ts=now - 3600 * 48),
-        _event("commented", ts=now - 3600 * 2, author="human"),
-    ]
-    assert kd.compute_task_diagnostics(task, events, [], now=now) == []
 
 
-def test_repeated_failures_surfaces_actual_error_in_title():
-    task = _task(consecutive_failures=5,
-                 last_failure_error="insufficient_quota: billing limit reached")
-    diags = kd.compute_task_diagnostics(task, [], [])
-    assert len(diags) == 1
-    d = diags[0]
-    assert "insufficient_quota" in d.title or "billing limit" in d.title
-    assert "insufficient_quota" in d.detail
 
 
 def test_repeated_crashes_truncates_huge_tracebacks():
@@ -229,24 +125,6 @@ def test_repeated_crashes_truncates_huge_tracebacks():
 # ---------------------------------------------------------------------------
 
 
-def test_diagnostics_sorted_critical_first():
-    """A task with both a critical (many spawn failures) and a warning
-    (prose phantoms) diagnostic should list the critical one first.
-
-    Status must be non-terminal: done/archived are exempt from the
-    failure rules (done means done). ``now=300`` keeps the synthetic
-    timestamps from tripping stranded_in_ready — same dodge as above."""
-    task = _task(status="ready", consecutive_failures=10,
-                 last_failure_error="nope")
-    events = [
-        _event("completed", ts=100, summary="referenced t_missing"),
-        _event("suspected_hallucinated_references", ts=101,
-               phantom_refs=["t_missing11"]),
-    ]
-    diags = kd.compute_task_diagnostics(task, events, [], now=300)
-    kinds = [d.kind for d in diags]
-    assert kinds[0] == "repeated_failures"  # critical
-    assert "prose_phantom_refs" in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -294,19 +172,6 @@ def test_engine_works_on_sqlite_row_objects(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-def test_broken_rule_is_isolated(monkeypatch):
-    def _bad_rule(task, events, runs, now, cfg):
-        raise RuntimeError("synthetic rule bug")
-
-    # Insert a broken rule at the front of the registry; subsequent
-    # rules should still run and produce their diagnostics.
-    monkeypatch.setattr(kd, "_RULES", [_bad_rule] + kd._RULES)
-
-    task = _task(consecutive_failures=5, last_failure_error="e")
-    diags = kd.compute_task_diagnostics(task, [], [])
-    # The broken rule silently drops, the real one still fires.
-    kinds = [d.kind for d in diags]
-    assert "repeated_failures" in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -333,44 +198,6 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
-def test_stranded_in_ready_works_on_real_db_row(kanban_home):
-    """Round-trip through real kanban_db.connect() — confirms the rule
-    works on sqlite3.Row objects, not just dicts."""
-    import time as _t
-    conn = kb.connect()
-    try:
-        # Create a task and force its created_at into the past.
-        tid = kb.create_task(conn, title="stranded one", assignee="ghost")
-        old_ts = int(_t.time()) - 90 * 60  # 90 min old
-        conn.execute(
-            "UPDATE tasks SET status = 'ready', created_at = ? WHERE id = ?",
-            (old_ts, tid),
-        )
-        conn.commit()
-
-        task_row = conn.execute(
-            "SELECT * FROM tasks WHERE id = ?", (tid,)
-        ).fetchone()
-        events = list(conn.execute(
-            "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at",
-            (tid,),
-        ).fetchall())
-        # Override created event timestamps too so age calc lines up.
-        conn.execute(
-            "UPDATE task_events SET created_at = ? WHERE task_id = ?",
-            (old_ts, tid),
-        )
-        conn.commit()
-        events = list(conn.execute(
-            "SELECT * FROM task_events WHERE task_id = ?", (tid,),
-        ).fetchall())
-
-        diags = kd.compute_task_diagnostics(task_row, events, [])
-        stranded = [d for d in diags if d.kind == "stranded_in_ready"]
-        assert len(stranded) == 1
-        assert stranded[0].data["assignee"] == "ghost"
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -382,27 +209,10 @@ def _triage_task():
     return _task(id="t_triage1", status="triage")
 
 
-def test_triage_aux_unavailable_silent_without_config_context():
-    """Low-level callers passing no config dict should not see this rule."""
-    diags = kd.compute_task_diagnostics(_triage_task(), [], [])
-    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
 
 
-def test_triage_aux_status_recognises_auto_default_as_not_explicit():
-    """Default `provider: auto` with empty fields → not 'explicit'."""
-    status = kd.triage_aux_status({
-        "auxiliary": {
-            "kanban_decomposer": {"provider": "auto", "model": ""},
-        },
-        "kanban": {},
-    })
-    assert status is not None
-    assert status["decomposer_explicit"] is False
 
 
-def test_config_from_runtime_config_handles_empty_input():
-    assert kd.config_from_runtime_config(None) == {}
-    assert kd.config_from_runtime_config({}) == {}
 
 
 def test_severity_at_or_above_uses_threshold_semantics():

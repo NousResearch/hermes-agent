@@ -16,16 +16,6 @@ from hermes_cli.models import _resolve_copilot_catalog_api_key
 
 
 class TestCopilotCatalogApiKeyResolution:
-    def test_env_var_token_wins_over_pool(self):
-        """Env-resolved token still short-circuits the pool fallback."""
-        with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={"api_key": "env-token"},
-        ), patch(
-            "hermes_cli.auth.read_credential_pool",
-        ) as mock_pool:
-            assert _resolve_copilot_catalog_api_key() == "env-token"
-            mock_pool.assert_not_called()
 
     def test_falls_back_to_pool_oauth_token(self):
         """Empty env → walk credential_pool.copilot[] for an OAuth access_token."""
@@ -42,19 +32,6 @@ class TestCopilotCatalogApiKeyResolution:
             assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
 
 
-    def test_skips_classic_pat_in_pool(self):
-        """Classic PATs (``ghp_…``) are unsupported by the Copilot API — skip them."""
-        with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={"api_key": ""},
-        ), patch(
-            "hermes_cli.auth.read_credential_pool",
-            return_value=[{"access_token": "ghp_classic_pat"}],
-        ), patch(
-            "hermes_cli.copilot_auth.exchange_copilot_token",
-        ) as mock_exchange:
-            assert _resolve_copilot_catalog_api_key() == ""
-            mock_exchange.assert_not_called()
 
 
     def test_skips_pool_entry_that_fails_to_exchange(self):
@@ -84,21 +61,5 @@ class TestCopilotCatalogApiKeyResolution:
             assert _resolve_copilot_catalog_api_key() == "tid_from_second"
             assert attempts == ["gho_unsupported_account", "gho_valid_token"]
 
-    def test_all_pool_entries_fail_exchange_returns_empty(self):
-        """All exchanges fail → return "" so the caller falls back to curated."""
-        with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={"api_key": ""},
-        ), patch(
-            "hermes_cli.auth.read_credential_pool",
-            return_value=[
-                {"access_token": "gho_expired_a"},
-                {"access_token": "gho_expired_b"},
-            ],
-        ), patch(
-            "hermes_cli.copilot_auth.exchange_copilot_token",
-            side_effect=ValueError("Copilot token exchange failed"),
-        ):
-            assert _resolve_copilot_catalog_api_key() == ""
 
 

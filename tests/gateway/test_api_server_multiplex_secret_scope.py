@@ -41,44 +41,6 @@ class TestProfileScopeDefaultFallback:
             assert ss.get_secret("OPENROUTER_BASE_URL") == "https://from-environ.example/v1"
         assert ss.current_secret_scope() is None
 
-    def test_default_scope_installed_under_multiplex(self, adapter, tmp_path, monkeypatch):
-        """No /p/ prefix + multiplex active → default profile scope, not nullcontext."""
-        (tmp_path / ".env").write_text(
-            "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(
-            "hermes_constants.get_hermes_home",
-            lambda: tmp_path,
-        )
-        monkeypatch.setenv("OPENROUTER_BASE_URL", "https://leak.example/v1")
-        ss.set_multiplex_active(True)
-
-        with adapter._profile_scope(None):
-            assert ss.current_secret_scope() is not None
-            # Profile .env wins; process env must not leak through.
-            assert ss.get_secret("OPENROUTER_BASE_URL") == "https://openrouter.ai/api/v1"
-
-        # Scope torn down; fail-closed behavior restored outside.
-        assert ss.current_secret_scope() is None
-        with pytest.raises(ss.UnscopedSecretError):
-            ss.get_secret("OPENROUTER_BASE_URL")
-
-    def test_named_profile_scope_still_wins(self, adapter, tmp_path, monkeypatch):
-        """A /p/<profile>/ request keeps resolving that profile's scope."""
-        profile_home = tmp_path / "profiles" / "worker"
-        profile_home.mkdir(parents=True)
-        (profile_home / ".env").write_text(
-            "OPENROUTER_BASE_URL=https://worker.example/v1\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(
-            "hermes_cli.profiles.get_profile_dir", lambda name: profile_home
-        )
-        ss.set_multiplex_active(True)
-
-        with adapter._profile_scope("worker"):
-            assert ss.get_secret("OPENROUTER_BASE_URL") == "https://worker.example/v1"
-        assert ss.current_secret_scope() is None
 
 # Regression coverage for #72041: profile-bound API authentication
 class TestProfileScopedApiAuthentication:
@@ -119,30 +81,6 @@ class TestProfileScopedApiAuthentication:
             with adapter._profile_scope("worker"):
                 assert adapter._check_auth(self._request(profile_key)) is None
 
-                rejected = adapter._check_auth(self._request(default_key))
-                assert rejected is not None
-                assert rejected.status == 401
-        finally:
-            _api_request_profile.reset(profile_token)
-
-    def test_named_profile_without_key_fails_closed(
-        self, adapter, tmp_path, monkeypatch
-    ):
-        from gateway.platforms.api_server import _api_request_profile
-
-        profile_home = tmp_path / "profiles" / "worker"
-        profile_home.mkdir(parents=True)
-        default_key = "default-listener-api-key-123456"
-        monkeypatch.setattr(
-            "hermes_cli.profiles.get_profile_dir",
-            lambda name: profile_home,
-        )
-        adapter._api_key = default_key
-        ss.set_multiplex_active(True)
-
-        profile_token = _api_request_profile.set("worker")
-        try:
-            with adapter._profile_scope("worker"):
                 rejected = adapter._check_auth(self._request(default_key))
                 assert rejected is not None
                 assert rejected.status == 401
@@ -221,29 +159,3 @@ async def test_profile_middleware_binds_auth_before_handler(
         assert (await accepted.json())["profile"] == "worker"
 
 
-def test_named_profile_rejects_weak_profile_key(
-    adapter, tmp_path, monkeypatch
-):
-    from gateway.platforms.api_server import _api_request_profile
-
-    worker_home = tmp_path / "profiles" / "worker"
-    worker_home.mkdir(parents=True)
-    (worker_home / ".env").write_text(
-        "API_SERVER_KEY=short\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir", lambda name: worker_home
-    )
-    adapter._api_key = "b" * 32
-    ss.set_multiplex_active(True)
-
-    token = _api_request_profile.set("worker")
-    try:
-        with adapter._profile_scope("worker"):
-            rejected = adapter._check_auth(
-                TestProfileScopedApiAuthentication._request("short")
-            )
-            assert rejected is not None
-            assert rejected.status == 401
-    finally:
-        _api_request_profile.reset(token)

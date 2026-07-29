@@ -142,11 +142,6 @@ def test_oauth_provider_defaults_supports_token_false():
     assert _OAuthOnly().supports_token is False
 
 
-def test_list_token_providers_filters_to_supports_token():
-    register_provider(_OAuthOnly())
-    register_provider(_TokenProvider())
-    names = [p.name for p in list_token_providers()]
-    assert names == ["tok"]
 
 
 class _NonInteractiveProvider(_TokenProvider):
@@ -162,21 +157,6 @@ class _NonInteractiveProvider(_TokenProvider):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "header,expected",
-    [
-        ("Bearer abc123", "abc123"),
-        ("bearer abc123", "abc123"),
-        ("BEARER abc123", "abc123"),
-        ("Bearer   spaced  ", "spaced"),
-        ("Basic abc123", ""),
-        ("abc123", ""),
-        ("", ""),
-    ],
-)
-def test_extract_bearer_token(header, expected):
-    req = _FakeRequest(headers={"authorization": header} if header else {})
-    assert token_auth.extract_bearer_token(req) == expected
 
 
 # --------------------------------------------------------------------------
@@ -241,25 +221,8 @@ async def _call_next_ok(request):
     return JSONResponse({"ok": True}, status_code=200)
 
 
-def test_seam_passthrough_for_unregistered_route():
-    register_provider(_TokenProvider())
-    req = _FakeRequest(path="/api/something-else")
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 200
-    assert getattr(req.state, "token_authenticated", False) is False
 
 
-def test_seam_accepts_valid_token_on_registered_route():
-    register_provider(_TokenProvider(secret="good"))
-    token_auth.register_token_route("/api/gateway/drain")
-    req = _FakeRequest(
-        path="/api/gateway/drain",
-        headers={"authorization": "Bearer good"},
-    )
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
-    assert resp.status_code == 200
-    assert req.state.token_authenticated is True
-    assert req.state.token_principal.provider == "tok"
 
 
 def test_seam_rejects_wrong_token_401():

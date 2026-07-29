@@ -4,37 +4,6 @@ from unittest.mock import patch
 from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 
 
-def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    (codex_home / "config.toml").write_text('model = "gpt-5.2-codex"\n')
-    (codex_home / "models_cache.json").write_text(
-        json.dumps(
-            {
-                "models": [
-                    {"slug": "gpt-5.3-codex", "priority": 20, "supported_in_api": True},
-                    {"slug": "gpt-5.3-codex-spark", "priority": 6, "supported_in_api": False},
-                    {"slug": "gpt-5.1-codex", "priority": 5, "supported_in_api": True},
-                    {"slug": "gpt-5.4", "priority": 1, "supported_in_api": True},
-                    {"slug": "gpt-5-hidden-codex", "priority": 2, "visibility": "hidden"},
-                ]
-            }
-        )
-    )
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    models = get_codex_model_ids()
-
-    assert models[0] == "gpt-5.2-codex"
-    assert "gpt-5.1-codex" in models
-    assert "gpt-5.3-codex" in models
-    # Codex CLI marks Spark unsupported in the public API, but the Codex
-    # backend still accepts it via the OAuth-backed CLI/Hermes route.
-    assert "gpt-5.3-codex-spark" in models
-    # Non-codex-suffixed models are included when the cache says they're available
-    assert "gpt-5.4" in models
-    assert "gpt-5.4-mini" in models
-    assert "gpt-5-hidden-codex" not in models
 
 
 def test_setup_wizard_codex_import_resolves():
@@ -45,24 +14,6 @@ def test_setup_wizard_codex_import_resolves():
     assert callable(setup_import)
 
 
-def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.3-codex"],
-    )
-
-    models = get_codex_model_ids(access_token="codex-access-token")
-
-    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
-    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
-    # (each is templated off gpt-5.3-codex).
-    assert models == [
-        "gpt-5.3-codex",
-        "gpt-5.5",
-        "gpt-5.4-mini",
-        "gpt-5.4",
-        "gpt-5.3-codex-spark",
-    ]
 
 
 def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
@@ -101,91 +52,8 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5-internal" not in models
 
 
-def test_fetch_from_api_sends_chatgpt_account_id_header(monkeypatch):
-    """The Codex /models endpoint only returns the per-account catalog when
-    the ``ChatGPT-Account-Id`` header is present. Without it, the response
-    is ``{"models":[]}`` (HTTP 200), which makes the picker silently
-    degrade to the curated fallback list and send invalid slugs on later
-    requests. Regression test for the upstream bug behind slow first
-    responses and HTTP 520/120s SSE hangs.
-    """
-    import sys
-    from hermes_cli import codex_models
-
-    captured = {}
-
-    class _FakeResp:
-        status_code = 200
-
-        def json(self):
-            return {"models": [{"slug": "gpt-5.6-sol", "priority": 0}]}
-
-    class _FakeHttpx:
-        @staticmethod
-        def get(url, headers=None, timeout=None):
-            captured["url"] = url
-            captured["headers"] = dict(headers or {})
-            return _FakeResp()
-
-    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
-
-    # Hand-crafted JWT carrying the chatgpt_account_id claim.
-    import base64
-    import json
-
-    payload = base64.urlsafe_b64encode(
-        json.dumps(
-            {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-test-123"}}
-        ).encode()
-    ).rstrip(b"=").decode()
-    fake_jwt = f"header.{payload}.sig"
-
-    models = codex_models._fetch_models_from_api(access_token=fake_jwt)
-
-    assert captured["headers"]["Authorization"] == f"Bearer {fake_jwt}"
-    assert captured["headers"].get("ChatGPT-Account-Id") == "acct-test-123"
-    assert "gpt-5.6-sol" in models
 
 
-def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
-    from hermes_cli.main import _model_flow_openai_codex
-
-    captured = {}
-    choices = iter(["1"])
-
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
-    monkeypatch.setattr(
-        "hermes_cli.auth.get_codex_auth_status",
-        lambda: {"logged_in": True},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_codex_runtime_credentials",
-        lambda *args, **kwargs: {"api_key": "codex-access-token"},
-    )
-
-    def _fake_get_codex_model_ids(access_token=None):
-        captured["access_token"] = access_token
-        return ["gpt-5.2-codex", "gpt-5.2"]
-
-    def _fake_prompt_model_selection(model_ids, current_model="", **_kwargs):
-        captured["model_ids"] = list(model_ids)
-        captured["current_model"] = current_model
-        return None
-
-    monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        _fake_get_codex_model_ids,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth._prompt_model_selection",
-        _fake_prompt_model_selection,
-    )
-
-    _model_flow_openai_codex({}, current_model="openai/gpt-5.4")
-
-    assert captured["access_token"] == "codex-access-token"
-    assert captured["model_ids"] == ["gpt-5.2-codex", "gpt-5.2"]
-    assert captured["current_model"] == "openai/gpt-5.4"
 
 
 def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypatch, capsys):

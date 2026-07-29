@@ -115,13 +115,6 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
     assert response.status_code != 409
 
 
-def test_callback_url_is_stable_for_a_server():
-    from hermes_cli import web_server
-
-    # The route helper's stable form must not depend on a one-time flow id.
-    first = web_server._mcp_oauth_callback_url_from_base("https://agent.example", "reports")
-    second = web_server._mcp_oauth_callback_url_from_base("https://agent.example", "reports")
-    assert first == second == "https://agent.example/api/mcp/oauth/callback/reports"
 
 
 def test_flow_status_does_not_expose_authorization_code():

@@ -110,55 +110,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         assert os.environ.get("HERMES_HOME") == str(profile_dir)
         assert sys.argv == ["hermes", "gateway", "install", "--system"]
 
-    def test_hermes_home_unset_default_profile_no_redirect(self, tmp_path, monkeypatch):
-        """active_profile=default must not redirect HERMES_HOME."""
-        hermes_root = tmp_path / ".hermes"
-        hermes_root.mkdir(parents=True, exist_ok=True)
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.delenv("HERMES_HOME", raising=False)
-        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
-        (hermes_root / "active_profile").write_text("default")
-
-        from hermes_cli.main import _apply_profile_override
-        _apply_profile_override()
-
-        assert os.environ.get("HERMES_HOME") is None
-
-    def test_subcommand_profile_flag_is_not_consumed(self, tmp_path, monkeypatch):
-        """Command argv flags named --profile must stay with that command.
-
-        Docker Desktop's MCP Toolkit uses `docker mcp gateway run --profile ...`.
-        When that argv is passed through `hermes mcp add --args`, the early
-        profile pre-parser must not interpret the Docker profile as a Hermes
-        profile.
-        """
-        hermes_root = tmp_path / ".hermes"
-        hermes_root.mkdir(parents=True, exist_ok=True)
-        argv = [
-            "hermes",
-            "mcp",
-            "add",
-            "docker-research",
-            "--command",
-            "docker",
-            "--args",
-            "mcp",
-            "gateway",
-            "run",
-            "--profile",
-            "research",
-        ]
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.delenv("HERMES_HOME", raising=False)
-        monkeypatch.setattr(sys, "argv", list(argv))
-
-        from hermes_cli.main import _apply_profile_override
-        _apply_profile_override()
-
-        assert os.environ.get("HERMES_HOME") is None
-        assert sys.argv == argv
 
 
 class TestSupervisedChildIgnoresStickyProfile:

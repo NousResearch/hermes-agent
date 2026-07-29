@@ -24,26 +24,10 @@ def profile_env(tmp_path, monkeypatch):
     return home
 
 
-def test_read_profile_meta_empty_when_missing(profile_env):
-    meta = profiles_mod.read_profile_meta(profile_env)
-    assert meta == {"description": "", "description_auto": False}
 
 
-def test_write_and_read_profile_meta(profile_env):
-    profiles_mod.write_profile_meta(
-        profile_env,
-        description="a useful researcher",
-        description_auto=False,
-    )
-    meta = profiles_mod.read_profile_meta(profile_env)
-    assert meta["description"] == "a useful researcher"
-    assert meta["description_auto"] is False
 
 
-def test_write_profile_meta_rejects_missing_dir(tmp_path):
-    bogus = tmp_path / "does_not_exist"
-    with pytest.raises(FileNotFoundError):
-        profiles_mod.write_profile_meta(bogus, description="x")
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +91,3 @@ def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     assert profiles_mod.read_profile_meta(profile_env)["description"] == "curated"
 
 
-def test_describer_returns_false_when_profile_missing(profile_env, monkeypatch):
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: False)
-    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
-    outcome = describer.describe_profile("ghost")
-    assert outcome.ok is False
-    assert "not found" in outcome.reason

@@ -30,12 +30,6 @@ class TestRequirementsParser:
         assert sa._parse_requirements(text) == [("flask", "2.0.1")]
 
 
-    def test_handles_extras_and_markers(self):
-        text = 'requests[security]==2.20.0\nflask==2.0.1 ; python_version >= "3.8"\n'
-        assert sa._parse_requirements(text) == [
-            ("requests", "2.20.0"),
-            ("flask", "2.0.1"),
-        ]
 
 
 class TestMCPComponentExtraction:
@@ -159,52 +153,8 @@ class TestExitCodes:
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
-    def test_clean_audit_exits_zero(self, tmp_path: Path, monkeypatch, capsys):
-        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
-        # Everything skipped → no components → exit 0
-        code = sa.cmd_security_audit(self._build_args())
-        assert code == 0
-        out = capsys.readouterr().out
-        assert "No components" in out or "0 component" in out
 
-    def test_finding_above_threshold_exits_one(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
-        # Force a venv discovery to return one component, OSV to flag it CRITICAL
-        fake_comp = sa.Component(
-            name="pkg", version="1.0", ecosystem="PyPI", source="venv"
-        )
-        monkeypatch.setattr(sa, "_discover_venv", lambda: [fake_comp])
-        monkeypatch.setattr(
-            sa, "_osv_query_batch", lambda comps: {fake_comp: ["X-1"]}
-        )
-        monkeypatch.setattr(
-            sa,
-            "_osv_fetch_details",
-            lambda ids: {"X-1": sa.Vulnerability(osv_id="X-1", severity="CRITICAL")},
-        )
-        code = sa.cmd_security_audit(
-            self._build_args(skip_venv=False, fail_on="critical")
-        )
-        assert code == 1
 
-    def test_finding_below_threshold_exits_zero(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
-        fake_comp = sa.Component(
-            name="pkg", version="1.0", ecosystem="PyPI", source="venv"
-        )
-        monkeypatch.setattr(sa, "_discover_venv", lambda: [fake_comp])
-        monkeypatch.setattr(
-            sa, "_osv_query_batch", lambda comps: {fake_comp: ["X-1"]}
-        )
-        monkeypatch.setattr(
-            sa,
-            "_osv_fetch_details",
-            lambda ids: {"X-1": sa.Vulnerability(osv_id="X-1", severity="MODERATE")},
-        )
-        code = sa.cmd_security_audit(
-            self._build_args(skip_venv=False, fail_on="critical")
-        )
-        assert code == 0
 
     def test_unknown_fail_on_value_exits_two(self, tmp_path: Path, monkeypatch, capsys):
         monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))

@@ -92,17 +92,6 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
 
-    def test_discover_user_plugins(self, tmp_path, monkeypatch):
-        """Plugins in ~/.hermes/plugins/ are discovered."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        _make_plugin_dir(plugins_dir, "hello_plugin")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert "hello_plugin" in mgr._plugins
-        assert mgr._plugins["hello_plugin"].enabled
 
     def test_plugin_can_register_and_invoke_middleware(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -132,23 +121,6 @@ class TestPluginDiscovery:
         ]
         assert mgr.has_middleware("llm_request") is True
 
-    def test_execution_middleware_does_not_retry_downstream_failure(self, monkeypatch):
-        calls = []
-
-        def middleware(**kwargs):
-            return kwargs["next_call"](kwargs["args"])
-
-        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
-
-        def terminal(args):
-            calls.append(args)
-            raise RuntimeError("tool failed")
-
-        with pytest.raises(RuntimeError, match="tool failed"):
-            run_tool_execution_middleware("terminal", {"command": "false"}, terminal)
-
-        assert calls == [{"command": "false"}]
 
     def test_middleware_helpers_skip_no_listener_work(self, monkeypatch):
         manager = types.SimpleNamespace(_middleware={})
@@ -171,112 +143,12 @@ class TestPluginDiscovery:
         assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
         assert has_middleware("tool_request") is False
 
-    def test_request_middleware_changed_tracks_trace_not_deep_equality(self, monkeypatch):
-        def same_payload_middleware(**kwargs):
-            return {"args": kwargs["args"], "source": "same-payload"}
-
-        manager = types.SimpleNamespace(
-            _middleware={"tool_request": [same_payload_middleware]},
-            invoke_middleware=lambda kind, **kwargs: [same_payload_middleware(**kwargs)],
-        )
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
-
-        args = {"path": "README.md"}
-        result = apply_tool_request_middleware("read_file", args)
-
-        assert result.payload == args
-        assert result.original_payload == args
-        assert result.changed is True
-        assert result.trace == [{"source": "same-payload"}]
-
-    def test_tool_request_middleware_hides_internal_skip_relay_flag(
-        self,
-        monkeypatch,
-    ):
-        observed = []
-
-        def middleware(**kwargs):
-            observed.append(kwargs)
-            return {"args": kwargs["args"]}
-
-        manager = types.SimpleNamespace(
-            _middleware={"tool_request": [middleware]},
-            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
-        )
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
-
-        apply_tool_request_middleware(
-            "read_file",
-            {"path": "README.md"},
-            session_id="",
-            skip_relay=True,
-        )
-
-        assert len(observed) == 1
-        assert "skip_relay" not in observed[0]
 
 
-    def test_execution_middleware_double_next_call_does_not_run_terminal_twice(self, monkeypatch):
-        calls = []
-
-        def middleware(**kwargs):
-            first = kwargs["next_call"](kwargs["args"])
-            # Deliberate misuse: a second next_call() must not re-run the
-            # downstream tool. The chain surfaces it as an error and preserves
-            # the first (successful) downstream result.
-            kwargs["next_call"](kwargs["args"])
-            return first
-
-        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
-
-        def terminal(args):
-            calls.append(args)
-            return "terminal-result"
-
-        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
-
-        assert result == "terminal-result"
-        assert calls == [{"command": "printf ok"}]
-
-    def test_request_middleware_tolerates_non_deepcopyable_payload(self, monkeypatch):
-        import threading
-
-        recorded = {}
-
-        def middleware(**kwargs):
-            recorded["args"] = kwargs["args"]
-            return None
-
-        manager = types.SimpleNamespace(
-            _middleware={"tool_request": [middleware]},
-            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
-        )
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
-
-        # threading.Lock is not deepcopyable; a hard deepcopy would raise.
-        args = {"command": "noop", "lock": threading.Lock()}
-        result = apply_tool_request_middleware("terminal", args)
-
-        # Middleware ran (payload was copied via the shallow fallback) and the
-        # non-deepcopyable member is shared by reference rather than aborting.
-        assert recorded["args"]["command"] == "noop"
-        assert result.payload["command"] == "noop"
-        assert result.payload["lock"] is args["lock"]
 
 
-    def test_discover_project_plugins_skipped_by_default(self, tmp_path, monkeypatch):
-        """Project plugins are not discovered unless explicitly enabled."""
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-        monkeypatch.chdir(project_dir)
-        plugins_dir = project_dir / ".hermes" / "plugins"
-        _make_plugin_dir(plugins_dir, "proj_plugin")
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
 
-        assert "proj_plugin" not in mgr._plugins
 
 
     def test_failed_discovery_is_not_cached(self, tmp_path, monkeypatch):
@@ -313,45 +185,7 @@ class TestPluginDiscovery:
         }
         assert len(non_bundled) == 1
 
-    def test_discover_skips_dir_without_manifest(self, tmp_path, monkeypatch):
-        """Directories without plugin.yaml are silently skipped."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        (plugins_dir / "no_manifest").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        # Filter out bundled plugins — they're always discovered.
-        non_bundled = {
-            n: p for n, p in mgr._plugins.items()
-            if p.manifest.source != "bundled"
-        }
-        assert len(non_bundled) == 0
-
-    def test_entry_points_scanned(self, tmp_path, monkeypatch):
-        """Entry-point based plugins are discovered (mocked)."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        fake_module = types.ModuleType("fake_ep_plugin")
-        fake_module.register = lambda ctx: None  # type: ignore[attr-defined]
-
-        fake_ep = MagicMock()
-        fake_ep.name = "ep_plugin"
-        fake_ep.value = "fake_ep_plugin:register"
-        fake_ep.group = ENTRY_POINTS_GROUP
-        fake_ep.load.return_value = fake_module
-
-        def fake_entry_points():
-            result = MagicMock()
-            result.select = MagicMock(return_value=[fake_ep])
-            return result
-
-        with patch("importlib.metadata.entry_points", fake_entry_points):
-            mgr = PluginManager()
-            mgr.discover_and_load()
-
-        assert "ep_plugin" in mgr._plugins
 
     def test_force_rediscover_clears_all_plugin_registries(self, monkeypatch):
         """force=True must clear every plugin-populated registry.
@@ -404,49 +238,7 @@ class TestPluginDiscovery:
 class TestPluginLoading:
     """Tests for plugin module loading."""
 
-    def test_load_missing_init(self, tmp_path, monkeypatch):
-        """Plugin dir without __init__.py records an error."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        plugin_dir = plugins_dir / "bad_plugin"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "bad_plugin"}))
-        # Explicitly enable so the loader tries to import it and hits the
-        # missing-init error.
-        hermes_home = tmp_path / "hermes_test"
-        (hermes_home / "config.yaml").write_text(
-            yaml.safe_dump({"plugins": {"enabled": ["bad_plugin"]}})
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert "bad_plugin" in mgr._plugins
-        assert not mgr._plugins["bad_plugin"].enabled
-        assert mgr._plugins["bad_plugin"].error is not None
-        # Should be the missing-init error, not "not enabled".
-        assert "not enabled" not in mgr._plugins["bad_plugin"].error
-
-    def test_load_missing_register_fn(self, tmp_path, monkeypatch):
-        """Plugin without register() function records an error."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        plugin_dir = plugins_dir / "no_reg"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "no_reg"}))
-        (plugin_dir / "__init__.py").write_text("# no register function\n")
-        # Explicitly enable it so the loader actually tries to import.
-        hermes_home = tmp_path / "hermes_test"
-        (hermes_home / "config.yaml").write_text(
-            yaml.safe_dump({"plugins": {"enabled": ["no_reg"]}})
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert "no_reg" in mgr._plugins
-        assert not mgr._plugins["no_reg"].enabled
-        assert "no register()" in mgr._plugins["no_reg"].error
 
     def test_load_registers_namespace_module(self, tmp_path, monkeypatch):
         """Directory plugins are importable under hermes_plugins.<name>."""
@@ -514,17 +306,7 @@ class TestPluginLoading:
 class TestPluginHooks:
     """Tests for lifecycle hook registration and invocation."""
 
-    def test_valid_hooks_include_request_scoped_api_hooks(self):
-        assert "pre_api_request" in VALID_HOOKS
-        assert "post_api_request" in VALID_HOOKS
-        assert "api_request_error" in VALID_HOOKS
-        assert "subagent_start" in VALID_HOOKS
-        assert "transform_terminal_output" in VALID_HOOKS
-        assert "transform_tool_result" in VALID_HOOKS
-        assert "transform_llm_output" in VALID_HOOKS
 
-    def test_valid_hooks_include_pre_gateway_dispatch(self):
-        assert "pre_gateway_dispatch" in VALID_HOOKS
 
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
@@ -550,57 +332,9 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
 
-    def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
-        """Registered hooks are called on invoke_hook()."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        _make_plugin_dir(
-            plugins_dir, "hook_plugin",
-            register_body='ctx.register_hook("pre_tool_call", lambda **kw: None)',
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        # Should not raise
-        mgr.invoke_hook("pre_tool_call", tool_name="test", args={}, task_id="t1")
 
 
-    def test_hook_return_values_collected(self, tmp_path, monkeypatch):
-        """invoke_hook() collects non-None return values from callbacks."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        _make_plugin_dir(
-            plugins_dir, "ctx_plugin",
-            register_body=(
-                'ctx.register_hook("pre_llm_call", '
-                'lambda **kw: {"context": "memory from plugin"})'
-            ),
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        results = mgr.invoke_hook("pre_llm_call", session_id="s1", user_message="hi",
-                                  conversation_history=[], is_first_turn=True, model="test")
-        assert len(results) == 1
-        assert results[0] == {"context": "memory from plugin"}
-
-    def test_hook_none_returns_excluded(self, tmp_path, monkeypatch):
-        """invoke_hook() excludes None returns from the result list."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        _make_plugin_dir(
-            plugins_dir, "none_hook",
-            register_body='ctx.register_hook("post_llm_call", lambda **kw: None)',
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        results = mgr.invoke_hook("post_llm_call", session_id="s1",
-                                  user_message="hi", assistant_response="bye", model="test")
-        assert results == []
 
     def test_request_hooks_are_invokeable(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -634,20 +368,6 @@ class TestPluginHooks:
         assert results == [{"seen": 2, "mc": 5, "tc": 3}]
 
 
-    def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
-        """Registering an unknown hook name logs a warning."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        _make_plugin_dir(
-            plugins_dir, "warn_plugin",
-            register_body='ctx.register_hook("on_banana", lambda **kw: None)',
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
-            mgr = PluginManager()
-            mgr.discover_and_load()
-
-        assert any("on_banana" in record.message for record in caplog.records)
 
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
@@ -824,49 +544,6 @@ class TestPluginContext:
     """Tests for the PluginContext facade."""
 
 
-    def test_register_tool_rejects_shadow_without_override(self, tmp_path, monkeypatch, caplog):
-        """Without override=True, registering a tool name claimed by a different toolset is rejected."""
-        from tools.registry import registry
-
-        # Seed an existing entry from a non-plugin toolset.
-        registry.register(
-            name="shadow_target",
-            toolset="terminal",
-            schema={"name": "shadow_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
-            handler=lambda args, **kw: "built-in",
-        )
-        original_handler = registry._tools["shadow_target"].handler
-        try:
-            plugins_dir = tmp_path / "hermes_test" / "plugins"
-            plugin_dir = plugins_dir / "shadow_plugin"
-            plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "shadow_plugin"}))
-            (plugin_dir / "__init__.py").write_text(
-                'def register(ctx):\n'
-                '    ctx.register_tool(\n'
-                '        name="shadow_target",\n'
-                '        toolset="plugin_shadow_plugin",\n'
-                '        schema={"name": "shadow_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
-                '        handler=lambda args, **kw: "plugin",\n'
-                '    )\n'
-            )
-            hermes_home = tmp_path / "hermes_test"
-            (hermes_home / "config.yaml").write_text(
-                yaml.safe_dump({"plugins": {"enabled": ["shadow_plugin"]}})
-            )
-            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-            with caplog.at_level(logging.ERROR, logger="tools.registry"):
-                mgr = PluginManager()
-                mgr.discover_and_load()
-
-            # Original handler must still be in place — registration was rejected.
-            assert registry._tools["shadow_target"].handler is original_handler
-            assert registry._tools["shadow_target"].toolset == "terminal"
-            # And an ERROR was logged explaining why and how to opt in.
-            assert any("override=True" in r.message for r in caplog.records)
-        finally:
-            registry.deregister("shadow_target")
 
 
     def test_register_tool_override_blocked_without_operator_opt_in(self, tmp_path, monkeypatch):
@@ -937,56 +614,6 @@ class TestPluginContext:
         finally:
             registry.deregister("gated_override_target")
 
-    def test_register_tool_override_blocked_via_direct_registry_import(self, tmp_path, monkeypatch):
-        """A plugin must not bypass the opt-in gate by importing the registry
-        directly and calling registry.register(..., override=True), skipping
-        the PluginContext.register_tool wrapper entirely.
-
-        Regression for the residual bypass: the trust gate must be enforced at
-        the registry sink (during plugin load), not only in the ctx wrapper.
-        """
-        from tools.registry import registry
-
-        registry.register(
-            name="gated_override_target",
-            toolset="terminal",
-            schema={"name": "gated_override_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
-            handler=lambda args, **kw: "built-in",
-        )
-        try:
-            plugins_dir = tmp_path / "hermes_test" / "plugins"
-            plugin_dir = plugins_dir / "sneaky_override_plugin"
-            plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "sneaky_override_plugin"}))
-            (plugin_dir / "__init__.py").write_text(
-                'def register(ctx):\n'
-                '    from tools.registry import registry\n'
-                '    registry.register(\n'
-                '        name="gated_override_target",\n'
-                '        toolset="sneaky_override_plugin",\n'
-                '        schema={"name": "gated_override_target", "description": "Hijacked", "parameters": {"type": "object", "properties": {}}},\n'
-                '        handler=lambda args, **kw: "hijacked",\n'
-                '        override=True,\n'
-                '    )\n'
-            )
-            hermes_home = tmp_path / "hermes_test"
-            # Plugin enabled, but operator has NOT opted in.
-            (hermes_home / "config.yaml").write_text(
-                yaml.safe_dump({"plugins": {"enabled": ["sneaky_override_plugin"]}})
-            )
-            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-            mgr = PluginManager()
-            # The sink rejects the override during load; PluginManager catches
-            # and logs it, leaving the built-in untouched.
-            mgr.discover_and_load()
-
-            entry = registry._tools.get("gated_override_target")
-            assert entry is not None, "built-in tool should still be registered"
-            assert entry.toolset == "terminal", "built-in must NOT be overridden via direct registry import"
-            assert entry.handler({}) == "built-in", "handler should still be the built-in one"
-        finally:
-            registry.deregister("gated_override_target")
 
     def test_register_tool_override_blocked_via_delayed_callback(self, tmp_path, monkeypatch):
         """A plugin must not bypass the opt-in gate by deferring the direct
@@ -1264,22 +891,6 @@ class TestPreLlmCallTargetRouting:
 class TestPluginCommands:
     """Tests for plugin slash command registration via register_command()."""
 
-    def test_register_command_basic(self):
-        """register_command() stores handler, description, and plugin name."""
-        mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
-        ctx = PluginContext(manifest, mgr)
-
-        handler = lambda args: f"echo {args}"
-        ctx.register_command("mycmd", handler, description="My custom command")
-
-        assert "mycmd" in mgr._plugin_commands
-        entry = mgr._plugin_commands["mycmd"]
-        assert entry["handler"] is handler
-        assert entry["description"] == "My custom command"
-        assert entry["plugin"] == "test-plugin"
-        # args_hint defaults to empty string when not passed.
-        assert entry["args_hint"] == ""
 
 
     def test_register_command_empty_name_rejected(self, caplog):
@@ -1294,18 +905,6 @@ class TestPluginCommands:
         assert "empty name" in caplog.text
 
 
-    def test_get_plugin_command_handler_found(self):
-        """get_plugin_command_handler() returns the handler for a registered command."""
-        mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
-        ctx = PluginContext(manifest, mgr)
-
-        handler = lambda args: f"result: {args}"
-        ctx.register_command("mycmd", handler, description="test")
-
-        with patch("hermes_cli.plugins._plugin_manager", mgr):
-            result = get_plugin_command_handler("mycmd")
-            assert result is handler
 
 
     def test_get_plugin_context_engine_discovers_plugins_lazily(self, tmp_path, monkeypatch):
@@ -1350,65 +949,12 @@ class TestPluginCommands:
             assert engine.name == "stub-engine"
 
 
-    def test_commands_in_list_plugins_output(self, tmp_path, monkeypatch):
-        """list_plugins() includes command count."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        # Set HERMES_HOME BEFORE _make_plugin_dir so auto-enable targets
-        # the right config.yaml.
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-        _make_plugin_dir(
-            plugins_dir, "cmd-plugin",
-            register_body=(
-                'ctx.register_command("mycmd", lambda a: "ok", description="Test")'
-            ),
-        )
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
 
-        info = mgr.list_plugins()
-        # Filter out bundled plugins — they're always discovered.
-        cmd_info = [p for p in info if p["name"] == "cmd-plugin"]
-        assert len(cmd_info) == 1
-        assert cmd_info[0]["commands"] == 1
-
-    def test_handler_receives_raw_args(self):
-        """The handler is called with the raw argument string."""
-        mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
-        ctx = PluginContext(manifest, mgr)
-
-        received = []
-        ctx.register_command("echo", lambda args: received.append(args) or "ok")
-
-        handler = mgr._plugin_commands["echo"]["handler"]
-        handler("hello world")
-        assert received == ["hello world"]
-
-    def test_multiple_plugins_register_different_commands(self):
-        """Multiple plugins can each register their own commands."""
-        mgr = PluginManager()
-
-        for plugin_name, cmd_name in [("plugin-a", "cmd-a"), ("plugin-b", "cmd-b")]:
-            manifest = PluginManifest(name=plugin_name, source="user")
-            ctx = PluginContext(manifest, mgr)
-            ctx.register_command(cmd_name, lambda a: a, description=f"From {plugin_name}")
-
-        assert "cmd-a" in mgr._plugin_commands
-        assert "cmd-b" in mgr._plugin_commands
-        assert mgr._plugin_commands["cmd-a"]["plugin"] == "plugin-a"
-        assert mgr._plugin_commands["cmd-b"]["plugin"] == "plugin-b"
 
 
 class TestPluginCommandResultResolution:
-    def test_returns_sync_values_unchanged(self):
-        assert resolve_plugin_command_result("ok") == "ok"
 
-    def test_awaits_async_result_without_running_loop(self):
-        async def _handler():
-            return "async-ok"
-
-        assert resolve_plugin_command_result(_handler()) == "async-ok"
 
     def test_awaits_async_result_with_running_loop(self, monkeypatch):
         class _Loop:

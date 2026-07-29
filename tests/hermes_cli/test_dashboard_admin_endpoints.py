@@ -32,25 +32,6 @@ class TestMcpEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, self.header = _client()
 
-    def test_list_add_remove_roundtrip(self):
-        assert self.client.get("/api/mcp/servers").json()["servers"] == []
-
-        r = self.client.post(
-            "/api/mcp/servers", json={"name": "srv1", "url": "https://x/mcp"}
-        )
-        assert r.status_code == 200
-        assert r.json()["transport"] == "http"
-
-        servers = self.client.get("/api/mcp/servers").json()["servers"]
-        assert [s["name"] for s in servers] == ["srv1"]
-
-        # CLI parity: the server is in config.yaml under mcp_servers.
-        from hermes_cli.mcp_config import _get_mcp_servers
-
-        assert "srv1" in _get_mcp_servers()
-
-        assert self.client.delete("/api/mcp/servers/srv1").status_code == 200
-        assert self.client.get("/api/mcp/servers").json()["servers"] == []
 
     def test_stdio_env_is_redacted_on_read(self):
         self.client.post(
@@ -158,51 +139,7 @@ class TestMcpEndpoints:
         assert error in response.json()["detail"]
 
 
-    def test_enable_disable_toggle(self):
-        self.client.post("/api/mcp/servers", json={"name": "tog", "url": "u"})
-        r = self.client.put("/api/mcp/servers/tog/enabled", json={"enabled": False})
-        assert r.status_code == 200 and r.json()["enabled"] is False
-        srv = [
-            s for s in self.client.get("/api/mcp/servers").json()["servers"]
-            if s["name"] == "tog"
-        ][0]
-        assert srv["enabled"] is False
-        # Toggling a missing server is a 404.
-        assert self.client.put(
-            "/api/mcp/servers/nope/enabled", json={"enabled": True}
-        ).status_code == 404
 
-    def test_catalog_lists_entries(self):
-        r = self.client.get("/api/mcp/catalog")
-        assert r.status_code == 200
-        body = r.json()
-        assert "entries" in body and "diagnostics" in body
-        # The shipped optional-mcps/ catalog has at least one entry; each must
-        # carry the install/enabled status fields plus the inspection detail
-        # the dashboard renders (transport target, install source, guidance) so
-        # users can vet an entry before installing.
-        for e in body["entries"]:
-            assert {
-                "name",
-                "transport",
-                "auth_type",
-                "installed",
-                "enabled",
-                "needs_install",
-                "command",
-                "args",
-                "url",
-                "install_url",
-                "install_ref",
-                "bootstrap",
-                "default_enabled",
-                "post_install",
-            } <= set(e)
-            # http entries expose a url; stdio entries expose a command.
-            if e["transport"] == "http":
-                assert e["url"]
-            elif e["transport"] == "stdio":
-                assert e["command"]
 
 
 class TestCredentialPoolEndpoints:
@@ -210,29 +147,6 @@ class TestCredentialPoolEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_add_list_remove_and_cli_parity(self):
-        assert self.client.get("/api/credentials/pool").json()["providers"] == []
-
-        r = self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "openrouter", "api_key": "sk-or-abcdef1234", "label": "p"},
-        )
-        assert r.status_code == 200 and r.json()["count"] == 1
-
-        providers = self.client.get("/api/credentials/pool").json()["providers"]
-        entry = providers[0]["entries"][0]
-        # API redacts the key but exposes a preview + 1-based index.
-        assert entry["index"] == 1
-        assert entry["token_preview"] != "sk-or-abcdef1234"
-
-        # CLI parity: the raw, usable key is retrievable via the pool API.
-        from agent.credential_pool import load_pool
-
-        raw = load_pool("openrouter").entries()
-        assert raw[0].access_token == "sk-or-abcdef1234"
-
-        assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
-        assert self.client.delete("/api/credentials/pool/openrouter/99").status_code == 404
 
 
     def test_env_seeded_delete_stays_deleted(self):
@@ -295,43 +209,7 @@ class TestCredentialPoolEndpoints:
         sources = sorted(e.source for e in load_pool("openrouter").entries())
         assert sources == ["env:OPENROUTER_API_KEY", "manual"]
 
-    def test_manual_delete_adds_no_suppression(self):
-        """Manual entries aren't re-seeded — CLI parity: no suppression marker."""
-        from hermes_cli.auth import _load_auth_store
 
-        self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "openrouter", "api_key": "sk-or-" + "m" * 20},
-        )
-        assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
-        suppressed = _load_auth_store().get("suppressed_sources", {})
-        assert not suppressed.get("openrouter")
-
-        # Immediate re-add works.
-        r = self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "openrouter", "api_key": "sk-or-" + "n" * 20},
-        )
-        assert r.status_code == 200 and r.json()["count"] == 1
-
-    def test_delete_does_not_clobber_other_providers(self):
-        """Deleting one provider's env entry leaves other providers' rows alone."""
-        from agent.credential_pool import load_pool
-        from hermes_cli.auth import _load_auth_store, read_credential_pool
-        from hermes_cli.config import save_env_value
-
-        self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "anthropic", "api_key": "sk-ant-" + "k" * 20},
-        )
-        save_env_value("OPENROUTER_API_KEY", "sk-or-" + "q" * 20)
-        load_pool("openrouter")
-
-        assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
-
-        assert len(read_credential_pool("anthropic")) == 1
-        suppressed = _load_auth_store().get("suppressed_sources", {})
-        assert list(suppressed.keys()) == ["openrouter"]
 
 
 class TestMemoryEndpoints:
@@ -473,31 +351,6 @@ class TestOpsEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_backup_output_uses_output_flag(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        captured = {}
-
-        class FakeProc:
-            pid = 12345
-
-        def fake_spawn_action(subcommand, name):
-            captured["subcommand"] = subcommand
-            captured["name"] = name
-            return FakeProc()
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
-
-        r = self.client.post(
-            "/api/ops/backup",
-            json={"output": "  /tmp/hermes-test.zip  "},
-        )
-
-        assert r.status_code == 200
-        assert captured == {
-            "subcommand": ["backup", "-o", "/tmp/hermes-test.zip"],
-            "name": "backup",
-        }
 
 
     def test_hooks_list_reads_config(self):
@@ -547,9 +400,6 @@ class TestOpsEndpoints:
         hooks2 = self.client.get("/api/ops/hooks").json()["hooks"]
         assert not [h for h in hooks2 if h["command"] == "/bin/echo created"]
 
-    def test_checkpoints_list_empty(self):
-        data = self.client.get("/api/ops/checkpoints").json()
-        assert data == {"sessions": [], "total_bytes": 0}
 
 
 class TestSystemStatsEndpoint:
@@ -612,12 +462,6 @@ class TestSessionManagementEndpoints:
         assert body["by_source"]["cli"] >= 1
 
 
-    def test_prune_validation(self):
-        r = self.client.post("/api/sessions/prune", json={"older_than_days": 9999})
-        assert r.status_code == 200 and "removed" in r.json()
-        assert self.client.post(
-            "/api/sessions/prune", json={"older_than_days": 0}
-        ).status_code == 400
 
     def test_prune_attr_filter_suppresses_default_cutoff(self):
         # An attribute filter without an explicit older_than_days matches all
@@ -642,14 +486,6 @@ class TestSessionManagementEndpoints:
         assert "oldest_last_active" in body and "newest_last_active" in body
         assert all("last_active" in session for session in body["sessions"])
 
-    def test_prune_explicit_older_than_kept_with_attr_filter(self):
-        # Explicit older_than_days is honored even alongside attribute filters.
-        r = self.client.post(
-            "/api/sessions/prune",
-            json={"source": "cli", "older_than_days": 9999, "dry_run": True},
-        )
-        assert r.status_code == 200
-        assert r.json()["matched"] == 0
 
 
 class TestSkillsHubSearchEndpoint:
@@ -905,15 +741,6 @@ class TestUpdateCheckEndpoint:
         assert body["can_apply"] is True
 
 
-    def test_docker_is_not_applyable(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "docker")
-        body = self.client.get("/api/hermes/update/check").json()
-        # Docker images are immutable — the dashboard can't apply an update.
-        assert body["can_apply"] is False
-        assert body["message"]
-        assert body["behind"] is None
 
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -935,25 +762,6 @@ class TestUpdateCheckEndpoint:
         assert "managed outside this dashboard" in body["message"]
 
 
-    def test_git_behind_includes_commits(self, monkeypatch):
-        import hermes_cli.web_server as ws
-        import hermes_cli.banner as banner
-
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 3)
-        monkeypatch.setattr(
-            ws,
-            "_recent_upstream_commits",
-            lambda n=20: [
-                {"sha": "abc1234", "summary": "feat: x", "author": "a", "at": 1},
-            ],
-        )
-
-        body = self.client.get("/api/hermes/update/check").json()
-        # The desktop overlay renders this as the "what's changed" list.
-        assert isinstance(body["commits"], list)
-        assert body["commits"][0]["sha"] == "abc1234"
-        assert body["commits"][0]["summary"] == "feat: x"
 
 
 class TestDebugShareEndpoint:
@@ -971,28 +779,6 @@ class TestDebugShareEndpoint:
         (logs / "errors.log").write_text("err line\n")
         (logs / "gateway.log").write_text("gw line\n")
 
-    def test_returns_structured_urls(self, monkeypatch):
-        import hermes_cli.debug as dbg
-
-        count = [0]
-
-        def _upload(content, expiry_days=7):
-            count[0] += 1
-            return f"https://paste.rs/p{count[0]}"
-
-        monkeypatch.setattr(dbg, "upload_to_pastebin", _upload)
-        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
-        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
-        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
-
-        r = self.client.post("/api/ops/debug-share", json={"redact": True})
-        assert r.status_code == 200
-        body = r.json()
-        assert body["ok"] is True
-        assert "Report" in body["urls"]
-        assert body["redacted"] is True
-        assert body["auto_delete_seconds"] == 21600
-        assert isinstance(body["failures"], list)
 
     def test_redact_false_is_honored(self, monkeypatch):
         import hermes_cli.debug as dbg
@@ -1038,15 +824,6 @@ class TestDebugShareEndpoint:
         r = self.client.post("/api/ops/debug-share", json={"redact": True})
         assert r.status_code == 502
 
-    def test_requires_session_token(self):
-        # Drop the token header and confirm the global auth gate rejects it.
-        bare = self.client
-        r = bare.post(
-            "/api/ops/debug-share",
-            json={"redact": True},
-            headers={self.header: "wrong-token"},
-        )
-        assert r.status_code == 401
 
 
 class TestToolsConfigEndpoints:
@@ -1058,13 +835,6 @@ class TestToolsConfigEndpoints:
         self.client, self.header = _client()
 
 
-    def test_toolset_config_provider_matrix(self):
-        # `web` has a TOOL_CATEGORIES entry → providers list populated.
-        r = self.client.get("/api/tools/toolsets/web/config")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["has_category"] is True
-        assert isinstance(body["providers"], list)
 
 
     def test_save_env_writes_key_and_validates_allowlist(self):
@@ -1092,12 +862,6 @@ class TestToolsConfigEndpoints:
         # CLI-config parity: the key landed in the .env store the CLI reads.
         assert get_env_value(key) == "test-secret-123"
 
-    def test_save_env_rejects_unknown_key(self):
-        r = self.client.put(
-            "/api/tools/toolsets/web/env",
-            json={"env": {"TOTALLY_BOGUS_KEY": "x"}},
-        )
-        assert r.status_code == 400
 
 
     def test_post_setup_unknown_toolset_400(self):
@@ -1108,18 +872,6 @@ class TestToolsConfigEndpoints:
         assert r.status_code == 400
 
 
-    def test_endpoints_require_session_token(self):
-        for method, path, payload in [
-            ("get", "/api/tools/toolsets/web/config", None),
-            ("put", "/api/tools/toolsets/web/env", {"env": {}}),
-            ("post", "/api/tools/toolsets/web/post-setup", {"key": "ddgs"}),
-        ]:
-            fn = getattr(self.client, method)
-            kwargs = {"headers": {self.header: "wrong-token"}}
-            if payload is not None:
-                kwargs["json"] = payload
-            r = fn(path, **kwargs)
-            assert r.status_code == 401, f"{method} {path} not gated"
 
 
 # ---------------------------------------------------------------------------

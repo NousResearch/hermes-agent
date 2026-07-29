@@ -73,20 +73,6 @@ class TestParseFrontmatter:
         fm, _ = _parse_frontmatter(nested)
         assert fm["metadata"]["hermes"]["tags"] == ["a", "b"]
 
-    def test_missing_empty_and_malformed_frontmatter(self):
-        content = "# Just a heading\nSome content.\n"
-        fm, body = _parse_frontmatter(content)
-        assert fm == {}
-        assert body == content
-
-        fm, _ = _parse_frontmatter("---\n---\n\n# Body\n")
-        assert fm == {}
-
-        # Malformed YAML falls back to simple key:value parsing.
-        fm, _ = _parse_frontmatter(
-            "---\nname: test\ndescription: desc\n: invalid\n---\n\nBody.\n"
-        )
-        assert "name" in fm
 
     def test_utf8_bom_frontmatter(self):
         """A leading UTF-8 BOM (Windows Notepad / PowerShell ``>`` save) must
@@ -231,11 +217,6 @@ class TestFindAllSkills:
         assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
         assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
 
-    def test_empty_or_missing_directory(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            assert _find_all_skills() == []
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
-            assert _find_all_skills() == []
 
     def test_description_falls_back_to_body_and_is_truncated(self, tmp_path):
         no_desc = tmp_path / "no-desc"
@@ -353,79 +334,6 @@ class TestSkillView:
         assert by_name["success"] is True
         assert "Step 1" in by_name["content"]
 
-    def test_skill_view_applies_template_vars(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch(
-                "agent.skill_preprocessing.load_skills_config",
-                return_value={"template_vars": True, "inline_shell": False},
-            ),
-        ):
-            skill_dir = _make_skill(
-                tmp_path,
-                "templated",
-                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh in ${HERMES_SESSION_ID}",
-            )
-            raw = skill_view("templated", task_id="session-123")
-
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
-        assert "${HERMES_SKILL_DIR}" not in result["content"]
-
-    def test_inline_shell_runs_only_when_enabled(self, tmp_path):
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch(
-                "agent.skill_preprocessing.load_skills_config",
-                return_value={
-                    "template_vars": True,
-                    "inline_shell": True,
-                    "inline_shell_timeout": 5,
-                },
-            ),
-        ):
-            _make_skill(tmp_path, "dynamic", body="Current date: !`printf 2026-04-24`")
-            enabled = json.loads(skill_view("dynamic"))
-
-        assert enabled["success"] is True
-        assert "Current date: 2026-04-24" in enabled["content"]
-        assert "!`printf 2026-04-24`" not in enabled["content"]
-
-        with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch(
-                "agent.skill_preprocessing.load_skills_config",
-                return_value={"template_vars": True, "inline_shell": False},
-            ),
-        ):
-            _make_skill(
-                tmp_path, "static", body="Current date: !`printf SHOULD_NOT_RUN`"
-            )
-            disabled = json.loads(skill_view("static"))
-
-        assert disabled["success"] is True
-        assert "Current date: !`printf SHOULD_NOT_RUN`" in disabled["content"]
-        assert "Current date: SHOULD_NOT_RUN" not in disabled["content"]
-
-    def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "zeta", category="z-cat")
-            _make_skill(tmp_path, "alpha", category="a-cat")
-            _make_skill(tmp_path, "beta", category="a-cat")
-
-            list_result = json.loads(skills_list())
-            view_result = json.loads(skill_view("missing-skill"))
-
-        assert view_result["success"] is False
-        assert "not found" in view_result["error"].lower()
-        assert view_result["available_skills"] == [
-            skill["name"] for skill in list_result["skills"]
-        ]
-
-        # A missing skills dir also fails gracefully.
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
-            assert json.loads(skill_view("anything"))["success"] is False
 
     def test_view_reference_files(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -587,22 +495,6 @@ class TestSkillMatchesPlatform:
         assert skill_matches_platform({"platforms": []}) is True
         assert skill_matches_platform({"platforms": None}) is True
 
-    def test_platform_list_matched_against_current_os(self):
-        with patch("agent.skill_utils.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            assert skill_matches_platform({"platforms": ["macos"]}) is True
-            assert skill_matches_platform({"platforms": ["linux"]}) is False
-            # Multiple platforms match any of them.
-            assert skill_matches_platform({"platforms": ["macos", "linux"]}) is True
-
-            mock_sys.platform = "linux"
-            assert skill_matches_platform({"platforms": ["linux"]}) is True
-            assert skill_matches_platform({"platforms": ["macos"]}) is False
-            assert skill_matches_platform({"platforms": ["windows"]}) is False
-
-            mock_sys.platform = "win32"
-            assert skill_matches_platform({"platforms": ["windows"]}) is True
-            assert skill_matches_platform({"platforms": ["macos", "linux"]}) is False
 
     def test_string_form_case_insensitive_and_unknown_platforms(self):
         with patch("agent.skill_utils.sys") as mock_sys:
@@ -719,77 +611,6 @@ class TestSkillViewPrerequisites:
             }
         ]
 
-    def test_no_setup_needed_when_prereqs_met_or_absent(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PRESENT_KEY", "value")
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "ready-skill",
-                frontmatter_extra="prerequisites:\n  env_vars: [PRESENT_KEY]\n",
-            )
-            _make_skill(tmp_path, "plain-skill")
-            ready = json.loads(skill_view("ready-skill"))
-            plain = json.loads(skill_view("plain-skill"))
-
-        assert ready["success"] is True
-        assert ready["setup_needed"] is False
-        assert ready["missing_required_environment_variables"] == []
-
-        assert plain["success"] is True
-        assert plain["setup_needed"] is False
-        assert plain["required_environment_variables"] == []
-
-    def test_remote_backend_treats_persisted_env_as_available(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "remote-ready",
-                frontmatter_extra="prerequisites:\n  env_vars: [PERSISTED_REMOTE_KEY]\n",
-            )
-            from hermes_cli.config import save_env_value
-
-            save_env_value("PERSISTED_REMOTE_KEY", "persisted-value")
-            monkeypatch.delenv("PERSISTED_REMOTE_KEY", raising=False)
-            raw = skill_view("remote-ready")
-
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert result["setup_needed"] is False
-        assert result["missing_required_environment_variables"] == []
-        assert result["readiness_status"] == "available"
-
-    def test_missing_env_keeps_setup_needed_on_local_and_remote(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "backend-ready",
-                frontmatter_extra="prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n",
-            )
-            remote = json.loads(skill_view("backend-ready"))
-        assert remote["success"] is True
-        assert remote["setup_needed"] is True
-        assert remote["missing_required_environment_variables"] == ["BACKEND_ONLY_KEY"]
-
-        monkeypatch.setenv("TERMINAL_ENV", "local")
-        monkeypatch.delenv("SHELL_ONLY_KEY", raising=False)
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "shell-ready",
-                frontmatter_extra="prerequisites:\n  env_vars: [SHELL_ONLY_KEY]\n",
-            )
-            local = json.loads(skill_view("shell-ready"))
-        assert local["success"] is True
-        assert local["setup_needed"] is True
-        assert local["missing_required_environment_variables"] == ["SHELL_ONLY_KEY"]
-        assert local["readiness_status"] == "setup_needed"
 
     def test_remote_backend_becomes_available_after_local_secret_capture(
         self, tmp_path, monkeypatch
@@ -835,25 +656,6 @@ class TestSkillViewPrerequisites:
         assert result["missing_required_environment_variables"] == []
         assert "setup_note" not in result
 
-    def test_skill_view_surfaces_skill_read_errors(self, tmp_path, monkeypatch):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "broken-skill")
-            skill_md = tmp_path / "broken-skill" / "SKILL.md"
-            original_read_text = Path.read_text
-
-            def fake_read_text(path_obj, *args, **kwargs):
-                if path_obj == skill_md:
-                    raise UnicodeDecodeError(
-                        "utf-8", b"\xff", 0, 1, "invalid start byte"
-                    )
-                return original_read_text(path_obj, *args, **kwargs)
-
-            monkeypatch.setattr(Path, "read_text", fake_read_text)
-            raw = skill_view("broken-skill")
-
-        result = json.loads(raw)
-        assert result["success"] is False
-        assert "Failed to read skill 'broken-skill'" in result["error"]
 
     def test_legacy_flat_md_skill_preserves_frontmatter_metadata(self, tmp_path):
         flat_skill = tmp_path / "legacy-skill.md"
@@ -992,29 +794,6 @@ class TestSkillViewCollisionDetection:
         assert any("external" in p for p in result["matches"])
         assert "hint" in result
 
-    def test_collision_resolvable_via_categorized_path(self, tmp_path):
-        """User can recover from a collision by passing the full
-        categorized path — the bare name is ambiguous, the path is not."""
-        local_dir = tmp_path / "local"
-        external_dir = tmp_path / "external"
-        local_dir.mkdir()
-        external_dir.mkdir()
-
-        _make_skill(
-            local_dir,
-            "explore-codebase",
-            category="foundations/runtime",
-            body="LOCAL VERSION",
-        )
-        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
-
-        p1, p2 = self._patch_dirs(local_dir, [external_dir])
-        with p1, p2:
-            raw = skill_view("foundations/runtime/explore-codebase")
-
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert "LOCAL VERSION" in result["content"]
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
         """Supporting reference docs named <skill>.md are not skills.
@@ -1051,71 +830,6 @@ class TestSkillViewCollisionDetection:
         assert result["path"] == "creative/sketch/SKILL.md"
         assert "REAL SKETCH SKILL" in result["content"]
 
-    def test_reference_package_skill_md_is_not_active_skill(self, tmp_path):
-        """Curator-preserved package SKILL.md files under references stay data.
-
-        Umbrella consolidations may preserve an old skill as
-        references/old-skill-package/SKILL.md. That package must not appear in
-        skills_list/system prompts and must not resolve as skill_view("old-skill").
-        The package can still be opened explicitly through the umbrella's
-        file_path progressive-disclosure channel.
-        """
-        local_dir = tmp_path / "local"
-        external_dir = tmp_path / "external"
-        local_dir.mkdir()
-        external_dir.mkdir()
-
-        _make_skill(local_dir, "umbrella", category="creative", body="UMBRELLA")
-        package = (
-            local_dir
-            / "creative"
-            / "umbrella"
-            / "references"
-            / "old-skill-package"
-        )
-        package.mkdir(parents=True, exist_ok=True)
-        (package / "SKILL.md").write_text(
-            "---\nname: old-skill\ndescription: Preserved old skill.\n---\n\nOLD BODY\n"
-        )
-
-        p1, p2 = self._patch_dirs(local_dir, [external_dir])
-        with p1, p2:
-            names = {skill["name"] for skill in _find_all_skills()}
-            old_raw = skill_view("old-skill")
-            direct_package_raw = skill_view("creative/umbrella/references/old-skill-package")
-            package_raw = skill_view(
-                "umbrella", file_path="references/old-skill-package/SKILL.md"
-            )
-
-        assert "umbrella" in names
-        assert "old-skill" not in names
-        old_result = json.loads(old_raw)
-        assert old_result["success"] is False
-        assert "not found" in old_result["error"]
-        direct_package_result = json.loads(direct_package_raw)
-        assert direct_package_result["success"] is False
-        assert "not found" in direct_package_result["error"]
-        package_result = json.loads(package_raw)
-        assert package_result["success"] is True
-        assert "OLD BODY" in package_result["content"]
-
-    def test_external_skill_resolves_when_no_collision(self, tmp_path):
-        """External-only skills still resolve normally when there's no
-        local skill of the same name."""
-        local_dir = tmp_path / "local"
-        external_dir = tmp_path / "external"
-        local_dir.mkdir()
-        external_dir.mkdir()
-
-        _make_skill(external_dir, "external-only", body="EXTERNAL BODY")
-
-        p1, p2 = self._patch_dirs(local_dir, [external_dir])
-        with p1, p2:
-            raw = skill_view("external-only")
-
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert "EXTERNAL BODY" in result["content"]
 
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with

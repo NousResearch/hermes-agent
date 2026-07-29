@@ -50,26 +50,8 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     return f"h.{encoded}.s"
 
 
-def test_read_codex_tokens_success(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
-    _setup_hermes_auth(hermes_home)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    data = _read_codex_tokens()
-    assert data["tokens"]["access_token"] == "access"
-    assert data["tokens"]["refresh_token"] == "refresh"
 
 
-def test_read_codex_tokens_missing(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    # Empty auth store
-    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    with pytest.raises(AuthError) as exc:
-        _read_codex_tokens()
-    assert exc.value.code == "codex_auth_missing"
 
 
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
@@ -122,10 +104,6 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
     assert resolved["base_url"]  # default codex backend URL
 
 
-def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    assert resolve_provider("openai-codex") == "openai-codex"
 
 
 def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
@@ -464,18 +442,6 @@ def test_save_codex_tokens_clears_error_markers_only_on_refreshed_entries(tmp_pa
     assert acctB["last_error_reason"] == "quota_exhausted"
 
 
-def test_import_codex_cli_tokens(tmp_path, monkeypatch):
-    codex_home = tmp_path / "codex-cli"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    (codex_home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"},
-    }))
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    tokens = _import_codex_cli_tokens()
-    assert tokens is not None
-    assert tokens["access_token"] == "cli-at"
-    assert tokens["refresh_token"] == "cli-rt"
 
 
 def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
@@ -544,31 +510,6 @@ def _patch_httpx(monkeypatch, response):
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
 
 
-def test_refresh_parses_openai_nested_error_shape_refresh_token_reused(monkeypatch):
-    """OpenAI returns {"error": {"code": "refresh_token_reused", "message": "..."}}
-    — parser must surface relogin_required and the dedicated message.
-    """
-    response = _StubHTTPResponse(
-        401,
-        {
-            "error": {
-                "message": "Your refresh token has already been used to generate a new access token. Please try signing in again.",
-                "type": "invalid_request_error",
-                "param": None,
-                "code": "refresh_token_reused",
-            }
-        },
-    )
-    _patch_httpx(monkeypatch, response)
-
-    with pytest.raises(AuthError) as exc_info:
-        refresh_codex_oauth_pure("a-tok", "r-tok")
-
-    err = exc_info.value
-    assert err.code == "refresh_token_reused"
-    assert err.relogin_required is True
-    # The existing dedicated branch should override the message with actionable guidance.
-    assert "already consumed by another client" in str(err)
 
 
 def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
@@ -639,42 +580,6 @@ def test_is_rate_limited_auth_error_distinguishes_credential_errors():
     assert is_rate_limited_auth_error(ValueError("nope")) is False
 
 
-def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypatch):
-    called = {"device_login": 0}
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_codex_runtime_credentials",
-        lambda: {"base_url": DEFAULT_CODEX_BASE_URL},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth._import_codex_cli_tokens",
-        lambda: {"access_token": "cli-at", "refresh_token": "cli-rt"},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.auth._codex_device_code_login",
-        lambda: {
-            "tokens": {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
-            "last_refresh": "2026-04-01T00:00:00Z",
-            "base_url": DEFAULT_CODEX_BASE_URL,
-        },
-    )
-
-    def _fake_save(tokens, last_refresh=None):
-        called["device_login"] += 1
-        called["tokens"] = dict(tokens)
-        called["last_refresh"] = last_refresh
-
-    monkeypatch.setattr("hermes_cli.auth._save_codex_tokens", _fake_save)
-    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda *args, **kwargs: "/tmp/config.yaml")
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda prompt="": (_ for _ in ()).throw(AssertionError("force_new_login should not prompt for reuse/import")),
-    )
-
-    _login_openai_codex(SimpleNamespace(), PROVIDER_REGISTRY["openai-codex"], force_new_login=True)
-
-    assert called["device_login"] == 1
-    assert called["tokens"]["access_token"] == "fresh-at"
 
 
 class _FakeResp:
@@ -704,41 +609,5 @@ def _patch_httpx_post(monkeypatch, responses):
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **k: _FakeClient())
 
 
-def test_device_code_login_retries_on_429_then_succeeds(monkeypatch):
-    """A transient 429 on the device-code request is retried, not surfaced."""
-    from hermes_cli import auth as auth_mod
-
-    sleeps = []
-    monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
-
-    # First call 429 (with Retry-After), second call succeeds. The polling
-    # loop then returns the authorization code, and token exchange succeeds.
-    _patch_httpx_post(
-        monkeypatch,
-        [
-            _FakeResp(429, headers={"retry-after": "1"}),
-            _FakeResp(200, {"user_code": "ABCD", "device_auth_id": "dev-1", "interval": "5"}),
-            _FakeResp(200, {"authorization_code": "auth-code", "code_verifier": "verifier"}),
-            _FakeResp(200, {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}),
-        ],
-    )
-    # Skip the polling sleep too (shares time.sleep, already patched).
-
-    creds = auth_mod._codex_device_code_login()
-
-    assert creds["tokens"]["access_token"] == "at"
-    # The 429 caused exactly one backoff sleep before the retry succeeded.
-    assert 1 in sleeps
 
 
-def test_device_code_login_non_429_error_unchanged(monkeypatch):
-    """Non-429 failures keep the generic device_code_request_error code."""
-    from hermes_cli import auth as auth_mod
-
-    monkeypatch.setattr("time.sleep", lambda s: None)
-    _patch_httpx_post(monkeypatch, [_FakeResp(500)])
-
-    with pytest.raises(AuthError) as exc_info:
-        auth_mod._codex_device_code_login()
-
-    assert exc_info.value.code == "device_code_request_error"

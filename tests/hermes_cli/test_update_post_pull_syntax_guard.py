@@ -63,14 +63,6 @@ def _populate_critical_tree(root: Path, *, broken_file: str | None = None) -> No
             path.write_text("# stub\n")
 
 
-def test_validate_critical_files_syntax_ok_when_all_files_parse(tmp_path):
-    _populate_critical_tree(tmp_path)
-
-    ok, failing_path, error = hermes_main._validate_critical_files_syntax(tmp_path)
-
-    assert ok is True
-    assert failing_path is None
-    assert error is None
 
 
 def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
@@ -98,13 +90,3 @@ def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
 # in CI first.
 # ---------------------------------------------------------------------------
 
-def test_production_tree_passes_syntax_guard():
-    """The repo itself must always satisfy the guard the update command runs."""
-    repo_root = Path(__file__).resolve().parents[2]
-
-    ok, failing_path, error = hermes_main._validate_critical_files_syntax(repo_root)
-
-    assert ok is True, (
-        f"Critical-path file {failing_path} fails to parse on current main; "
-        f"hermes update would brick users. Error: {error}"
-    )

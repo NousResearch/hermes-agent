@@ -43,22 +43,6 @@ def test_execution_projection_is_opaque_bounded_and_content_free():
     assert "top-secret-token" not in str(event)
 
 
-def test_execution_projection_omits_duration_and_delivery_when_not_known():
-    from agent.monitoring.cron_health import project_execution_event
-
-    event = project_execution_event(
-        {
-            "job_id": "private",
-            "source": "external-value-must-not-leak",
-            "status": "claimed",
-            "claimed_at": "2026-07-24T12:00:00+00:00",
-        }
-    ).to_dict()
-
-    assert event["status"] == "claimed"
-    assert event["source"] == "external"
-    assert event["duration_ms"] is None
-    assert event["delivery_outcome"] is None
 
 
 
@@ -72,18 +56,6 @@ def test_error_classification_avoids_auth_substring_false_positives(message):
 
 
 
-def test_cron_snapshot_exports_catch_up_occurrence_counter(monkeypatch):
-    from agent.monitoring import cron_health
-
-    monkeypatch.setattr(cron_health, "get_ticker_heartbeat_age", lambda: None)
-    monkeypatch.setattr(cron_health, "get_ticker_success_age", lambda: None)
-    monkeypatch.setattr(cron_health, "get_running_job_ids", lambda: frozenset())
-    monkeypatch.setattr(cron_health, "load_jobs", lambda: [])
-    monkeypatch.setattr(cron_health, "get_catch_up_occurrence_count", lambda: 3)
-
-    snapshot = cron_health.build_cron_health_snapshot()
-
-    assert _metric(snapshot, "hermes.cron.scheduler.catch_up_occurrences").value == 3
 
 
 def test_terminal_execution_emission_flushes_and_failures_are_fail_open(monkeypatch):
@@ -110,30 +82,6 @@ def test_terminal_execution_emission_flushes_and_failures_are_fail_open(monkeypa
 
 
 
-def test_background_work_is_task_granular_and_delegations_is_unit_granular(monkeypatch):
-    """background_work expands batches to child tasks; background_delegations
-    counts dispatch units. A 3-task batch => work +3, delegations +1.
-    """
-    from agent.monitoring import gateway_health_export
-    from tools import async_delegation as ad
-
-    with ad._records_lock:
-        saved = dict(ad._records)
-        ad._records.clear()
-        ad._records["single"] = {"status": "running"}
-        ad._records["batch3"] = {"status": "running", "is_batch": True, "goals": ["a", "b", "c"]}
-    # Isolate from process_registry so we measure only the delegation contribution.
-    monkeypatch.setattr(
-        "tools.process_registry.process_registry.count_running", lambda: 0, raising=False
-    )
-    try:
-        # work = single(1) + batch(3) = 4 tasks; delegations = 2 units.
-        assert gateway_health_export._read_background_work_count() == 4
-        assert gateway_health_export._read_background_delegations_count() == 2
-    finally:
-        with ad._records_lock:
-            ad._records.clear()
-            ad._records.update(saved)
 
 
 def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):

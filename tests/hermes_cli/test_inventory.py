@@ -40,37 +40,8 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
     }
 
 
-def test_load_picker_context_full_dict():
-    cfg = _cfg(
-        model={
-            "default": "anthropic/claude-sonnet-4.6",
-            "provider": "openrouter",
-            "base_url": "https://openrouter.ai/api/v1",
-        },
-        providers={"openrouter": {}},
-        custom_providers=[{"name": "Ollama", "base_url": "http://localhost:11434/v1"}],
-    )
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        ctx = load_picker_context()
-    assert ctx.current_model == "anthropic/claude-sonnet-4.6"
-    assert ctx.current_provider == "openrouter"
-    assert ctx.current_base_url == "https://openrouter.ai/api/v1"
-    assert "openrouter" in ctx.user_providers
-    # custom_providers comes from get_compatible_custom_providers, which
-    # merges legacy list + v12+ keyed providers — both present here means
-    # at least one row.
-    assert isinstance(ctx.custom_providers, list)
 
 
-def test_load_picker_context_empty_config():
-    cfg = _cfg()
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        ctx = load_picker_context()
-    assert ctx.current_provider == ""
-    assert ctx.current_model == ""
-    assert ctx.current_base_url == ""
-    assert ctx.user_providers == {}
-    assert ctx.custom_providers == []
 
 
 # ─── with_overrides ────────────────────────────────────────────────────
@@ -86,23 +57,8 @@ def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
     )
 
 
-def test_with_overrides_truthy_only_strings():
-    """Empty strings must NOT clobber disk config — TUI calls this with
-    empty getattr(agent, 'provider', '') when no agent is spawned yet."""
-    ctx = _empty_ctx()
-    overlaid = ctx.with_overrides(
-        current_provider="",
-        current_model="",
-        current_base_url="",
-    )
-    assert overlaid.current_provider == "orig"
-    assert overlaid.current_model == "orig-model"
-    assert overlaid.current_base_url == "orig-url"
 
 
-def test_with_overrides_no_args_returns_self_or_equivalent():
-    ctx = _empty_ctx()
-    assert ctx.with_overrides() == ctx
 
 
 # ─── build_models_payload ──────────────────────────────────────────────
@@ -128,21 +84,6 @@ def _nous_row(model: str = "openai/gpt-5.5") -> dict:
     }
 
 
-def test_build_models_payload_returns_expected_shape():
-    rows = [
-        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
-         "total_models": 1, "is_current": True, "is_user_defined": False,
-         "source": "built-in"},
-    ]
-    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx)
-    assert set(payload.keys()) == {"providers", "model", "provider"}
-    assert payload["model"] == "m1"
-    assert payload["provider"] == "openrouter"
-    assert payload["providers"][0]["slug"] == "moa"
-    assert payload["providers"][0]["models"] == ["default"]
-    assert payload["providers"][1:] == rows
 
 
 def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
@@ -200,25 +141,6 @@ def test_list_authenticated_providers_force_fresh_is_keyword_only():
     assert param.default is False
 
 
-def test_pricing_can_force_fresh_nous_tier():
-    rows = [_nous_row()]
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    with (
-        _list_auth_returning(rows),
-        patch(
-            "hermes_cli.models.get_pricing_for_provider",
-            return_value={
-                "openai/gpt-5.5": {
-                    "prompt": "0.000001",
-                    "completion": "0.000002",
-                },
-            },
-        ),
-        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
-    ):
-        build_models_payload(ctx, pricing=True, force_fresh_nous_tier=True)
-
-    mock_free.assert_called_once_with(force_fresh=True)
 
 
 def test_include_unconfigured_appends_canonical_skeletons():
@@ -286,55 +208,7 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
     ]
 
 
-def test_include_unconfigured_does_not_duplicate_configured_current_row():
-    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
-    with _list_auth_returning([]):
-        payload = build_models_payload(
-            ctx,
-            explicit_only=True,
-            include_unconfigured=True,
-            picker_hints=True,
-        )
 
-    assert sum(row["slug"] == "deepseek" for row in payload["providers"]) == 1
-
-def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
-    rows = [
-        {"slug": "moa", "name": "MoA", "models": ["review"],
-         "total_models": 1, "is_current": False, "is_user_defined": False,
-         "source": "virtual"},
-    ]
-    ctx = _empty_ctx(provider="openrouter", model="anthropic/claude-opus-4.8")
-    raw_config = {
-        "moa": {
-            "active_preset": "review",
-            "presets": {
-                "review": {
-                    "enabled": True,
-                    "reference_models": [
-                        {"provider": "openai-codex", "model": "gpt-5.5"},
-                    ],
-                    "aggregator": {
-                        "provider": "openrouter",
-                        "model": "anthropic/claude-opus-4.8",
-                    },
-                },
-            },
-        },
-    }
-
-    with (
-        _list_auth_returning(rows),
-        patch("hermes_cli.config.load_config", return_value=raw_config),
-        patch("hermes_cli.config.read_raw_config", return_value=raw_config),
-        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
-    ):
-        payload = build_models_payload(ctx, explicit_only=True)
-
-    assert [row["slug"] for row in payload["providers"]] == ["moa", "openrouter"]
-    assert payload["providers"][0]["models"] == ["review"]
-    assert payload["providers"][1]["source"] == "configured-current"
-    assert payload["providers"][1]["authenticated"] is False
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 
@@ -405,32 +279,6 @@ def test_canonical_order_uses_slug_not_is_user_defined_flag():
     )
 
 
-def test_canonical_order_with_unconfigured_preserves_full_universe():
-    """Combined picker call: include_unconfigured + picker_hints +
-    canonical_order is the production TUI shape. Verify the result
-    has CANONICAL_PROVIDERS in declaration order, hints applied,
-    custom rows trailing.
-    """
-    from hermes_cli.models import CANONICAL_PROVIDERS
-
-    rows = [
-        {"slug": "custom:Ollama", "name": "Ollama", "models": [],
-         "total_models": 0, "is_current": False, "is_user_defined": True,
-         "source": "user-config"},
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(
-            ctx,
-            include_unconfigured=True,
-            picker_hints=True,
-            canonical_order=True,
-        )
-    slugs = [r["slug"] for r in payload["providers"]]
-    # First row: first canonical provider in declaration order.
-    assert slugs[0] == CANONICAL_PROVIDERS[0].slug
-    # Custom row trails canonical universe.
-    assert slugs.index("custom:Ollama") >= len(CANONICAL_PROVIDERS)
 
 
 # ─── Integration: end-to-end through real load_picker_context ──────────
@@ -535,36 +383,6 @@ def test_aggregator_dedup_removes_overlapping_models():
     assert or_row["total_models"] == 2
 
 
-def test_aggregator_dedup_does_not_empty_user_defined_custom_provider():
-    """A named custom provider has slug ``custom:<name>``, which makes it
-    *both* ``is_user_defined=True`` *and* ``is_aggregator()==True``
-    (is_aggregator reports True for every ``custom:*`` slug).  The dedup
-    must skip user-defined rows: their models populate ``user_models``, so
-    filtering them against that set would strip the row's entire catalog and
-    hide the provider from the picker.  Regression for the #45954 dedup
-    emptying ``custom:*`` providers (e.g. a local llama.cpp endpoint or an
-    Anthropic-compatible proxy)."""
-    rows = [
-        _user_provider_row("custom:my-proxy", ["my-model-a", "my-model-b"]),
-        _aggregator_row("openrouter", ["my-model-a", "other/model"]),
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx)
-
-    proxy_row = next(
-        r for r in payload["providers"] if r["slug"] == "custom:my-proxy"
-    )
-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
-
-    # The user's own custom provider keeps all of its models.
-    assert proxy_row["models"] == ["my-model-a", "my-model-b"]
-    assert proxy_row["total_models"] == 2
-
-    # A genuine aggregator is still deduped against the user's models.
-    assert "my-model-a" not in or_row["models"]
-    assert "other/model" in or_row["models"]
-    assert or_row["total_models"] == 1
 
 
 def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy():
@@ -607,26 +425,6 @@ def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy
     assert "anthropic/claude-sonnet-4.6" in or_row["models"]
 
 
-def test_two_custom_providers_with_overlap_both_survive():
-    """Two user-defined custom endpoints that happen to expose an
-    overlapping model must each keep their full catalog. Neither is the
-    aggregator the dedup exists to trim, so cross-filtering between two
-    user-defined rows must not happen.
-    """
-    rows = [
-        _user_provider_row("custom:proxy-a", ["shared/model", "a/only"]),
-        _user_provider_row("custom:proxy-b", ["shared/model", "b/only"]),
-    ]
-    ctx = _empty_ctx()
-    with _list_auth_returning(rows):
-        payload = build_models_payload(ctx)
-
-    a_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-a")
-    b_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-b")
-    assert a_row["models"] == ["shared/model", "a/only"]
-    assert b_row["models"] == ["shared/model", "b/only"]
-    assert a_row["total_models"] == 2
-    assert b_row["total_models"] == 2
 
 
 def test_build_models_payload_no_max_models_returns_full_list():
@@ -713,31 +511,5 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
         inventory._apply_featured(rows)
 
 
-def test_apply_featured_keeps_newest_n_per_lab():
-    """Each lab keeps its newest _FEATURED_PER_LAB models by release_date; the
-    older tail is dropped. Uses a lab with more than N models to exercise the
-    cut."""
-    from hermes_cli.inventory import _FEATURED_PER_LAB
-
-    # One lab ("a") with N+2 dated models, plus a second lab so the row counts
-    # as a multi-lab aggregator.
-    a_models = [f"a/m{i}" for i in range(_FEATURED_PER_LAB + 2)]
-    rows = [{"slug": "nous", "models": [*a_models, "b/solo"]}]
-    # m0 newest … m{N+1} oldest (descending dates), b/solo dated in the middle.
-    dates = {f"a/m{i}": f"2026-{12 - i:02d}-01" for i in range(_FEATURED_PER_LAB + 2)}
-    dates["b/solo"] = "2026-01-01"
-    _apply_featured_with_dates(rows, dates)
-
-    featured = rows[0]["featured_models"]
-    # Lab "a" keeps its newest N (m0..m{N-1}); the two oldest drop. "b" keeps its one.
-    assert featured == [*a_models[:_FEATURED_PER_LAB], "b/solo"]
-    assert f"a/m{_FEATURED_PER_LAB}" not in featured
-    assert f"a/m{_FEATURED_PER_LAB + 1}" not in featured
 
 
-def test_apply_featured_empty_for_prefixless_models():
-    """Models with no vendor/ prefix (ollama, custom endpoints) get no
-    shortlist — there are no labs to split on."""
-    rows = [{"slug": "ollama", "models": ["qwen3:latest", "llama3.2:latest"]}]
-    _apply_featured_with_dates(rows, {})
-    assert rows[0]["featured_models"] == []

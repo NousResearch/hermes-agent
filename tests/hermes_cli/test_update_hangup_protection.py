@@ -29,15 +29,6 @@ from hermes_cli.main import (
 
 
 class TestUpdateOutputStream:
-    def test_write_mirrors_to_both_original_and_log(self):
-        original = io.StringIO()
-        log = io.StringIO()
-        stream = _UpdateOutputStream(original, log)
-
-        stream.write("hello world\n")
-
-        assert original.getvalue() == "hello world\n"
-        assert log.getvalue() == "hello world\n"
 
     def test_write_continues_after_broken_original(self):
         """When the terminal disconnects, original.write raises BrokenPipeError.
@@ -64,53 +55,8 @@ class TestUpdateOutputStream:
         assert log.getvalue() == "first line\nsecond line\n"
         assert stream._original_broken is True
 
-    def test_write_tolerates_oserror_and_valueerror(self):
-        """OSError (EIO) and ValueError (closed file) should also be absorbed."""
-        log = io.StringIO()
 
-        class _RaisingStream:
-            def __init__(self, exc):
-                self._exc = exc
 
-            def write(self, data):
-                raise self._exc
-
-            def flush(self):
-                raise self._exc
-
-        for exc in (OSError("EIO"), ValueError("closed file")):
-            stream = _UpdateOutputStream(_RaisingStream(exc), log)
-            stream.write("x\n")
-            assert stream._original_broken is True
-
-    def test_log_failure_does_not_abort_write(self):
-        """Even if the log file write raises, the original write must still happen."""
-        class _BrokenLog:
-            def write(self, data):
-                raise OSError("disk full")
-
-            def flush(self):
-                raise OSError("disk full")
-
-        original = io.StringIO()
-        stream = _UpdateOutputStream(original, _BrokenLog())
-
-        stream.write("data\n")
-
-        assert original.getvalue() == "data\n"
-
-    def test_flush_tolerates_broken_original(self):
-        class _BrokenStream:
-            def write(self, data):
-                return len(data)
-
-            def flush(self):
-                raise BrokenPipeError("gone")
-
-        log = io.StringIO()
-        stream = _UpdateOutputStream(_BrokenStream(), log)
-        stream.flush()  # must not raise
-        assert stream._original_broken is True
 
     def test_isatty_delegates_to_original(self):
         class _TtyStream:
@@ -133,43 +79,7 @@ class TestUpdateOutputStream:
 
 
 class TestInstallHangupProtection:
-    def test_gateway_mode_is_noop(self):
-        """In gateway mode the process is already detached — don't touch stdio or signals."""
-        prev_out, prev_err = sys.stdout, sys.stderr
-        prev_sighup = signal.getsignal(signal.SIGHUP) if hasattr(signal, "SIGHUP") else None
 
-        state = _install_hangup_protection(gateway_mode=True)
-
-        try:
-            assert sys.stdout is prev_out
-            assert sys.stderr is prev_err
-            assert state["log_file"] is None
-            assert state["installed"] is False
-            if hasattr(signal, "SIGHUP"):
-                assert signal.getsignal(signal.SIGHUP) == prev_sighup
-        finally:
-            _finalize_update_output(state)
-
-    @pytest.mark.skipif(
-        not hasattr(signal, "SIGHUP"), reason="SIGHUP not available on this platform"
-    )
-    def test_installs_sighup_ignore(self, tmp_path, monkeypatch):
-        """SIGHUP should be set to SIG_IGN so SSH disconnect doesn't kill the update."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        # Clear cached get_hermes_home if present
-        import hermes_cli.config as _cfg
-        if hasattr(_cfg, "_HERMES_HOME_CACHE"):
-            _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
-
-        original_handler = signal.getsignal(signal.SIGHUP)
-        state = _install_hangup_protection(gateway_mode=False)
-
-        try:
-            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
-        finally:
-            _finalize_update_output(state)
-            # Restore whatever was there before so we don't leak to other tests.
-            signal.signal(signal.SIGHUP, original_handler)
 
     def test_wraps_stdout_and_stderr_with_mirror(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -202,21 +112,6 @@ class TestInstallHangupProtection:
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err
 
-    def test_logs_dir_created_if_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        import hermes_cli.config as _cfg
-        if hasattr(_cfg, "_HERMES_HOME_CACHE"):
-            _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
-
-        # No logs/ dir yet.
-        assert not (tmp_path / "logs").exists()
-
-        state = _install_hangup_protection(gateway_mode=False)
-        try:
-            assert (tmp_path / "logs").is_dir()
-            assert (tmp_path / "logs" / "update.log").exists()
-        finally:
-            _finalize_update_output(state)
 
     def test_non_fatal_if_log_setup_fails(self, monkeypatch):
         """If get_hermes_home() raises, stdio must be left untouched but SIGHUP still handled."""

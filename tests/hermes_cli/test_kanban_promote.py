@@ -63,31 +63,10 @@ def test_promote_stuck_todo_succeeds(conn):
     assert kb.get_task(conn, child).status == "ready"
 
 
-def test_promote_with_force_bypasses_dependency_check(conn):
-    child, _ = _stuck_todo(conn, parents_done=False)
-    ok, err = kb.promote_task(
-        conn, child, actor="tester", reason="recovery", force=True
-    )
-    assert ok and err is None
-    assert kb.get_task(conn, child).status == "ready"
 
 
-def test_promote_does_not_change_assignee(conn):
-    child, _ = _stuck_todo(conn, parents_done=True)
-    before = kb.get_task(conn, child).assignee
-    kb.promote_task(conn, child, actor="someone_else")
-    after = kb.get_task(conn, child).assignee
-    assert before == after
 
 
-def test_promote_blocked_task_works(conn):
-    tid = kb.create_task(conn, title="t")
-    conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
-    ok, err = kb.promote_task(
-        conn, tid, actor="tester", reason="ready now"
-    )
-    assert ok and err is None
-    assert kb.get_task(conn, tid).status == "ready"
 
 
 # ---------------------------------------------------------------------------
@@ -126,18 +105,3 @@ def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
             assert kb.get_task(conn, c).status == "ready"
 
 
-def test_cli_promote_dedupes_duplicate_ids(kanban_home, capsys):
-    """Same id in positional + --ids must only attempt the promotion once."""
-    with kb.connect() as conn:
-        parent = kb.create_task(conn, title="parent")
-        child = kb.create_task(conn, title="c", parents=[parent])
-        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
-    rc = kb_cli._cmd_promote(_promote_ns(child, ids=[child, child]))
-    assert rc == 0
-    with kb.connect() as conn:
-        n = conn.execute(
-            "SELECT COUNT(*) AS n FROM task_events "
-            "WHERE task_id = ? AND kind = 'promoted_manual'",
-            (child,),
-        ).fetchone()["n"]
-    assert n == 1

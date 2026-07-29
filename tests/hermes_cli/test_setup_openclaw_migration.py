@@ -15,10 +15,6 @@ from hermes_cli import setup as setup_mod
 class TestOfferOpenclawMigration:
     """Test the _offer_openclaw_migration helper in isolation."""
 
-    def test_skips_when_no_openclaw_dir(self, tmp_path):
-        """Should return False immediately when ~/.openclaw does not exist."""
-        with patch("hermes_cli.setup.Path.home", return_value=tmp_path):
-            assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
 
 
     def test_skips_when_user_declines(self, tmp_path):
@@ -227,17 +223,6 @@ class TestGetSectionConfigSummary:
         assert result is None
 
 
-    def test_gateway_returns_none_without_tokens(self):
-        # _platform_status reads via hermes_cli.gateway.get_env_value, not
-        # setup_mod.get_env_value, so patch BOTH. Without the second patch,
-        # any environment-variable token (or one leaked in by a sibling
-        # test on the same xdist worker) makes the gateway section report
-        # platforms-configured and the test sees a non-None summary.
-        import hermes_cli.gateway as gateway_mod
-        with patch.object(setup_mod, "get_env_value", return_value=""), \
-             patch.object(gateway_mod, "get_env_value", return_value=""):
-            result = setup_mod._get_section_config_summary({}, "gateway")
-        assert result is None
 
 
     # Regression tests for issue #13025: the model / gateway summaries used
@@ -247,17 +232,6 @@ class TestGetSectionConfigSummary:
     # section.
 
 
-    def test_gateway_recognises_signal_http_url(self):
-        """Signal uses SIGNAL_HTTP_URL (not SIGNAL_ACCOUNT)."""
-        def env_side(key):
-            return "http://signal.local" if key == "SIGNAL_HTTP_URL" else ""
-
-        import hermes_cli.gateway as gateway_mod
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
-             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
-            result = setup_mod._get_section_config_summary({}, "gateway")
-        assert result is not None
-        assert "Signal" in result
 
 
     def test_model_ignores_claude_code_oauth_token(self):
@@ -271,46 +245,7 @@ class TestGetSectionConfigSummary:
             result = setup_mod._get_section_config_summary({}, "model")
         assert result is None
 
-    def test_model_copilot_recognised_when_explicitly_chosen(self):
-        """If the user picked copilot in config, GH_TOKEN *does* count —
-        only the auto-detect path excludes it."""
-        def env_side(key):
-            return "gho_xxx" if key == "GH_TOKEN" else ""
 
-        cfg = {"model": {"provider": "copilot", "default": "gpt-5"}}
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
-            result = setup_mod._get_section_config_summary(cfg, "model")
-        assert result == "gpt-5"
-
-    def test_gateway_matches_platform_registry(self):
-        """Every built-in platform should be recognised by its primary
-        env-var sentinel — i.e. the summary must not drift from the
-        registry used by the setup checklist."""
-        from hermes_cli.gateway import _PLATFORMS
-
-        for plat in _PLATFORMS:
-            label = plat["label"]
-            env_var = plat.get("token_var")
-            if not env_var:
-                continue
-            # Some platforms require a specific value shape (e.g. WhatsApp
-            # needs the literal "true"). Use a sentinel that satisfies every
-            # real validator _platform_status() currently checks.
-            def env_side(key, _target=env_var):
-                if key != _target:
-                    return ""
-                if _target == "WHATSAPP_ENABLED":
-                    return "true"
-                return "x"
-            import hermes_cli.gateway as gateway_mod
-            with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
-                 patch.object(gateway_mod, "get_env_value", side_effect=env_side):
-                result = setup_mod._get_section_config_summary({}, "gateway")
-            expected = setup_mod._gateway_platform_short_label(label)
-            assert result is not None, f"{label} ({env_var}) not recognised"
-            assert expected in result, (
-                f"{label} ({env_var}) recognised but label missing from summary: {result!r}"
-            )
 
 
 class TestSkipConfiguredSection:

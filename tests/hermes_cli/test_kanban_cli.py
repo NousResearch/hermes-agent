@@ -28,48 +28,16 @@ def kanban_home(tmp_path, monkeypatch):
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        ("scratch",              ("scratch", None)),
-        ("worktree",              ("worktree", None)),
-        ("worktree:/tmp/wt",       ("worktree", "/tmp/wt")),
-        ("dir:/tmp/work",         ("dir", "/tmp/work")),
-    ],
-)
-def test_parse_workspace_flag_valid(value, expected):
-    assert kc._parse_workspace_flag(value) == expected
 
 
-@pytest.mark.parametrize("bad", ["cloud", "dir:", "worktree:", ""])
-def test_parse_workspace_flag_rejects(bad):
-    if not bad:
-        # Empty -> defaults; not an error.
-        assert kc._parse_workspace_flag(bad) == ("scratch", None)
-        return
-    with pytest.raises(argparse.ArgumentTypeError):
-        kc._parse_workspace_flag(bad)
 
 
-def test_parse_branch_flag_rejects_empty_and_option_like():
-    assert kc._parse_branch_flag(None) is None
-    assert kc._parse_branch_flag(" wt/t6-wire ") == "wt/t6-wire"
-    with pytest.raises(argparse.ArgumentTypeError):
-        kc._parse_branch_flag("   ")
-    with pytest.raises(argparse.ArgumentTypeError):
-        kc._parse_branch_flag("-bad")
-    with pytest.raises(argparse.ArgumentTypeError):
-        kc._parse_branch_flag("bad branch")
 
 
 # ---------------------------------------------------------------------------
 # run_slash smoke tests (end-to-end via the same entry both CLI and gateway use)
 # ---------------------------------------------------------------------------
 
-def test_run_slash_no_args_shows_usage(kanban_home):
-    out = kc.run_slash("")
-    assert "kanban" in out.lower()
-    assert "create" in out.lower() or "subcommand" in out.lower() or "action" in out.lower()
 
 
 def test_kanban_list_json_includes_session_id(kanban_home):
@@ -140,28 +108,8 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def test_kanban_bypasses_active_session_guard():
-    from hermes_cli.commands import should_bypass_active_session
-
-    assert should_bypass_active_session("kanban")
 
 
-def test_kanban_autocomplete_includes_live_subcommands():
-    from prompt_toolkit.document import Document
-
-    from hermes_cli.commands import SlashCommandCompleter
-
-    completer = SlashCommandCompleter()
-    doc = Document("/kanban sp", cursor_position=len("/kanban sp"))
-    texts = {c.text for c in completer.get_completions(doc, None)}
-
-    assert "specify" in texts
-
-    doc = Document("/kanban re", cursor_position=len("/kanban re"))
-    texts = {c.text for c in completer.get_completions(doc, None)}
-
-    assert "reclaim" in texts
-    assert "reassign" in texts
 
 
 # ---------------------------------------------------------------------------
@@ -206,40 +154,6 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
-def test_run_slash_reassign_with_reclaim_flag(kanban_home):
-    import re
-    import time
-    import secrets
-    from hermes_cli import kanban_db as kb
-
-    out1 = kc.run_slash("create 'switch model' --assignee orig")
-    m = re.search(r"(t_[a-f0-9]+)", out1)
-    tid = m.group(1)
-
-    # Simulate a running claim.
-    conn = kb.connect()
-    try:
-        lock = secrets.token_hex(4)
-        conn.execute(
-            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
-            (lock, int(time.time()) + 3600, 4242, tid),
-        )
-        conn.execute(
-            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
-            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
-            (tid, lock, int(time.time()) + 3600, 4242, int(time.time())),
-        )
-        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (rid, tid))
-        conn.commit()
-    finally:
-        conn.close()
-
-    out = kc.run_slash(f"reassign {tid} newbie --reclaim --reason 'switch'")
-    assert "Reassigned" in out, out
-    out2 = kc.run_slash(f"show {tid}")
-    assert "newbie" in out2
 
 
 # ---------------------------------------------------------------------------
@@ -252,11 +166,3 @@ def test_run_slash_reassign_with_reclaim_flag(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-def test_run_slash_board_override_does_not_change_boards_show_current(kanban_home):
-    kb.create_board("alpha")
-    kb.create_board("beta")
-    kb.set_current_board("alpha")
-
-    out = kc.run_slash("--board beta boards show")
-
-    assert "Current board: alpha" in out

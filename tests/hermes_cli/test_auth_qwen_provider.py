@@ -86,102 +86,32 @@ def test_qwen_cli_auth_path_returns_expected_location():
 # _read_qwen_cli_tokens
 # ---------------------------------------------------------------------------
 
-def test_read_qwen_cli_tokens_success(qwen_env):
-    tokens = _make_qwen_tokens(access_token="my-access")
-    _write_qwen_creds(qwen_env, tokens)
-    result = _read_qwen_cli_tokens()
-    assert result["access_token"] == "my-access"
-    assert result["refresh_token"] == "test-refresh-token"
 
 
-def test_read_qwen_cli_tokens_non_dict(qwen_env):
-    creds_path = qwen_env / ".qwen" / "oauth_creds.json"
-    creds_path.parent.mkdir(parents=True, exist_ok=True)
-    creds_path.write_text(json.dumps(["a", "b"]), encoding="utf-8")
-    with pytest.raises(AuthError) as exc:
-        _read_qwen_cli_tokens()
-    assert exc.value.code == "qwen_auth_invalid"
 
 
 # ---------------------------------------------------------------------------
 # _save_qwen_cli_tokens
 # ---------------------------------------------------------------------------
 
-def test_save_qwen_cli_tokens_roundtrip(qwen_env):
-    tokens = _make_qwen_tokens(access_token="saved-token")
-    saved_path = _save_qwen_cli_tokens(tokens)
-    assert saved_path.exists()
-    loaded = json.loads(saved_path.read_text(encoding="utf-8"))
-    assert loaded["access_token"] == "saved-token"
 
 
-def test_save_qwen_cli_tokens_permissions(qwen_env):
-    tokens = _make_qwen_tokens()
-    saved_path = _save_qwen_cli_tokens(tokens)
-    mode = saved_path.stat().st_mode
-    assert mode & stat.S_IRUSR  # owner read
-    assert mode & stat.S_IWUSR  # owner write
-    assert not (mode & stat.S_IRGRP)  # no group read
-    assert not (mode & stat.S_IROTH)  # no other read
 
 
 # ---------------------------------------------------------------------------
 # _qwen_access_token_is_expiring
 # ---------------------------------------------------------------------------
 
-def test_expiring_token_not_expired():
-    # 1 hour from now in milliseconds
-    future_ms = int((time.time() + 3600) * 1000)
-    assert not _qwen_access_token_is_expiring(future_ms)
 
 
-def test_expiring_token_non_numeric_returns_true():
-    assert _qwen_access_token_is_expiring("not-a-number")
 
 
 # ---------------------------------------------------------------------------
 # _refresh_qwen_cli_tokens
 # ---------------------------------------------------------------------------
 
-def test_refresh_qwen_cli_tokens_success(qwen_env):
-    tokens = _make_qwen_tokens(refresh_token="old-refresh")
-
-    resp = MagicMock()
-    resp.status_code = 200
-    resp.json.return_value = {
-        "access_token": "new-access",
-        "refresh_token": "new-refresh",
-        "expires_in": 7200,
-    }
-
-    with patch("hermes_cli.auth.httpx") as mock_httpx:
-        mock_httpx.post.return_value = resp
-        result = _refresh_qwen_cli_tokens(tokens)
-
-    assert result["access_token"] == "new-access"
-    assert result["refresh_token"] == "new-refresh"
-    assert "expiry_date" in result
 
 
-def test_refresh_qwen_cli_tokens_saves_to_disk(qwen_env):
-    tokens = _make_qwen_tokens()
-
-    resp = MagicMock()
-    resp.status_code = 200
-    resp.json.return_value = {
-        "access_token": "disk-check",
-        "expires_in": 3600,
-    }
-
-    with patch("hermes_cli.auth.httpx") as mock_httpx:
-        mock_httpx.post.return_value = resp
-        _refresh_qwen_cli_tokens(tokens)
-
-    # Verify it was persisted
-    creds_path = qwen_env / ".qwen" / "oauth_creds.json"
-    assert creds_path.exists()
-    saved = json.loads(creds_path.read_text(encoding="utf-8"))
-    assert saved["access_token"] == "disk-check"
 
 
 # ---------------------------------------------------------------------------

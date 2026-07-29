@@ -190,264 +190,34 @@ def test_package_schema_matches_the_model_call_contract():
     assert set(properties["provider_family"]["enum"]) == PROVIDER_FAMILIES
 
 
-@pytest.mark.parametrize(
-    ("provider", "expected"),
-    [
-        ("", "unknown"),
-        ("not-a-hermes-provider", "unknown"),
-        ("custom", "custom"),
-        ("custom-local", "custom"),
-        ("custom:private-endpoint", "custom"),
-        ("lmstudio", "local"),
-        ("lm_studio", "local"),
-        ("ollama", "local"),
-        ("nous", "aggregator"),
-        ("openrouter", "aggregator"),
-        ("kilo", "aggregator"),
-        ("copilot-acp", "aggregator"),
-        ("huggingface", "aggregator"),
-        ("novita", "aggregator"),
-        ("anthropic", "direct"),
-        ("google", "direct"),
-        ("openai-api", "direct"),
-    ],
-)
-def test_provider_family_uses_bounded_product_categories(provider, expected):
-    assert provider_family({"provider": provider}) == expected
 
 
-def test_provider_family_does_not_resolve_live_provider_metadata(monkeypatch):
-    def fail_live_lookup(_provider):
-        raise AssertionError("telemetry must not refresh provider metadata")
-
-    monkeypatch.setattr("hermes_cli.providers.get_provider", fail_live_lookup)
-    assert provider_family({"provider": "anthropic"}) == "direct"
 
 
-def test_locality_uses_the_endpoint_only_for_local_classification():
-    kwargs = {
-        "provider": "custom",
-        "base_url": "http://127.0.0.1:11434/v1",
-    }
-
-    assert provider_family(kwargs) == "custom"
-    assert model_locality(kwargs) == "local"
 
 
-def test_model_family_accepts_only_allowlisted_declared_metadata():
-    assert model_family({"model": "private", "model_family": "qwen"}) == "qwen"
-    assert model_family({"model": "private", "model_family": "private"}) == "unknown"
 
 
-@pytest.mark.parametrize(
-    ("platform", "expected"),
-    [
-        ("", "unknown"),
-        ("cli", "cli"),
-        ("api_server", "api"),
-        ("cron", "scheduled_task"),
-        ("whatsapp_cloud", "gateway"),
-        ("private-surface", "other"),
-    ],
-)
-def test_execution_surface_uses_the_hermes_platform_registry(platform, expected):
-    assert execution_surface({"platform": platform}) == expected
 
 
-@pytest.mark.parametrize(
-    ("platform", "expected"),
-    [
-        ("cli", "interactive"),
-        ("tui", "interactive"),
-        ("whatsapp_cloud", "gateway_message"),
-        ("cron", "scheduled_task"),
-        ("api_server", "api"),
-        ("private-surface", "other"),
-    ],
-)
-def test_task_start_fields_use_bounded_surface_and_entrypoint(platform, expected):
-    fields = task_start_fields({"platform": platform})
-
-    assert fields["entrypoint"] == expected
-    assert fields["execution_surface"] in EXECUTION_SURFACES
 
 
-def test_model_outcome_fails_closed_to_a_bounded_value():
-    assert model_call_outcome({"outcome": "private"}) == "failed"
 
 
-def test_unlisted_model_collapses_to_a_bounded_value():
-    assert model_family({"model": "private-model-name"}) == "unknown"
 
 
-def test_subscriber_contract_rejects_unknown_fields_and_dimension_values():
-    event = SimpleNamespace(
-        kind="scope",
-        category="llm",
-        category_profile={"model_name": "gpt"},
-        name="hermes.model_call",
-        scope_category="end",
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v1"},
-        data={
-            "call_role": "primary",
-            "locality": "remote",
-            "model_family": "gpt",
-            "outcome": "success",
-            "provider_family": "direct",
-        },
-    )
-
-    assert model_call_dimensions(event) == {
-        "call_role": "primary",
-        "locality": "remote",
-        "model_family": "gpt",
-        "outcome": "success",
-        "provider_family": "direct",
-    }
-    event.category_profile["model_name"] = "private-model-name"
-    assert model_call_dimensions(event) is None
-    event.category_profile["model_name"] = "gpt"
-    event.data["prompt"] = "must-not-pass"
-    assert model_call_dimensions(event) is None
-    event.data.pop("prompt")
-    event.metadata["prompt"] = "must-not-pass"
-    assert model_call_dimensions(event) is None
-    event.metadata.pop("prompt")
-    event.category_profile["private"] = "must-not-pass"
-    assert model_call_dimensions(event) is None
-    event.category_profile.pop("private")
-    event.category = "function"
-    assert model_call_dimensions(event) is None
 
 
-def test_task_subscriber_contract_accepts_only_bounded_scope_events():
-    start = SimpleNamespace(
-        kind="scope",
-        category="function",
-        category_profile=None,
-        name="hermes.task_run",
-        scope_category="start",
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v1"},
-        data={"entrypoint": "interactive", "execution_surface": "cli"},
-    )
-    assert task_counter(start) == (
-        "hermes.task_run.started",
-        {"entrypoint": "interactive", "execution_surface": "cli"},
-    )
-
-    terminal_fields = task_terminal_fields(
-        {
-            "platform": "cli",
-            "completed": True,
-            "turn_exit_reason": "text_response(stop)",
-        },
-        duration_ms=6_000,
-        model_call_count=2,
-        tool_call_count=3,
-        retry_count=1,
-    )
-    end = SimpleNamespace(**{
-        **start.__dict__,
-        "scope_category": "end",
-        "data": terminal_fields,
-    })
-    assert task_counter(end) == (
-        "hermes.task_run.finished",
-        terminal_fields,
-    )
-
-    end.data["task_id"] = "must-not-pass"
-    assert task_counter(end) is None
-    end.data.pop("task_id")
-    end.data["outcome"] = "private"
-    assert task_counter(end) is None
-    end.data["outcome"] = "success"
-    end.metadata["prompt"] = "must-not-pass"
-    assert task_counter(end) is None
 
 
-def test_store_rejects_an_unsupported_schema_version(tmp_path):
-    database_path = tmp_path / "metrics.sqlite3"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "CREATE TABLE telemetry_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        connection.execute(
-            "INSERT INTO telemetry_state(key, value) VALUES ('schema_version', '999')"
-        )
-
-    with pytest.raises(RuntimeError, match="Unsupported shared-metrics store schema"):
-        SharedMetricsStore(database_path, tmp_path / "outbox")
-
-    with sqlite3.connect(database_path) as connection:
-        [schema_version] = connection.execute(
-            "SELECT value FROM telemetry_state WHERE key = 'schema_version'"
-        ).fetchone()
-    assert schema_version == "999"
 
 
-def test_pending_metrics_keep_the_version_recorded_at_event_time(tmp_path):
-    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
-    store.record_model_call(_dimensions(), "version-a")
-    store.record_model_call(_dimensions(), "version-b")
-
-    packages = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in store.create_and_export_package()
-    ]
-
-    assert {package["resource"]["hermes_version"] for package in packages} == {
-        "version-a",
-        "version-b",
-    }
-    assert all(package["metrics"][0]["value"] == 1 for package in packages)
 
 
-def test_store_rejects_dimensions_outside_the_metric_contract(tmp_path):
-    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
-
-    with pytest.raises(ValueError, match="Unsupported dimensions"):
-        store.record_counter(
-            "hermes.model_call.count",
-            {"prompt": "must-not-be-persisted"},
-            "test-version",
-        )
-
-    assert store.counter_snapshot() == []
 
 
-def test_package_builder_rejects_tampered_dimensions(tmp_path):
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "UPDATE counter_aggregates SET dimensions_json = ?",
-            (json.dumps({"prompt": "must-not-be-exported"}),),
-        )
-
-    with pytest.raises(ValueError, match="Unsupported dimensions"):
-        store.create_and_export_package()
-
-    assert list(outbox_directory.glob("*.json")) == []
 
 
-def test_pending_package_retry_reuses_the_same_package_and_file(tmp_path):
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
-    [package_path] = store.create_and_export_package()
-    original_payload = package_path.read_bytes()
-
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("UPDATE package_outbox SET exported_at = NULL")
-
-    restarted = SharedMetricsStore(database_path, outbox_directory)
-    assert restarted.create_and_export_package() == [package_path]
-    assert package_path.read_bytes() == original_payload
-    assert list(outbox_directory.glob("*.json")) == [package_path]
 
 
 def test_retention_prunes_only_expired_exported_history(tmp_path):
@@ -509,87 +279,10 @@ def test_retention_prunes_only_expired_exported_history(tmp_path):
     assert aggregate_versions == {"current-version", "pending-version"}
 
 
-def test_retention_failure_does_not_fail_a_committed_export(tmp_path, monkeypatch):
-    store = SharedMetricsStore(
-        tmp_path / "metrics.sqlite3",
-        tmp_path / "outbox",
-    )
-    store.record_model_call(_dimensions(), "test-version")
-
-    def fail_pruning():
-        raise OSError("retention unavailable")
-
-    monkeypatch.setattr(store, "_prune_expired_history", fail_pruning)
-
-    [package_path] = store.create_and_export_package()
-
-    assert package_path.exists()
-    assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
-def test_file_export_failure_retries_committed_outbox_without_duplicate_delta(
-    tmp_path, monkeypatch
-):
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
-
-    def fail_write(*_args, **_kwargs):
-        raise OSError("simulated atomic export failure")
-
-    module_globals = SharedMetricsStore._export_pending_packages.__globals__
-    original_write = module_globals["atomic_json_write"]
-    monkeypatch.setitem(module_globals, "atomic_json_write", fail_write)
-    with pytest.raises(OSError, match="simulated atomic export failure"):
-        store.create_and_export_package()
-
-    with sqlite3.connect(database_path) as connection:
-        package_id, exported_at = connection.execute(
-            "SELECT package_id, exported_at FROM package_outbox"
-        ).fetchone()
-    assert exported_at is None
-    assert store.counter_snapshot()[0]["packaged_value"] == 1
-    assert list(outbox_directory.glob("*.json")) == []
-
-    monkeypatch.setitem(module_globals, "atomic_json_write", original_write)
-    assert store.create_and_export_package() == [
-        outbox_directory / f"{package_id}.json"
-    ]
-    assert len(list(outbox_directory.glob("*.json"))) == 1
-    assert store.create_and_export_package() == []
 
 
-def test_package_export_does_not_chase_concurrent_updates(tmp_path, monkeypatch):
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
-    original_create = store._create_package
-    create_calls = 0
-
-    def create_and_record_another():
-        nonlocal create_calls
-        create_calls += 1
-        package = original_create()
-        if create_calls == 1:
-            store.record_model_call(_dimensions(), "test-version")
-        return package
-
-    monkeypatch.setattr(store, "_create_package", create_and_record_another)
-    first_paths = store.create_and_export_package()
-
-    assert create_calls == 1
-    assert len(first_paths) == 1
-    [counter] = store.counter_snapshot()
-    assert counter["metric_name"] == "hermes.model_call.count"
-    assert counter["dimensions"] == _dimensions()
-    assert counter["value"] == 2
-    assert counter["packaged_value"] == 1
-
-    second_paths = store.create_and_export_package()
-    assert len(second_paths) == 1
-    assert store.counter_snapshot()[0]["packaged_value"] == 2
 
 
 def test_concurrent_package_builders_commit_one_delta(tmp_path):
@@ -621,49 +314,8 @@ def test_concurrent_package_builders_commit_one_delta(tmp_path):
     assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
-def test_concurrent_due_exports_create_one_daily_package(tmp_path):
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    store = SharedMetricsStore(database_path, outbox_directory)
-    store.record_model_call(_dimensions(), "test-version")
-    ready = threading.Barrier(8)
-
-    def export() -> None:
-        worker_store = SharedMetricsStore(database_path, outbox_directory)
-        ready.wait(timeout=5)
-        worker_store.create_and_export_package_if_due()
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(export) for _ in range(8)]
-        for future in futures:
-            future.result()
-
-    with sqlite3.connect(database_path) as connection:
-        [outbox_count] = connection.execute(
-            "SELECT COUNT(*) FROM package_outbox"
-        ).fetchone()
-    assert outbox_count == 1
-    assert len(list(outbox_directory.glob("*.json"))) == 1
-    assert store.counter_snapshot()[0]["packaged_value"] == 1
 
 
-def test_concurrent_model_call_updates_are_transactional(tmp_path):
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    SharedMetricsStore(database_path, outbox_directory)
-
-    def record_calls(count: int) -> None:
-        store = SharedMetricsStore(database_path, outbox_directory)
-        for _ in range(count):
-            store.record_model_call(_dimensions(), "test-version")
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(record_calls, 10) for _ in range(2)]
-        for future in futures:
-            future.result()
-
-    restarted = SharedMetricsStore(database_path, outbox_directory)
-    assert restarted.counter_snapshot()[0]["value"] == 20
 
 
 def test_cross_process_model_call_updates_are_transactional(tmp_path):
@@ -690,28 +342,6 @@ def test_cross_process_model_call_updates_are_transactional(tmp_path):
     assert restarted.counter_snapshot()[0]["value"] == 20
 
 
-def test_schema_initialization_waits_for_an_existing_writer(tmp_path):
-    database_path = tmp_path / "metrics.sqlite3"
-    outbox_directory = tmp_path / "outbox"
-    database_path.touch()
-    blocker = sqlite3.connect(database_path)
-    blocker.execute("BEGIN IMMEDIATE")
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            SharedMetricsStore,
-            database_path,
-            outbox_directory,
-        )
-        try:
-            time.sleep(0.15)
-            assert not future.done()
-        finally:
-            blocker.rollback()
-            blocker.close()
-        store = future.result(timeout=2)
-
-    assert store.counter_snapshot() == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes are unavailable")

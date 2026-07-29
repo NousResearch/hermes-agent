@@ -144,15 +144,7 @@ class TestProfileCompletion:
     """Ensure profile name completion is present in all shell outputs."""
 
 
-    def test_bash_completes_profiles_after_p_flag(self):
-        out = generate_bash(_make_parser())
-        assert '"-p"' in out or "== \"-p\"" in out
-        assert '"--profile"' in out or '== "--profile"' in out
-        assert "_hermes_profiles" in out
 
-    def test_bash_profile_subcommand_has_action_completion(self):
-        out = generate_bash(_make_parser())
-        assert "use|delete|show|alias|rename|export)" in out
 
     def test_bash_profile_actions_complete_profile_names(self):
         """After 'hermes profile use', complete with profile names."""

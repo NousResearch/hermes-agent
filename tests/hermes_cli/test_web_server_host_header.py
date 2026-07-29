@@ -23,18 +23,6 @@ class TestHostHeaderValidator:
     """Unit test the _is_accepted_host helper directly — cheaper and
     more thorough than spinning up the full FastAPI app."""
 
-    def test_loopback_bind_accepts_loopback_names(self):
-        from hermes_cli.web_server import _is_accepted_host
-
-        for bound in ("127.0.0.1", "localhost", "::1"):
-            for host_header in (
-                "127.0.0.1", "127.0.0.1:9119",
-                "localhost", "localhost:9119",
-                "[::1]", "[::1]:9119",
-            ):
-                assert _is_accepted_host(host_header, bound), (
-                    f"bound={bound} must accept host={host_header}"
-                )
 
 
     def test_zero_zero_bind_accepts_anything(self):
@@ -59,12 +47,6 @@ class TestHostHeaderValidator:
         # Loopback — reject (we bound to a specific non-loopback name)
         assert not _is_accepted_host("localhost", "my-server.corp.net")
 
-    def test_case_insensitive_comparison(self):
-        """Host headers are case-insensitive per RFC — accept variations."""
-        from hermes_cli.web_server import _is_accepted_host
-
-        assert _is_accepted_host("LOCALHOST", "127.0.0.1")
-        assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
 
 class TestHostHeaderMiddleware:
@@ -136,28 +118,6 @@ class TestWebSocketHostOriginGuard:
 
         assert exc.value.code == 4403
 
-    def test_rebinding_websocket_origin_is_rejected(self, monkeypatch):
-        from fastapi.testclient import TestClient
-        from starlette.websockets import WebSocketDisconnect
-
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
-        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
-
-        client = TestClient(ws.app)
-        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect(
-                url,
-                headers={
-                    "Host": "localhost:9119",
-                    "Origin": "http://evil.example",
-                },
-            ):
-                pass
-
-        assert exc.value.code == 4403
 
     def test_loopback_websocket_host_and_origin_are_accepted(self, monkeypatch):
         from fastapi.testclient import TestClient

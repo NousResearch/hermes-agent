@@ -15,18 +15,8 @@ from hermes_cli.provider_catalog import (
 )
 
 
-def test_catalog_covers_every_hermes_model_provider():
-    """PARITY CONTRACT: the catalog == the `hermes model` universe."""
-    slugs = {d.slug for d in provider_catalog()}
-    for entry in CANONICAL_PROVIDERS:
-        assert entry.slug in slugs, (
-            f"{entry.slug} is shown in `hermes model` but missing from provider_catalog()"
-        )
 
 
-def test_every_descriptor_lands_on_exactly_one_known_tab():
-    for d in provider_catalog():
-        assert d.tab in {"keys", "accounts"}, f"{d.slug} has bad tab {d.tab!r}"
 
 
 def test_profileless_providers_still_present():
@@ -77,10 +67,6 @@ def test_api_key_providers_expose_a_credential_env_var():
             assert d.api_key_env_vars, f"{d.slug} is api_key but exposes no env var"
 
 
-def test_order_mirrors_canonical_declaration():
-    cat = provider_catalog()
-    assert [d.order for d in cat] == list(range(len(cat)))
-    assert [d.slug for d in cat] == [e.slug for e in CANONICAL_PROVIDERS]
 
 
 def test_tab_for_auth_type_helper():

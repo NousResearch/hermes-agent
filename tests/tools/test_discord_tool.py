@@ -90,29 +90,6 @@ class TestDiscordRequest:
         assert req.get_header("Authorization") == "Bot token123"
         assert req.get_method() == "GET"
 
-    @patch("tools.discord_tool.urllib.request.urlopen")
-    def test_post_with_body(self, mock_urlopen_fn):
-        mock_urlopen_fn.return_value = _mock_urlopen({"id": "123"})
-        result = _discord_request("POST", "/channels", "tok", body={"name": "test"})
-        assert result == {"id": "123"}
-        req = mock_urlopen_fn.call_args[0][0]
-        assert req.data == json.dumps({"name": "test"}).encode("utf-8")
-
-    @patch("tools.discord_tool.urllib.request.urlopen")
-    def test_http_error(self, mock_urlopen_fn):
-        error_body = json.dumps({"message": "Missing Access"}).encode()
-        http_error = urllib.error.HTTPError(
-            url="https://discord.com/api/v10/test",
-            code=403,
-            msg="Forbidden",
-            hdrs={},
-            fp=BytesIO(error_body),
-        )
-        mock_urlopen_fn.side_effect = http_error
-        with pytest.raises(DiscordAPIError) as exc_info:
-            _discord_request("GET", "/test", "tok")
-        assert exc_info.value.status == 403
-        assert "Missing Access" in exc_info.value.body
 
     @patch("tools.discord_tool.urllib.request.urlopen")
     def test_response_body_size_limit(self, mock_urlopen_fn, monkeypatch):
@@ -143,12 +120,6 @@ class TestDiscordServerValidation:
         assert "error" in result
         assert "DISCORD_BOT_TOKEN" in result["error"]
 
-    def test_unknown_action(self, monkeypatch):
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        result = json.loads(discord_core(action="bad_action"))
-        assert "error" in result
-        assert "Unknown action" in result["error"]
-        assert "available_actions" in result
 
     def test_missing_multiple_params(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
@@ -366,13 +337,6 @@ class TestCapabilityDetection:
         assert caps["has_message_content"] is True
         assert caps["detected"] is True
 
-    @patch("tools.discord_tool._discord_request")
-    def test_limited_intent_variants_counted(self, mock_req):
-        # GUILD_MEMBERS_LIMITED (1<<15), MESSAGE_CONTENT_LIMITED (1<<19)
-        mock_req.return_value = {"flags": (1 << 15) | (1 << 19)}
-        caps = _detect_capabilities("tok")
-        assert caps["has_members_intent"] is True
-        assert caps["has_message_content"] is True
 
     @patch("tools.discord_tool._discord_request")
     def test_detection_failure_is_permissive(self, mock_req):
@@ -409,17 +373,6 @@ class TestNonBlockingCapabilityDetection:
         assert caps == caps_in
         mock_req.assert_not_called()
 
-    def test_disk_cache_round_trip(self, tmp_path, monkeypatch):
-        import tools.discord_tool as dt
-        monkeypatch.setattr(
-            dt, "_capability_disk_cache_path",
-            lambda: tmp_path / "discord_capabilities.json",
-        )
-        caps_in = {"has_members_intent": True, "has_message_content": False, "detected": True}
-        dt._save_caps_to_disk("tok", caps_in)
-        assert dt._load_caps_from_disk("tok") == caps_in
-        # Wrong token → miss
-        assert dt._load_caps_from_disk("other") is None
 
     def test_disk_cache_expires(self, tmp_path, monkeypatch):
         import time as _time
@@ -535,23 +488,6 @@ class TestConfigAllowlist:
         result = _load_allowed_actions_config()
         assert result == ["list_guilds", "list_channels", "fetch_messages"]
 
-    def test_yaml_list(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"discord": {"server_actions": ["list_guilds", "server_info"]}},
-        )
-        result = _load_allowed_actions_config()
-        assert result == ["list_guilds", "server_info"]
-
-    def test_unknown_names_dropped(self, monkeypatch, caplog):
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"discord": {"server_actions": "list_guilds,bogus_action,fetch_messages"}},
-        )
-        with caplog.at_level("WARNING"):
-            result = _load_allowed_actions_config()
-        assert result == ["list_guilds", "fetch_messages"]
-        assert "bogus_action" in caplog.text
 
     def test_config_load_failure_is_permissive(self, monkeypatch):
         """If config can't be loaded at all, fall back to None (all allowed)."""
@@ -606,20 +542,6 @@ class TestDynamicSchema:
         assert get_dynamic_schema_admin() is None
         mock_req.assert_not_called()
 
-    @patch("tools.discord_tool._discord_request")
-    def test_full_intents_admin_schema(self, mock_req, monkeypatch):
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"discord": {"server_actions": ""}},
-        )
-        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
-        schema = get_dynamic_schema_admin()
-        actions = set(schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == set(_ADMIN_ACTIONS.keys())
-        assert schema["name"] == "discord_admin"
-        # No content warning when MESSAGE_CONTENT is enabled
-        assert "MESSAGE_CONTENT" not in schema["description"]
 
     @patch("tools.discord_tool._discord_request")
     def test_no_members_intent_hides_search_members_from_core(

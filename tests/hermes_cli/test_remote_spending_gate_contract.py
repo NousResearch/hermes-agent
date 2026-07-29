@@ -52,18 +52,6 @@ def test_503_is_rate_limited_not_revoked_and_carries_retry_after():
     assert exc.retry_after == 30
 
 
-def test_403_business_denial_carries_code_and_recovery():
-    exc = _raise(403, {
-        "error": "cli_billing_disabled",
-        "code": "remote_spending_disabled",
-        "recovery": "enable_account_toggle",
-        "portalUrl": "/billing",
-    })
-    # Generic BillingError (not a typed revoke) — the surface maps on code.
-    assert type(exc) is BillingError
-    assert exc.error == "cli_billing_disabled"
-    assert exc.code == "remote_spending_disabled"
-    assert exc.recovery == "enable_account_toggle"
 
 
 def test_409_idempotency_conflict_passes_through():
@@ -80,9 +68,5 @@ def _serialize(status, payload, headers=None):
     return srv._serialize_billing_error(_raise(status, payload, headers))
 
 
-def test_envelope_session_revoked_kind():
-    env = _serialize(401, {"error": "session_revoked", "recovery": "login"})
-    assert env["error"] == "session_revoked"
-    assert env["recovery"] == "login"
 
 

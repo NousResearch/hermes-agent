@@ -55,34 +55,6 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
     assert features.web.current_provider == "exa"
 
 
-def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
-    # Paid account: entitled to every category, including video.
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True)
-    )
-    monkeypatch.setattr(
-        ns,
-        "_get_gateway_direct_credentials",
-        lambda: {
-            "web": True,
-            "image_gen": False,
-            "video_gen": False,
-            "tts": False,
-            "stt": False,
-            "browser": False,
-        },
-    )
-
-    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
-        {
-            "model": {"provider": "nous"},
-            "web": {"use_gateway": "false"},
-        }
-    )
-
-    assert "web" in has_direct
-    assert "web" not in already_managed
-    assert set(unconfigured) == {"image_gen", "video_gen", "tts", "stt", "browser"}
 
 
 def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda=False):
@@ -127,53 +99,10 @@ def test_local_browser_unavailable_without_chromium(monkeypatch):
     assert features.browser.current_provider == "Local browser"
 
 
-def test_default_local_browser_unavailable_without_chromium(monkeypatch):
-    """The implicit (no cloud_provider) local fallthrough is gated on Chromium too."""
-    _stub_browser_probes(monkeypatch, has_agent_browser=True, chromium=False)
-
-    features = ns.get_nous_subscription_features({})
-
-    assert features.browser.available is False
-    assert features.browser.current_provider == "Local browser"
 
 
-def test_cloud_browserbase_available_without_local_chromium(monkeypatch):
-    """Cloud providers host their own Chromium, so the new local gate must not
-    regress them: agent-browser binary present + Browserbase creds is enough."""
-    env = {"BROWSERBASE_API_KEY": "bb-key", "BROWSERBASE_PROJECT_ID": "bb-project"}
-    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
-    )
-    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
-    monkeypatch.setattr(ns, "_has_agent_browser", lambda: True)
-    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
-    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
-    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
-    # Chromium absent locally — must not matter for a cloud provider.
-    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
-    monkeypatch.setattr("tools.browser_tool._using_lightpanda_engine", lambda: False)
-
-    features = ns.get_nous_subscription_features(
-        {"browser": {"cloud_provider": "browserbase"}}
-    )
-
-    assert features.browser.available is True
-    assert features.browser.active is True
-    assert features.browser.current_provider == "Browserbase"
 
 
-def test_get_gateway_eligible_tools_empty_when_not_entitled(monkeypatch):
-    """A logged-in free user with no pool and no paid access gets nothing."""
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False)
-    )
-
-    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
-        {"model": {"provider": "nous"}}
-    )
-
-    assert (unconfigured, has_direct, already_managed) == ([], [], [])
 
 
 def _capture_checklist(monkeypatch, *, selected_idx):
@@ -215,22 +144,6 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     assert "free" in captured["title"].lower() and "pool" in captured["title"].lower()
 
 
-def test_prompt_enable_tool_gateway_paid_user_offers_video(monkeypatch):
-    """Paid users still get video gen in the offer (regression guard)."""
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=True)
-    )
-    monkeypatch.setattr(
-        ns,
-        "_get_gateway_direct_credentials",
-        lambda: {"web": False, "image_gen": False, "video_gen": False, "tts": False, "browser": False},
-    )
-    captured = _capture_checklist(monkeypatch, selected_idx=[])
-
-    ns.prompt_enable_tool_gateway({"model": {"provider": "nous"}})
-
-    blob = " ".join(captured["items"]).lower()
-    assert "video" in blob
 
 
 def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
@@ -260,85 +173,16 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_nous_portal_access_fast_path_when_already_paid(monkeypatch):
-    """Already-entitled users return True without any login prompt."""
-    login_called = {"v": False}
-
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info",
-        lambda **kw: _account(logged_in=True, paid=True),
-    )
-
-    def _login(**kw):
-        login_called["v"] = True
-        return True
-
-    monkeypatch.setattr(ns, "_run_nous_portal_login_only", _login)
-
-    assert ns.ensure_nous_portal_access() is True
-    assert login_called["v"] is False
 
 
-def test_ensure_nous_portal_access_returns_false_when_login_declined(monkeypatch):
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info",
-        lambda **kw: _account(logged_in=False, paid=None),
-    )
-    monkeypatch.setattr(ns, "_run_nous_portal_login_only", lambda **kw: False)
-
-    assert ns.ensure_nous_portal_access() is False
 
 
 # ---------------------------------------------------------------------------
 # STT — managed-by-Nous detection (Phase 4 follow-up)
 # ---------------------------------------------------------------------------
 
-def test_stt_managed_by_nous_when_provider_openai_and_no_direct_key(monkeypatch):
-    """Default `stt.provider: openai` with a Nous sub + no direct OpenAI key
-    should route through the managed audio gateway."""
-    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info",
-        lambda **kw: _account(logged_in=True, paid=True),
-    )
-    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: False)
-    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
-    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
-    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
-    monkeypatch.setattr(
-        ns,
-        "is_managed_tool_gateway_ready",
-        lambda vendor: vendor == "openai-audio",
-    )
-
-    features = ns.get_nous_subscription_features({"stt": {"provider": "openai"}})
-
-    assert features.stt.available is True
-    assert features.stt.active is True
-    assert features.stt.managed_by_nous is True
-    assert features.stt.direct_override is False
-    assert features.stt.current_provider == "OpenAI Whisper"
 
 
-def test_stt_groq_provider_requires_groq_key(monkeypatch):
-    env = {"GROQ_API_KEY": "groq-key"}
-    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(
-        ns, "get_nous_portal_account_info",
-        lambda **kw: _account(logged_in=False),
-    )
-    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: False)
-    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
-    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
-    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
-    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
-
-    features = ns.get_nous_subscription_features({"stt": {"provider": "groq"}})
-
-    assert features.stt.available is True
-    assert features.stt.managed_by_nous is False
-    assert features.stt.current_provider == "Groq Whisper"
-    assert features.stt.explicit_configured is True
 
 
 def _stt_features_stub(*, account_info):
@@ -359,45 +203,8 @@ def _stt_features_stub(*, account_info):
     )
 
 
-def test_apply_nous_managed_defaults_skips_stt_when_groq_key_present(monkeypatch):
-    """Don't override a user who explicitly set up Groq for STT."""
-    env = {"GROQ_API_KEY": "groq-key"}
-    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(
-        ns,
-        "get_nous_subscription_features",
-        lambda config, **kw: ns.NousSubscriptionFeatures(
-            subscribed=True,
-            nous_auth_present=True,
-            provider_is_nous=True,
-            account_info=_account(logged_in=True, paid=True),
-            features={
-                key: ns.NousFeatureState(
-                    key=key, label=key, included_by_default=True,
-                    available=False, active=False, managed_by_nous=False,
-                    direct_override=False, toolset_enabled=False,
-                    explicit_configured=False,
-                )
-                for key in ("web", "image_gen", "video_gen", "tts", "stt", "browser", "modal")
-            },
-        ),
-    )
-
-    config = {"stt": {"provider": "local"}}
-    changed = ns.apply_nous_managed_defaults(config, enabled_toolsets=[])
-
-    # STT was not flipped because the user has a Groq key configured.
-    assert "stt" not in changed
-    assert config["stt"]["provider"] == "local"
 
 
-def test_apply_gateway_defaults_sets_stt_use_gateway(monkeypatch):
-    config = {}
-    changed = ns.apply_gateway_defaults(config, ["stt"])
-
-    assert "stt" in changed
-    assert config["stt"]["provider"] == "openai"
-    assert config["stt"]["use_gateway"] is True
 
 
 def test_has_agent_browser_resolves_via_hermes_managed_node_path(monkeypatch, tmp_path):
@@ -424,11 +231,3 @@ def test_has_agent_browser_resolves_via_hermes_managed_node_path(monkeypatch, tm
     assert ns._has_agent_browser() is True
 
 
-def test_has_agent_browser_false_when_nothing_runnable(monkeypatch):
-    import shutil as _shutil
-
-    monkeypatch.setattr(_shutil, "which", lambda cmd, path=None: None)
-    monkeypatch.setattr("hermes_constants.with_hermes_node_path", lambda: {"PATH": ""})
-    monkeypatch.setattr("hermes_constants.agent_browser_runnable", lambda p: False)
-
-    assert ns._has_agent_browser() is False

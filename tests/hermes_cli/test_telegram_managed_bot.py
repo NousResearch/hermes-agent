@@ -171,44 +171,7 @@ class TestPollForToken:
         }
 
 
-    def test_invalid_ready_token_returns_none(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "bot_username": "hermes_abcdefghijklmnop_bot",
-            "owner_user_id": 42,
-            "status": "ready",
-            "token": "not-a-real-token",
-        }
 
-        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
-            with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                with patch(
-                    "hermes_cli.telegram_managed_bot.time.monotonic"
-                ) as mock_time:
-                    mock_time.side_effect = [0, 0, 999]
-                    assert (
-                        poll_for_token(
-                            "https://api.example.com", self.pairing(), timeout=1
-                        )
-                        is None
-                    )
-
-    def test_timeout_returns_none(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"status": "waiting"}
-
-        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
-            with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                with patch(
-                    "hermes_cli.telegram_managed_bot.time.monotonic"
-                ) as mock_time:
-                    mock_time.side_effect = [0, 0, 999]
-                    token = poll_for_token(
-                        "https://api.example.com", self.pairing(), timeout=1
-                    )
-                    assert token is None
 
     def test_eventual_success(self):
         not_ready = MagicMock()

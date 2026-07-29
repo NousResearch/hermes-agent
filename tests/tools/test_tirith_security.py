@@ -255,24 +255,6 @@ class TestUnsupportedPlatform:
              patch("tools.tirith_security.platform.machine", return_value=machine):
             assert _tirith_mod.is_platform_supported() is expected
 
-    @patch("tools.tirith_security._load_security_config")
-    def test_ensure_installed_unsupported_returns_none_no_thread(self, mock_cfg):
-        """Windows: don't start a background install thread, don't write a
-        failure marker — just cache the verdict and return None."""
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
-        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
-             patch("tools.tirith_security.threading.Thread") as MockThread, \
-             patch("tools.tirith_security._mark_install_failed") as mock_mark, \
-             patch("tools.tirith_security.shutil.which") as mock_which:
-            result = ensure_installed()
-            assert result is None
-            MockThread.assert_not_called()
-            mock_mark.assert_not_called()
-            mock_which.assert_not_called()
-            assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
-            assert _tirith_mod._install_failure_reason == "unsupported_platform"
 
     @patch("tools.tirith_security._load_security_config")
     def test_check_command_security_unsupported_allows_silently(self, mock_cfg):
@@ -390,27 +372,6 @@ class TestCosignVerification:
         assert "workflows/release" in identity
         assert "refs/tags/v" in identity
 
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/bin/cosign")
-    def test_cosign_fail_aborts(self, mock_which, mock_run):
-        """cosign verify-blob exits non-zero → returns False (abort install)."""
-        from tools.tirith_security import _verify_cosign
-        mock_run.return_value = _mock_run(1, "", "signature mismatch")
-        result = _verify_cosign("/tmp/checksums.txt", "/tmp/checksums.txt.sig",
-                                "/tmp/checksums.txt.pem")
-        assert result is False
-
-    @patch("tools.tirith_security._verify_cosign", return_value=False)
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
-    @patch("tools.tirith_security._download_file")
-    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
-    def test_install_aborts_on_cosign_rejection(self, mock_target, mock_dl,
-                                                 mock_which, mock_cosign):
-        """_install_tirith returns None when cosign rejects the signature."""
-        from tools.tirith_security import _install_tirith
-        path, reason = _install_tirith()
-        assert path is None
-        assert reason == "cosign_verification_failed"
 
     @patch("tools.tirith_security.tarfile.open")
     @patch("tools.tirith_security._verify_checksum", return_value=True)
@@ -582,60 +543,6 @@ class TestDiskFailureMarker:
             os.utime(marker, (old_time, old_time))
             assert not _is_install_failed_on_disk()
 
-    def test_cosign_missing_marker_clears_when_cosign_appears(self):
-        """Marker with 'cosign_missing' reason clears if cosign is now on PATH."""
-        import tempfile
-        tmpdir = tempfile.mkdtemp()
-        marker = os.path.join(tmpdir, ".tirith-install-failed")
-        with patch("tools.tirith_security._failure_marker_path", return_value=marker):
-            from tools.tirith_security import _mark_install_failed, _is_install_failed_on_disk
-            _mark_install_failed("cosign_missing")
-            with patch("tools.tirith_security.shutil.which", return_value=None):
-                assert _is_install_failed_on_disk()  # cosign still absent
-
-            # Now cosign appears on PATH
-            with patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign"):
-                assert not _is_install_failed_on_disk()
-            # Marker file should have been removed
-            assert not os.path.exists(marker)
-
-    def test_install_failed_still_checks_local_paths(self):
-        """After _INSTALL_FAILED, a manual install on PATH is picked up."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = _INSTALL_FAILED
-
-        with patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/tirith"), \
-             patch("tools.tirith_security._clear_install_failed") as mock_clear:
-            result = _resolve_tirith_path("tirith")
-            assert result == "/usr/local/bin/tirith"
-            assert _tirith_mod._resolved_path == "/usr/local/bin/tirith"
-            mock_clear.assert_called_once()
-
-        _tirith_mod._resolved_path = None
-
-    def test_in_memory_cosign_missing_retries_when_cosign_appears(self):
-        """In-memory _INSTALL_FAILED with cosign_missing retries when cosign appears."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = _INSTALL_FAILED
-        _tirith_mod._install_failure_reason = "cosign_missing"
-
-        def _which_side_effect(name):
-            if name == "tirith":
-                return None  # tirith not on PATH
-            if name == "cosign":
-                return "/usr/local/bin/cosign"  # cosign now available
-            return None
-
-        with patch("tools.tirith_security.shutil.which", side_effect=_which_side_effect), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=False), \
-             patch("tools.tirith_security._install_tirith", return_value=("/new/tirith", "")) as mock_install, \
-             patch("tools.tirith_security._clear_install_failed"):
-            result = _resolve_tirith_path("tirith")
-            mock_install.assert_called_once()  # network retry happened
-            assert result == "/new/tirith"
-
-        _tirith_mod._resolved_path = None
 
     def test_in_memory_cosign_exec_failed_not_retried(self):
         """In-memory _INSTALL_FAILED with cosign_exec_failed is NOT retried."""

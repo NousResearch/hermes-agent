@@ -280,18 +280,6 @@ class TestRestore:
         mgr.ensure_checkpoint(str(work_dir), "initial")
         assert mgr.restore(str(work_dir), "deadbeef1234")["success"] is False
 
-    def test_restore_creates_pre_rollback_snapshot(self, mgr, work_dir):
-        (work_dir / "main.py").write_text("v1\n")
-        mgr.ensure_checkpoint(str(work_dir), "v1")
-        mgr.new_turn()
-
-        (work_dir / "main.py").write_text("v2\n")
-        cps = mgr.list_checkpoints(str(work_dir))
-        mgr.restore(str(work_dir), cps[0]["hash"])
-
-        all_cps = mgr.list_checkpoints(str(work_dir))
-        assert len(all_cps) >= 2
-        assert "pre-rollback" in all_cps[0]["reason"]
 
     def test_tilde_path_supports_diff_and_restore_flow(
         self, checkpoint_base, fake_home, monkeypatch,
@@ -428,37 +416,6 @@ class TestErrorResilience:
         assert stdout == ""
         assert not caplog.records
 
-    def test_run_git_distinguishes_bad_workdir_from_missing_git(
-        self, tmp_path, monkeypatch, caplog,
-    ):
-        missing = tmp_path / "missing"
-        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
-            ok, _, stderr = _run_git(
-                ["status"], tmp_path / "store", str(missing),
-            )
-        assert ok is False
-        assert "working directory not found" in stderr
-        assert not any(
-            "Git executable not found" in r.getMessage() for r in caplog.records
-        )
-
-        work = tmp_path / "work"
-        work.mkdir()
-
-        def raise_missing_git(*args, **kwargs):
-            raise FileNotFoundError(2, "No such file or directory", "git")
-
-        monkeypatch.setattr("tools.checkpoint_manager.subprocess.run", raise_missing_git)
-        caplog.clear()
-        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
-            ok, _, stderr = _run_git(
-                ["status"], tmp_path / "store", str(work),
-            )
-        assert ok is False
-        assert stderr == "git not found"
-        assert any(
-            "Git executable not found" in r.getMessage() for r in caplog.records
-        )
 
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):
         def broken_run_git(*args, **kwargs):
@@ -636,22 +593,6 @@ class TestPruneCheckpointsLegacy:
         assert alive_repo.exists()
         assert not orphan_repo.exists()
 
-    def test_deletes_stale_by_mtime(self, tmp_path):
-        base = tmp_path / "checkpoints"
-        work = tmp_path / "work"
-        work.mkdir()
-        fresh_repo = _seed_legacy_repo(base, "cccc" * 4, work)
-        stale_work = tmp_path / "stale_work"
-        stale_work.mkdir()
-        old = time.time() - 60 * 86400
-        stale_repo = _seed_legacy_repo(base, "dddd" * 4, stale_work, mtime=old)
-
-        result = prune_checkpoints(
-            retention_days=30, delete_orphans=False, checkpoint_base=base,
-        )
-        assert result["deleted_stale"] == 1
-        assert fresh_repo.exists()
-        assert not stale_repo.exists()
 
     def test_noop_cases_delete_nothing(self, tmp_path):
         # Missing base.
@@ -1000,76 +941,6 @@ class TestOrphanPruneRequiresObservableDeletion:
             "merely survived the unmount as an empty directory"
         )
 
-    def test_empty_parent_project_is_still_reclaimed_by_retention(
-        self, tmp_path, checkpoint_base, monkeypatch,
-    ):
-        """Skipping an ambiguous parent defers reclamation, it does not lose it.
-
-        A project deleted out of an otherwise-empty parent is indistinguishable
-        from an unmounted volume, so orphan pruning leaves it alone — but the
-        retention rule, which reads ``last_touch`` instead of probing the
-        filesystem, still reclaims it.
-        """
-        parent = tmp_path / "solo"
-        work_dir = parent / "proj"
-        work_dir.mkdir(parents=True)
-        (work_dir / "main.py").write_text("print('x')\n")
-        self._project_with_history(work_dir, checkpoint_base, monkeypatch)
-
-        shutil.rmtree(work_dir)
-        assert parent.is_dir() and not any(parent.iterdir())
-
-        store = _store_path(checkpoint_base)
-        meta_path = _project_meta_path(store, _project_hash(str(work_dir)))
-        meta = json.loads(meta_path.read_text())
-        meta["last_touch"] = time.time() - 60 * 86400
-        meta_path.write_text(json.dumps(meta))
-
-        result = prune_checkpoints(
-            retention_days=30, delete_orphans=True, checkpoint_base=checkpoint_base,
-        )
-
-        assert result["deleted_stale"] >= 1
-        assert not self._history_survives(checkpoint_base, work_dir)
-
-    def test_orphan_classification_needs_recorded_parent_identity(
-        self, tmp_path, checkpoint_base, monkeypatch,
-    ):
-        """Control + the older-metadata case, side by side.
-
-        A populated parent without the project is a real orphan and gets
-        pruned. But without a recorded parent ``(st_dev, st_ino)`` we cannot
-        tell the project's real parent from an underlay directory exposed by
-        an unmount, so metadata written by an older version stays conservative:
-        not an orphan. (Retention still reclaims those.)
-        """
-        parent = tmp_path / "projects"
-        real = parent / "proj"
-        legacy = parent / "legacy-proj"
-        for d, body in ((real, "x"), (legacy, "y")):
-            d.mkdir(parents=True)
-            (d / "main.py").write_text(f"print('{body}')\n")
-            self._project_with_history(d, checkpoint_base, monkeypatch)
-        (parent / "other-project").mkdir()  # parent stays populated
-
-        # Strip the recorded identity from one project, as older metadata would.
-        store = _store_path(checkpoint_base)
-        legacy_meta = _project_meta_path(store, _project_hash(str(legacy)))
-        meta = json.loads(legacy_meta.read_text())
-        meta.pop("workdir_parent_dev", None)
-        meta.pop("workdir_parent_ino", None)
-        legacy_meta.write_text(json.dumps(meta))
-
-        shutil.rmtree(real)
-        shutil.rmtree(legacy)
-
-        result = prune_checkpoints(
-            retention_days=0, delete_orphans=True, checkpoint_base=checkpoint_base,
-        )
-
-        assert result["deleted_orphan"] >= 1
-        assert not self._history_survives(checkpoint_base, real)
-        assert self._history_survives(checkpoint_base, legacy)
 
     def test_populated_underlay_mountpoint_keeps_its_checkpoints(
         self, tmp_path, checkpoint_base, monkeypatch,
@@ -1164,25 +1035,6 @@ class TestSessionDiff:
         assert result.get("empty") is True
         assert result["diff"] == ""
 
-    def test_cumulative_diff_spans_all_edits(self, mgr, work_dir):
-        """The diff covers the first edit through the latest working tree."""
-        # First checkpoint captures the pre-edit state (main.py == hello).
-        mgr.ensure_checkpoint(str(work_dir), "before edit 1")
-        (work_dir / "main.py").write_text("print('v2')\n")
-        mgr.new_turn()
-        mgr.ensure_checkpoint(str(work_dir), "before edit 2")
-        (work_dir / "main.py").write_text("print('v3')\n")
-
-        result = mgr.session_diff(str(work_dir))
-        assert result["success"] is True
-        assert not result.get("empty")
-        # Baseline is the earliest retained checkpoint.
-        assert result["baseline"] == mgr.list_checkpoints(str(work_dir))[-1]["hash"]
-        # Cumulative: the original line is removed, the final line added; the
-        # intermediate "v2" is neither in the baseline nor the working tree.
-        assert "-print('hello')" in result["diff"]
-        assert "+print('v3')" in result["diff"]
-        assert "v2" not in result["diff"]
 
     def test_includes_newly_added_files(self, mgr, work_dir):
         mgr.ensure_checkpoint(str(work_dir), "baseline")

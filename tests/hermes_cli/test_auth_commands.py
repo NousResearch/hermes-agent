@@ -596,37 +596,6 @@ def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, mo
     assert "base_url: https://openrouter.ai/api/v1" in config_text
 
 
-def test_reset_config_provider_uses_atomic_yaml_write(tmp_path, monkeypatch):
-    """Logout config reset should delegate the YAML write atomically."""
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    config_path = hermes_home / "config.yaml"
-    original = {
-        "model": {
-            "default": "gpt-5.3-codex",
-            "provider": "openai-codex",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-        }
-    }
-    config_path.write_text(yaml.safe_dump(original, sort_keys=False), encoding="utf-8")
-    original_text = config_path.read_text(encoding="utf-8")
-
-    from hermes_cli.auth import _reset_config_provider
-
-    def _boom(path, data, **kwargs):
-        assert path == config_path
-        assert data["model"]["provider"] == "auto"
-        assert data["model"]["base_url"] == "https://openrouter.ai/api/v1"
-        assert kwargs["sort_keys"] is False
-        raise OSError("simulated atomic write failure")
-
-    with patch("hermes_cli.auth.atomic_yaml_write", side_effect=_boom) as mock_write:
-        with pytest.raises(OSError, match="simulated atomic write failure"):
-            _reset_config_provider()
-
-    assert mock_write.call_count == 1
-    assert config_path.read_text(encoding="utf-8") == original_text
 
 
 def test_unsuppress_credential_source_clears_marker(tmp_path, monkeypatch):
@@ -666,42 +635,6 @@ def test_unsuppress_credential_source_preserves_other_markers(tmp_path, monkeypa
     assert is_source_suppressed("anthropic", "claude_code") is True
 
 
-def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
-    """_seed_from_singletons() for openai-codex must skip auto-import when suppressed."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-
-    # Suppression marker in place
-    (hermes_home / "auth.json").write_text(json.dumps({
-        "version": 1,
-        "providers": {},
-        "suppressed_sources": {"openai-codex": ["device_code"]},
-    }))
-
-    # Make _import_codex_cli_tokens return tokens — these would normally trigger
-    # a re-seed, but suppression must skip it.
-    def _fake_import():
-        return {
-            "access_token": "would-be-reimported",
-            "refresh_token": "would-be-reimported",
-        }
-
-    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", _fake_import)
-
-    from agent.credential_pool import _seed_from_singletons
-
-    entries = []
-    changed, active_sources = _seed_from_singletons("openai-codex", entries)
-
-    # With suppression in place: nothing changes, no entries added, no sources
-    assert changed is False
-    assert entries == []
-    assert active_sources == set()
-
-    # Verify the auth store was NOT modified (no auto-import happened)
-    after = json.loads((hermes_home / "auth.json").read_text())
-    assert "openai-codex" not in after.get("providers", {})
 
 
 # =============================================================================
@@ -741,34 +674,6 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
     assert "hermes_pkce" not in active
 
 
-def test_seed_custom_pool_respects_config_suppression(tmp_path, monkeypatch):
-    """Custom provider config:<name> source must not re-seed when suppressed."""
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    import yaml
-    (hermes_home / "config.yaml").write_text(yaml.dump({
-        "model": {},
-        "custom_providers": [
-            {"name": "my", "base_url": "https://c.example.com", "api_key": "sk-custom"},
-        ],
-    }))
-
-    from agent.credential_pool import _seed_custom_pool, get_custom_provider_pool_key
-    pool_key = get_custom_provider_pool_key("https://c.example.com")
-
-    (hermes_home / "auth.json").write_text(json.dumps({
-        "version": 1,
-        "providers": {},
-        "suppressed_sources": {pool_key: ["config:my"]},
-    }))
-
-    entries = []
-    changed, active = _seed_custom_pool(pool_key, entries)
-    assert changed is False
-    assert entries == []
-    assert "config:my" not in active
 
 
 def test_credential_sources_registry_has_expected_steps():

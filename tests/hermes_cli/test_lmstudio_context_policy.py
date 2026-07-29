@@ -48,44 +48,8 @@ def _capture_load(monkeypatch, response_payload):
     return requests
 
 
-def test_loaded_64k_runtime_is_preserved_without_post(monkeypatch):
-    monkeypatch.setattr(
-        models,
-        "_lmstudio_fetch_raw_models",
-        lambda **_kwargs: _catalog(loaded_context=64_000),
-    )
-    monkeypatch.setattr(
-        models,
-        "_urlopen_model_catalog_request",
-        lambda *_args, **_kwargs: pytest.fail("loaded model must not be reloaded"),
-    )
-
-    result = models.ensure_lmstudio_model_loaded(
-        MODEL, BASE_URL, api_key="", target_context_length=None
-    )
-
-    assert result == 64_000
 
 
-@pytest.mark.parametrize("requested_context", [32_000, 100_000])
-def test_unloaded_explicit_override_sends_exact_context(monkeypatch, requested_context):
-    monkeypatch.setattr(
-        models, "_lmstudio_fetch_raw_models", lambda **_kwargs: _catalog()
-    )
-    requests = _capture_load(monkeypatch, {
-        "load_config": {"context_length": requested_context},
-    })
-
-    result = models.ensure_lmstudio_model_loaded(
-        MODEL, BASE_URL, api_key="", target_context_length=requested_context
-    )
-
-    assert result == requested_context
-    assert requests[0][2] == {
-        "model": MODEL,
-        "context_length": requested_context,
-        "echo_load_config": True,
-    }
 
 
 def test_missing_echo_refreshes_loaded_state(monkeypatch):

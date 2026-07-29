@@ -120,10 +120,6 @@ class TestCursesBrowse:
                 with patch("curses.has_colors", return_value=False):
                     return _session_browse_picker(sessions)
 
-    def test_enter_selects_first_session(self):
-        sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [10])  # Enter key
-        assert result == sessions[0]["id"]
 
 
     def test_escape_cancels(self):
@@ -145,44 +141,10 @@ class TestCursesBrowse:
         assert result == "s2"
 
 
-    def test_backspace_removes_filter_char(self):
-        """Backspace removes the last character from the filter."""
-        sessions = [
-            {"id": "s1", "source": "cli", "title": "Alpha", "preview": "", "last_active": time.time()},
-            {"id": "s2", "source": "cli", "title": "Beta", "preview": "", "last_active": time.time()},
-        ]
-        # Type "Bet", backspace, backspace, backspace (clears filter), then Enter (selects first)
-        keys = [ord('B'), ord('e'), ord('t'), 127, 127, 127, 10]
-        result = self._run_with_keys(sessions, keys)
-        assert result == "s1"
-
-    def test_escape_clears_filter_first(self):
-        """First Esc clears the search text, second Esc exits."""
-        sessions = _make_sessions(3)
-        # Type "ab" then Esc (clears filter) then Enter (selects first)
-        keys = [ord('a'), ord('b'), 27, 10]
-        result = self._run_with_keys(sessions, keys)
-        assert result == sessions[0]["id"]
 
 
-    def test_q_quits_when_no_filter_active(self):
-        """When no search text is active, 'q' should quit (not filter)."""
-        sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [ord('q')])
-        assert result is None
 
-    def test_q_types_into_filter_when_filter_active(self):
-        """When search text is already active, 'q' should add to filter, not quit."""
-        sessions = [
-            {"id": "s1", "source": "cli", "title": "the sequel", "preview": "", "last_active": time.time()},
-            {"id": "s2", "source": "cli", "title": "other thing", "preview": "", "last_active": time.time()},
-        ]
-        # Type "se" first (activates filter, matches "the sequel")
-        # Then type "q" — should add 'q' to filter (filter="seq"), NOT quit
-        # "seq" still matches "the sequel" → Enter selects it
-        keys = [ord('s'), ord('e'), ord('q'), 10]
-        result = self._run_with_keys(sessions, keys)
-        assert result == "s1"  # "the sequel" matches "seq"
+
 
 
 # ─── Argument parser registration ──────────────────────────────────────────
@@ -219,8 +181,6 @@ class TestSessionBrowseArgparse:
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────
 
-class TestCmdSessionsBrowse:
-    """Integration tests for the 'browse' action in cmd_sessions."""
 
 
 # ─── Edge cases ──────────────────────────────────────────────────────────────

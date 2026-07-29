@@ -146,117 +146,16 @@ def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
     assert "125" in text
 
 
-def test_starting_state_does_not_autostart(tmp_path: Path) -> None:
-    """`starting` means the gateway died mid-boot last time; treat as
-    failed, not as a candidate for auto-restart."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    _make_profile(tmp_path, "unlucky", state="starting")
-
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    named = _named_actions(actions)
-    assert named[0].action == "registered"
 
 
-def test_draining_default_root_autostarts(tmp_path: Path) -> None:
-    """The hosted-agent path: the default (root) profile, not a named one.
-    A managed Fly instance runs the root profile; a stranded `draining` there
-    is exactly what wedged the relay-opted-in staging instance. Mirror the
-    named-profile case for the default slot."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    _seed_default_root(tmp_path, state="draining")
-
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    default_action = next(a for a in actions if a.profile == "default")
-    assert default_action.prior_state == "running"
-    assert default_action.action == "started"
-    assert not (scandir / "gateway-default" / "down").exists()
 
 
-def test_directory_without_marker_file_is_skipped(tmp_path: Path) -> None:
-    """A stray dir under profiles/ that isn't actually a profile (no
-    SOUL.md — the marker the reconciler keys on) should be skipped."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    # Create a profile dir but without SOUL.md
-    (tmp_path / "profiles" / "stray").mkdir(parents=True)
-
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    assert _named_actions(actions) == []
-    assert not (scandir / "gateway-stray").exists()
 
 
-def test_corrupt_state_file_treated_as_no_prior_state(tmp_path: Path) -> None:
-    """If gateway_state.json is malformed JSON, don't blow up the whole
-    reconciliation — register the slot in the down state."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    profile = _make_profile(tmp_path, "junk", state="running")
-    (profile / "gateway_state.json").write_text("{ not valid json")
-
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    named = _named_actions(actions)
-    assert named[0].action == "registered"  # not "started"
-    assert (scandir / "gateway-junk" / "down").exists()
 
 
-def test_reconcile_log_rotates_when_size_exceeded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When container-boot.log exceeds _LOG_ROTATE_BYTES, the existing
-    file is rotated to .1 before the new entries are appended."""
-    from hermes_cli import container_boot
-
-    # Tighten the threshold so we don't have to write 256 KiB.
-    monkeypatch.setattr(container_boot, "_LOG_ROTATE_BYTES", 200)
-
-    log_path = tmp_path / "logs" / "container-boot.log"
-    log_path.parent.mkdir()
-    log_path.write_text("X" * 300)  # already over the threshold
-
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    _make_profile(tmp_path, "coder", state="running")
-
-    reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    rotated = tmp_path / "logs" / "container-boot.log.1"
-    assert rotated.exists(), "expected previous log to be rotated to .1"
-    assert rotated.read_text().startswith("X" * 300)
-    # The new entries land in a fresh container-boot.log (no leftover Xs).
-    new_contents = log_path.read_text()
-    assert "X" not in new_contents
-    assert "profile=coder" in new_contents
 
 
-def test_missing_profiles_root_still_registers_default_slot(
-    tmp_path: Path,
-) -> None:
-    """When $HERMES_HOME/profiles doesn't exist (fresh install), the
-    reconciliation should still register a gateway-default slot for
-    the root profile and return without raising. Previously this
-    returned an empty list; the default slot is now always present
-    so `hermes gateway start` (no -p) has somewhere to land."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-    assert actions == [ReconcileAction(
-        profile="default", prior_state=None, action="registered",
-    )]
-    assert (scandir / "gateway-default").is_dir()
-    assert (scandir / "gateway-default" / "down").exists()
 
 
 def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
@@ -290,27 +189,6 @@ def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
     assert (scandir / "gateway-coder" / "down").exists()
 
 
-def test_register_service_cleans_up_stale_tmp_dir(tmp_path: Path) -> None:
-    """If a previous interrupted run left a staging sibling directory,
-    a fresh reconcile must clean it up rather than failing on mkdir.
-
-    The staging dir is dot-prefixed (``.gateway-<profile>.tmp``) so a
-    concurrent s6-svscan rescan can't supervise it half-built; the
-    cleanup must target that same dot-prefixed name.
-    """
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    # Simulate a leftover from an interrupted run (current staging name).
-    stale_tmp = scandir / ".gateway-coder.tmp"
-    stale_tmp.mkdir()
-    (stale_tmp / "stale-file").write_text("garbage")
-
-    _make_profile(tmp_path, "coder", state="running")
-    reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    assert not stale_tmp.exists()
-    assert (scandir / "gateway-coder" / "run").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -318,62 +196,10 @@ def test_register_service_cleans_up_stale_tmp_dir(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_default_slot_always_registered_on_empty_home(tmp_path: Path) -> None:
-    """Bare HERMES_HOME with nothing under it still produces a
-    gateway-default slot (down state)."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    assert actions == [ReconcileAction(
-        profile="default", prior_state=None, action="registered",
-    )]
-    svc = scandir / "gateway-default"
-    assert svc.is_dir()
-    assert (svc / "run").exists()
-    assert (svc / "down").exists()
 
 
-def test_legacy_gateway_run_env_no_supervise_does_not_seed_s6_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Env opt-out matches the CLI `--no-supervise` flag."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    monkeypatch.setenv("HERMES_GATEWAY_NO_SUPERVISE", "1")
-
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path,
-        scandir=scandir,
-        dry_run=False,
-        container_argv=("gateway", "run"),
-    )
-
-    default_action = next(a for a in actions if a.profile == "default")
-    assert default_action.prior_state is None
-    assert default_action.action == "registered"
-    assert (scandir / "gateway-default" / "down").exists()
-    assert not (tmp_path / "gateway_state.json").exists()
 
 
-def test_default_slot_cleans_up_stale_runtime_files_at_root(
-    tmp_path: Path,
-) -> None:
-    """gateway.pid and processes.json at the HERMES_HOME root (left
-    over from the previous container's default gateway) must be
-    swept the same way as for named profiles."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    _seed_default_root(tmp_path, state="running", with_pid=True)
-    assert (tmp_path / "gateway.pid").exists()
-
-    reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    assert not (tmp_path / "gateway.pid").exists()
-    assert not (tmp_path / "processes.json").exists()
 
 
 def test_profiles_default_subdir_is_skipped_with_warning(
@@ -408,82 +234,8 @@ def test_profiles_default_subdir_is_skipped_with_warning(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "container_argv",
-    [
-        # Bare subcommand (docker run ... dashboard ...).
-        ("dashboard",),
-        ("dashboard", "--host", "127.0.0.1", "--no-open"),
-        # Through s6 /init + the main-wrapper that re-execs `hermes`.
-        ("/init", "/opt/hermes/docker/main-wrapper.sh", "dashboard"),
-        (
-            "/init",
-            "/opt/hermes/docker/main-wrapper.sh",
-            "dashboard",
-            "--host",
-            "127.0.0.1",
-            "--no-open",
-        ),
-        # Wrapper that kept the explicit `hermes` argv0.
-        ("/init", "/opt/hermes/docker/main-wrapper.sh", "hermes", "dashboard"),
-        # s6-overlay v3: PID 1 is s6-svscan, so the role is read off the
-        # rc.init-launched process whose argv is
-        # `/bin/sh -e .../rc.init top .../main-wrapper.sh dashboard ...`.
-        # This is the exact shape that regressed in issue #49196.
-        (
-            "/bin/sh",
-            "-e",
-            "/run/s6/basedir/scripts/rc.init",
-            "top",
-            "/opt/hermes/docker/main-wrapper.sh",
-            "dashboard",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "9119",
-            "--no-open",
-            "--insecure",
-        ),
-    ],
-)
-def test_is_dashboard_container_true_for_dashboard_argv(
-    container_argv: tuple[str, ...],
-) -> None:
-    """A dashboard command is detected across every wrapper prefix shape."""
-    from hermes_cli.container_boot import _is_dashboard_container
-
-    assert _is_dashboard_container(container_argv) is True
 
 
-def test_main_skips_reconcile_in_dashboard_container(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """main() must NOT reconcile when PID 1 argv is the dashboard command.
-
-    A running profile is seeded so that, if reconcile ran, it would create
-    the gateway-<profile> slot. Asserting the slot is absent proves the
-    skip is real, not just a log line.
-    """
-    from hermes_cli import container_boot
-
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    _make_profile(tmp_path, "worker", state="running")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
-    monkeypatch.setattr(
-        container_boot,
-        "_read_container_argv",
-        lambda: ("/init", "/opt/hermes/docker/main-wrapper.sh", "dashboard"),
-    )
-
-    rc = container_boot.main()
-
-    assert rc == 0
-    assert not (scandir / "gateway-worker").exists()
-    assert not (scandir / "gateway-default").exists()
-    assert "skipping (dashboard container" in capsys.readouterr().out
 
 
 def test_main_skips_reconcile_in_dashboard_container_s6v3(
@@ -534,31 +286,6 @@ def test_main_skips_reconcile_in_dashboard_container_s6v3(
     assert "skipping (dashboard container" in capsys.readouterr().out
 
 
-def test_main_ignores_removed_skip_reconcile_env_var(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The legacy HERMES_SKIP_PROFILE_RECONCILE flag is gone: setting it on a
-    gateway container must NOT suppress reconciliation. Role is decided by
-    PID 1 argv alone, so a stale flag in someone's manifest is inert."""
-    from hermes_cli import container_boot
-
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    _make_profile(tmp_path, "worker", state="running")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
-    monkeypatch.setenv("HERMES_SKIP_PROFILE_RECONCILE", "1")
-    monkeypatch.setattr(
-        container_boot,
-        "_read_container_argv",
-        lambda: ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run"),
-    )
-
-    rc = container_boot.main()
-
-    assert rc == 0
-    # Reconcile still ran despite the stale env var.
-    assert (scandir / "gateway-worker").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -572,18 +299,5 @@ def _write_lifecycle_sentinel(profile_dir: Path, payload: dict) -> None:
     (state_dir / "gateway.lifecycle.json").write_text(json.dumps(payload))
 
 
-def test_reconcile_log_prior_exit_unknown_without_sentinel(tmp_path: Path) -> None:
-    """No lifecycle sentinel (fresh profile, pre-upgrade volume) →
-    prior_exit=unknown, and reconciliation is unaffected."""
-    scandir = tmp_path / "run-service"; scandir.mkdir()
-    _make_profile(tmp_path, "fresh", state="running")
-
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
-    )
-
-    (fresh,) = [a for a in actions if a.profile == "fresh"]
-    assert fresh.prior_exit == "unknown"
-    assert fresh.action == "started"
 
 

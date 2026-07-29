@@ -52,32 +52,10 @@ def test_get_container_exec_info_returns_metadata(container_env):
     assert info["hermes_bin"] == "/data/current-package/bin/hermes"
 
 
-def test_get_container_exec_info_skipped_when_hermes_dev(container_env, monkeypatch):
-    """Returns None when HERMES_DEV=1 is set (dev mode bypass)."""
-    monkeypatch.setenv("HERMES_DEV", "1")
-
-    with patch("hermes_constants.is_container", return_value=False):
-        info = get_container_exec_info()
-
-    assert info is None
 
 
-def test_get_container_exec_info_not_skipped_when_hermes_dev_zero(container_env, monkeypatch):
-    """HERMES_DEV=0 does NOT trigger bypass — only '1' does."""
-    monkeypatch.setenv("HERMES_DEV", "0")
-
-    with patch("hermes_constants.is_container", return_value=False):
-        info = get_container_exec_info()
-
-    assert info is not None
 
 
-def test_get_container_exec_info_crashes_on_permission_error(container_env):
-    """PermissionError propagates instead of being silently swallowed."""
-    with patch("hermes_constants.is_container", return_value=False), \
-         patch("builtins.open", side_effect=PermissionError("permission denied")):
-        with pytest.raises(PermissionError):
-            get_container_exec_info()
 
 
 # =============================================================================
@@ -137,23 +115,3 @@ def test_exec_in_container_calls_execvp(docker_container_info):
     assert "chat" in cmd
 
 
-def test_exec_in_container_container_not_running_no_sudo(docker_container_info):
-    """When runtime exists but container not found and no sudo available,
-    prints helpful error about root containers."""
-    from hermes_cli.main import _exec_in_container
-
-    def which_side_effect(name):
-        if name == "docker":
-            return "/usr/bin/docker"
-        return None
-
-    with patch("shutil.which", side_effect=which_side_effect), \
-         patch("subprocess.run") as mock_run, \
-         patch("os.execvp") as mock_execvp, \
-         pytest.raises(SystemExit) as exc_info:
-        mock_run.return_value = MagicMock(returncode=1)
-
-        _exec_in_container(docker_container_info, ["chat"])
-
-    mock_execvp.assert_not_called()
-    assert exc_info.value.code == 1

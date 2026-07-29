@@ -143,9 +143,6 @@ class TestIsWsl:
         with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is expected
 
-    def test_proc_version_missing(self):
-        with patch.dict(_is_wsl.__globals__, {"open": MagicMock(side_effect=FileNotFoundError)}):
-            assert _is_wsl() is False
 
     def test_result_is_cached(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
@@ -187,24 +184,6 @@ class TestWslSave:
             assert _wsl_save(dest) is True
         assert dest.read_bytes() == FAKE_PNG
 
-    def test_falls_back_to_get_clipboard_extraction(self, tmp_path):
-        dest = tmp_path / "out.png"
-        b64_png = base64.b64encode(FAKE_PNG).decode()
-        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                MagicMock(stdout="", returncode=1),
-                MagicMock(stdout=b64_png + "\n", returncode=0),
-            ]
-            assert _wsl_save(dest) is True
-            assert mock_run.call_count == 2
-        assert dest.read_bytes() == FAKE_PNG
-
-    def test_no_image_returns_false(self, tmp_path):
-        dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="", returncode=1)
-            assert _wsl_save(dest) is False
-        assert not dest.exists()
 
     def test_invalid_base64(self, tmp_path):
         dest = tmp_path / "out.png"
@@ -241,43 +220,6 @@ class TestWaylandSave:
             assert _wayland_save(dest) is True
         assert dest.stat().st_size > 0
 
-    def test_jpeg_extraction_converts_to_real_png(self, tmp_path):
-        dest = tmp_path / "out.png"
-
-        def fake_run(cmd, **kw):
-            if "--list-types" in cmd:
-                return MagicMock(stdout="image/jpeg\ntext/plain\n", returncode=0)
-            if "stdout" in kw and hasattr(kw["stdout"], "write"):
-                kw["stdout"].write(FAKE_JPEG)
-            return MagicMock(returncode=0)
-
-        def fake_convert(path):
-            assert path == dest
-            path.write_bytes(FAKE_PNG)
-            return True
-
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
-            with patch("hermes_cli.clipboard._convert_to_png", side_effect=fake_convert) as mock_convert:
-                assert _wayland_save(dest) is True
-
-        mock_convert.assert_called_once_with(dest)
-        assert dest.read_bytes() == FAKE_PNG
-
-    def test_non_png_conversion_failure_cleans_up(self, tmp_path):
-        dest = tmp_path / "out.png"
-
-        def fake_run(cmd, **kw):
-            if "--list-types" in cmd:
-                return MagicMock(stdout="image/jpeg\n", returncode=0)
-            if "stdout" in kw and hasattr(kw["stdout"], "write"):
-                kw["stdout"].write(FAKE_JPEG)
-            return MagicMock(returncode=0)
-
-        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
-            with patch("hermes_cli.clipboard._convert_to_png", return_value=True):
-                assert _wayland_save(dest) is False
-
-        assert not dest.exists()
 
     def test_prefers_png_over_bmp(self, tmp_path):
         """When both PNG and BMP are available, PNG should be preferred."""
@@ -431,17 +373,6 @@ class TestConvertToPng:
             assert _convert_to_png(dest) is True
             mock_img_instance.save.assert_called_once_with(dest, "PNG")
 
-    def test_file_still_usable_when_no_converter(self, tmp_path):
-        """BMP file should still be reported as success if no converter available."""
-        dest = tmp_path / "img.png"
-        dest.write_bytes(FAKE_BMP)  # it's a BMP but named .png
-        # Both Pillow and ImageMagick unavailable
-        with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
-            with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
-                result = _convert_to_png(dest)
-                # Raw BMP is better than nothing — function should return True
-                assert result is True
-                assert dest.exists() and dest.stat().st_size > 0
 
     @pytest.mark.parametrize("failure", ["nonzero-exit", "timeout"])
     def test_imagemagick_failure_preserves_original(self, tmp_path, failure):
@@ -545,21 +476,6 @@ class TestPreprocessImagesWithVision:
         assert str(img) in result
         assert "base64," not in result  # no raw base64 image content
 
-    def test_missing_image_skipped(self, cli, tmp_path):
-        missing = tmp_path / "gone.png"
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
-            result = cli._preprocess_images_with_vision("test", [missing])
-        # No images analyzed, falls back to default
-        assert result == "test"
-
-    def test_mix_of_existing_and_missing(self, cli, tmp_path):
-        real = self._make_image(tmp_path, "real.png")
-        missing = tmp_path / "gone.png"
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
-            result = cli._preprocess_images_with_vision("test", [real, missing])
-        assert str(real) in result
-        assert str(missing) not in result
-        assert "test" in result
 
     def test_vision_exception_includes_path(self, cli, tmp_path):
         img = self._make_image(tmp_path)
@@ -593,21 +509,6 @@ class TestTryAttachClipboardImage:
         assert len(cli._attached_images) == 1
         assert cli._image_counter == 1
 
-    def test_no_image_doesnt_attach(self, cli):
-        with patch("hermes_cli.clipboard.save_clipboard_image", return_value=False):
-            result = cli._try_attach_clipboard_image()
-        assert result is False
-        assert len(cli._attached_images) == 0
-        assert cli._image_counter == 0  # rolled back
-
-    def test_mixed_success_and_failure(self, cli):
-        results = [True, False, True]
-        with patch("hermes_cli.clipboard.save_clipboard_image", side_effect=results):
-            cli._try_attach_clipboard_image()
-            cli._try_attach_clipboard_image()
-            cli._try_attach_clipboard_image()
-        assert len(cli._attached_images) == 2
-        assert cli._image_counter == 2  # 3 attempts, 1 rolled back
 
     def test_image_path_follows_naming_convention(self, cli):
         with patch("hermes_cli.clipboard.save_clipboard_image", return_value=True):

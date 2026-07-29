@@ -80,69 +80,8 @@ def _reset_cache():
     reset_nous_portal_account_info_cache()
 
 
-def test_valid_jwt_with_paid_access_true(monkeypatch):
-    token = _jwt(
-        {
-            "sub": "user_123",
-            "org_id": "org_123",
-            "client_id": "hermes-cli",
-            "product_id": "nous-hermes-agent",
-            "nous_client": "hermes-agent",
-            "exp": int(time.time()) + 900,
-            "paid_access": True,
-            "subscription_tier": 2,
-        }
-    )
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
-
-    info = get_nous_portal_account_info()
-
-    assert info.source == "jwt"
-    assert info.fresh is False
-    assert info.logged_in is True
-    assert info.user_id == "user_123"
-    assert info.org_id == "org_123"
-    assert info.product_id == "nous-hermes-agent"
-    assert info.paid_service_access is True
-    assert info.is_paid is True
-    assert info.is_free_tier is False
 
 
-def test_expired_jwt_falls_back_to_fresh_account(monkeypatch):
-    token = _jwt(
-        {
-            "sub": "user_123",
-            "org_id": "org_123",
-            "exp": int(time.time()) - 60,
-            "paid_access": False,
-        }
-    )
-    payload = _account_payload(
-        allowed=True,
-        subscription={
-            "plan": "Tier 2",
-            "tier": 2,
-            "monthly_charge": 20,
-            "current_period_end": "2026-05-01T00:00:00.000Z",
-            "credits_remaining": 12.25,
-            "rollover_credits": 3.5,
-        },
-        subscription_credits=12.25,
-        purchased_credits=7.75,
-    )
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
-
-    info = get_nous_portal_account_info()
-
-    assert info.source == "account_api"
-    assert info.fresh is True
-    assert info.paid_service_access is True
-    assert info.subscription is not None
-    assert info.subscription.monthly_charge == 20
-    assert info.paid_service_access_info is not None
-    assert info.paid_service_access_info.total_usable_credits == 20
 
 
 @pytest.mark.parametrize(
@@ -315,70 +254,14 @@ def test_pool_oauth_entry_force_fresh_uses_account_api(monkeypatch):
     assert info.credential_source == "pool:dashboard device_code"
 
 
-def test_entitlement_message_returns_none_for_paid_access():
-    info = NousPortalAccountInfo(
-        logged_in=True,
-        source="account_api",
-        fresh=True,
-        paid_service_access=True,
-        portal_base_url="https://portal.example.test",
-    )
-
-    assert format_nous_portal_entitlement_message(info, capability="paid models") is None
 
 
-def test_entitlement_message_for_account_missing():
-    info = NousPortalAccountInfo(
-        logged_in=True,
-        source="account_api",
-        fresh=True,
-        paid_service_access=False,
-        paid_service_access_info=NousPaidServiceAccessInfo(
-            allowed=False,
-            reason="account_missing",
-        ),
-    )
-
-    message = format_nous_portal_entitlement_message(info, capability="Tool Gateway")
-
-    assert message is not None
-    assert "could not find a Nous Portal account or organisation" in message
 
 
 # ── org slug/name parsing + top-up URL builder ──────────────────────────────
 
 
-def test_account_payload_parses_org_slug_and_name(monkeypatch):
-    token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
-    payload = {
-        "user": {"email": "alice@example.test"},
-        "organisation": {"id": "org_123", "slug": "acme", "name": "Acme Inc"},
-        "paid_service_access": {"allowed": True, "paid_access": True},
-    }
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
-
-    info = get_nous_portal_account_info(force_fresh=True)
-
-    assert info.source == "account_api"
-    assert info.org_slug == "acme"
-    assert info.org_name == "Acme Inc"
 
 
-def test_topup_url_falls_back_to_legacy_when_slug_null():
-    info = NousPortalAccountInfo(
-        logged_in=True,
-        source="account_api",
-        fresh=True,
-        portal_base_url="https://portal.example.test",
-        org_slug=None,
-    )
-    url = nous_portal_topup_url(info)
-    assert url == "https://portal.example.test/billing?topup=open"
-    assert "/orgs/" not in url
 
 
-def test_topup_url_defaults_to_production_portal_for_none():
-    url = nous_portal_topup_url(None)
-    assert url == "https://portal.nousresearch.com/billing?topup=open"

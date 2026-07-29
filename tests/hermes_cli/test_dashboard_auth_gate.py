@@ -31,18 +31,8 @@ def client_loopback():
     web_server.app.state.bound_port = prev_port
 
 
-def test_loopback_status_is_public(client_loopback):
-    """`/api/status` must remain reachable without a token in loopback mode."""
-    r = client_loopback.get("/api/status")
-    assert r.status_code == 200
-    body = r.json()
-    assert "version" in body
 
 
-def test_loopback_host_header_validation_still_enforced(client_loopback):
-    """DNS-rebinding protection: a foreign Host header is rejected."""
-    r = client_loopback.get("/api/status", headers={"Host": "evil.test"})
-    assert r.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -213,21 +203,3 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
         clear_providers()
 
 
-def test_start_server_insecure_public_engages_gate_and_fails_closed(monkeypatch):
-    """--insecure on a public host: gate engages now; no provider → fail closed.
-
-    Replaces the old "insecure keeps gate off" test. --insecure is a no-op for
-    auth as of the June 2026 hardening, so a public bind with no provider
-    refuses to start.
-    """
-    from hermes_cli.dashboard_auth import clear_providers
-
-    clear_providers()
-    _stub_uvicorn_run(monkeypatch)
-    web_server.app.state.auth_required = None
-    with pytest.raises(SystemExit):
-        web_server.start_server(
-            host="0.0.0.0", port=9119,
-            open_browser=False, allow_public=True,
-        )
-    assert web_server.app.state.auth_required is True

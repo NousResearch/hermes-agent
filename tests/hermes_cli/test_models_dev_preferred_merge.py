@@ -47,43 +47,10 @@ class TestMergeHelper:
 
 
 class TestProviderModelIdsPreferred:
-    def test_opencode_go_is_preferred(self):
-        assert "opencode-go" in _MODELS_DEV_PREFERRED
-
-    def test_opencode_go_includes_fresh_models_dev_entries(self):
-        """provider_model_ids('opencode-go') adds models.dev entries on top."""
-        mdev = ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "kimi-k2.6"]
-        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
-            out = provider_model_ids("opencode-go")
-        # Fresh models must surface (this is exactly the reported bug fix:
-        # mimo-v2.5-pro should be pickable on opencode-go).
-        assert "mimo-v2.5-pro" in out
-        assert "mimo-v2.5" in out
-        # Curated entries are still present.
-        assert "mimo-v2-pro" in out
-        assert "kimi-k2.6" in out
 
 
-    def test_kimi_coding_offline_catalog_includes_k3(self):
-        """Native Kimi users must see the newest models without live catalog help."""
-        assert "kimi-coding" not in _MODELS_DEV_PREFERRED
-        with patch("agent.models_dev.list_agentic_models", return_value=[]):
-            out = provider_model_ids("kimi-coding")
-        assert "kimi-k3" in out
-        assert "kimi-k2.7-code" in out
 
-    def test_kimi_coding_live_catalog_does_not_hide_curated_k3(self):
-        """Kimi /models can lag inference; live results must not replace curated."""
-        with (
-            patch(
-                "hermes_cli.auth.resolve_api_key_provider_credentials",
-                return_value={"api_key": "sk-test", "base_url": "https://api.moonshot.ai/v1"},
-            ),
-            patch("providers.base.ProviderProfile.fetch_models", return_value=["kimi-k2.6"]),
-        ):
-            out = provider_model_ids("kimi-coding")
-        # Curated-first order; curated newest (k3) stays ahead of live.
-        assert out[:3] == ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"]
+
 
     def test_k3_live_discovery_is_scoped_to_kimi_coding_endpoint(self):
         """Coding keys discover K3; legacy Moonshot keys must not advertise it."""

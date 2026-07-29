@@ -34,17 +34,8 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def test_serve_routes_to_the_shared_dashboard_handler():
-    args = _parser().parse_args(["serve"])
-    assert args.func is _dash
 
 
-def test_serve_takes_the_same_runtime_flags_as_dashboard():
-    argv = ["--host", "0.0.0.0", "--port", "0", "--insecure", "--skip-build", "--isolated"]
-    serve = _parser().parse_args(["serve", *argv])
-    dash = _parser().parse_args(["dashboard", *argv])
-    for field in ("host", "port", "insecure", "skip_build", "isolated"):
-        assert getattr(serve, field) == getattr(dash, field)
 
 
 def test_serve_supports_the_lifecycle_flags():

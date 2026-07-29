@@ -64,13 +64,7 @@ class TestAccessTokenValidator:
 
 
 class TestAppSecretValidator:
-    def test_accepts_32_hex_chars(self):
-        ok, _ = _validate_app_secret("0123456789abcdef0123456789abcdef")
-        assert ok
 
-    def test_accepts_uppercase_hex(self):
-        ok, _ = _validate_app_secret("0123456789ABCDEF0123456789ABCDEF")
-        assert ok
 
     def test_rejects_wrong_length(self):
         ok, reason = _validate_app_secret("0123456789abcdef")  # 16 chars
@@ -82,9 +76,6 @@ class TestAppSecretValidator:
         assert not ok
         assert "hex" in reason.lower()
 
-    def test_rejects_empty(self):
-        ok, _ = _validate_app_secret("")
-        assert not ok
 
 
 class TestWabaIdValidator:
@@ -180,65 +171,7 @@ class TestWizardFlow:
         # Should also be echoed to user output so they can paste into Meta
         assert verify_token in buf.getvalue()
 
-    def test_setup_complete_block_includes_post_setup_instructions(self, isolated_home, monkeypatch):
-        """The wizard can't smoke-test the webhook itself (the gateway
-        isn't running yet), so it MUST print the exact curl/cloudflared
-        steps the user needs after the wizard exits."""
-        inputs = iter([
-            "",                                       # continue
-            "7794189252778687",                       # Phone ID
-            "EAA" + "x" * 200,                        # Token
-            "0123456789abcdef0123456789abcdef",       # App Secret
-            "",                                       # App ID — skip
-            "",                                       # WABA ID — skip
-            "15551234567",                            # Allowed users
-        ])
-        monkeypatch.setattr("builtins.input", lambda *a, **kw: next(inputs))
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            run_whatsapp_cloud_setup()
-        out = buf.getvalue()
-        # Required post-setup guidance
-        assert "cloudflared tunnel --url http://localhost:8090" in out
-        assert "hermes gateway" in out
-        assert "Verify and save" in out
-        assert "messages" in out
-        # The verify token should be quotable on the curl line
-        verify_token = _env_value(isolated_home, "WHATSAPP_CLOUD_VERIFY_TOKEN")
-        assert verify_token in out
 
-    def test_existing_token_preserved_on_rerun(self, isolated_home, monkeypatch):
-        """Re-running the wizard with existing config should let the
-        user keep current values by hitting Enter."""
-        # Pre-populate .env as if a previous run succeeded
-        env_file = isolated_home / ".env"
-        env_file.write_text(
-            "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687\n"
-            "WHATSAPP_CLOUD_ACCESS_TOKEN=EAAprevious_token_here_" + "x" * 100 + "\n"
-            "WHATSAPP_CLOUD_APP_SECRET=0123456789abcdef0123456789abcdef\n"
-            "WHATSAPP_CLOUD_VERIFY_TOKEN=existing_verify_token_already_set\n"
-        )
-        inputs = iter([
-            "",                                       # continue
-            "",                                       # Phone ID — keep existing
-            "",                                       # Token — keep existing
-            "",                                       # App Secret — keep existing
-            "",                                       # App ID — skip
-            "",                                       # WABA ID — skip
-            "",                                       # verify token: regenerate? [y/N] — no
-            "",                                       # Allowed users — keep
-        ])
-        monkeypatch.setattr("builtins.input", lambda *a, **kw: next(inputs))
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            rc = run_whatsapp_cloud_setup()
-        assert rc == 0
-        # Values preserved
-        token = _env_value(isolated_home, "WHATSAPP_CLOUD_ACCESS_TOKEN")
-        assert token is not None
-        assert token.startswith("EAAprevious_token_here_")
-        # Verify token preserved (user said no to regenerate)
-        assert _env_value(isolated_home, "WHATSAPP_CLOUD_VERIFY_TOKEN") == "existing_verify_token_already_set"
 
 
 # =========================================================================

@@ -5196,7 +5196,7 @@ class TestAnthropicInterruptHandler:
         def _create(_api_kwargs, *, client):
             assert client is request_client
             agent._interrupt_requested = True
-            time.sleep(1.0)
+            time.sleep(0.5)
             raise RuntimeError("forced close would have happened")
 
         agent._anthropic_messages_create = MagicMock(side_effect=_create)

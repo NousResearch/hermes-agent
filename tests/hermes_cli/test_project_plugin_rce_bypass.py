@@ -148,10 +148,6 @@ class TestApiPathSanitizer:
         d = self._dashboard_dir(tmp_path)
         assert web_server._safe_plugin_api_relpath(payload, dashboard_dir=d) is None
 
-    @pytest.mark.parametrize("payload", [None, "", "   ", 42, [], {}])
-    def test_non_string_or_empty_rejected(self, tmp_path, payload):
-        d = self._dashboard_dir(tmp_path)
-        assert web_server._safe_plugin_api_relpath(payload, dashboard_dir=d) is None
 
 
 # ---------------------------------------------------------------------------

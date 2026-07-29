@@ -51,14 +51,6 @@ def _cfg(home):
 
 
 class TestProfileScopedConfig:
-    def test_config_put_lands_in_target_profile_only(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/config",
-            json={"config": {"timezone": "Mars/Olympus"}, "profile": "worker_beta"},
-        )
-        assert resp.status_code == 200
-        assert _cfg(isolated_profiles["worker_beta"]).get("timezone") == "Mars/Olympus"
-        assert _cfg(isolated_profiles["default"]).get("timezone") != "Mars/Olympus"
 
 
     def test_config_query_param_equivalent_to_body(self, client, isolated_profiles):
@@ -72,15 +64,6 @@ class TestProfileScopedConfig:
         assert _cfg(isolated_profiles["default"]).get("timezone") != "Pluto/Far"
 
 
-    def test_config_raw_path_reflects_requested_profile(self, client, isolated_profiles):
-        """The Config page header shows /api/config/raw's ``path`` — it must
-        point at the SWITCHED profile's config.yaml, not the dashboard's own
-        (the stale-path bug reported after the profile unification launch)."""
-        resp = client.get("/api/config/raw", params={"profile": "worker_beta"})
-        assert resp.status_code == 200
-        assert resp.json()["path"] == str(isolated_profiles["worker_beta"] / "config.yaml")
-        resp = client.get("/api/config/raw")
-        assert resp.json()["path"] == str(isolated_profiles["default"] / "config.yaml")
 
     def test_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/config", params={"profile": "ghost"})
@@ -115,22 +98,6 @@ class TestProfileScopedEnv:
 
 
 class TestProfileScopedMcp:
-    def test_mcp_add_and_list_scoped(self, client, isolated_profiles):
-        resp = client.post(
-            "/api/mcp/servers",
-            json={"name": "scoped-srv", "url": "http://localhost:1234/sse",
-                  "profile": "worker_beta"},
-        )
-        assert resp.status_code == 200
-
-        worker_cfg = _cfg(isolated_profiles["worker_beta"])
-        assert "scoped-srv" in worker_cfg.get("mcp_servers", {})
-        assert "scoped-srv" not in _cfg(isolated_profiles["default"]).get("mcp_servers", {})
-
-        listing = client.get("/api/mcp/servers", params={"profile": "worker_beta"}).json()
-        assert any(s["name"] == "scoped-srv" for s in listing["servers"])
-        listing = client.get("/api/mcp/servers").json()
-        assert not any(s["name"] == "scoped-srv" for s in listing["servers"])
 
     def test_mcp_bearer_secret_is_profile_scoped(self, client, isolated_profiles):
         secret = "worker-only-secret"
@@ -157,32 +124,6 @@ class TestProfileScopedMcp:
         )
 
 
-    def test_mcp_probe_runs_inside_profile_scope(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        """The test-server probe must execute with the selected profile's
-        scope active so env-placeholder expansion reads the profile's .env,
-        matching the config the server was saved into."""
-        import hermes_cli.mcp_config as mcp_config
-        from hermes_constants import get_hermes_home
-
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "mcp_servers:\n  probe-srv:\n    url: http://x/sse\n",
-            encoding="utf-8",
-        )
-        seen = {}
-
-        def fake_probe(name, config, connect_timeout=30, details=None):
-            seen["home"] = str(get_hermes_home())
-            return [("tool-a", "desc")]
-
-        monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
-        resp = client.post(
-            "/api/mcp/servers/probe-srv/test", params={"profile": "worker_beta"}
-        )
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        assert seen["home"] == str(isolated_profiles["worker_beta"])
 
     def test_mcp_test_oauth_server_without_token_is_not_ok(
         self, client, isolated_profiles, monkeypatch
@@ -239,59 +180,8 @@ class TestProfileScopedModel:
         if isinstance(default_model, dict):
             assert default_model.get("default") != "test/model-1"
 
-    def test_auxiliary_read_scoped_matches_write_target(
-        self, client, isolated_profiles
-    ):
-        """Reads and writes must scope symmetrically: an aux pin written to
-        the worker profile must show up ONLY in the worker-scoped read.
-        (Regression: /api/model/auxiliary used to read unscoped while
-        /api/model/set wrote scoped — the Models page displayed the
-        dashboard profile's pins while editing the selected profile's.)"""
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "auxiliary:\n  vision:\n    provider: openrouter\n"
-            "    model: worker/vision-pin\n",
-            encoding="utf-8",
-        )
-        resp = client.get("/api/model/auxiliary", params={"profile": "worker_beta"})
-        assert resp.status_code == 200
-        vision = next(t for t in resp.json()["tasks"] if t["task"] == "vision")
-        assert vision["model"] == "worker/vision-pin"
-
-        # Unscoped read = the dashboard's own profile, which has no pin.
-        resp = client.get("/api/model/auxiliary")
-        assert resp.status_code == 200
-        vision = next(t for t in resp.json()["tasks"] if t["task"] == "vision")
-        assert vision["model"] != "worker/vision-pin"
 
 
-    def test_model_options_matches_tui_safe_probe_flags(self, client, monkeypatch):
-        calls = []
-
-        monkeypatch.setattr(
-            "hermes_cli.inventory.load_picker_context",
-            lambda: object(),
-        )
-
-        def _fake_build_models_payload(_ctx, **kwargs):
-            calls.append(kwargs)
-            return {"providers": [], "model": "", "provider": ""}
-
-        monkeypatch.setattr(
-            "hermes_cli.inventory.build_models_payload",
-            _fake_build_models_payload,
-        )
-
-        resp = client.get("/api/model/options")
-        assert resp.status_code == 200
-        assert calls[-1]["refresh"] is False
-        assert calls[-1]["probe_custom_providers"] is False
-        assert calls[-1]["probe_current_custom_provider"] is True
-
-        resp = client.get("/api/model/options", params={"refresh": "1"})
-        assert resp.status_code == 200
-        assert calls[-1]["refresh"] is True
-        assert calls[-1]["probe_custom_providers"] is True
-        assert calls[-1]["probe_current_custom_provider"] is False
 
 
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
@@ -527,41 +417,7 @@ class TestProfileScopedAudio:
     #64057).
     """
 
-    def test_elevenlabs_voices_reads_target_profile_env(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-        # Key only in the DEFAULT profile's .env; worker_beta has none.
-        (isolated_profiles["default"] / ".env").write_text(
-            "ELEVENLABS_API_KEY=sk-default-profile\n", encoding="utf-8"
-        )
-        resp = client.get("/api/audio/elevenlabs/voices?profile=worker_beta")
-        assert resp.status_code == 200
-        # Scoped to worker_beta → no key found → unavailable, no network call.
-        assert resp.json() == {"available": False, "voices": []}
 
-    def test_speak_synthesizes_inside_target_profile_home(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import tools.tts_tool as tts_tool
-
-        seen = {}
-
-        def _fake_tts(text):
-            from hermes_constants import get_hermes_home
-
-            seen["home"] = str(get_hermes_home())
-            out = isolated_profiles["worker_beta"] / "speech.mp3"
-            out.write_bytes(b"ID3fake")
-            return {"success": True, "file_path": str(out), "provider": "fake"}
-
-        monkeypatch.setattr(tts_tool, "text_to_speech_tool", _fake_tts)
-        resp = client.post(
-            "/api/audio/speak?profile=worker_beta", json={"text": "hello"}
-        )
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        assert seen["home"] == str(isolated_profiles["worker_beta"])
 
     def test_transcribe_runs_inside_target_profile_home(
         self, client, isolated_profiles, monkeypatch

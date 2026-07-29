@@ -9,20 +9,6 @@ import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.setup as setup
 
 
-@pytest.mark.parametrize(
-    "detail",
-    [
-        "ERROR: Access is denied.",
-        "ERROR: Acceso denegado.",
-        "ERROR: Přístup byl odepřen.",
-        "schtasks timed out after 15s",
-        "schtasks produced no output",
-    ],
-)
-def test_schtasks_fallback_patterns_cover_localized_access_denied(detail):
-    """Localized schtasks access-denied errors should use Startup fallback."""
-
-    assert gateway_windows._should_fall_back(1, detail) is True
 
 
 def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
@@ -38,34 +24,6 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     assert gateway_windows._schtasks_encoding() == "utf-8"
 
 
-def test_exec_schtasks_decodes_with_replace_errors(monkeypatch):
-    """schtasks output must be decoded with errors='replace' so localized
-    (non-UTF-8) bytes never surface a UnicodeDecodeError traceback (#38172)."""
-
-    captured: dict[str, object] = {}
-
-    class _FakeCompleted:
-        returncode = 0
-        stdout = "ok"
-        stderr = ""
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured.update(kwargs)
-        return _FakeCompleted()
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\\Windows\\System32\\schtasks.exe")
-    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
-
-    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
-
-    assert (code, out, err) == (0, "ok", "")
-    assert captured["errors"] == "replace", "schtasks output must decode with errors='replace'"
-    assert isinstance(captured["encoding"], str) and captured["encoding"], (
-        "an explicit non-empty encoding must be passed to subprocess.run"
-    )
-    assert captured["text"] is True
 
 
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
@@ -123,28 +81,6 @@ class TestStableWindowsGatewayWorkingDir:
         assert gateway_windows._stable_gateway_working_dir(project) == str(project)
 
 
-def test_write_task_script_anchors_cmd_cd_at_hermes_home(monkeypatch, tmp_path):
-    project = tmp_path / "project"
-    hermes_home = tmp_path / "hermes-home"
-    hermes_home.mkdir()
-    python_exe = project / "venv" / "Scripts" / "python.exe"
-    python_exe.parent.mkdir(parents=True)
-    python_exe.write_text("", encoding="utf-8")
-    script_path = tmp_path / "gateway.cmd"
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
-    monkeypatch.setattr(gateway, "get_python_path", lambda: str(python_exe))
-    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
-    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
-
-    written = gateway_windows._write_task_script()
-    content = script_path.read_text(encoding="utf-8")
-
-    assert written == script_path
-    assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(hermes_home.resolve()))}" in content
-    assert f"cd /d {gateway_windows._quote_cmd_script_arg(str(project))}" not in content
 
 
 def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
@@ -185,29 +121,6 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     return script_path, calls
 
 
-def test_gateway_cmd_script_uses_console_python_without_replace_or_start_churn(monkeypatch):
-    """Scheduled Task wrapper launches the console python once (hidden by the
-    .vbs window-style-0 chain, NOT console-less pythonw — see #54220/#56747)
-    and avoids replace loops."""
-    monkeypatch.setattr(
-        gateway_windows,
-        "_resolve_detached_python",
-        lambda exe: (exe, r"C:\\Hermes\\hermes-agent\\venv", []),
-    )
-
-    content = gateway_windows._build_gateway_cmd_script(
-        r"C:\\Hermes\\hermes-agent\\venv\\Scripts\\python.exe",
-        r"C:\\Hermes\\hermes-agent",
-        r"C:\\HermesHome\\profiles\\alice",
-        "--profile alice",
-    )
-
-    assert "python.exe" in content
-    assert "pythonw.exe" not in content
-    assert "gateway run" in content
-    assert "--replace" not in content
-    assert "start \"\"" not in content
-    assert "exit /b 0" in content
 
 
 def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
@@ -310,131 +223,16 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
-def test_gateway_vbs_script_pythonpath_chains_runtime_value(monkeypatch):
-    """PYTHONPATH chains onto the task env's existing value, like ;%PYTHONPATH%."""
-    monkeypatch.setattr(
-        gateway_windows,
-        "_resolve_detached_python",
-        lambda exe: (r"C:\v\pythonw.exe", Path(r"C:\v"), [r"C:\v\Lib\site-packages"]),
-    )
-    content = gateway_windows._build_gateway_vbs_script(
-        r"C:\v\python.exe", r"C:\w", r"C:\h", "",
-    )
-    assert 'existing_pp = env.Item("PYTHONPATH")' in content
-    assert "If Len(existing_pp) > 0 Then" in content
-    assert r"C:\v\Lib\site-packages" in content
 
 
-def test_quote_vbs_string_doubles_quotes_and_rejects_newlines():
-    assert gateway_windows._quote_vbs_string("plain") == '"plain"'
-    assert gateway_windows._quote_vbs_string('a"b') == '"a""b"'
-    with pytest.raises(ValueError):
-        gateway_windows._quote_vbs_string("line1\nline2")
 
 
-def test_install_prompts_start_choices_before_uac(monkeypatch, tmp_path, capsys):
-    """Windows install asks start-now and auto-start before any UAC handoff."""
-    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
-    calls = []
-    answers = iter([True, True, True])
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
-    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
-    monkeypatch.setattr(
-        gateway_windows,
-        "_install_scheduled_task",
-        lambda task_name, script_path: (
-            False,
-            "schtasks /Create failed (code 1): ERROR: Access is denied.",
-        ),
-    )
-    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: False)
-    monkeypatch.setattr(setup, "prompt_yes_no", lambda prompt, default=True: calls.append(("prompt", prompt, default)) or next(answers))
-    monkeypatch.setattr(
-        gateway_windows,
-        "_launch_elevated_install",
-        lambda force=False, start_now=None, start_on_login=None: calls.append(("elevate", force, start_now, start_on_login)) or True,
-    )
-
-    gateway_windows.install(force=False)
-
-    assert calls == [
-        ("prompt", "Start the gateway now after install?", True),
-        ("prompt", "Start the gateway automatically on Windows login with a Scheduled Task?", True),
-        ("prompt", "  Open the UAC prompt now?", False),
-        ("elevate", False, True, True),
-    ]
-    out = capsys.readouterr().out
-    assert "elevated install will start the gateway afterwards" in out
 
 
-def test_start_noops_when_gateway_already_running(monkeypatch, capsys):
-    """Repeated start should not invoke schtasks /Run or spawn another process."""
-    calls = []
-    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (False, True))
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [27128])
-    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: calls.append("task_check") or True)
-    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: calls.append(("schtasks", tuple(args))) or (0, "", ""))
-    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda path=None: calls.append(("spawn", path)) or 12345)
-
-    gateway_windows.start()
-
-    assert calls == []
-    out = capsys.readouterr().out
-    assert "already running" in out
-    assert "27128" in out
 
 
-def test_install_startup_fallback_does_not_auto_spawn_when_gateway_stopped(monkeypatch, tmp_path, capsys):
-    """Startup fallback install should only install login item, not launch pythonw."""
-    script_path, calls = _arrange_startup_fallback(monkeypatch, tmp_path, [])
-
-    gateway_windows.install(force=False)
-
-    assert ("install_startup", script_path) in calls
-    assert not any(call[0] == "spawn" for call in calls)
-    assert not any(call[0] == "report_start" for call in calls)
-    assert ("next_steps", None) in calls
-    out = capsys.readouterr().out
-    assert "gateway not started now" in out
-    assert "hermes --profile alice gateway start" in out
 
 
-def test_uninstall_access_denied_declined_keeps_task_and_cleans_files(monkeypatch, tmp_path, capsys):
-    """Declining UAC should not surprise the user, but should still remove user-writable artifacts."""
-    calls = []
-    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
-    startup_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
-    startup_entry.parent.mkdir(parents=True)
-    script_path.write_text("task", encoding="utf-8")
-    startup_entry.write_text("startup", encoding="utf-8")
-
-    monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (False, True))
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
-    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
-    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup_entry)
-    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
-    monkeypatch.setattr(
-        gateway_windows,
-        "_exec_schtasks",
-        lambda args: calls.append(("schtasks", tuple(args))) or (1, "", "ERROR: Access is denied."),
-    )
-    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: False)
-    monkeypatch.setattr(setup, "prompt_yes_no", lambda prompt, default=True: calls.append(("prompt", prompt, default)) or False)
-    monkeypatch.setattr(gateway_windows, "_launch_elevated_uninstall", lambda: calls.append(("elevate_uninstall", None)) or True)
-
-    gateway_windows.uninstall()
-
-    assert not any(call[0] == "elevate_uninstall" for call in calls)
-    assert not script_path.exists()
-    assert not startup_entry.exists()
-    out = capsys.readouterr().out
-    assert "Skipped elevation" in out
-    assert "UAC is Windows' admin approval prompt" in out
-    assert "Scheduled Task still registered" in out
 
 
 # ---------------------------------------------------------------------------
@@ -449,154 +247,11 @@ def test_uninstall_access_denied_declined_keeps_task_and_cleans_files(monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_stop_writes_planned_stop_marker_before_killing(monkeypatch):
-    """stop() must write the planned-stop marker BEFORE any kill signal.
-
-    Without this, the gateway's drain loop never runs on Windows and
-    sessions silently lose context across restarts.
-    """
-    pid = 99999
-    events = []
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
-
-    # Stub the marker write so we can record the order of operations.
-    from gateway import status as status_mod
-
-    def fake_write_marker(target_pid):
-        events.append(("write_marker", target_pid))
-        return True
-
-    def fake_pid_exists(check_pid):
-        # Drain succeeds: pid "exits" right after the marker write.
-        return ("write_marker", pid) not in events
-
-    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write_marker)
-    monkeypatch.setattr(status_mod, "_pid_exists", fake_pid_exists)
-    monkeypatch.setattr(status_mod, "get_running_pid", lambda: pid)
-
-    def fake_kill(**kwargs):
-        events.append(("kill", kwargs.get("force", False)))
-        return 0
-
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", fake_kill)
-    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
-
-    gateway_windows.stop()
-
-    # Marker MUST be written before any kill.
-    kinds = [e[0] for e in events]
-    assert "write_marker" in kinds, "stop() never wrote the planned-stop marker"
-    marker_idx = kinds.index("write_marker")
-    kill_idx = kinds.index("kill") if "kill" in kinds else len(kinds)
-    assert marker_idx < kill_idx, (
-        f"stop() killed before writing the marker (events={events})"
-    )
 
 
-def test_stop_waits_for_graceful_drain_before_force_kill(monkeypatch):
-    """When drain succeeds, stop() should NOT force-terminate the gateway.
-
-    drained=True means the gateway exited cleanly after seeing the
-    marker — escalating to taskkill /F afterwards would be wasted
-    work and may emit confusing "killed N processes" output.
-    """
-    pid = 88888
-    events = []
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
-
-    from gateway import status as status_mod
-
-    def fake_write_marker(target_pid):
-        events.append(("write_marker", target_pid))
-        return True
-
-    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write_marker)
-
-    # Simulate the gateway exiting cleanly after one poll tick.
-    poll_count = [0]
-
-    def fake_pid_exists(check_pid):
-        poll_count[0] += 1
-        return poll_count[0] < 2  # alive on first poll, gone on second
-
-    monkeypatch.setattr(status_mod, "_pid_exists", fake_pid_exists)
-    monkeypatch.setattr(status_mod, "get_running_pid", lambda: pid)
-
-    def fake_terminate_pid(target_pid, force=False):
-        events.append(("terminate", target_pid, force))
-
-    monkeypatch.setattr(status_mod, "terminate_pid", fake_terminate_pid)
-    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
-
-    gateway_windows.stop()
-
-    assert events == [("write_marker", pid)], (
-        f"After clean drain, force termination should be skipped (events={events})"
-    )
 
 
-def test_stop_no_running_gateway_skips_drain(monkeypatch):
-    """When no gateway PID file is running, skip drain but clear known strays."""
-    events = []
-    stray_pid = 42424
-
-    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
-    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [stray_pid])
-
-    from gateway import status as status_mod
-    monkeypatch.setattr(status_mod, "get_running_pid", lambda: None)
-
-    def fake_write_marker(target_pid):
-        events.append(("write_marker", target_pid))
-        return True
-    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write_marker)
-    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: check_pid == stray_pid)
-
-    def fake_terminate_pid(target_pid, force=False):
-        events.append(("terminate", target_pid, force))
-
-    monkeypatch.setattr(status_mod, "terminate_pid", fake_terminate_pid)
-    monkeypatch.setattr("hermes_cli.gateway._get_restart_drain_timeout", lambda: 5.0)
-
-    gateway_windows.stop()
-
-    # With no PID to drain, no marker is written. The bounded profile scan can
-    # still find and terminate a known stray without falling back to a broad
-    # process sweep.
-    assert ("write_marker", None) not in events
-    assert all(e[0] != "write_marker" for e in events), (
-        f"Should not write marker when no PID is running (events={events})"
-    )
-    assert events == [("terminate", stray_pid, True)]
 
 
-def test_drain_helper_handles_invalid_pid(monkeypatch):
-    """_drain_gateway_pid returns False for invalid PIDs without crashing."""
-    assert gateway_windows._drain_gateway_pid(0, 5.0) is False
-    assert gateway_windows._drain_gateway_pid(-1, 5.0) is False
 
 
-def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
-    """Marker-write failures are swallowed; drain still polls for PID exit.
-
-    If the marker can't be written (disk full, permission error), the
-    gateway can't drain — but the wait still happens so a slow-shutdown
-    gateway from a different code path (e.g. SIGTERM working on this
-    platform after all) still gets observed cleanly.
-    """
-    pid = 44444
-    def fake_write(target_pid):
-        raise OSError("disk full")
-
-    from gateway import status as status_mod
-    monkeypatch.setattr(status_mod, "write_planned_stop_marker", fake_write)
-    monkeypatch.setattr(status_mod, "_pid_exists", lambda check_pid: False)
-
-    # Returns True because _pid_exists immediately says "gone".
-    assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True

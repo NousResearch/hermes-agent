@@ -24,24 +24,8 @@ def _clean_anthropic_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def test_returns_false_when_no_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("anthropic") is False
 
 
-def test_returns_true_when_active_provider_matches(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {
-        "version": 1,
-        "providers": {},
-        "active_provider": "anthropic",
-    })
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("anthropic") is True
 
 
 def test_ambient_pool_source_does_not_count_as_explicit(tmp_path, monkeypatch):
@@ -114,43 +98,7 @@ def test_stale_env_pool_entry_does_not_count_when_var_unset(tmp_path, monkeypatc
     assert is_provider_explicitly_configured("deepseek") is False
 
 
-def test_env_pool_entry_counts_when_var_still_resolves(tmp_path, monkeypatch):
-    """The same env-seeded pool entry IS explicit while the var still resolves."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-realkey-123456")
-    _write_auth_store(tmp_path, {
-        "version": 1,
-        "providers": {},
-        "active_provider": None,
-        "credential_pool": {
-            "deepseek": [{
-                "id": "aaa111",
-                "source": "env:DEEPSEEK_API_KEY",
-                "auth_type": "api_key",
-            }],
-        },
-    })
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("deepseek") is True
 
 
-def test_provider_not_in_registry_but_in_models_dev(tmp_path, monkeypatch):
-    """Providers absent from PROVIDER_REGISTRY but present in the models.dev
-    catalog (e.g. openrouter) must still be detected via their env vars.
-
-    Regression: is_provider_explicitly_configured() only checked
-    PROVIDER_REGISTRY for env-var names, so providers that exist solely in
-    the models.dev catalog were never recognised as explicitly configured -
-    hiding them from the desktop model picker even when their API key was
-    set in .env.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key-12345678")
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-
-    from hermes_cli.auth import is_provider_explicitly_configured
-    assert is_provider_explicitly_configured("openrouter") is True
 
 

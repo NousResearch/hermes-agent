@@ -63,7 +63,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor = MagicMock()
 
     def _compress_with_overlap(*_a, **_kw):
-        time.sleep(0.25)
+        time.sleep(0.15)
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "user", "content": "tail"},
@@ -527,7 +527,7 @@ def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatc
     real_try_acquire = SessionDB.try_acquire_compression_lock
 
     def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-        return real_try_acquire(self, session_id, holder, ttl_seconds=0.3)
+        return real_try_acquire(self, session_id, holder, ttl_seconds=0.15)
 
     monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
 
@@ -536,8 +536,8 @@ def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatc
     db.create_session(parent_sid, source="discord")
 
     agent = _build_agent_with_db(db, parent_sid)
-    agent._compression_lock_ttl_seconds = 0.3
-    agent._compression_lock_refresh_interval = 0.1
+    agent._compression_lock_ttl_seconds = 0.15
+    agent._compression_lock_refresh_interval = 0.05
     agent.context_compressor._last_summary_error = "summary failed"
     agent._emit_warning = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("warn boom"))
 
@@ -546,7 +546,7 @@ def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatc
     with pytest.raises(RuntimeError, match="warn boom"):
         agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    time.sleep(0.45)
+    time.sleep(0.25)
     assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
 
 

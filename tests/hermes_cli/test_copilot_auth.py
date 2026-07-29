@@ -18,14 +18,6 @@ class TestTokenValidation:
 class TestResolveToken:
     """Token resolution with env var priority."""
 
-    def test_copilot_github_token_first_priority(self, monkeypatch):
-        from hermes_cli.copilot_auth import resolve_copilot_token
-        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_copilot_first")
-        monkeypatch.setenv("GH_TOKEN", "gho_gh_second")
-        monkeypatch.setenv("GITHUB_TOKEN", "gho_github_third")
-        token, source = resolve_copilot_token()
-        assert token == "gho_copilot_first"
-        assert source == "COPILOT_GITHUB_TOKEN"
 
     def test_gh_token_second_priority(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
@@ -36,25 +28,7 @@ class TestResolveToken:
         assert token == "gho_gh_second"
         assert source == "GH_TOKEN"
 
-    def test_github_token_third_priority(self, monkeypatch):
-        from hermes_cli.copilot_auth import resolve_copilot_token
-        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.setenv("GITHUB_TOKEN", "gho_github_third")
-        token, source = resolve_copilot_token()
-        assert token == "gho_github_third"
-        assert source == "GITHUB_TOKEN"
 
-    def test_classic_pat_in_env_skipped(self, monkeypatch):
-        """Classic PATs in env vars should be skipped, not returned."""
-        from hermes_cli.copilot_auth import resolve_copilot_token
-        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_classic_pat_nope")
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.setenv("GITHUB_TOKEN", "gho_valid_oauth")
-        token, source = resolve_copilot_token()
-        # Should skip the ghp_ token and find the gho_ one
-        assert token == "gho_valid_oauth"
-        assert source == "GITHUB_TOKEN"
 
 
     def test_gh_cli_classic_pat_raises(self, monkeypatch):

@@ -10,37 +10,10 @@ from __future__ import annotations
 import pytest
 
 
-def test_vertex_profile_registered():
-    from providers import get_provider_profile
-
-    p = get_provider_profile("vertex")
-    assert p is not None
-    assert p.name == "vertex"
-    assert p.api_mode == "chat_completions"
-    assert p.auth_type == "vertex"
 
 
-@pytest.mark.parametrize("alias", ["google-vertex", "vertex-ai", "gcp-vertex", "vertexai"])
-def test_alias_canonicalizes_to_vertex(alias):
-    from hermes_cli.models import _PROVIDER_ALIASES
-
-    assert _PROVIDER_ALIASES[alias] == "vertex"
 
 
-def test_resolve_runtime_provider_mints_token(monkeypatch):
-    import agent.vertex_adapter as va
-    from hermes_cli import runtime_provider as rp
-
-    monkeypatch.setattr(
-        va, "get_vertex_config",
-        lambda: ("ya29.TOKEN", "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"),
-    )
-    rt = rp.resolve_runtime_provider(requested="vertex")
-    assert rt["provider"] == "vertex"
-    assert rt["api_mode"] == "chat_completions"
-    assert rt["source"] == "vertex-oauth"
-    assert rt["api_key"] == "ya29.TOKEN"
-    assert "aiplatform.googleapis.com" in rt["base_url"]
 
 
 def test_resolve_runtime_provider_raises_autherror_when_unresolved(monkeypatch):

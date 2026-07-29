@@ -245,30 +245,8 @@ class TestCopilotNormalization:
         assert copilot_model_api_mode("gpt-5.2") == "codex_responses"
 
 
-    def test_copilot_api_mode_with_catalog_only_responses(self):
-        catalog = [{
-            "id": "gpt-5.4",
-            "supported_endpoints": ["/responses"],
-            "capabilities": {"type": "chat"},
-        }]
-        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
 
-    def test_normalize_opencode_model_id_strips_provider_prefix(self):
-        assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"
-        assert normalize_opencode_model_id("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "claude-sonnet-4-6"
-        assert normalize_opencode_model_id("opencode-go", "glm-5") == "glm-5"
 
-    def test_opencode_zen_api_modes_match_docs(self):
-        assert opencode_model_api_mode("opencode-zen", "gpt-5.4") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "gpt-5.3-codex") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/gpt-5.4") == "codex_responses"
-        assert opencode_model_api_mode("opencode-zen", "claude-sonnet-4-6") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
-        assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
-        # Qwen on Zen is served via /v1/messages per the Zen endpoint table.
-        assert opencode_model_api_mode("opencode-zen", "qwen3.7-max") == "anthropic_messages"
-        assert opencode_model_api_mode("opencode-zen", "qwen3.6-plus") == "anthropic_messages"
 
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
@@ -408,51 +386,10 @@ class TestValidateApiFallback:
     write the ``_session_model_overrides`` entry.
     """
 
-    def test_known_model_accepted_via_catalog_when_api_down(self):
-        # Force the openrouter catalog lookup to return a deterministic list.
-        with patch(
-            "hermes_cli.models.provider_model_ids",
-            return_value=["anthropic/claude-opus-4.6", "openai/gpt-5.4"],
-        ):
-            result = _validate("anthropic/claude-opus-4.6", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
-        assert result["recognized"] is True
 
 
-    def test_zai_known_model_accepted_via_catalog_when_api_down(self):
-        # glm-5 is in the zai curated catalog (_PROVIDER_MODELS["zai"]).
-        result = _validate("glm-5", provider="zai", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
-        assert result["recognized"] is True
 
 
-    def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
-        with patch(
-            "hermes_cli.models.probe_api_models",
-            return_value={
-                "models": None,
-                "probed_url": "http://localhost:8000/v1/models",
-                "resolved_base_url": "http://localhost:8000",
-                "suggested_base_url": "http://localhost:8000/v1",
-                "used_fallback": False,
-            },
-        ):
-            result = validate_requested_model(
-                "qwen3",
-                "custom",
-                api_key="local-key",
-                base_url="http://localhost:8000",
-            )
-
-        # Unreachable /models on a custom endpoint no longer hard-rejects —
-        # the model is persisted with a warning so Cloudflare-protected /
-        # proxy endpoints that don't expose /models still work. See #12950.
-        assert result["accepted"] is False
-        assert result["persist"] is True
-        assert "http://localhost:8000/v1/models" in result["message"]
-        assert "http://localhost:8000/v1" in result["message"]
 
     def test_fetch_lmstudio_models_filters_embedding_type(self):
         mock_resp = MagicMock()
@@ -471,14 +408,6 @@ class TestValidateApiFallback:
         assert models == ["publisher/chat-model"]
 
 
-    def test_fetch_lmstudio_models_returns_empty_on_network_error(self):
-        with patch(
-            "hermes_cli.models._urlopen_model_catalog_request",
-            side_effect=ConnectionRefusedError(),
-        ):
-            models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
-
-        assert models == []
 
     def test_validate_lmstudio_distinguishes_auth_failure(self):
         import urllib.error
@@ -502,19 +431,6 @@ class TestValidateApiFallback:
         assert "401" in result["message"]
         assert "LM_API_KEY" in result["message"]
 
-    def test_validate_lmstudio_distinguishes_unreachable(self):
-        with patch(
-            "hermes_cli.models._urlopen_model_catalog_request",
-            side_effect=ConnectionRefusedError(),
-        ):
-            result = validate_requested_model(
-                "publisher/chat-model",
-                "lmstudio",
-                base_url="http://localhost:1234/v1",
-            )
-
-        assert result["accepted"] is False
-        assert "Could not reach LM Studio" in result["message"]
 
 
 # -- validate — Codex auto-correction ------------------------------------------

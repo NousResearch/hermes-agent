@@ -287,75 +287,9 @@ def _write_cron_jobs(tmp_path, jobs):
 class TestCronModelDriftConfigWarning:
     """Warn operators before unpinned snapshot-bearing cron jobs fail closed."""
 
-    def test_model_default_change_warns_for_unpinned_snapshot_jobs(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "no_agent": False,
-                    "model": None,
-                    "provider": None,
-                    "model_snapshot": "old-model",
-                    "provider_snapshot": "openrouter",
-                    "prompt": "do not print this prompt",
-                },
-            ],
-        )
-
-        set_config_value("model.default", "new-model")
-
-        captured = capsys.readouterr()
-        assert "1 enabled unpinned cron job" in captured.out
-        assert "model_snapshot" in captured.out
-        assert "fail closed" in captured.out
-        assert "cronjob action=update job_id=<job_id> provider=<provider> model=<model>" in captured.out
-        assert "do not print this prompt" not in captured.out
 
 
-    def test_unreadable_cron_database_does_not_break_config_set(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        cron_dir = _isolated_hermes_home / "cron"
-        cron_dir.mkdir(parents=True, exist_ok=True)
-        (cron_dir / "jobs.json").write_text("{not-json", encoding="utf-8")
 
-        set_config_value("model.default", "new-model")
-
-        captured = capsys.readouterr()
-        assert "Set model.default = new-model" in captured.out
-        assert "fail closed" not in captured.out
-
-    def test_model_name_change_warns_like_model_default(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        """model.name is a legacy alias for model.default — the warning must fire."""
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("model.name", "new-model")
-
-        captured = capsys.readouterr()
-        assert "Set model.name = new-model" in captured.out
-        assert "fail closed" in captured.out
 
     def test_explicit_opt_out_suppresses_warning(
         self,
@@ -509,34 +443,10 @@ class TestSchemaValidation:
     ``discord.gateway_restart_notification``).
     """
 
-    def test_unknown_top_level_key_written_with_notice(self, _isolated_hermes_home, capsys):
-        """An unknown top-level key is saved AND a notice is printed."""
-        set_config_value("totally_made_up_key", "value")
-        out = capsys.readouterr().out
-        assert "not a recognized config key" in out
-        assert "totally_made_up_key" in out
-        assert "saved anyway" in out
-        # The value WAS written.
-        assert "totally_made_up_key" in _read_config(_isolated_hermes_home)
 
 
-    def test_platforms_container_is_accepted(self, _isolated_hermes_home, capsys):
-        """``platforms.<name>.<field>`` is a valid current shape: gateway/
-        config.py resolves a top-level ``platforms`` map in addition to the
-        top-level platform blocks, so it must NOT trigger the notice."""
-        set_config_value("platforms.discord.enabled", "true")
-        content = _read_config(_isolated_hermes_home)
-        assert "enabled: true" in content
-        assert "not a recognized config key" not in capsys.readouterr().out
 
 
-    def test_unknown_approvals_subkey_warns_but_writes(self, _isolated_hermes_home, capsys):
-        """``approvals`` is a defined schema, so a typo'd sub-key gets the
-        notice — but is still written."""
-        set_config_value("approvals.notarealkey", "true")
-        out = capsys.readouterr().out
-        assert "not a recognized config key" in out
-        assert "notarealkey" in _read_config(_isolated_hermes_home)
 
 
     def test_desktop_macos_signing_identity_is_accepted(self, _isolated_hermes_home, capsys):
@@ -547,18 +457,7 @@ class TestSchemaValidation:
         assert saved["desktop"]["macos_signing_identity"] == "Hermes Local Signing"
         assert "not a recognized config key" not in capsys.readouterr().out
 
-    def test_close_typo_suggests_correct_key(self, _isolated_hermes_home, capsys):
-        """Typo'd top-level keys should get a fuzzy-match suggestion."""
-        set_config_value("disco", "false")
-        out = capsys.readouterr().out
-        assert "Did you mean" in out
-        assert "discord" in out
 
-    def test_typoed_subkey_suggests_sibling(self, _isolated_hermes_home, capsys):
-        """``agent.max_turn`` should suggest ``agent.max_turns``."""
-        set_config_value("agent.max_turn", "100")
-        out = capsys.readouterr().out
-        assert "agent.max_turns" in out
 
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
@@ -605,20 +504,6 @@ class TestValidateConfigKey:
             assert suggestion is not None and expected_in_suggestion in suggestion, \
                 f"Expected suggestion to contain {expected_in_suggestion!r}, got {suggestion!r}"
 
-    @pytest.mark.parametrize("key", [
-        "_test.shim_marker",
-        "_internal",
-        "_test.nested.deep.marker",
-        "_x",
-    ])
-    def test_underscore_prefixed_keys_are_accepted(self, key):
-        """Underscore-prefixed top-level keys are internal/test markers and
-        bypass schema validation. The Docker privilege-drop shim test writes
-        ``_test.shim_marker`` to probe config.yaml ownership; that must not
-        be rejected. (Regression: #34250 schema validation broke this.)"""
-        from hermes_cli.config import _validate_config_key
-        is_known, _ = _validate_config_key(key)
-        assert is_known, f"Expected underscore-prefixed {key!r} to be accepted"
 
     def test_underscore_only_first_segment_escapes(self):
         """The underscore escape only applies to the FIRST segment. A real

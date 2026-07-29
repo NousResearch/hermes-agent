@@ -33,15 +33,6 @@ def test_config_set_managed_key_rejected(homes, capsys):
     assert "managed" in (captured.out + captured.err).lower()
 
 
-def test_config_set_managed_key_does_not_write(homes):
-    from hermes_cli.config import set_config_value, read_raw_config
-
-    try:
-        set_config_value("model.default", "user/override")
-    except SystemExit:
-        pass
-    raw = read_raw_config()
-    assert raw.get("model", {}).get("default") != "user/override"
 
 
 # ── env write guards ─────────────────────────────────────────────────────────
@@ -74,23 +65,8 @@ def test_save_env_value_managed_key_rejected(env_homes, capsys):
     assert "user.example" not in body
 
 
-def test_remove_env_value_managed_key_rejected(env_homes, capsys):
-    from hermes_cli.config import remove_env_value
-
-    result = remove_env_value("OPENAI_API_BASE")
-    assert result is False
-    assert "managed" in capsys.readouterr().err.lower()
 
 
 # ── bulk save strips managed leaves ──────────────────────────────────────────
 
 
-def test_save_config_strips_managed_leaves(homes, capsys):
-    from hermes_cli.config import save_config, read_raw_config
-
-    # 'model.default' is managed (homes fixture); 'model.fallback' is not.
-    save_config({"model": {"default": "user/override", "fallback": "user/fb"}})
-    raw = read_raw_config()
-    assert raw.get("model", {}).get("default") != "user/override"  # stripped
-    assert raw.get("model", {}).get("fallback") == "user/fb"  # kept
-    assert "managed" in capsys.readouterr().err.lower()

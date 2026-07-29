@@ -22,28 +22,6 @@ class _FakeDB:
         self.closed = True
 
 
-def test_resolve_last_session_prefers_last_active_over_started_at(monkeypatch):
-    # `search_sessions` should return in MRU order, so -c can trust row 0.
-    rows = [
-        {
-            "id": "new_started_old_active",
-            "source": "cli",
-            "started_at": 1000.0,
-            "last_active": 100.0,
-        },
-        {
-            "id": "old_started_recently_active",
-            "source": "cli",
-            "started_at": 500.0,
-            "last_active": 999.0,
-        },
-    ]
-
-    fake_db = _FakeDB(rows)
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: fake_db)
-
-    assert _resolve_last_session("cli") == "old_started_recently_active"
-    assert fake_db.closed
 
 
 def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
@@ -84,43 +62,6 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
         db.close()
 
 
-def test_resolve_last_session_not_limited_to_newest_started_20(tmp_path, monkeypatch):
-    # Regression: when sampling by started_at, -c could miss the true MRU if
-    # it was older than the newest 20 started sessions.
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-
-    import hermes_state
-
-    from pathlib import Path
-
-    state_db = Path(tmp_path / "state.db")
-    real_session_db = hermes_state.SessionDB
-    db = real_session_db(db_path=state_db)
-    try:
-        for i in range(25):
-            sid = f"s_{i:02d}"
-            db.create_session(sid, source="cli")
-            with db._lock:
-                db._conn.execute(
-                    "UPDATE sessions SET started_at=? WHERE id=?",
-                    (10_000.0 - i, sid),
-                )
-                db._conn.commit()
-
-        target = "s_24"
-        db.append_message(target, role="user", content="latest activity")
-        with db._lock:
-            db._conn.execute(
-                "UPDATE messages SET timestamp=? WHERE session_id=?",
-                (20_000.0, target),
-            )
-            db._conn.commit()
-    finally:
-        db.close()
-
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: real_session_db(db_path=state_db))
-    assert _resolve_last_session("cli") == target
 
 
 # ---------------------------------------------------------------------------

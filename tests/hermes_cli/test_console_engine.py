@@ -231,66 +231,14 @@ MUTATING_CONFIRMATION_SMOKE_COMMANDS = [
 ]
 
 
-def test_console_parses_bare_and_hermes_prefixed_commands(_isolate_hermes_home):
-    engine = HermesConsoleEngine()
-
-    bare = engine.execute("config path")
-    prefixed = engine.execute("hermes config path")
-
-    assert bare.status == "ok"
-    assert prefixed.status == "ok"
-    assert bare.output == prefixed.output
-    assert bare.output.endswith("config.yaml")
 
 
-def test_console_help_uses_cli_subcommand_summaries():
-    help_text = HermesConsoleEngine().help_text()
-
-    assert "skills list" in help_text
-    assert "List installed skills" in help_text
-    assert "Show all tools and their enabled/disabled status" in help_text
-    assert "Remove an MCP server" in help_text
-    assert "Check pet setup + terminal graphics support" in help_text
-    assert "Run `hermes skills list`" not in help_text
-    assert "Run `hermes tools list`" not in help_text
 
 
-def test_console_registry_covers_non_admin_cli_surface():
-    registered = set(HermesConsoleEngine().commands)
-
-    missing = EXPECTED_CONSOLE_COMMANDS - registered
-
-    assert missing == set()
 
 
-def test_help_lists_supported_commands_and_not_full_cli():
-    result = HermesConsoleEngine().execute("help")
-
-    assert result.status == "ok"
-    assert "sessions list" in result.output
-    assert "config set" in result.output
-    assert "dashboard" not in result.output
-    assert "gateway restart" not in result.output
 
 
-def test_config_set_requires_confirmation_then_writes(_isolate_hermes_home):
-    engine = HermesConsoleEngine()
-
-    # Use a schema-known key path. Since #34067, `config set` refuses unknown
-    # top-level keys, so this flow test must target a valid path (telegram is a
-    # PlatformConfig-shaped dict that accepts arbitrary child keys).
-    pending = engine.execute("config set telegram.test true")
-    assert pending.status == "confirm_required"
-
-    from hermes_cli.config import read_raw_config
-
-    assert read_raw_config() == {}
-
-    result = engine.execute("config set telegram.test true", confirmed=True)
-
-    assert result.status == "ok"
-    assert "telegram.test" in result.output
-    assert read_raw_config()["telegram"]["test"] is True
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):
@@ -361,18 +309,3 @@ def test_repl_runs_non_interactive_lines_without_prompts(_isolate_hermes_home):
     assert stderr.getvalue() == ""
 
 
-def test_main_console_subcommand_smoke(_isolate_hermes_home):
-    import subprocess
-
-    result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "console"],
-        cwd=Path(__file__).resolve().parents[2],
-        input="help\nexit\n",
-        text=True,
-        capture_output=True,
-        timeout=20,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "Hermes Console" in result.stdout

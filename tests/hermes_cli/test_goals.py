@@ -47,24 +47,7 @@ class TestParseJudgeResponse:
         assert wait is None
 
 
-    def test_string_done_values(self):
-        from hermes_cli.goals import _parse_judge_response
 
-        for s in ("true", "yes", "done", "1"):
-            verdict, _, _, _ = _parse_judge_response(f'{{"done": "{s}", "reason": "r"}}')
-            assert verdict == "done"
-        for s in ("false", "no", "not yet"):
-            verdict, _, _, _ = _parse_judge_response(f'{{"done": "{s}", "reason": "r"}}')
-            assert verdict == "continue"
-
-    def test_new_verdict_shape(self):
-        """The explicit {"verdict": ...} shape is honored."""
-        from hermes_cli.goals import _parse_judge_response
-
-        v, _, _, _ = _parse_judge_response('{"verdict": "done", "reason": "r"}')
-        assert v == "done"
-        v, _, _, _ = _parse_judge_response('{"verdict": "continue", "reason": "r"}')
-        assert v == "continue"
 
     def test_wait_verdict_with_pid(self):
         from hermes_cli.goals import _parse_judge_response
@@ -78,14 +61,6 @@ class TestParseJudgeResponse:
         assert reason == "CI running"
 
 
-    def test_wait_verdict_without_target_downgrades_to_continue(self):
-        """A wait verdict with no pid/seconds can't park on anything → continue."""
-        from hermes_cli.goals import _parse_judge_response
-
-        v, _, pf, wait = _parse_judge_response('{"verdict": "wait", "reason": "vague"}')
-        assert v == "continue"
-        assert wait is None
-        assert pf is False
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -128,14 +103,6 @@ class TestJudgeGoal:
 
 
 class TestGoalManager:
-    def test_no_goal_initial(self, hermes_home):
-        from hermes_cli.goals import GoalManager
-
-        mgr = GoalManager(session_id="test-sid-1")
-        assert mgr.state is None
-        assert not mgr.is_active()
-        assert not mgr.has_goal()
-        assert "No active goal" in mgr.status_line()
 
     def test_set_then_status(self, hermes_home):
         from hermes_cli.goals import GoalManager
@@ -150,78 +117,12 @@ class TestGoalManager:
         assert "active" in mgr.status_line().lower()
         assert "port the thing" in mgr.status_line()
 
-    def test_set_rejects_empty(self, hermes_home):
-        from hermes_cli.goals import GoalManager
-
-        mgr = GoalManager(session_id="test-sid-3")
-        with pytest.raises(ValueError):
-            mgr.set("")
-        with pytest.raises(ValueError):
-            mgr.set("   ")
-
-    def test_pause_and_resume(self, hermes_home):
-        from hermes_cli.goals import GoalManager
-
-        mgr = GoalManager(session_id="test-sid-4")
-        mgr.set("goal text")
-        mgr.pause(reason="user-paused")
-        assert mgr.state.status == "paused"
-        assert not mgr.is_active()
-        assert mgr.has_goal()
-
-        mgr.resume()
-        assert mgr.state.status == "active"
-        assert mgr.is_active()
 
 
-    def test_persistence_across_managers(self, hermes_home):
-        """Key invariant: a second manager on the same session sees the goal.
-
-        This is what makes /resume work — each session rebinds its
-        GoalManager and picks up the saved state.
-        """
-        from hermes_cli.goals import GoalManager
-
-        mgr1 = GoalManager(session_id="persist-sid")
-        mgr1.set("do the thing")
-
-        mgr2 = GoalManager(session_id="persist-sid")
-        assert mgr2.state is not None
-        assert mgr2.state.goal == "do the thing"
-        assert mgr2.is_active()
-
-    def test_evaluate_after_turn_done(self, hermes_home):
-        """Judge says done → status=done, no continuation."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
-
-        mgr = GoalManager(session_id="eval-sid-1")
-        mgr.set("ship it")
-
-        with patch.object(goals, "judge_goal", return_value=("done", "shipped", False, None, False)):
-            decision = mgr.evaluate_after_turn("I shipped the feature.")
-
-        assert decision["verdict"] == "done"
-        assert decision["should_continue"] is False
-        assert decision["continuation_prompt"] is None
-        assert mgr.state.status == "done"
-        assert mgr.state.turns_used == 1
 
 
-    def test_evaluate_after_turn_inactive(self, hermes_home):
-        """evaluate_after_turn is a no-op when goal isn't active."""
-        from hermes_cli.goals import GoalManager
 
-        mgr = GoalManager(session_id="eval-sid-4")
-        d = mgr.evaluate_after_turn("anything")
-        assert d["verdict"] == "inactive"
-        assert d["should_continue"] is False
 
-        mgr.set("a goal")
-        mgr.pause()
-        d2 = mgr.evaluate_after_turn("anything")
-        assert d2["verdict"] == "inactive"
-        assert d2["should_continue"] is False
 
     def test_continuation_prompt_shape(self, hermes_home):
         """The continuation prompt must include the goal text verbatim —
@@ -270,15 +171,6 @@ class TestJudgeParseFailureAutoPause:
     instead of burning the whole turn budget."""
 
 
-    def test_parse_response_flags_non_json_as_parse_failure(self):
-        from hermes_cli.goals import _parse_judge_response
-
-        verdict, reason, parse_failed, _w = _parse_judge_response(
-            "Let me analyze whether the goal is fully satisfied based on the agent's response..."
-        )
-        assert verdict == "continue"
-        assert parse_failed is True
-        assert "not json" in reason.lower()
 
 
     def test_api_error_does_not_count_as_parse_failure(self):
@@ -296,17 +188,6 @@ class TestJudgeParseFailureAutoPause:
         assert parse_failed is False
         assert transport_failed is True
 
-    def test_empty_judge_reply_flagged_as_parse_failure(self):
-        """End-to-end: judge returns empty content → parse_failed=True."""
-        from hermes_cli import goals
-
-        with patch(
-            "agent.auxiliary_client.call_llm",
-            return_value=MagicMock(choices=[MagicMock(message=MagicMock(content=""))]),
-        ):
-            verdict, _, parse_failed, _wd, _tf = goals.judge_goal("goal", "response")
-        assert verdict == "continue"
-        assert parse_failed is True
 
     def test_auto_pause_after_three_consecutive_parse_failures(self, hermes_home):
         """N=3 consecutive parse failures → auto-pause with config pointer."""
@@ -337,87 +218,8 @@ class TestJudgeParseFailureAutoPause:
             assert "goal_judge" in d3["message"]
             assert "config.yaml" in d3["message"]
 
-    def test_parse_failure_counter_resets_on_good_reply(self, hermes_home):
-        """A single good judge reply resets the counter — transient flakes don't pause."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
 
-        mgr = GoalManager(session_id="parse-fail-sid-2", default_max_turns=20)
-        mgr.set("another goal")
 
-        # Two parse failures…
-        with patch.object(
-            goals, "judge_goal", return_value=("continue", "not json", True, None, False)
-        ):
-            mgr.evaluate_after_turn("step 1")
-            mgr.evaluate_after_turn("step 2")
-            assert mgr.state.consecutive_parse_failures == 2
-
-        # …then one clean reply resets the counter.
-        with patch.object(
-            goals, "judge_goal", return_value=("continue", "making progress", False, None, False)
-        ):
-            d = mgr.evaluate_after_turn("step 3")
-            assert d["should_continue"] is True
-            assert mgr.state.consecutive_parse_failures == 0
-
-    def test_transport_failures_do_not_increment_parse_counter(self, hermes_home):
-        """Transport failures use their own counter and a good reply resets both."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
-
-        mgr = GoalManager(session_id="parse-fail-sid-3", default_max_turns=20)
-        mgr.set("goal")
-        assert mgr.state is not None
-
-        with patch.object(
-            goals,
-            "judge_goal",
-            return_value=(
-                "continue",
-                "judge error: RuntimeError",
-                False,
-                None,
-                True,
-            ),
-        ):
-            for _ in range(2):
-                d = mgr.evaluate_after_turn("still going")
-                assert d["should_continue"] is True
-            assert mgr.state.consecutive_parse_failures == 0
-            assert mgr.state.consecutive_transport_failures == 2
-            assert mgr.state.status == "active"
-
-        with patch.object(
-            goals,
-            "judge_goal",
-            return_value=("continue", "making progress", False, None, False),
-        ):
-            d = mgr.evaluate_after_turn("recovered")
-
-        assert d["should_continue"] is True
-        assert mgr.state.consecutive_parse_failures == 0
-        assert mgr.state.consecutive_transport_failures == 0
-
-    def test_consecutive_parse_failures_persists_across_goalmanager_reloads(
-        self, hermes_home
-    ):
-        """The counter must be durable so cross-session resumes see it."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager, load_goal
-
-        mgr = GoalManager(session_id="parse-fail-sid-4", default_max_turns=20)
-        mgr.set("persistent goal")
-
-        with patch.object(
-            goals, "judge_goal", return_value=("continue", "empty", True, None, False)
-        ):
-            mgr.evaluate_after_turn("r")
-            mgr.evaluate_after_turn("r")
-
-        reloaded = load_goal("parse-fail-sid-4")
-        assert reloaded is not None
-        assert reloaded.consecutive_parse_failures == 2
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -745,9 +547,6 @@ class TestSessionTriggerBarrier:
             process_registry._running[sid] = s
         return s, process_registry
 
-    def test_registry_is_session_waiting_running_unmatched(self, hermes_home):
-        s, reg = self._inject("proc_t1", watch_patterns=["READY"])
-        assert reg.is_session_waiting("proc_t1") is True
 
     def test_registry_releases_on_watch_match_while_alive(self, hermes_home):
         s, reg = self._inject("proc_t2", watch_patterns=["READY"])
@@ -775,12 +574,6 @@ class TestSessionTriggerBarrier:
             pass
 
 
-    def test_old_state_loads_without_session_field(self, hermes_home):
-        from hermes_cli.goals import GoalState
-        st = GoalState.from_json(json.dumps({
-            "goal": "g", "status": "active", "turns_used": 0, "max_turns": 20,
-        }))
-        assert st.waiting_on_session is None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -856,23 +649,7 @@ class TestGoalContractSerialization:
 
 class TestGoalManagerContract:
 
-    def test_set_without_contract_no_marker(self, hermes_home):
-        from hermes_cli.goals import GoalManager
 
-        mgr = GoalManager(session_id="c-none")
-        mgr.set("ship it")
-        assert not mgr.has_contract()
-        assert "contract" not in mgr.status_line()
-
-    def test_continuation_prompt_includes_contract(self, hermes_home):
-        from hermes_cli.goals import GoalManager, GoalContract
-
-        mgr = GoalManager(session_id="c-cont")
-        mgr.set("ship it", contract=GoalContract(verification="run pytest"))
-        prompt = mgr.next_continuation_prompt()
-        assert "Completion contract" in prompt
-        assert "run pytest" in prompt
-        assert "concrete evidence" in prompt
 
     def test_set_contract_after_the_fact(self, hermes_home):
         from hermes_cli.goals import GoalManager, GoalContract

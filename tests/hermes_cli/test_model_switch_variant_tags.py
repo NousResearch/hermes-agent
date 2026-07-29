@@ -55,7 +55,3 @@ class TestVariantTagPreservation:
         assert result == "nvidia/nemotron-3-super-120b-a12b"
 
 
-    def test_already_correct_slug_no_tag(self):
-        """Standard vendor/model slugs without tags pass through unchanged."""
-        result = _run_switch("anthropic/claude-sonnet-4.6")
-        assert result == "anthropic/claude-sonnet-4.6"

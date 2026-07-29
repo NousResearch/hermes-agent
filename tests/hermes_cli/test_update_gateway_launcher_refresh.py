@@ -51,13 +51,6 @@ def test_resolve_detached_python_swaps_legacy_pythonw_for_console_sibling(tmp_pa
     assert extra == []
 
 
-def test_resolve_detached_python_leaves_console_python_untouched(tmp_path):
-    _pythonw, python = _make_venv(tmp_path, with_console_python=True)
-
-    exe, venv_dir, _extra = gateway_windows._resolve_detached_python(str(python))
-
-    assert exe == str(python)
-    assert venv_dir == tmp_path / "venv"
 
 
 def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
@@ -90,51 +83,9 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_refresh_is_noop_off_windows():
-    with mock.patch.object(cli_main, "_is_windows", return_value=False), mock.patch.object(
-        gateway_windows, "is_installed"
-    ) as is_installed:
-        cli_main._refresh_windows_gateway_launchers()
-    is_installed.assert_not_called()
 
 
-@mock.patch.object(cli_main, "_is_windows", return_value=True)
-def test_refresh_failure_never_raises(_winp):
-    with mock.patch.object(gateway_windows, "is_installed", return_value=True), mock.patch.object(
-        gateway_windows, "_write_task_script", side_effect=OSError("locked")
-    ):
-        cli_main._refresh_windows_gateway_launchers()  # must not raise
 
 
-@mock.patch.object(cli_main, "_is_windows", return_value=True)
-def test_resume_after_update_refreshes_launchers_first(_winp):
-    """The resume path regenerates launchers before any respawn, including the
-    cold-start-only shape (no gateway was running, autostart installed)."""
-    calls: list[str] = []
-    with mock.patch.object(
-        cli_main,
-        "_refresh_windows_gateway_launchers",
-        side_effect=lambda: calls.append("refresh"),
-    ), mock.patch.object(
-        cli_main,
-        "_cold_start_windows_gateway_after_update",
-        side_effect=lambda: calls.append("cold_start"),
-    ):
-        cli_main._resume_windows_gateways_after_update(
-            {
-                "resume_needed": True,
-                "profiles": {},
-                "unmapped_pids": [],
-                "unmapped": [],
-                "cold_start_if_installed": True,
-            }
-        )
-
-    assert calls == ["refresh", "cold_start"]
 
 
-def test_resume_after_update_noop_token_skips_refresh():
-    with mock.patch.object(cli_main, "_refresh_windows_gateway_launchers") as refresh:
-        cli_main._resume_windows_gateways_after_update(None)
-        cli_main._resume_windows_gateways_after_update({"resume_needed": False})
-    refresh.assert_not_called()

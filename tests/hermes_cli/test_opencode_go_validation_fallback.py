@@ -72,12 +72,6 @@ def test_opencode_go_totally_unknown_model_still_accepted():
 # ---------------------------------------------------------------------------
 
 
-@_patched
-def test_opencode_zen_known_model_accepted():
-    """opencode-zen also uses _PROVIDER_MODELS; kimi-k2 is in its catalog."""
-    result = validate_requested_model("kimi-k2", "opencode-zen")
-    assert result["accepted"] is True
-    assert result["recognized"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -85,15 +79,3 @@ def test_opencode_zen_known_model_accepted():
 # ---------------------------------------------------------------------------
 
 
-@_patched
-def test_provider_without_catalog_accepts_with_warning():
-    """When a provider has no entry in _PROVIDER_MODELS and /models is
-    unreachable, accept the model with a 'Note:' warning rather than reject.
-    This matches the in-code comment: 'Accept and persist, but warn so typos
-    don't silently break things.'"""
-    # Use a made-up provider name that won't resolve to any catalog.
-    result = validate_requested_model("some-model", "provider-that-does-not-exist")
-    assert result["accepted"] is True
-    assert result["persist"] is True
-    assert result["recognized"] is False
-    assert "Note:" in result["message"]

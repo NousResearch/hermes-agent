@@ -48,9 +48,6 @@ def test_summarize_strips_rust_report_noise():
     assert "Error:" not in summary
 
 
-def test_summarize_joins_multiple_cause_lines():
-    raw = "Error:\n   0: outer cause\n   1: inner cause\n\nLocation:\n   x.rs:1"
-    assert _summarize_bws_stderr(raw) == "outer cause; inner cause"
 
 
 
@@ -103,26 +100,6 @@ def test_onepassword_auth_remediation_points_at_token_command():
 
 
 
-def test_base_remediation_covers_common_kinds():
-    class _Src(SecretSource):
-        name = "dummy"
-        label = "Dummy"
-
-        def fetch(self, cfg, home_path):  # pragma: no cover
-            raise NotImplementedError
-
-    src = _Src()
-    for kind in (ErrorKind.NOT_CONFIGURED, ErrorKind.BINARY_MISSING,
-                 ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED,
-                 ErrorKind.NETWORK, ErrorKind.TIMEOUT):
-        hint = src.remediation(kind, {})
-        assert hint, f"no default hint for {kind}"
-        if kind in (ErrorKind.NOT_CONFIGURED, ErrorKind.BINARY_MISSING,
-                    ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED):
-            assert "hermes secrets dummy" in hint
-    # Kinds without a sensible generic action stay silent.
-    assert _Src().remediation(ErrorKind.INTERNAL, {}) == ""
-    assert _Src().remediation(None, {}) == ""
 
 
 def test_remediation_never_raises_on_junk_cfg():

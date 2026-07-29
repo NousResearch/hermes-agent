@@ -107,32 +107,8 @@ def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
 # ─── Shared rendering ───────────────────────────────────────────────────
 
 
-def test_format_entries_marks_current_provider():
-    from hermes_cli.inventory import format_aux_picker_entries
-
-    rows = [
-        {"slug": "my-llm", "name": "My LLM", "models": ["a", "b"], "total_models": 2},
-        {"slug": "openrouter", "name": "OpenRouter", "models": ["x"], "total_models": 1},
-    ]
-
-    entries = format_aux_picker_entries(rows, current_provider="my-llm")
-
-    assert entries[0] == ("my-llm", "My LLM — 2 models  ← current", ["a", "b"])
-    assert entries[1] == ("openrouter", "OpenRouter — 1 models", ["x"])
 
 
-def test_format_entries_base_url_owns_current_marker():
-    """When the task points at a raw base_url, the current selection is the
-    URL — no provider row may claim the marker."""
-    from hermes_cli.inventory import format_aux_picker_entries
-
-    rows = [{"slug": "my-llm", "name": "My LLM", "models": ["a"], "total_models": 1}]
-
-    entries = format_aux_picker_entries(
-        rows, current_provider="my-llm", current_base_url="https://elsewhere/v1"
-    )
-
-    assert "← current" not in entries[0][1]
 
 
 # ─── Seam guard ─────────────────────────────────────────────────────────

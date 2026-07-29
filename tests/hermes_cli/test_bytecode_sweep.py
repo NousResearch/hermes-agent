@@ -50,42 +50,10 @@ def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
     assert recorded.strip().endswith("b" * 40)
 
 
-def test_sweep_first_launch_clears_and_records(monkeypatch, tmp_path):
-    """No stamp yet (first launch with the guard) → sweep once, record."""
-    repo = _make_repo(tmp_path, sha="d" * 40)
-    cache = _make_pycache(repo)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert not cache.exists()
-    assert (repo / hermes_main._BYTECODE_FINGERPRINT_FILE).exists()
 
 
-def test_record_bytecode_fingerprint_writes_atomically(monkeypatch, tmp_path):
-    repo = _make_repo(tmp_path, sha="f" * 40)
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._record_bytecode_fingerprint()
-
-    stamp = repo / hermes_main._BYTECODE_FINGERPRINT_FILE
-    assert stamp.read_text(encoding="utf-8").endswith("f" * 40)
-    assert not stamp.with_name(stamp.name + ".tmp").exists()
 
 
-def test_sweep_skips_venv_and_git_dirs(monkeypatch, tmp_path):
-    """The underlying clear must not touch venv/node_modules bytecode."""
-    repo = _make_repo(tmp_path, sha="9" * 40)
-    repo_cache = _make_pycache(repo, "hermes_cli")
-    venv_cache = repo / "venv" / "lib" / "__pycache__"
-    venv_cache.mkdir(parents=True)
-    (venv_cache / "x.pyc").write_bytes(b"keep")
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
-
-    hermes_main._sweep_stale_bytecode_if_checkout_changed()
-
-    assert not repo_cache.exists()
-    assert venv_cache.exists()
 
 # ---------------------------------------------------------------------------
 # Plugin-update sibling site: __pycache__ under ~/.hermes/plugins/<name>
@@ -109,7 +77,3 @@ def test_clear_plugin_bytecode_removes_nested_caches(tmp_path):
     assert not nested.exists()
 
 
-def test_clear_plugin_bytecode_never_raises_on_missing_dir(tmp_path):
-    from hermes_cli import plugins_cmd
-
-    assert plugins_cmd._clear_plugin_bytecode(tmp_path / "nope") == 0

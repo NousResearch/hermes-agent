@@ -12,12 +12,14 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
+  getRememberedRoute,
   getRememberedSessionId,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   sessionPinId,
   setCurrentCwd,
+  setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
   setSessions,
@@ -504,6 +506,59 @@ describe('remembered session id (per profile)', () => {
 
     expect(getRememberedSessionId('ai-engineer')).toBeNull()
     expect(getRememberedSessionId('default')).toBe('personal-session')
+  })
+})
+
+describe('remembered route (per profile)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('scopes the remembered route by profile so one profile cannot restore another', () => {
+    // A session route embeds a session id. Remembered globally, a cold start
+    // under 'default' would navigate straight into ai-engineer's conversation.
+    setRememberedRoute('/session/work-session', 'ai-engineer')
+    setRememberedRoute('/session/personal-session', 'default')
+
+    expect(getRememberedRoute('ai-engineer')).toBe('/session/work-session')
+    expect(getRememberedRoute('default')).toBe('/session/personal-session')
+    expect(getRememberedRoute('research')).toBeNull()
+  })
+
+  it('keeps the default profile on the legacy unsuffixed key for back-compat', () => {
+    localStorage.setItem('hermes.desktop.lastRoute', '/skills')
+
+    expect(getRememberedRoute('default')).toBe('/skills')
+    expect(getRememberedRoute(undefined)).toBe('/skills')
+    expect(getRememberedRoute('')).toBe('/skills')
+    expect(getRememberedRoute(null)).toBe('/skills')
+  })
+
+  it('clearing one profile leaves the others intact', () => {
+    setRememberedRoute('/session/work-session', 'ai-engineer')
+    setRememberedRoute('/session/personal-session', 'default')
+
+    setRememberedRoute(null, 'ai-engineer')
+
+    expect(getRememberedRoute('ai-engineer')).toBeNull()
+    expect(getRememberedRoute('default')).toBe('/session/personal-session')
+  })
+
+  it('route and session id agree on the owner, so restore cannot cross profiles', () => {
+    // The cold-start restore prefers the route over the id, so the two keys
+    // must be written under the same owner or the id scoping is bypassed.
+    const owner = rememberedSessionProfile([session({ id: 'stored-1', profile: 'ai-engineer' })], 'stored-1', 'default')
+
+    setRememberedSessionId('stored-1', owner)
+    setRememberedRoute('/session/stored-1', owner)
+
+    expect(getRememberedRoute('default')).toBeNull()
+    expect(getRememberedSessionId('default')).toBeNull()
+    expect(getRememberedRoute('ai-engineer')).toBe('/session/stored-1')
   })
 })
 

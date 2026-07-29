@@ -1278,7 +1278,7 @@ stt:
 
 Provider 行为：
 
-- `local` 使用在您机器上运行的 `faster-whisper`。使用 `pip install faster-whisper` 单独安装。
+- `local` 使用在您机器上运行的 `faster-whisper`。使用 `pip install faster-whisper` 单独安装。静音幻觉防护默认开启:Silero VAD 过滤器让静音/噪声不会进入 Whisper,跨窗口条件预测被禁用,并且模型自己标记为"很可能不是语音"且低置信度的片段会被丢弃。设置 `stt.local.vad: false` 可用原始行为转录非语音音频(音乐、环境声)。
 - `groq` 使用 Groq 的 Whisper 兼容端点，读取 `GROQ_API_KEY`。
 - `openai` 使用 OpenAI 语音 API，读取 `VOICE_TOOLS_OPENAI_KEY`。
 

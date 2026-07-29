@@ -2332,6 +2332,12 @@ DEFAULT_CONFIG = {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
             "initial_prompt": "",
+            # Anti-hallucination hardening (faster-whisper decodes junk tokens
+            # from silence/noise without these):
+            "vad": True,  # Silero VAD filter — silence never reaches whisper. false = old raw behavior (music/ambient).
+            "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks when vad is on
+            "no_speech_prob_threshold": 0.6,  # drop a segment only if no_speech_prob is ABOVE this...
+            "logprob_threshold": -1.0,  # ...AND its avg_logprob is BELOW this (both must hit)
         },
         "groq": {
             "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en

@@ -16,17 +16,16 @@ import {
   getSkills,
   getToolsets,
   getUsageAnalytics,
-  type HermesGateway,
   toggleSkill,
   toggleToolset
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { compactNumber } from '@/lib/format'
-import { useStoreSelector } from '@/lib/use-session-slice'
 import { queryClient, writeCache } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'

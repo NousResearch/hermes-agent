@@ -344,10 +344,30 @@ class RelayAdapter(BasePlatformAdapter):
         sub = extra.get("slack")
         return sub if isinstance(sub, dict) else extra
 
+    @staticmethod
+    def _coerce_flag(raw: Any, default: bool) -> bool:
+        """Coerce an operator-supplied boolean exactly as native Slack does.
+
+        Native SlackAdapter reads its behavior flags with
+        ``str(raw).strip().lower() in {"1","true","yes","on"}``, so a
+        YAML-quoted ``"false"`` — a shape operators write routinely — turns
+        the flag OFF. A bare ``bool()`` would read that same string as True
+        (non-empty string), silently ignoring the off switch. These knobs are
+        documented as native-parity mirrors, so they must coerce identically
+        or the parity claim only holds for unquoted YAML booleans.
+        """
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
     def _effective_reply_in_thread(self) -> bool:
         """Resolve the thread-per-message vs flat-DM mode for fronted Slack."""
         try:
-            return bool(self._relay_slack_extra().get("reply_in_thread", True))
+            return self._coerce_flag(
+                self._relay_slack_extra().get("reply_in_thread"), True
+            )
         except Exception:  # noqa: BLE001 - config shape is operator-owned
             return True
 
@@ -363,10 +383,9 @@ class RelayAdapter(BasePlatformAdapter):
         legacy steer/queue posture, decoupled from reply_in_thread.
         """
         try:
-            return bool(
-                self._relay_slack_extra().get(
-                    "dm_top_level_threads_as_sessions", True
-                )
+            return self._coerce_flag(
+                self._relay_slack_extra().get("dm_top_level_threads_as_sessions"),
+                True,
             )
         except Exception:  # noqa: BLE001 - config shape is operator-owned
             return True

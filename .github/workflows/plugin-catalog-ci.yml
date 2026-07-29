@@ -1,0 +1,140 @@
+name: Plugin Catalog CI
+
+# Admission gate for plugin-catalog entries. Fires ONLY on PRs touching
+# plugin-catalog/** so it can never go red on unrelated PRs.
+#
+# Two gates:
+#   structural            — cheap schema check, no hermes install needed
+#   pinned-source-validate — supply-chain gate: the pinned sha MUST be
+#                            reachable in the entry's repo, and the plugin
+#                            at that exact commit must pass
+#                            `hermes plugins validate`.
+
+on:
+  pull_request:
+    paths:
+      - "plugin-catalog/**"
+
+permissions:
+  contents: read
+
+jobs:
+  structural:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        uses: ./.github/actions/retry
+        with:
+          command: pip install pyyaml==6.0.2
+
+      - name: Validate catalog files (structural)
+        run: |
+          set -euo pipefail
+          # Validating the whole directory is simpler than diffing and keeps
+          # the invariant that EVERYTHING in plugin-catalog/ stays valid.
+          python3 scripts/validate_plugin_catalog.py plugin-catalog/
+
+  pinned-source-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need the merge-base to diff changed catalog files
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Find changed catalog entries
+        id: changed
+        run: |
+          set -euo pipefail
+          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          # Added + modified entry files only; deletions and removed.yaml
+          # have nothing to clone.
+          CHANGED=$(git diff --name-only --diff-filter=AM "$MERGE_BASE"...HEAD \
+            -- 'plugin-catalog/*.yaml' 'plugin-catalog/*.yml' \
+            | grep -v '/removed\.yaml$' || true)
+          echo "Changed catalog entries:"
+          echo "${CHANGED:-<none>}"
+          {
+            echo 'files<<__EOF__'
+            echo "$CHANGED"
+            echo '__EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install hermes-agent from the PR's own checkout
+        if: steps.changed.outputs.files != ''
+        uses: ./.github/actions/retry
+        with:
+          command: pip install -e .
+
+      - name: Clone each entry at its pinned sha and validate
+        if: steps.changed.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          set -euo pipefail
+          FAILED=0
+          while IFS= read -r entry; do
+            [ -z "$entry" ] && continue
+            echo "::group::validate $entry"
+
+            # Parse repo / sha / subdir from the entry yaml.
+            eval "$(python3 - "$entry" <<'PYEOF'
+          import shlex
+          import sys
+
+          import yaml
+
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              data = yaml.safe_load(fh) or {}
+          print(f"REPO={shlex.quote(str(data.get('repo', '')))}")
+          print(f"SHA={shlex.quote(str(data.get('sha', '')))}")
+          print(f"SUBDIR={shlex.quote(str(data.get('subdir', '') or ''))}")
+          PYEOF
+          )"
+            echo "repo=$REPO sha=$SHA subdir=$SUBDIR"
+
+            CLONE_DIR=$(mktemp -d)
+            # Full clone (no --depth 1): the pinned sha may not be the branch tip.
+            if ! git clone "$REPO" "$CLONE_DIR"; then
+              echo "::error file=$entry::clone failed for $REPO"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            # SUPPLY-CHAIN GATE: the pinned sha must be reachable in the repo.
+            if ! git -C "$CLONE_DIR" checkout --detach "$SHA"; then
+              echo "::error file=$entry::pinned sha $SHA is not reachable in $REPO"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            PLUGIN_DIR="$CLONE_DIR${SUBDIR:+/$SUBDIR}"
+            if [ ! -f "$PLUGIN_DIR/plugin.yaml" ]; then
+              echo "::error file=$entry::no plugin.yaml at subdir '$SUBDIR' of $REPO@$SHA"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            # Manifest schema + declared-vs-registered capability check.
+            if hermes plugins validate "$PLUGIN_DIR"; then
+              echo "✅ PASS: $entry"
+            else
+              echo "::error file=$entry::hermes plugins validate failed"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done <<< "$CHANGED_FILES"
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ FAIL: one or more catalog entries failed pinned-source validation"
+            exit 1
+          fi
+          echo "✅ PASS: all changed catalog entries validated at their pinned shas"

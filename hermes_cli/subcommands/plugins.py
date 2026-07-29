@@ -42,6 +42,51 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         action="store_true",
         help="Install disabled (skip confirmation prompt); enable later with `hermes plugins enable <name>`",
     )
+    plugins_install.add_argument(
+        "--allow-removed",
+        action="store_true",
+        help="DANGEROUS: bypass the catalog removed-plugin blocklist check",
+    )
+
+    plugins_search = plugins_subparsers.add_parser(
+        "search", help="Search the Hermes plugin catalog"
+    )
+    plugins_search.add_argument(
+        "query",
+        nargs="?",
+        default="",
+        help="Substring to match against entry names, descriptions, and tools",
+    )
+
+    plugins_subparsers.add_parser(
+        "browse", help="Browse every plugin catalog entry"
+    )
+
+    plugins_info = plugins_subparsers.add_parser(
+        "info", help="Show full catalog details for an entry"
+    )
+    plugins_info.add_argument("name", help="Catalog entry name")
+
+    plugins_validate = plugins_subparsers.add_parser(
+        "validate",
+        help="Validate a plugin directory for catalog admission (CI gate)",
+    )
+    plugins_validate.add_argument("path", help="Path to the plugin directory")
+    plugins_validate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON (for CI)",
+    )
+
+    plugins_doctor = plugins_subparsers.add_parser(
+        "doctor", help="Diagnose installed plugins"
+    )
+    plugins_doctor.add_argument(
+        "name",
+        nargs="?",
+        default=None,
+        help="Plugin name to inspect in detail (default: all installed)",
+    )
 
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin"

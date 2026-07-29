@@ -157,6 +157,9 @@ jobs:
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
 
+      - name: Extract plugin catalog for the Plugins page
+        run: python3 website/scripts/extract-plugins.py
+
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 

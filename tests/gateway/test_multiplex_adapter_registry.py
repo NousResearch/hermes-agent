@@ -276,6 +276,58 @@ class TestSecondaryProfileFatalRecovery:
         assert all(path == Path("/profiles/reviewer") for path in scoped_homes)
 
     @pytest.mark.asyncio
+    async def test_secondary_fatal_callback_survives_caller_cancellation(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        stale = _SecondaryRecoveryAdapter()
+        replacement = _SecondaryRecoveryAdapter()
+        runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
+        _install_secondary_reconnect_context(monkeypatch, runner, replacement)
+
+        disconnect_started = asyncio.Event()
+        release_disconnect = asyncio.Event()
+
+        async def slow_disconnect():
+            disconnect_started.set()
+            await release_disconnect.wait()
+            stale.disconnected = True
+
+        async def connect(adapter, platform, *, is_reconnect=False):
+            assert adapter is replacement
+            assert platform is Platform.DISCORD
+            assert is_reconnect is True
+            replacement.connected = True
+            return True
+
+        stale.disconnect = slow_disconnect
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        handler = runner._make_profile_fatal_error_handler(
+            "reviewer", Platform.DISCORD
+        )
+
+        caller_task = asyncio.create_task(handler(stale))
+        await disconnect_started.wait()
+        caller_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller_task
+
+        assert Platform.DISCORD not in runner._profile_adapters["reviewer"]
+        assert runner._background_tasks == set()
+
+        release_disconnect.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if not getattr(runner, "_profile_fatal_handler_tasks", set()):
+                break
+
+        assert stale.disconnected is True
+        tasks = list(runner._background_tasks)
+        assert len(tasks) == 1
+        await tasks[0]
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+
+    @pytest.mark.asyncio
     async def test_secondary_reconnect_cancellation_disposes_partial_adapter(
         self, monkeypatch
     ):

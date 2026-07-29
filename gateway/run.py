@@ -10627,7 +10627,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> Callable[[BasePlatformAdapter], Awaitable[None]]:
         """Route a secondary-profile fatal error to that profile's reconnect slot."""
         async def _handler(adapter: BasePlatformAdapter) -> None:
-            await self._handle_profile_adapter_fatal_error(profile_name, platform, adapter)
+            tasks = getattr(self, "_profile_fatal_handler_tasks", None)
+            if tasks is None:
+                tasks = self._profile_fatal_handler_tasks = set()
+            task = asyncio.create_task(
+                self._handle_profile_adapter_fatal_error(
+                    profile_name, platform, adapter
+                ),
+                name=f"secondary-fatal:{profile_name}:{platform.value}",
+            )
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+            await asyncio.shield(task)
 
         return _handler
 

@@ -1,20 +1,22 @@
 # Photon iMessage platform plugin
 
-This plugin connects Hermes Agent to iMessage (and other Spectrum
-interfaces) through [Photon][photon] — a managed service that handles
-iMessage line allocation, delivery, and abuse-prevention so users don't
-have to run their own Mac relay.
+This plugin connects Hermes Agent to iMessage through [Photon][photon] —
+either through Photon's managed Spectrum service, or through Spectrum local
+mode on a macOS host that can access Messages.app.
 
 The free tier uses Photon's shared iMessage line pool and is the path we
 recommend for everyone who doesn't already pay for a dedicated number.
+Local mode is for users who explicitly want Hermes to use the signed-in
+iMessage account on their own Mac instead of Photon Cloud.
 
 ## Architecture
 
 Like Discord and Slack, Photon is a **persistent-connection** channel — no
 public URL, no webhook, no signing secret. The `spectrum-ts` SDK holds a
-long-lived **gRPC stream** to Photon for both directions. Because the SDK is
-TypeScript-only, Hermes runs it inside a small supervised Node sidecar and
-talks to it over loopback.
+long-lived stream for both directions. In cloud mode that stream connects to
+Photon Spectrum; in local mode it watches the macOS Messages database and sends
+through Messages.app. Because the SDK is TypeScript-only, Hermes runs it inside
+a small supervised Node sidecar and talks to it over loopback.
 
 ```
                          gRPC (spectrum-ts)
@@ -42,6 +44,8 @@ talks to it over loopback.
   `X-Hermes-Sidecar-Token`.
 
 ## First-time setup
+
+### Photon Cloud
 
 ```bash
 # One-shot setup: device login (opens browser) + project + user + sidecar deps
@@ -72,6 +76,38 @@ There is no separate `login` command; like every other Hermes channel,
 onboarding goes through one setup surface. Re-running `setup` reuses an
 existing token/project, so it's safe to run again to finish a partial setup.
 Run `hermes photon status` to see what's configured.
+
+### Local iMessage on macOS
+
+Local mode skips Photon Cloud project credentials and loads Spectrum 12's
+`localIMessage` provider from `@spectrum-ts/imessage-local`. Enable the
+behavioral setting in `config.yaml`:
+
+```yaml
+platforms:
+  photon:
+    enabled: true
+    extra:
+      local: true
+```
+
+The Node runtime that launches the sidecar must have macOS Full Disk Access for
+`~/Library/Messages/chat.db` and Automation permission to control Messages.app.
+If you want those permissions scoped to a dedicated runtime instead of every
+`node` process, set `PHOTON_NODE_BIN` to that signed/bundled Node executable.
+On macOS, TCC may still attribute a child process to the parent gateway. In
+that case, run the signed Node runtime as its own LaunchAgent and configure:
+
+```yaml
+platforms:
+  photon:
+    extra:
+      local: true
+      sidecar_url: http://127.0.0.1:8789
+      autostart_sidecar: false
+```
+
+Give both processes the same `PHOTON_SIDECAR_TOKEN` so Hermes can authenticate.
 
 ## Credentials
 
@@ -109,22 +145,27 @@ Management metadata lives in `~/.hermes/auth.json` under `credential_pool`:
 
 ## Configuration knobs
 
-All env vars are documented in `plugin.yaml`. The most important:
+The local/cloud mode is a `config.yaml` setting. Credentials and the existing
+sidecar compatibility settings remain environment-backed:
 
-| Env var                   | Default                    | Meaning                              |
+| Setting                   | Default                    | Meaning                              |
 |---------------------------|----------------------------|--------------------------------------|
+| `platforms.photon.extra.local` | false                 | Use local macOS Messages/iMessage instead of Photon Cloud |
 | `PHOTON_PROJECT_ID`       | from .env / auth.json      | Spectrum project id (SDK `projectId`)|
 | `PHOTON_PROJECT_SECRET`   | from .env / auth.json      | Project secret                       |
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
-| `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
+| `platforms.photon.extra.autostart_sidecar` | true | Spawn the sidecar on connect |
+| `platforms.photon.extra.sidecar_url` | loopback port | HTTP(S) URL for an externally supervised sidecar |
+| `PHOTON_SIDECAR_TOKEN`    | generated                  | Authentication token shared by adapters and sidecar |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
 | `PHOTON_SPECTRUM_HOST`    | https://spectrum.photon.codes | Spectrum API host                 |
 | `PHOTON_HOME_CHANNEL`     | your number (set by setup) | Default space for cron delivery — a space id, or a bare E.164 number (resolved to a DM) |
 | `PHOTON_ALLOWED_USERS`    | your number (set by setup) | Comma-separated E.164 allowlist      |
+| `platforms.photon.extra.allowed_chat_ids` | unset | Optional hard allowlist of local Messages chat GUIDs |
 | `PHOTON_REQUIRE_MENTION`  | false                      | Gate group chats on a wake word      |
 | `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | 20 MB           | Max inbound attachment size the sidecar reads & inlines |
 | `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `hermes photon telemetry on\|off` (restart the gateway to apply) |
-| `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
+| `PHOTON_MARKDOWN`         | true cloud / false local   | Send agent replies as markdown. Local mode uses plain text because its provider does not support markdown content |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
 
 ## Attachments & limitations
@@ -146,26 +187,30 @@ All env vars are documented in `plugin.yaml`. The most important:
   `.pluginPayloadAttachment` images immediately after the URL; Hermes coalesces
   those artifacts so the agent receives one link message instead of a follow-up
   `(attachment)` prompt.
-- **Outbound attachments are supported.** Images, voice notes, video, and
+- **Outbound attachments are supported when Hermes and the sidecar share a
+  filesystem.** Images, voice notes, video, and
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`
   endpoint; a caption is delivered as a separate text bubble after the media.
-- **Markdown is rendered.** Replies go out via spectrum-ts' `markdown()`
+  A remote sidecar cannot safely consume a path from the Hermes host, so remote
+  adapters reject outbound attachments instead of sending an invalid or
+  sidecar-local path. Text delivery remains fully supported remotely.
+- **Markdown is rendered in cloud mode.** Replies go out via Spectrum's `markdown()`
   builder; iMessage renders bold/italics/lists/code natively and other
   Spectrum platforms degrade to readable plain text. URL-only replies go out
   via spectrum-ts' `richlink()` builder so iMessage can render a native link
   preview card. `PHOTON_MARKDOWN=false` reverts to stripped plain text and
   disables rich-link routing.
-- **Reactions (tapbacks) are supported** behind `PHOTON_REACTIONS` (default
+- **Reactions (tapbacks) are supported in cloud mode** behind `PHOTON_REACTIONS` (default
   off): the adapter tapbacks 👀 while processing and swaps it for 👍/👎 on
   completion, and a user tapback on a bot-sent message is routed to the agent
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
   reachable across restarts via spectrum-ts' `space.get(id)`.
-- **Native polls are supported.** Hermes posts poll content through
+- **Native polls are supported in cloud mode.** Hermes posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
-- **Message effects are supported.** Text can be sent with native iMessage
+- **Message effects are supported in cloud mode.** Text can be sent with native iMessage
   bubble/screen effects through `spectrum-ts`' iMessage `effect(...)` builder
   via the sidecar's `/send-effect` endpoint.
 - **Cron/standalone sends require a running gateway.** Processes outside
@@ -176,15 +221,28 @@ All env vars are documented in `plugin.yaml`. The most important:
   note that shared/free-tier Photon lines cannot INITIATE conversations
   with numbers that never texted the line — that's Photon-side policy, not
   a Hermes limitation.
+- **Local-mode limitations** — local mode depends on the host Mac's Messages
+  database and AppleScript/Automation permissions. It sends text and generic
+  attachments, but not markdown content, rich-link previews, typing indicators,
+  voice-specific content, reactions, polls, or message effects. It cannot create
+  group chats from multiple
+  recipients; prefer existing DM/group ids or existing DM targets.
+  Self-iMessage conversations can surface the sender's own outbound reply as
+  inbound; the sidecar suppresses exact recent outbound text echoes to prevent
+  Hermes from answering itself.
 
 ## Upgrading spectrum-ts
 
-`spectrum-ts` is pinned to an **exact version** in `sidecar/package.json`
+Spectrum's core, cloud bundle, and local provider are pinned to the same
+**exact version** in `sidecar/package.json`
 (no `^` range) and installed with `npm ci`, because the SDK ships breaking
 majors (v2 removed `defineFusorPlatform`; v3 reworked space construction; v5
 split it into `@spectrum-ts/*` packages, with `spectrum-ts` as the umbrella
 that re-exports them; v8 made `richlink` primarily outbound, so many inbound
-links now arrive as plain `text`). A floating range or `npm install spectrum-ts@latest`
+links now arrive as plain `text`; v10 split local iMessage into its own package;
+v12 replaced `platforms` with `providers`; and v12.1 renamed the local export to
+`localIMessage` with canonical `imessage` / `local_imessage` platform IDs). A
+floating range or `npm install spectrum-ts@latest`
 would let a breaking release take down fresh setups silently. Upgrades are
 deliberate:
 
@@ -192,18 +250,16 @@ deliberate:
    for every version between the current pin and the target.
 2. Bump the exact pin in `sidecar/package.json`, then run `npm install`
    inside `sidecar/` to regenerate `package-lock.json`. Commit both.
-3. Migrate `sidecar/index.mjs` against the new typings. `spectrum-ts` re-exports
-   `@spectrum-ts/core` (the framework: `Spectrum`, content builders,
-   `Space`/`Message`) and `@spectrum-ts/imessage` (the provider), so the source
-   of truth is `sidecar/node_modules/@spectrum-ts/{core,imessage}/dist/*.d.ts`
-   (the hosted docs can lag).
-4. Re-validate `sidecar/patch-spectrum-mixed-attachments.mjs`. It rewrites the
-   compiled iMessage inbound mappers in `@spectrum-ts/imessage/dist/index.js`
-   so a bubble with both text and attachments keeps its typed text; the anchors
-   are tied to that build's output. `npm install` runs it via `postinstall` and
-   fails loudly if the anchors no longer match — update them to the new output
-   (`test_spectrum_patch.py` covers the patch).
-5. Run `pytest tests/plugins/platforms/photon/`.
+3. Migrate `sidecar/index.mjs` against the new typings. Import framework and
+   builders from `@spectrum-ts/core`, `localIMessage` from
+   `@spectrum-ts/imessage-local`, and cloud `imessage` from
+   `spectrum-ts/providers/imessage`.
+4. Run the non-sending compatibility smoke check:
+   `cd plugins/platforms/photon/sidecar && npm run smoke:local`. This verifies
+   exact pins, lockfile/package sync, Spectrum import paths, provider IDs,
+   core content builders, and native ordered mixed text/attachment behavior
+   through a fake local watcher without connecting to Messages.app.
+5. Run `scripts/run_tests.sh tests/plugins/platforms/photon/`.
 6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises
    `space.get` rehydration).

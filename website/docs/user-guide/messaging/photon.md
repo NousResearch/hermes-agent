@@ -4,9 +4,9 @@ sidebar_position: 18
 
 # Photon iMessage
 
-Connect Hermes to **iMessage** through [Photon][photon], a managed
-service that handles the Apple line allocation and abuse-prevention
-layer so you don't have to run your own Mac relay.
+Connect Hermes to **iMessage** through [Photon Spectrum][photon]. Use either
+Photon's managed line service or Spectrum's local macOS provider with the
+iMessage account already signed into Messages on your Mac.
 
 The free tier uses Photon's shared iMessage line pool — different
 recipients may see different sending numbers, but each conversation
@@ -25,29 +25,34 @@ your account.
 Photon is a **persistent-connection** channel, like Discord or Slack —
 **no webhook, no public URL, no signing secret to manage.**
 
-The `spectrum-ts` SDK holds a long-lived **gRPC stream** to Photon for
-both directions. Because the SDK is TypeScript-only, Hermes runs it in a
-small supervised **Node sidecar** and talks to it over loopback:
+Because the `spectrum-ts` SDK is TypeScript-only, Hermes runs it in a small
+supervised **Node sidecar** and talks to it over loopback. Cloud mode uses a
+long-lived gRPC stream to Photon; local mode reads and sends through the Mac's
+Messages account:
 
-- **Inbound** — the sidecar consumes the SDK's `app.messages` gRPC
-  stream and forwards each message to the Python adapter over a loopback
-  `GET /inbound` (NDJSON). The adapter dedupes and dispatches it to the
-  agent, reconnecting automatically if the stream drops.
+- **Inbound** — the sidecar consumes the SDK's `app.messages` stream and
+  forwards each message to the Python adapter over a loopback `GET /inbound`
+  (NDJSON). The adapter dedupes and dispatches it to the agent, reconnecting
+  automatically if the stream drops.
 - **Outbound** — replies are loopback POSTs to the sidecar, which calls
   `space.send(...)` on the SDK.
 
-The Python plugin starts, supervises, and shuts down the sidecar
-automatically.
+The Python plugin normally starts, supervises, and shuts down the sidecar
+automatically. Advanced local installations can supervise one shared sidecar
+separately and connect multiple Hermes gateways to it.
 
 ## Prerequisites
 
-- A Photon account — sign up at [app.photon.codes][app]
 - **Node.js 18.17 or newer** on PATH (`node --version`)
-- A phone number that can receive iMessage (used to bind your account)
+- For **Photon Cloud**: a [Photon account][app] and a phone number that can
+  receive iMessage (used to bind your account)
+- For **local mode**: macOS, Messages signed into the account Hermes should
+  use, and Full Disk Access for the process that runs the Node sidecar so it
+  can read `~/Library/Messages/chat.db`
 
 That's it — there is no public URL or tunnel to set up.
 
-## First-time setup
+## Photon Cloud setup
 
 Either run the unified gateway wizard and pick **Photon iMessage**:
 
@@ -84,6 +89,38 @@ Runtime credentials are written to `~/.hermes/.env`
 the same place every other channel keeps its token. Management metadata
 (device token, dashboard project id) lives in `~/.hermes/auth.json` under
 `credential_pool.photon` / `credential_pool.photon_project`.
+
+## Local macOS setup
+
+Local mode uses Spectrum's separate `@spectrum-ts/imessage-local` provider and
+does **not** require a Photon account, project id, project secret, or managed
+line. Install the sidecar dependencies, then enable local mode in
+`config.yaml`:
+
+```bash
+hermes photon install-sidecar
+```
+
+```yaml
+platforms:
+  photon:
+    enabled: true
+    extra:
+      local: true
+```
+
+Restart the gateway after changing the environment or configuration. The Node
+sidecar process needs Full Disk Access; macOS may also request Automation
+permission when it sends through Messages. If you do not want to grant those
+permissions to a general-purpose `node` executable, set `PHOTON_NODE_BIN` to a
+dedicated signed runtime.
+
+For an externally supervised sidecar, set `sidecar_url` and
+`autostart_sidecar: false` under `platforms.photon.extra`, and use the same
+`PHOTON_SIDECAR_TOKEN` in both processes. The endpoint should remain
+loopback-only or otherwise be protected by transport security and the sidecar
+token. An optional `allowed_chat_ids` list in the same `extra` mapping can hard
+limit this Hermes instance to assigned local Messages chat GUIDs.
 
 ## Authorizing users
 
@@ -197,20 +234,23 @@ Common issues:
 
 ## Limits today
 
-- **Inbound attachments are metadata-only.** Inbound events carry the
-  filename + MIME type; the agent sees a marker but can't yet read the
-  bytes. The SDK exposes attachment bytes via `content.read()`, so this
-  is a sidecar follow-up.
-- **Outbound attachments are supported.** Hermes sends images, voice
-  notes, video, and documents through spectrum-ts' `attachment()` /
-  `voice()` content builders via the sidecar's `/send-attachment`
-  endpoint. Captions arrive as a separate iMessage bubble after the
-  media.
-- **Native polls are supported.** Hermes sends poll content through
-  spectrum-ts' `poll()` builder via the sidecar's `/send-poll` endpoint.
-- **Message effects are supported.** Hermes sends text with native iMessage
-  bubble/screen effects through spectrum-ts' iMessage `effect()` builder
-  via the sidecar's `/send-effect` endpoint.
+- **Inbound attachments are downloaded with a size cap.** The sidecar reads
+  attachment bytes and base64-inlines them in the authenticated NDJSON stream;
+  the adapter caches them so the agent can inspect images/files and transcribe
+  voice notes. Items above `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (20 MB by
+  default) fall back to a metadata marker.
+- **Outbound attachments require a co-resident sidecar.** Hermes sends images,
+  voice notes, video, and documents through spectrum-ts' `attachment()` /
+  `voice()` content builders via the sidecar's `/send-attachment` endpoint.
+  Captions arrive as a separate iMessage bubble after the media. Adapters using
+  a configured remote sidecar reject attachments because a path on the Hermes
+  host is not a path on the sidecar host; remote text delivery is unaffected.
+- **Native polls are supported in cloud mode.** Hermes sends poll content
+  through spectrum-ts' `poll()` builder via the sidecar's `/send-poll`
+  endpoint.
+- **Message effects are supported in cloud mode.** Hermes sends text with
+  native iMessage bubble/screen effects through spectrum-ts' iMessage
+  `effect()` builder via the sidecar's `/send-effect` endpoint.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.
@@ -236,6 +276,7 @@ Common issues:
 | `PHOTON_PROJECT_SECRET`   | from `.env`        | Project secret; set by setup               |
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
+| `PHOTON_SIDECAR_TOKEN`    | generated          | Shared authentication token for the sidecar HTTP API |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |

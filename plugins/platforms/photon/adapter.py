@@ -15,12 +15,13 @@ Inbound:
     No webhook, no public URL, no signing secret.
 
 Outbound:
-    ``send`` / ``send_typing`` are loopback POSTs to the sidecar's control
-    endpoints, authenticated with a shared bearer token. URL-only messages can
-    route through spectrum-ts' ``richlink()`` builder via ``/send-richlink``.
-    Outbound media (images, voice notes, video, documents) goes through
-    spectrum-ts' ``attachment()`` / ``voice()`` content builders via the
-    sidecar's ``/send-attachment`` endpoint.
+    ``send`` / ``send_typing`` are authenticated HTTP(S) POSTs to the sidecar's
+    control endpoints. The default remains loopback; ``sidecar_url`` supports
+    a separately supervised macOS sidecar exposed over a private network.
+    URL-only messages can route through spectrum-ts' ``richlink()`` builder via
+    ``/send-richlink``. Outbound media (images, voice notes, video, documents)
+    goes through spectrum-ts' ``attachment()`` / ``voice()`` content builders
+    via the sidecar's ``/send-attachment`` endpoint.
 """
 from __future__ import annotations
 
@@ -64,6 +65,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from utils import is_truthy_value
 
 from .auth import load_project_credentials
 
@@ -246,6 +248,10 @@ _RICHLINK_PREVIEW_ATTACHMENT_SUFFIX = ".pluginpayloadattachment"
 # upstream gRPC pressure during Photon overflow events.
 _TYPING_COOLDOWN_SECONDS = 5.0
 
+# A transient health probe failure should not flap the platform, but a dead
+# external sidecar must not leave Photon reported as connected forever.
+_SIDECAR_HEALTH_FAILURE_LIMIT = 3
+
 # Group-chat mention wake words. When ``require_mention`` is enabled, group
 # messages are ignored unless they match one of these patterns — same
 # behavior and defaults as the BlueBubbles iMessage channel so the two
@@ -377,11 +383,21 @@ def _is_timeout_error(exc: BaseException) -> bool:
     return "timeout" in type(exc).__name__.lower()
 
 
+def _sidecar_url_is_remote(url: str) -> bool:
+    """Whether ``url`` points at a host that cannot share local file paths."""
+    hostname = (urlparse(url).hostname or "").lower()
+    return hostname not in {"127.0.0.1", "localhost", "::1"}
+
+
 def check_requirements() -> bool:
-    """Return True when both Python deps and the Node sidecar are available."""
+    """Check Python HTTP support and, when local, the Node sidecar runtime."""
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
+    # A separately supervised sidecar may live on a macOS host while Hermes
+    # itself runs on Linux. In that shape only the Python HTTP client is local.
+    if os.getenv("PHOTON_SIDECAR_URL", "").strip():
+        return True
     if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
         logger.warning(
             "photon: node binary '%s' not found on PATH",
@@ -454,9 +470,9 @@ def _reinstall_sidecar_deps() -> None:
 
     Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
     reproducible install, falling back to ``npm install`` if the lockfile is
-    missing or drifted. Runs the postinstall patch as part of the install.
-    Best-effort — a failure here just leaves the (stale) deps in place and the
-    normal ``_start_sidecar`` readiness check reports the real error.
+    missing or drifted. Best-effort — a failure here leaves the stale deps in
+    place, and the normal ``_start_sidecar`` readiness check reports the real
+    error.
     """
     npm = shutil.which("npm")
     if not npm:
@@ -510,6 +526,8 @@ def _reinstall_sidecar_deps() -> None:
 
 def validate_config(cfg: PlatformConfig) -> bool:
     extra = cfg.extra or {}
+    if _local_mode_enabled(extra):
+        return True
     project_id = extra.get("project_id") or os.getenv("PHOTON_PROJECT_ID")
     project_secret = extra.get("project_secret") or os.getenv("PHOTON_PROJECT_SECRET")
     if not project_id or not project_secret:
@@ -529,10 +547,15 @@ def _env_enablement() -> Optional[dict]:
     The special ``home_channel`` key is handled by the core plugin hook and
     becomes a proper ``HomeChannel`` on ``PlatformConfig``.
     """
+    local_mode = _local_mode_enabled()
     project_id, project_secret = load_project_credentials()
-    if not (project_id and project_secret):
+    if not local_mode and not (project_id and project_secret):
         return None
-    seed: dict = {"project_id": project_id, "project_secret": project_secret}
+    seed: dict = {}
+    if local_mode:
+        seed["local"] = True
+    if project_id and project_secret:
+        seed.update({"project_id": project_id, "project_secret": project_secret})
     home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
@@ -542,7 +565,55 @@ def _env_enablement() -> Optional[dict]:
     return seed
 
 
-def _markdown_enabled() -> bool:
+def _apply_yaml_config(_yaml_cfg: dict, photon_cfg: dict) -> Optional[dict]:
+    """Bridge Photon ``config.yaml`` behavior into internal sidecar env vars.
+
+    The platform registry invokes ``check_fn`` before constructing the adapter.
+    In particular, a config-only remote sidecar must expose its URL before that
+    dependency gate runs so a non-macOS Hermes host is not incorrectly required
+    to have Node and local sidecar dependencies installed. Secrets stay in
+    ``.env``; this hook only mirrors non-secret behavior settings. Existing env
+    values are preserved for backward compatibility.
+    """
+    extra = photon_cfg.get("extra", photon_cfg) or {}
+    if not isinstance(extra, dict):
+        return None
+
+    mappings = {
+        "local": "PHOTON_LOCAL",
+        "sidecar_url": "PHOTON_SIDECAR_URL",
+        "sidecar_port": "PHOTON_SIDECAR_PORT",
+        "autostart_sidecar": "PHOTON_SIDECAR_AUTOSTART",
+        "node_bin": "PHOTON_NODE_BIN",
+        "markdown": "PHOTON_MARKDOWN",
+        "reactions": "PHOTON_REACTIONS",
+        "probe_interval_seconds": "PHOTON_PROBE_INTERVAL_SECONDS",
+        "probe_timeout_seconds": "PHOTON_PROBE_TIMEOUT_SECONDS",
+        "probe_max_failures": "PHOTON_PROBE_MAX_FAILURES",
+    }
+    for key, env_name in mappings.items():
+        value = extra.get(key)
+        if value is not None and not os.getenv(env_name):
+            os.environ[env_name] = str(value).lower() if isinstance(value, bool) else str(value)
+
+    allowed_chat_ids = extra.get("allowed_chat_ids")
+    if allowed_chat_ids is not None and not os.getenv("PHOTON_ALLOWED_CHAT_IDS"):
+        if isinstance(allowed_chat_ids, (list, tuple, set)):
+            allowed_chat_ids = json.dumps(list(allowed_chat_ids))
+        os.environ["PHOTON_ALLOWED_CHAT_IDS"] = str(allowed_chat_ids)
+    return None
+
+
+def _local_mode_enabled(extra: Optional[dict] = None) -> bool:
+    """Use the local macOS Messages/iMessage bridge instead of Photon Cloud."""
+    extra = extra or {}
+    value = extra.get("local")
+    if value is None:
+        value = os.getenv("PHOTON_LOCAL")
+    return is_truthy_value(value)
+
+
+def _markdown_enabled(extra: Optional[dict] = None) -> bool:
     """Send agent replies as markdown (spectrum-ts ``markdown()`` builder).
 
     iMessage renders it natively; other Spectrum platforms degrade to
@@ -550,9 +621,42 @@ def _markdown_enabled() -> bool:
     ``PHOTON_MARKDOWN=false`` is the kill-switch back to stripped plain
     text without a release.
     """
-    return os.getenv("PHOTON_MARKDOWN", "true").strip().lower() not in {
-        "false", "0", "no",
-    }
+    extra = extra or {}
+    value = extra.get("markdown")
+    if value is None:
+        value = os.getenv("PHOTON_MARKDOWN")
+    if value is None:
+        return not _local_mode_enabled(extra)
+    return is_truthy_value(value)
+
+
+def _parse_chat_ids(raw: Any) -> set[str]:
+    """Normalize a hard inbound chat allowlist from config or env.
+
+    Config accepts a YAML list. The environment form accepts either a JSON
+    list or comma/newline-separated chat ids. An empty value leaves routing
+    unrestricted for backward compatibility.
+    """
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return set()
+        try:
+            loaded = json.loads(text)
+        except (TypeError, ValueError):
+            loaded = None
+        values = loaded if isinstance(loaded, list) else [
+            part.strip()
+            for line in text.splitlines()
+            for part in line.split(",")
+        ]
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = [raw]
+    return {str(value).strip() for value in values if str(value).strip()}
 
 
 def _url_only_candidate(text: str) -> Optional[str]:
@@ -670,7 +774,7 @@ class PhotonAdapter(BasePlatformAdapter):
     """Bidirectional bridge to Photon Spectrum via the Node spectrum-ts sidecar.
 
     Inbound: consume the sidecar's ``/inbound`` gRPC stream.
-    Outbound: loopback POSTs to the sidecar's control channel.
+    Outbound: authenticated HTTP(S) POSTs to the sidecar's control channel.
     """
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
@@ -686,6 +790,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Project credentials (env wins, then config.extra, then auth.json).
         # ``project_id`` here is the project's spectrumProjectId — the value
         # the spectrum-ts SDK authenticates with.
+        self._local_mode = _local_mode_enabled(extra)
         stored_id, stored_sec = load_project_credentials()
         self._project_id: str = (
             os.getenv("PHOTON_PROJECT_ID")
@@ -706,13 +811,48 @@ class PhotonAdapter(BasePlatformAdapter):
             _DEFAULT_SIDECAR_PORT,
         )
         self._sidecar_bind = _DEFAULT_SIDECAR_BIND
-        self._sidecar_token = (
-            os.getenv("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
+        configured_sidecar_url = str(
+            extra.get("sidecar_url") or os.getenv("PHOTON_SIDECAR_URL") or ""
+        ).strip()
+        if configured_sidecar_url and not re.match(
+            r"^https?://[^/\s]+(?:/.*)?$", configured_sidecar_url
+        ):
+            raise ValueError("Photon sidecar_url must be an http:// or https:// URL")
+        self._sidecar_url = (
+            configured_sidecar_url.rstrip("/")
+            or f"http://{self._sidecar_bind}:{self._sidecar_port}"
         )
-        self._autostart_sidecar = str(
-            os.getenv("PHOTON_SIDECAR_AUTOSTART", "true")
-        ).lower() not in ("0", "false", "no")
-        self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
+        self._sidecar_is_remote = bool(
+            configured_sidecar_url
+            and _sidecar_url_is_remote(configured_sidecar_url)
+        )
+        self._sidecar_token = (
+            os.getenv("PHOTON_SIDECAR_TOKEN")
+            or extra.get("sidecar_token")
+            or secrets.token_hex(16)
+        )
+        autostart = extra.get("autostart_sidecar")
+        if autostart is None:
+            autostart = os.getenv(
+                "PHOTON_SIDECAR_AUTOSTART",
+                "false" if configured_sidecar_url else "true",
+            )
+        self._autostart_sidecar = is_truthy_value(autostart)
+        self._node_bin = (
+            os.getenv("PHOTON_NODE_BIN")
+            or extra.get("node_bin")
+            or shutil.which("node")
+            or "node"
+        )
+        self._markdown = _markdown_enabled(extra)
+        allowed_chat_ids = extra.get("allowed_chat_ids")
+        if allowed_chat_ids is None:
+            allowed_chat_ids = os.getenv("PHOTON_ALLOWED_CHAT_IDS")
+        self._allowed_chat_ids = _parse_chat_ids(allowed_chat_ids)
+        reactions = extra.get("reactions")
+        if reactions is None:
+            reactions = os.getenv("PHOTON_REACTIONS", "false")
+        self._reactions = not self._local_mode and is_truthy_value(reactions)
 
         # Presence watchdog. spectrum-ts only reconnects when its inbound
         # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
@@ -758,7 +898,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
         # With markdown on, format_message preserves fences and the sidecar's
         # markdown() builder renders them (or degrades them readably).
-        self.supports_code_blocks = _markdown_enabled()
+        self.supports_code_blocks = self._markdown
 
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None
@@ -803,9 +943,7 @@ class PhotonAdapter(BasePlatformAdapter):
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = os.getenv("PHOTON_REQUIRE_MENTION")
-        self.require_mention = str(_require_mention).strip().lower() in {
-            "true", "1", "yes", "on",
-        }
+        self.require_mention = is_truthy_value(_require_mention)
         self._mention_patterns = self._compile_mention_patterns(
             extra["mention_patterns"]
             if "mention_patterns" in extra
@@ -858,11 +996,12 @@ class PhotonAdapter(BasePlatformAdapter):
                 "MISSING_DEP", "httpx not installed", retryable=False
             )
             return False
-        if not self._project_id or not self._project_secret:
+        if not self._local_mode and (not self._project_id or not self._project_secret):
             self._set_fatal_error(
                 "MISSING_CREDENTIALS",
-                "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required. "
-                "Run: hermes photon setup",
+                "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required "
+                "unless local mode is enabled with "
+                "platforms.photon.extra.local: true. Run: hermes photon setup",
                 retryable=False,
             )
             return False
@@ -888,9 +1027,22 @@ class PhotonAdapter(BasePlatformAdapter):
                 self._http_client = None
                 return False
         else:
-            logger.warning(
-                "[photon] sidecar autostart disabled — inbound + outbound will fail"
+            logger.info(
+                "[photon] sidecar autostart disabled — using externally "
+                "supervised sidecar at %s",
+                self._sidecar_url,
             )
+            try:
+                await self._sidecar_call("/healthz", {})
+            except Exception as e:
+                self._set_fatal_error(
+                    "SIDECAR_UNREACHABLE",
+                    f"externally supervised Photon sidecar is not ready: {e}",
+                    retryable=True,
+                )
+                await client.aclose()
+                self._http_client = None
+                return False
 
         # Start consuming the inbound gRPC stream from the sidecar.
         self._inbound_running = True
@@ -913,8 +1065,8 @@ class PhotonAdapter(BasePlatformAdapter):
 
         self._mark_connected()
         logger.info(
-            "[photon] connected — sidecar on %s:%d, streaming inbound over gRPC",
-            self._sidecar_bind, self._sidecar_port,
+            "[photon] connected — sidecar at %s, streaming inbound over gRPC",
+            self._sidecar_url,
         )
         return True
 
@@ -1012,7 +1164,7 @@ class PhotonAdapter(BasePlatformAdapter):
         client = self._http_client
         if client is None:
             return
-        url = f"http://{self._sidecar_bind}:{self._sidecar_port}/inbound"
+        url = self._sidecar_endpoint("/inbound")
         headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
         backoff = 1.0
         while self._inbound_running:
@@ -1049,6 +1201,7 @@ class PhotonAdapter(BasePlatformAdapter):
         fails to maintain the upstream inbound gRPC stream. Polling `/healthz`
         keeps that from becoming a silent inbound outage.
         """
+        consecutive_failures = 0
         while self._inbound_running:
             await asyncio.sleep(self._sidecar_health_interval)
             if not self._inbound_running:
@@ -1058,8 +1211,29 @@ class PhotonAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug("[photon] sidecar health check failed: %s", exc)
-                continue
+                consecutive_failures += 1
+                if consecutive_failures < _SIDECAR_HEALTH_FAILURE_LIMIT:
+                    logger.warning(
+                        "[photon] sidecar health check failed (%d/%d): %s",
+                        consecutive_failures,
+                        _SIDECAR_HEALTH_FAILURE_LIMIT,
+                        exc,
+                    )
+                    continue
+                message = (
+                    "Photon sidecar health check failed "
+                    f"{consecutive_failures} consecutive times: {exc}"
+                )
+                logger.error("[photon] %s", message)
+                self._set_fatal_error(
+                    "SIDECAR_UNREACHABLE",
+                    message,
+                    retryable=True,
+                )
+                self._dispatch_fatal_notification()
+                break
+
+            consecutive_failures = 0
 
             stream = data.get("stream") if isinstance(data, dict) else None
             if not isinstance(stream, dict):
@@ -1153,7 +1327,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
             {
               "messageId": "...",
-              "platform": "iMessage",
+              "platform": "imessage" | "local_imessage",
               "space": {"id": "...", "type": "dm"|"group", "phone": "+E164"},
               "sender": {"id": "+E164"},
               "content": {"type": "text", "text": "..."}
@@ -1179,6 +1353,11 @@ class PhotonAdapter(BasePlatformAdapter):
         space_id = space.get("id") or ""
         if not space_id:
             logger.warning("[photon] inbound missing space.id")
+            return
+        if self._allowed_chat_ids and space_id not in self._allowed_chat_ids:
+            logger.debug(
+                "[photon] dropping inbound from unassigned chat %s", space_id
+            )
             return
 
         # iMessage spaces carry their type directly — no id string-sniffing.
@@ -1481,7 +1660,7 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
                 await client.post(
-                    f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
+                    self._sidecar_endpoint("/healthz"),
                     headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
                 )
         except httpx.RequestError:
@@ -1556,10 +1735,9 @@ class PhotonAdapter(BasePlatformAdapter):
                     f"{_sidecar_dir()} (see log for the npm error). "
                     f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)"
                 )
-        # A `hermes update` that bumps the spectrum-ts pin rewrites
+        # A `hermes update` that bumps the Spectrum pins rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
-        # spawns against stale deps and dies on every reconnect (the v8 patch
-        # script can't find @spectrum-ts/imessage/dist that only v8 ships).
+        # can otherwise spawn against stale dependencies after an update.
         # Self-heal by reinstalling when the lockfile is newer than npm's
         # install marker. Runs off the event loop so a cold install can't
         # freeze every other platform's traffic.
@@ -1572,8 +1750,11 @@ class PhotonAdapter(BasePlatformAdapter):
         await self._reap_stale_sidecar()
 
         env = os.environ.copy()
-        env["PHOTON_PROJECT_ID"] = self._project_id
-        env["PHOTON_PROJECT_SECRET"] = self._project_secret
+        env["PHOTON_LOCAL"] = "1" if self._local_mode else "0"
+        if self._project_id:
+            env["PHOTON_PROJECT_ID"] = self._project_id
+        if self._project_secret:
+            env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
@@ -1585,38 +1766,6 @@ class PhotonAdapter(BasePlatformAdapter):
         # Windows: hide the child console (0 elsewhere). Same helper the
         # discord/whatsapp adapters use for their sidecar spawns.
         from hermes_cli._subprocess_compat import windows_hide_flags
-
-        try:
-            # Off the event loop, for the same reason the dep reinstall above
-            # hops to a thread: this spawns node and *waits* for it (up to 10s).
-            # Run inline it holds the shared gateway loop for that whole window,
-            # so every other platform's traffic stalls — and _start_sidecar runs
-            # on every reconnect (connect(is_reconnect=True)), not just startup,
-            # so the stall recurs on a live gateway.
-            patch = await asyncio.to_thread(
-                subprocess.run,  # noqa: S603
-                [
-                    self._node_bin,
-                    str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"),
-                    str(_sidecar_dir()),
-                ],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                timeout=10,
-                check=False,
-                # Windows: suppress the brief console flash this short-lived
-                # node patch run would otherwise pop on every sidecar start.
-                creationflags=windows_hide_flags(),
-            )
-            if patch.returncode != 0:
-                raise RuntimeError((patch.stderr or patch.stdout or "").strip())
-            if patch.stderr.strip():
-                logger.debug("[photon] %s", patch.stderr.strip())
-        except Exception as exc:
-            logger.warning(
-                "[photon] failed to apply Spectrum mixed attachment patch: %s",
-                exc,
-            )
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
             [self._node_bin, str(_sidecar_dir() / "index.mjs")],
@@ -1650,7 +1799,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     )
                 try:
                     resp = await client.post(
-                        f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
+                        self._sidecar_endpoint("/healthz"),
                         headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
                     )
                     if resp.status_code == 200:
@@ -1718,7 +1867,7 @@ class PhotonAdapter(BasePlatformAdapter):
             if self._http_client is not None:
                 try:
                     await self._http_client.post(
-                        f"http://{self._sidecar_bind}:{self._sidecar_port}/shutdown",
+                        self._sidecar_endpoint("/shutdown"),
                         headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
                         timeout=2.0,
                     )
@@ -2196,9 +2345,7 @@ class PhotonAdapter(BasePlatformAdapter):
         return True
 
     def _reactions_enabled(self) -> bool:
-        return os.getenv("PHOTON_REACTIONS", "false").strip().lower() in {
-            "true", "1", "yes", "on",
-        }
+        return self._reactions
 
     async def _add_reaction(
         self, chat_id: str, message_id: str, emoji: str
@@ -2315,7 +2462,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Markdown is passed through verbatim — the sidecar sends it with the
         # markdown() builder and iMessage renders it. The strip path remains
         # as the PHOTON_MARKDOWN=false kill-switch.
-        if _markdown_enabled():
+        if self._markdown:
             return content
         return strip_markdown(content)
 
@@ -2466,7 +2613,7 @@ class PhotonAdapter(BasePlatformAdapter):
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
         # Omit the key when disabled so an older sidecar (pre-`format`)
         # keeps accepting the body during a half-upgraded restart.
-        if markdown and _markdown_enabled():
+        if markdown and self._markdown:
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
@@ -2529,6 +2676,15 @@ class PhotonAdapter(BasePlatformAdapter):
         ``mimeType`` from the file extension; we only pass overrides when
         Hermes supplied them.
         """
+        if self._sidecar_is_remote:
+            return SendResult(
+                success=False,
+                error=(
+                    "outbound attachments are unavailable with a remote sidecar; "
+                    "the sidecar cannot read this host's filesystem path"
+                ),
+            )
+
         # Defense-in-depth: re-validate the path before handing it to the
         # Node sidecar. The gateway already filters MEDIA paths, but
         # send_*_file / cron callers may pass arbitrary strings.
@@ -2579,7 +2735,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # persistent _http_client was created on (e.g. via _run_async in
         # send_message_tool).  The inbound streaming loop continues to use
         # _http_client directly — it always runs on the gateway's loop.
-        url = f"http://{self._sidecar_bind}:{self._sidecar_port}{path}"
+        url = self._sidecar_endpoint(path)
         headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
         async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             resp = await client.post(url, json=body, headers=headers)
@@ -2589,6 +2745,9 @@ class PhotonAdapter(BasePlatformAdapter):
         if not data.get("ok"):
             raise _sidecar_error_from_response(path, resp.status_code, resp.text, data)
         return data
+
+    def _sidecar_endpoint(self, path: str) -> str:
+        return f"{self._sidecar_url}/{path.lstrip('/')}"
 
 
 # ---------------------------------------------------------------------------
@@ -2726,12 +2885,21 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
         return {"error": "httpx not installed"}
+    extra = pconfig.extra or {}
     port = _coerce_port(
-        (pconfig.extra or {}).get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
+        extra.get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
         _DEFAULT_SIDECAR_PORT,
     )
-    token = os.getenv("PHOTON_SIDECAR_TOKEN")
-    if not token:
+    configured_sidecar_url = str(
+        extra.get("sidecar_url") or os.getenv("PHOTON_SIDECAR_URL") or ""
+    ).strip()
+    token = os.getenv("PHOTON_SIDECAR_TOKEN") or extra.get("sidecar_token")
+    base = (
+        configured_sidecar_url.rstrip("/")
+        or f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
+    )
+    stale_hint = ""
+    if not token and not configured_sidecar_url:
         # Fall back to the runtime record the gateway persists once its
         # sidecar passes /healthz (issue #69960) — the token only exists in
         # the gateway process env otherwise, so cron/`hermes send` would be
@@ -2742,23 +2910,30 @@ async def _standalone_send(
             if _sidecar_pid_alive(record.get("pid")):
                 token = str(record["token"])
                 port = _coerce_port(record.get("port"), port)
+                base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
             else:
                 stale_hint = (
                     " A stale sidecar runtime record was found (pid "
                     f"{record.get('pid')} is not running) — the gateway "
                     "appears to be down."
                 )
-        if not token:
-            return {
-                "error": (
-                    "Photon standalone send requires a running sidecar. "
-                    "Start the Hermes gateway (which spawns the sidecar and "
-                    "records its address under <hermes-home>/runtime/"
-                    f"{_RUNTIME_RECORD_NAME}), or set PHOTON_SIDECAR_TOKEN "
-                    "in this process's environment." + stale_hint
-                )
-            }
-    base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
+    if not token:
+        return {
+            "error": (
+                "Photon standalone send requires a running sidecar and an "
+                "authentication token. Start the Hermes gateway (which records "
+                "its local sidecar under <hermes-home>/runtime/"
+                f"{_RUNTIME_RECORD_NAME}), or configure PHOTON_SIDECAR_TOKEN "
+                "for an external sidecar." + stale_hint
+            )
+        }
+    if media_files and configured_sidecar_url and _sidecar_url_is_remote(base):
+        return {
+            "error": (
+                "Photon standalone send cannot deliver attachments through a "
+                "remote sidecar because filesystem paths are host-local"
+            )
+        }
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
     try:
@@ -2785,7 +2960,7 @@ async def _standalone_send(
                         "spaceId": chat_id,
                         "text": message[:_MAX_MESSAGE_LENGTH],
                     }
-                    if _markdown_enabled() and not _richlink_candidate(message):
+                    if _markdown_enabled(extra) and not _richlink_candidate(message):
                         send_body["format"] = "markdown"
                     resp = await client.post(
                         f"{base}/send", json=send_body, headers=headers,
@@ -2846,7 +3021,10 @@ def register(ctx) -> None:
         check_fn=check_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
-        required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
+        # validate_config handles the mutually exclusive setup shapes:
+        # Photon Cloud needs project credentials, while local iMessage uses
+        # platforms.photon.extra.local and has no cloud id/secret.
+        required_env=[],
         install_hint=(
             "Run: hermes photon setup  (logs in via device flow, creates a "
             "Spectrum project, links your phone number, installs the "
@@ -2856,6 +3034,7 @@ def register(ctx) -> None:
         # channel — same unified onboarding wizard, no Photon-only detour.
         setup_fn=_cli.gateway_setup,
         env_enablement_fn=_env_enablement,
+        apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="PHOTON_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         allowed_users_env="PHOTON_ALLOWED_USERS",

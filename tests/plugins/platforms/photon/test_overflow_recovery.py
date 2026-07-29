@@ -635,3 +635,36 @@ async def test_standalone_send_classifies_target_not_allowed(
     assert result.get("error_class") == "target_not_allowed"
     assert result.get("retryable") is False
     assert "Target not allowed for this project" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_repeated_sidecar_health_failures_raise_retryable_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True
+    adapter._sidecar_health_interval = 0.0
+    calls = 0
+
+    async def _unreachable(path: str, payload: Dict[str, Any]) -> Any:
+        nonlocal calls
+        assert path == "/healthz"
+        calls += 1
+        raise RuntimeError("connection refused")
+
+    notified: list[bool] = []
+
+    async def _fake_notify() -> None:
+        notified.append(True)
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _unreachable)
+    monkeypatch.setattr(adapter, "_notify_fatal_error", _fake_notify)
+
+    await adapter._monitor_sidecar_health()
+    await _drain_pending_tasks()
+
+    assert calls == 3
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "SIDECAR_UNREACHABLE"
+    assert adapter.fatal_error_retryable is True
+    assert notified == [True]

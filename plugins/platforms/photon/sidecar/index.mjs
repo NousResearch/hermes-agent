@@ -8,15 +8,15 @@
 // Inbound  (gRPC -> Hermes): the SDK's `app.messages` async iterator is a
 //   long-lived gRPC stream. We serialize each `[space, message]` to a
 //   normalized JSON event and stream it to the Python adapter over a
-//   loopback `GET /inbound` (NDJSON). We pause pulling from the stream while
-//   no consumer is attached so a backlog isn't pulled-and-lost before the
-//   gateway connects.
+//   loopback `GET /inbound` (NDJSON). A bounded fan-out queue isolates slow
+//   gateway consumers and retains a small reconnect window when all are down.
 // Outbound (Hermes -> gRPC): `/send` drives `space.send(...)`; `/typing`
 //   sends the documented `typing("start" | "stop")` content builder.
 //
 // Protocol (all requests require `X-Hermes-Sidecar-Token: ${TOKEN}`):
 //   - GET  /inbound    -> 200 NDJSON stream; one JSON event per line, blank
-//                         lines are heartbeats. One consumer at a time.
+//                         lines are heartbeats. Events fan out to every
+//                         authenticated gateway consumer.
 //   - POST /healthz     -> {"ok": true}
 //   - POST /send        -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...",
@@ -46,14 +46,18 @@
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
 //
-// Requires spectrum-ts 8.x — pinned exactly in package.json because the SDK
-// ships breaking majors; see README "Upgrading spectrum-ts".
+// Requires Spectrum 12.x. The shared core, cloud provider bundle, and local
+// iMessage provider are pinned together in package.json because Spectrum ships
+// breaking majors; see README "Upgrading Spectrum".
 //
-// Env vars (required):
-//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
-//   PHOTON_PROJECT_SECRET
+// Env vars:
+//   PHOTON_LOCAL           "1" = use local macOS Messages/iMessage instead of
+//                          Photon Cloud. In cloud mode, PHOTON_PROJECT_ID
+//                          and PHOTON_PROJECT_SECRET are required.
+//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId; cloud mode)
+//   PHOTON_PROJECT_SECRET  (cloud mode)
 //   PHOTON_SIDECAR_PORT
-//   PHOTON_SIDECAR_TOKEN
+//   PHOTON_SIDECAR_TOKEN  (required)
 // Optional:
 //   PHOTON_SIDECAR_BIND    (default 127.0.0.1)
 //   PHOTON_SIDECAR_WATCH_STDIN  "1" = exit when stdin hits EOF (set by the
@@ -64,17 +68,25 @@
 
 import http from "node:http";
 import crypto from "node:crypto";
-import { once } from "node:events";
-import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
   shouldProbe,
   isZombieSuspect,
 } from "./stream-staleness.mjs";
-
+import { createConsumerHub } from "./inbound-consumers.mjs";
+import { createSpectrumRuntime } from "./spectrum-runtime.mjs";
+import {
+  buildStreamHealthSnapshot,
+  classifyStreamLog,
+  inboundStreamErrorMessage,
+  installStreamLogClassifier,
+} from "./stream-observability.mjs";
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
+const localMode = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_LOCAL || "").trim()
+);
 const port = parseInt(process.env.PHOTON_SIDECAR_PORT || "8789", 10);
 const bind = process.env.PHOTON_SIDECAR_BIND || "127.0.0.1";
 const sharedToken = process.env.PHOTON_SIDECAR_TOKEN;
@@ -94,6 +106,8 @@ const E164_RE = /^\+\d{6,}$/;
 const MAX_KNOWN_SPACES = 2048;
 const MAX_KNOWN_MESSAGES = 1024;
 const MAX_REACTION_HANDLES = 512;
+const OUTBOUND_ECHO_TTL_MS = 30 * 1000;
+const MAX_RECENT_OUTBOUND_TEXTS = 256;
 const STREAM_DEGRADED_RESTART_MS =
   Number(process.env.PHOTON_STREAM_DEGRADED_RESTART_MS) || 90 * 1000;
 const STREAM_INTERRUPTED_DEGRADE_COUNT =
@@ -123,6 +137,7 @@ const streamHealth = {
   lastIssue: null,
   issueCount: 0,
 };
+const recentOutboundTexts = [];
 let streamRestartTimer = null;
 
 // Zombie-watchdog runtime state (see stream-staleness.mjs for the rules).
@@ -152,20 +167,46 @@ function stalenessSnapshot(now) {
   };
 }
 
-function streamHealthSnapshot() {
+function rememberOutboundText(space, requestedSpaceId, text) {
   const now = Date.now();
-  const degradedForMs =
-    streamHealth.degradedSince === null ? 0 : now - streamHealth.degradedSince;
+  const spaceIds = new Set(
+    [requestedSpaceId, space?.id].filter(
+      (value) => typeof value === "string" && value
+    )
+  );
+  recentOutboundTexts.push({ text, spaceIds, sentAt: now });
+  while (
+    recentOutboundTexts.length > MAX_RECENT_OUTBOUND_TEXTS ||
+    (recentOutboundTexts[0] &&
+      now - recentOutboundTexts[0].sentAt > OUTBOUND_ECHO_TTL_MS)
+  ) {
+    recentOutboundTexts.shift();
+  }
+}
+
+function isRecentOutboundEcho(space, message) {
+  const text = message?.content?.type === "text" ? message.content.text : null;
+  if (typeof text !== "string") return false;
+  const now = Date.now();
+  while (
+    recentOutboundTexts[0] &&
+    now - recentOutboundTexts[0].sentAt > OUTBOUND_ECHO_TTL_MS
+  ) {
+    recentOutboundTexts.shift();
+  }
+  const ids = [space?.id, message?.space?.id].filter(
+    (value) => typeof value === "string" && value
+  );
+  return recentOutboundTexts.some(
+    (entry) =>
+      entry.text === text && ids.some((spaceId) => entry.spaceIds.has(spaceId))
+  );
+}
+
+function streamHealthSnapshot() {
   return {
-    ok: streamHealth.state !== "degraded",
-    state: streamHealth.state,
-    degradedForMs,
-    restartAfterMs: STREAM_DEGRADED_RESTART_MS,
-    lastHealthyAt: streamHealth.lastHealthyAt,
-    lastIssueAt: streamHealth.lastIssueAt,
-    lastIssue: streamHealth.lastIssue,
-    issueCount: streamHealth.issueCount,
-    staleness: stalenessSnapshot(now),
+    ...buildStreamHealthSnapshot(streamHealth, STREAM_DEGRADED_RESTART_MS),
+    staleness: stalenessSnapshot(Date.now()),
   };
 }
 
@@ -226,12 +267,12 @@ function markStreamRecovering(reason) {
   }
 }
 
-function classifyStreamLog(text) {
-  if (!text.includes("[spectrum.stream]")) return;
+function applyStreamLogClassification(text) {
+  const classification = classifyStreamLog(text);
   const reason = text.split("\n", 1)[0];
-  if (text.includes("persistently failing")) {
+  if (classification === "degraded") {
     markStreamDegraded(reason);
-  } else if (text.includes("stream interrupted")) {
+  } else if (classification === "recovering") {
     markStreamRecovering(reason);
   }
 }
@@ -241,63 +282,32 @@ function classifyStreamLog(text) {
 // everything else (WARN/INFO) to console.log. The two lines we key off
 // land on *different* channels: `log.error("stream persistently failing")`
 // -> console.error, but `log.warn("stream interrupted; reconnecting")`
-// -> console.log. Patch both so the recovering/degraded counters see the
+// -> console.log. Intercept both so the recovering/degraded counters see the
 // interrupt bursts, not just the terminal "persistently failing" line.
-const originalConsoleError = console.error.bind(console);
-console.error = (...args) => {
-  const text = args
-    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
-    .join(" ");
-  classifyStreamLog(text);
-  originalConsoleError(...args);
-};
-
-const originalConsoleLog = console.log.bind(console);
-console.log = (...args) => {
-  const text = args
-    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
-    .join(" ");
-  classifyStreamLog(text);
-  originalConsoleLog(...args);
-};
+installStreamLogClassifier(console, applyStreamLogClassification);
 
 // Upstream liveness probe (see `/probe` handler). A synthetic DM space id +
 // a unique-per-probe bogus message id drive a cheap unary read over the same
 // gRPC channel the inbound stream uses, so we can tell a live channel from a
 // half-open ("zombie") one. `space.get` is purely local in shared/dedicated
 // mode (no chat is created or messaged); only the message read hits the wire.
-const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+10000000000";
+const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+100****0000";
 const PROBE_MSG_PREFIX = "hermes-liveness-probe-";
 
-if (!projectId || !projectSecret || !sharedToken) {
+if (!sharedToken || (!localMode && (!projectId || !projectSecret))) {
   console.error(
-    "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
-      "PHOTON_SIDECAR_TOKEN must all be set."
+    "photon-sidecar: PHOTON_SIDECAR_TOKEN is required, and " +
+      "PHOTON_PROJECT_ID/PHOTON_PROJECT_SECRET are required unless " +
+      "PHOTON_LOCAL=true."
   );
   process.exit(2);
 }
 
-// Lazy-load spectrum-ts so a missing install fails with a clear message
-// instead of a cryptic module-resolution error during import. Apply Hermes'
-// pinned-sdk compatibility patch first so existing installs self-heal at
-// runtime, not only during npm postinstall.
-try {
-  const patchResult = patchSpectrumTs();
-  if (patchResult.patched) {
-    console.error(
-      `photon-sidecar: spectrum mixed attachment patch applied: ${patchResult.file}`
-    );
-  }
-} catch (e) {
-  console.error(
-    "photon-sidecar: spectrum mixed attachment patch failed. " +
-      "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
-      "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
-      "Original error: " +
-      (e && e.stack ? e.stack : String(e))
-  );
-}
-let Spectrum,
+// Lazy-load Spectrum so a missing install fails with a clear message instead
+// of a cryptic module-resolution error during import. Local macOS iMessage is
+// the explicit @spectrum-ts/imessage-local provider; cloud iMessage remains
+// available through the spectrum-ts provider export.
+let app,
   imessage,
   attachment,
   voice,
@@ -309,7 +319,8 @@ let Spectrum,
   imessageEffect;
 try {
   ({
-    Spectrum,
+    app,
+    imessage,
     attachment,
     voice,
     poll: spectrumPoll,
@@ -317,36 +328,32 @@ try {
     markdown: spectrumMarkdown,
     richlink: spectrumRichlink,
     typing: spectrumTyping,
-  } = await import("spectrum-ts"));
-  ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
+    effect: imessageEffect,
+  } = await createSpectrumRuntime({
+    localMode,
+    projectId,
+    projectSecret,
+    telemetry,
+  }));
 } catch (e) {
   console.error(
-    "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
+    "photon-sidecar: Spectrum dependencies are not installed. Run `npm install` " +
       "inside plugins/platforms/photon/sidecar/. Original error: " +
       (e && e.stack ? e.stack : String(e))
   );
   process.exit(3);
 }
 
-const app = await Spectrum({
-  projectId,
-  projectSecret,
-  providers: [imessage.config()],
-  options: { flattenGroups: true },
-  telemetry,
-});
-
 // Effect-name → native effect id map. Optional chaining: an SDK build
 // without the iMessage effect surface (or a test stub) must not crash the
 // sidecar at import — /send-effect then rejects with "unsupported effect".
 const MESSAGE_EFFECTS = imessage?.effect?.message || {};
-
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
 
-// At most one Python consumer is attached at a time (the gateway adapter).
-let consumerRes = null;
-let consumerWaiters = [];
+// Multiple authenticated Hermes adapters may share one local Messages session.
+// Each receives the stream and applies its own allowed-user/chat routing.
+const consumerHub = createConsumerHub();
 const knownSpaces = new Map();
 // Inbound Message objects by id, so /react can usually skip a
 // `space.getMessage` round trip when tapping back on a recent message.
@@ -392,40 +399,6 @@ function rememberInboundSpace(space, message) {
     rememberKnownSpace(id, space);
     const phone = phoneTargetFromSpaceId(id);
     if (phone) rememberKnownSpace(phone, space);
-  }
-}
-
-function waitForConsumer() {
-  if (consumerRes) return Promise.resolve();
-  return new Promise((resolve) => consumerWaiters.push(resolve));
-}
-
-function setConsumer(res) {
-  consumerRes = res;
-  const waiters = consumerWaiters;
-  consumerWaiters = [];
-  for (const resolve of waiters) resolve();
-}
-
-function clearConsumer(res) {
-  if (consumerRes === res) consumerRes = null;
-}
-
-// Write one NDJSON line to the active consumer. Blocks until a consumer is
-// connected; if the write fails (consumer vanished mid-flight) we wait for a
-// new consumer and retry, so a message is never silently dropped here.
-async function deliver(line) {
-  for (;;) {
-    await waitForConsumer();
-    const res = consumerRes;
-    if (!res) continue;
-    try {
-      const flushed = res.write(line + "\n");
-      if (!flushed) await once(res, "drain");
-      return;
-    } catch {
-      clearConsumer(res);
-    }
   }
 }
 
@@ -484,8 +457,8 @@ async function normalizeBinaryContent(content) {
 // Python adapter can populate the gateway's `reply_to_text` (context: WHAT was
 // tapped back). The SDK only emits a reaction once it has resolved the full
 // target Message (toReactionMessages bails otherwise), so `target.content` is
-// hydrated here — no extra round trip. Handles plain text and our patched mixed
-// text+attachment groups (first text child); null for attachment/voice-only
+// hydrated here — no extra round trip. Handles plain text and Spectrum's native
+// mixed text+attachment groups (first text child); null for attachment/voice-only
 // targets. Capped so one long bubble can't balloon the NDJSON line.
 const REACTION_TARGET_TEXT_CAP = 2000;
 function reactionTargetText(target) {
@@ -592,7 +565,10 @@ async function normalizeEvent(space, message) {
     const ts = message.timestamp;
     return {
       messageId: message.id ?? null,
-      platform: message.platform || space.__platform || "iMessage",
+      platform:
+        message.platform ||
+        space.__platform ||
+        (localMode ? "local_imessage" : "imessage"),
       space: {
         id: space.id ?? msgSpace.id ?? null,
         // iMessage spaces carry `type` ("dm"|"group") and `phone` directly.
@@ -612,31 +588,6 @@ async function normalizeEvent(space, message) {
   }
 }
 
-function inboundStreamErrorMessage(e) {
-  const msg = e && e.message ? e.message : String(e);
-  let out = "photon-sidecar: inbound stream errored — restarting: " + msg;
-
-  // The Spectrum SDK surfaces Photon cloud CatchUpEvents failures as an
-  // iMessage internal error. Local Hermes allowlists cannot cause or fix this:
-  // inbound messages stop before they reach the gateway. Add an explicit hint
-  // so operators know to retry/restart or escalate to Photon support instead
-  // of chasing PHOTON_ALLOWED_USERS / pairing configuration.
-  const details = String(e?.cause?.details || e?.details || "");
-  const path = String(e?.cause?.path || e?.path || "");
-  const code = String(e?.code || "");
-  if (
-    path.includes("EventService/CatchUpEvents") ||
-    details.includes("Unknown server error occurred") ||
-    (code === "internalError" && msg.includes("Unknown server error"))
-  ) {
-    out +=
-      " | Photon Spectrum CatchUpEvents returned an internal server error; " +
-      "this is upstream of Hermes, so inbound iMessages may not be delivered " +
-      "until Photon recovers or the stream is re-established.";
-  }
-  return out;
-}
-
 // spectrum-ts handles in-session gRPC reconnects internally, but if the async
 // iterator itself throws or ends, this consumer would stop forever. Wrap it in
 // a re-subscribe loop with capped exponential backoff + jitter so inbound
@@ -654,11 +605,21 @@ function inboundStreamErrorMessage(e) {
         if (message && message.direction && message.direction !== "inbound") {
           continue;
         }
+        // The local provider can surface a self-iMessage sent by this sidecar
+        // as inbound. Suppress exact recent text echoes so Hermes never answers
+        // itself in a loop; cloud mode's explicit outbound direction remains
+        // the primary filter above.
+        if (localMode && isRecentOutboundEcho(space, message)) {
+          console.error(
+            `photon-sidecar: suppressed local outbound echo ${message?.id ?? "(no id)"}`
+          );
+          continue;
+        }
         rememberInboundSpace(space, message);
         rememberKnownMessage(message);
         const event = await normalizeEvent(space, message);
         if (!event) continue;
-        await deliver(JSON.stringify(event));
+        await consumerHub.deliver(JSON.stringify(event));
       }
       console.error("photon-sidecar: inbound stream ended — re-subscribing");
       markStreamRecovering("inbound stream ended");
@@ -878,16 +839,7 @@ function handleInbound(req, res) {
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Connection", "keep-alive");
-  // One consumer at a time — a fresh connection (e.g. after a reconnect)
-  // supersedes the previous one.
-  if (consumerRes && consumerRes !== res) {
-    try {
-      consumerRes.end();
-    } catch {
-      /* ignore */
-    }
-  }
-  setConsumer(res);
+  consumerHub.add(res);
   // Heartbeat keeps the socket warm through idle periods and lets the Python
   // side detect a dead pipe promptly.
   const heartbeat = setInterval(() => {
@@ -899,7 +851,7 @@ function handleInbound(req, res) {
   }, 25000);
   const cleanup = () => {
     clearInterval(heartbeat);
-    clearConsumer(res);
+    consumerHub.remove(res);
   };
   req.on("close", cleanup);
   req.on("aborted", cleanup);
@@ -1029,10 +981,11 @@ const server = http.createServer(async (req, res) => {
       // spectrumMarkdown for URL-free markdown. The decision lives in
       // send-format.mjs so tests can exercise it directly.
       const builder =
-        chooseSendFormat(format, text) === "markdown"
+        chooseSendFormat(format, text) === "markdown" && !localMode
           ? spectrumMarkdown(text)
           : spectrumText(text);
       const result = await space.send(builder);
+      if (localMode) rememberOutboundText(space, spaceId, text);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-richlink") {
@@ -1059,7 +1012,7 @@ const server = http.createServer(async (req, res) => {
       if (name) opts.name = name;
       if (mimeType) opts.mimeType = mimeType;
       const builder =
-        kind === "voice"
+        kind === "voice" && !localMode
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
@@ -1080,6 +1033,9 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/react") {
+      if (localMode) {
+        return badRequest(res, "reactions are not supported in local iMessage mode");
+      }
       const { spaceId, messageId, emoji } = body || {};
       if (!spaceId || !messageId || typeof emoji !== "string" || !emoji) {
         return badRequest(res, "spaceId, messageId and emoji are required");
@@ -1103,6 +1059,9 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { reactionId: handle.id ?? null });
     }
     if (req.url === "/unreact") {
+      if (localMode) {
+        return badRequest(res, "reactions are not supported in local iMessage mode");
+      }
       const { spaceId, messageId, reactionId } = body || {};
       if (!spaceId || !messageId) {
         return badRequest(res, "spaceId and messageId are required");
@@ -1174,8 +1133,10 @@ const server = http.createServer(async (req, res) => {
       if (state !== "start" && state !== "stop") {
         return badRequest(res, "state must be start or stop");
       }
-      const space = await resolveSpace(spaceId);
-      await space.send(spectrumTyping(state));
+      if (!localMode) {
+        const space = await resolveSpace(spaceId);
+        await space.send(spectrumTyping(state));
+      }
       return ok(res, {});
     }
     res.statusCode = 404;

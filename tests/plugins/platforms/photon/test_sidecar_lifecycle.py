@@ -124,6 +124,38 @@ async def test_reap_raises_for_foreign_listener(
 
 
 @pytest.mark.asyncio
+async def test_external_sidecar_must_be_healthy_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = PlatformConfig(
+        enabled=True,
+        token="",
+        extra={
+            "local": True,
+            "autostart_sidecar": False,
+            "sidecar_url": "https://sidecar.example.test:8789",
+            "sidecar_token": "test-sidecar-token",
+        },
+    )
+    adapter = PhotonAdapter(cfg)
+
+    async def _unreachable(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        assert path == "/healthz"
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _unreachable)
+
+    connected = await adapter.connect()
+    try:
+        assert connected is False
+        assert adapter._http_client is None
+        assert adapter._inbound_task is None
+        assert adapter._sidecar_health_task is None
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_start_sidecar_spawns_with_stdin_pipe(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -186,7 +218,6 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
-    assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
     assert kwargs["creationflags"] == hidden_flags
 
 
@@ -339,70 +370,3 @@ async def test_reap_inspects_listeners_off_the_event_loop(
             "must be dispatched via asyncio.to_thread so a 5s lsof/ps spawn "
             "can't freeze every other platform on the gateway loop"
         )
-
-
-@pytest.mark.asyncio
-async def test_spectrum_patch_runs_off_the_event_loop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The node patch run must not block the shared gateway event loop.
-
-    ``_start_sidecar`` spawns the Spectrum patch script and *waits* for it
-    (``timeout=10``). Run inline it holds the loop for that whole window, so
-    every other platform's traffic stalls — and ``_start_sidecar`` runs on
-    every reconnect (``connect(is_reconnect=True)``), not just startup, so the
-    stall recurs on a live gateway. The dep reinstall a few lines above already
-    hops to a thread for exactly this reason; the patch run must too.
-    """
-    import threading
-
-    adapter = _make_adapter(monkeypatch)
-    main_thread = threading.current_thread()
-    seen: Dict[str, Any] = {}
-
-    # node_modules present + deps fresh, so we reach the patch run.
-    monkeypatch.setattr(photon_adapter.Path, "exists", lambda self: True)
-    monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
-
-    async def _no_reap() -> None:
-        return None
-
-    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
-
-    def _fake_run(*a: Any, **k: Any) -> Any:
-        seen["thread"] = threading.current_thread()
-
-        class _Done:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return _Done()
-
-    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
-
-    class _FakeProc:
-        pid = 4242
-        stdin = None
-        stdout = None
-
-        def poll(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        photon_adapter.subprocess, "Popen", lambda *a, **k: _FakeProc()
-    )
-
-    try:
-        await adapter._start_sidecar()
-    except Exception:
-        # Readiness/handshake past the patch run may fail under the fakes —
-        # irrelevant here; we only assert where the patch run executed.
-        pass
-
-    assert seen.get("thread") is not None, "patch run never executed"
-    assert seen["thread"] is not main_thread, (
-        "Spectrum patch subprocess ran on the event-loop thread; it must be "
-        "dispatched via asyncio.to_thread so a 10s node spawn can't freeze "
-        "every other platform on the gateway loop"
-    )

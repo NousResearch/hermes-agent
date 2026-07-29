@@ -266,6 +266,97 @@ async def test_send_attachment_rejects_unsafe_path(
 
 
 @pytest.mark.asyncio
+async def test_remote_sidecar_rejects_filesystem_attachment_paths(
+    monkeypatch: pytest.MonkeyPatch, real_file: str
+) -> None:
+    _patch_safe_path(monkeypatch)
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    cfg = PlatformConfig(
+        enabled=True,
+        token="",
+        extra={"sidecar_url": "https://sidecar.example.test:8789"},
+    )
+    adapter = PhotonAdapter(cfg)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_image_file("any;-;+1", real_file)
+
+    assert result.success is False
+    assert "remote sidecar" in (result.error or "")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_uses_configured_remote_sidecar_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+    posted: List[str] = []
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {"ok": True, "messageId": "m-remote"}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url: str, json: Dict[str, Any], headers=None):
+            posted.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+    cfg = PlatformConfig(
+        enabled=True,
+        token="",
+        extra={"sidecar_url": "https://sidecar.example.test:8789/base"},
+    )
+
+    result = await photon_adapter._standalone_send(cfg, "any;-;+1", "hello")
+
+    assert result == {"success": True, "message_id": "m-remote"}
+    assert posted == ["https://sidecar.example.test:8789/base/send"]
+
+
+@pytest.mark.asyncio
+async def test_standalone_remote_attachment_fails_before_partial_text_send(
+    monkeypatch: pytest.MonkeyPatch, real_file: str
+) -> None:
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+
+    class _UnexpectedClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("HTTP client must not open for an unsupported send")
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _UnexpectedClient)
+    cfg = PlatformConfig(
+        enabled=True,
+        token="",
+        extra={"sidecar_url": "https://sidecar.example.test:8789"},
+    )
+
+    result = await photon_adapter._standalone_send(
+        cfg,
+        "any;-;+1",
+        "caption",
+        media_files=[{"path": real_file, "media_type": "image"}],
+    )
+
+    assert "error" in result
+    assert "remote sidecar" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_standalone_send_text_then_attachments(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

@@ -2,7 +2,7 @@ import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
+import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
@@ -48,6 +48,7 @@ import { useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
+import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
@@ -132,6 +133,10 @@ export function ChatBar({
   // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
   // every per-item status mutation or other sessions' churn (see the hook).
   const statusPresent = useSessionStatusPresence(statusSessionId)
+
+  // Publishes contributed micro actions for this session; the status stack
+  // renders them as the pill strip at the top of the overlay lane.
+  useComposerMicroActions(statusSessionId, busy)
 
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
@@ -1076,7 +1081,14 @@ export function ChatBar({
               className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
               data-dragging={dragging ? '' : undefined}
               data-slot="composer-drag-region"
-              onDoubleClick={handleComposerToggle}
+              onDoubleClick={event => {
+                // The pill strips paint above this region; a double-click that
+                // lands on one must not float the composer. onPointerDown goes
+                // through gestureTargetOk, but this handler doesn't.
+                if (!(event.target as Element).closest('[data-slot="composer-no-drag"]')) {
+                  handleComposerToggle()
+                }
+              }}
             />
           )}
           <div className="relative w-full rounded-[inherit]">
@@ -1167,6 +1179,17 @@ export function ChatBar({
                 <ContribSlot area={COMPOSER_AREAS.bottom} />
               </div>
             </div>
+          </div>
+          {/* Underside: a floating strip BELOW the whole composer surface.
+              Chrome-free by design — contributions bring their own pill/skin,
+              like the micro-action strip above. In flow (the root is
+              bottom-anchored, so this grows the composer upward and stays on
+              screen) but OUTSIDE the surface, so it escapes the surface's
+              clipping, border, and scroll fade. Shares the micro-action
+              strip's grid so the two bracket the composer on one vertical
+              line. Renders nothing until something contributes. */}
+          <div className={cn(composerFloatingStrip, 'pt-1.5 empty:hidden')} data-slot="composer-no-drag">
+            <ContribSlot area={COMPOSER_AREAS.underside} />
           </div>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

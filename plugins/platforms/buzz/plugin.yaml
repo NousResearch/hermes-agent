@@ -21,6 +21,14 @@ requires_env:
     prompt: "Nostr private key (nsec or hex)"
     password: true
 optional_env:
+  - name: BUZZ_TRANSPORT
+    description: "Inbound transport: auto (WebSocket w/ poll fallback, default), websocket, or poll"
+    prompt: "Transport (auto/websocket/poll)"
+    password: false
+  - name: BUZZ_AUTH_TAG
+    description: "Optional NIP-OA owner-attestation auth tag JSON for NIP-42 WebSocket auth"
+    prompt: "NIP-OA auth tag JSON (or empty)"
+    password: false
   - name: BUZZ_CHANNELS
     description: "Comma-separated channel UUIDs to watch (default: all joined channels)"
     prompt: "Channel UUIDs (comma-separated)"

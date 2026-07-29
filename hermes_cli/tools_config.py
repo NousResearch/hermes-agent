@@ -540,7 +540,12 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "browser",
                 "override_env_vars": ["BROWSER_USE_API_KEY"],
-                "post_setup": "agent_browser",
+                # Cloud hook: installs the agent-browser CLI only. Browser Use
+                # hosts its own Chromium, so the local-Chromium install (and
+                # the local-Chromium readiness gate) must not apply here —
+                # with "agent_browser" this row read "needs setup" forever on
+                # machines without a local Chromium build.
+                "post_setup": "browserbase",
             },
             {
                 "name": "Camofox",
@@ -2872,7 +2877,18 @@ def _agent_browser_installed() -> bool:
     Lightpanda engine, which needs no Chromium). Mirrors the hook so "Run
     setup" flips to an installed state only when re-running it would be a
     no-op."""
+    import sys
+
     from hermes_cli.nous_subscription import _local_browser_runnable
+
+    # The install hook runs in a spawned ``hermes tools post-setup`` process,
+    # but this probe runs in the long-lived web-server/CLI process, whose
+    # browser_tool module may have cached a stale "Chromium missing" result
+    # from before the install. Drop the cache (when the module is loaded) so
+    # the readiness pill flips to Ready right after a successful setup run.
+    bt = sys.modules.get("tools.browser_tool")
+    if bt is not None:
+        bt._cached_chromium_installed = None
 
     return _local_browser_runnable()
 

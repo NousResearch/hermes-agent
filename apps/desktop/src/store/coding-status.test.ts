@@ -10,6 +10,7 @@ import {
   refreshAllRepoStatuses,
   refreshRepoStatus,
   registerRepoStatusCwd,
+  repoChangeKindForPath,
   repoStatusForCwd
 } from './coding-status'
 import { $currentCwd, $selectedStoredSessionId } from './session'
@@ -253,5 +254,30 @@ describe('refreshRepoStatus', () => {
     expect(repoStatusForCwd('/main').get()).toEqual(sampleStatus)
 
     release?.()
+  })
+})
+
+describe('repoChangeKindForPath', () => {
+  it('does not notify a row when only another path changes', () => {
+    $currentCwd.set('/repo')
+    $repoStatus.set({ ...sampleStatus, files: [] })
+    const row = repoChangeKindForPath('/repo/a.ts')
+    const listener = vi.fn()
+    const unsubscribe = row.subscribe(listener)
+
+    $repoStatus.set({
+      ...sampleStatus,
+      files: [{ path: 'b.ts', untracked: true } as HermesRepoStatus['files'][number]]
+    })
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    $repoStatus.set({
+      ...sampleStatus,
+      files: [{ path: 'a.ts', untracked: true } as HermesRepoStatus['files'][number]]
+    })
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(listener.mock.calls.at(-1)?.[0]).toBe('added')
+
+    unsubscribe()
   })
 })

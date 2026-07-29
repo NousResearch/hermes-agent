@@ -64,3 +64,66 @@ class TurnContext:
     #     send_progress_messages is scheduled) ----------------------------
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
+
+    # ------------------------------------------------------------------
+    # run_sync extraction (second wave of the seam): the closed-over locals
+    # of ``_run_agent_inner`` that ``run_sync`` (and the four sibling bridge
+    # callbacks) captured.  Same rules as above: read-only snapshots or
+    # shared mutable containers; ``message`` is the ONE exception — the old
+    # closure rebound it via ``nonlocal``, so the rebind sites now write
+    # ``ctx.message`` and the outer body reads ``ctx.message`` afterwards.
+    # ------------------------------------------------------------------
+
+    # --- the ex-``nonlocal`` turn message (rebindable) --------------------
+    message: Optional[str] = None
+
+    # --- turn parameters / config snapshots (read-only in run_sync) -------
+    history: Any = None
+    context_prompt: Optional[str] = None
+    channel_prompt: Optional[str] = None
+    session_id: Optional[str] = None
+    session_key: Optional[str] = None
+    run_generation: Optional[int] = None
+    _interrupt_depth: int = 0
+    event_message_id: Optional[str] = None
+    moa_config: Optional[dict] = None
+    persist_user_message: Optional[Any] = None
+    persist_user_timestamp: Optional[float] = None
+    user_config: Any = None
+    enabled_toolsets: Any = None
+    disabled_toolsets: Any = None
+    log_mode_enabled: bool = False
+    interim_assistant_messages_enabled: bool = False
+    needs_progress_queue: bool = False
+
+    # --- lazy-imported callables captured from the outer body -------------
+    AIAgent: Any = None
+    resolve_display_setting: Any = None
+
+    # --- mutable holder cells (shared-list pattern; outer body + the
+    #     post-executor closures read mutations through the same objects) --
+    result_holder: list = field(default_factory=lambda: [None])
+    tools_holder: list = field(default_factory=lambda: [None])
+    stream_consumer_holder: list = field(default_factory=lambda: [None])
+    streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
+
+    # --- voice-ack wiring --------------------------------------------------
+    _voice_ack_fired: list = field(default_factory=lambda: [False])
+    _voice_ack_guild: list = field(default_factory=lambda: [None])
+    _voice_ack_loop: Any = None
+
+    # --- hook / status bridge wiring (published at original binding sites) -
+    _loop_for_step: Any = None
+    _hooks_ref: Any = None
+    _status_adapter: Any = None
+    _status_chat_id: Any = None
+    _status_thread_metadata: Optional[dict] = None
+
+    # --- extracted sibling callbacks (bound TurnRunner methods; run_sync
+    #     reads them through the ctx exactly where it used to close over
+    #     the sibling closures) ---------------------------------------------
+    progress_callback: Optional[Callable] = None
+    voice_ack_callback: Optional[Callable] = None
+    _step_callback_sync: Optional[Callable] = None
+    _event_callback_sync: Optional[Callable] = None
+    _status_callback_sync: Optional[Callable] = None

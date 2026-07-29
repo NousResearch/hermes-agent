@@ -54,7 +54,17 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
-REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
+# Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
+# and tools/lazy_deps.py LAZY_DEPS['skill.google_workspace'].
+# Pinning all three protects against version drift and ensures the httplib2
+# GHSA-j5g9-f88f-gfj3 security fix is honoured regardless of install path.
+REQUIRED_PACKAGES = [
+    "google-api-python-client==2.194.0",
+    "google-auth-oauthlib==1.3.1",
+    "google-auth-httplib2==0.3.1",
+    # GHSA-j5g9-f88f-gfj3 — Decompression Bomb DoS via unbounded gzip/deflate
+    "httplib2==0.32.0",
+]
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to

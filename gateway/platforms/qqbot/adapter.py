@@ -71,6 +71,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
 
@@ -1791,7 +1792,14 @@ class QQAdapter(BasePlatformAdapter):
             return None
 
         if content_type.startswith("image/"):
-            ext = mimetypes.guess_extension(content_type) or ".jpg"
+            # preserves historical qqbot mapping: trust mimetypes'
+            # guess (never the shared table) and fall back to .jpg.
+            ext = ext_for_mime(
+                content_type,
+                use_defaults=False,
+                use_mimetypes=True,
+                fallback=".jpg",
+            ) or ".jpg"
             return cache_image_from_bytes(data, ext)
         elif content_type == "voice" or content_type.startswith("audio/"):
             # QQ voice messages are typically .amr or .silk format.

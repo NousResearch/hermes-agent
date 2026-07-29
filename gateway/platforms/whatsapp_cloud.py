@@ -79,6 +79,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
@@ -164,18 +165,25 @@ async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
 def _ext_for_mime(mime: str) -> Optional[str]:
     """Resolve a mime type to the file extension we want on disk.
 
-    Consults the override map first so types like ``audio/ogg`` produce
-    the extension downstream tools actually accept (``.ogg``, not the
-    technically-correct-but-broken ``.oga``). Falls back to Python's
-    ``mimetypes.guess_extension`` for anything we haven't pinned.
+    Thin wrapper over the shared dispatch in
+    ``gateway.platforms.media_cache``. Consults the WhatsApp override map
+    first so types like ``audio/ogg`` produce the extension downstream
+    tools actually accept (``.ogg``, not the technically-correct-but-broken
+    ``.oga``). Falls back to Python's ``mimetypes.guess_extension`` for
+    anything we haven't pinned — the shared default table is skipped so
+    behavior stays byte-identical to the historical implementation.
     """
     if not mime:
         return None
-    primary = mime.split(";")[0].strip().lower()
-    override = _WHATSAPP_MIME_EXTENSION_OVERRIDES.get(primary)
-    if override:
-        return override
-    return mimetypes.guess_extension(primary) or None
+    return ext_for_mime(
+        mime,
+        # preserves historical whatsapp_cloud mapping: overrides →
+        # mimetypes → None, never the shared default table.
+        overrides=_WHATSAPP_MIME_EXTENSION_OVERRIDES,
+        use_defaults=False,
+        use_mimetypes=True,
+        fallback=None,
+    )
 
 
 # Inbound media cache lives under the user's hermes dir so it survives

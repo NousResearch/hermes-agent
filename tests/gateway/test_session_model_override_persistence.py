@@ -25,6 +25,7 @@ from gateway.session import (
     SessionSource,
     SessionStore,
     sanitize_model_override,
+    sanitize_reasoning_override,
 )
 
 OVERRIDE = {
@@ -140,6 +141,60 @@ def test_new_clears_persisted_override(store_factory, tmp_path):
     assert "gpt-5o" not in _sessions_json(tmp_path)
 
 
+def test_expiry_finalization_clears_all_persisted_runtime_overrides(store_factory):
+    """Expiry is a conversation boundary for both /model and /reasoning."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(entry.session_key, OVERRIDE)
+    store.set_reasoning_override(
+        entry.session_key,
+        {"enabled": True, "effort": "high"},
+    )
+
+    store.set_expiry_finalized(entry)
+
+    assert store.get_model_override(entry.session_key) is None
+    assert store.get_reasoning_override(entry.session_key) is None
+
+    # Durable verification: neither override may reappear after reload.
+    store2 = store_factory()
+    assert store2.get_model_override(entry.session_key) is None
+    assert store2.get_reasoning_override(entry.session_key) is None
+
+
+def test_expiry_finalization_clears_overrides_from_state_db(tmp_path, monkeypatch):
+    """The primary SQLite routing row must not resurrect expired overrides."""
+    import hermes_state
+
+    real_session_db = hermes_state.SessionDB
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(
+        hermes_state,
+        "SessionDB",
+        lambda: real_session_db(db_path=db_path),
+    )
+    config = GatewayConfig()
+    config.write_sessions_json = False
+
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(entry.session_key, OVERRIDE)
+    store.set_reasoning_override(
+        entry.session_key,
+        {"enabled": True, "effort": "high"},
+    )
+    store.set_expiry_finalized(entry)
+    store._db.close()
+
+    # A fresh store can only load from state.db because the JSON mirror is off.
+    store2 = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    try:
+        assert store2.get_model_override(entry.session_key) is None
+        assert store2.get_reasoning_override(entry.session_key) is None
+    finally:
+        store2._db.close()
+
+
 def _make_runner(store):
     from gateway.run import GatewayRunner
 
@@ -232,3 +287,56 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+def test_reasoning_override_persists_and_survives_restart(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+
+    store.set_reasoning_override(session_key, {"enabled": True, "effort": "xhigh"})
+
+    store2 = store_factory()
+    assert store2.get_reasoning_override(session_key) == {"enabled": True, "effort": "xhigh"}
+
+
+def test_reasoning_override_clears(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+
+    store.set_reasoning_override(entry.session_key, {"enabled": False})
+    assert store.get_reasoning_override(entry.session_key) == {"enabled": False}
+
+    store.set_reasoning_override(entry.session_key, None)
+    assert store.get_reasoning_override(entry.session_key) is None
+
+
+def test_runner_rehydrates_reasoning_override_after_restart(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_reasoning_override(session_key, {"enabled": True, "effort": "high"})
+
+    runner = _make_runner(store_factory())
+    runner._session_reasoning_overrides = {}
+
+    assert runner._resolve_session_reasoning_config(session_key=session_key) == {
+        "enabled": True,
+        "effort": "high",
+    }
+
+
+def test_sanitize_reasoning_override():
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    assert sanitize_reasoning_override(None) is None
+    assert sanitize_reasoning_override({}) is None
+    assert sanitize_reasoning_override({"enabled": False, "api_key": "sk-x"}) == {
+        "enabled": False,
+    }
+    for effort in VALID_REASONING_EFFORTS:
+        assert sanitize_reasoning_override({"enabled": True, "effort": effort}) == {
+            "enabled": True,
+            "effort": effort,
+        }
+    assert sanitize_reasoning_override({"enabled": "false", "effort": "xhigh"}) is None
+    assert sanitize_reasoning_override({"enabled": True, "effort": "weird"}) is None

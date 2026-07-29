@@ -162,15 +162,39 @@ compaction. Everything else about compression is unchanged.
 
 ## Measuring it
 
+Micro-compaction is not primarily a token-saving or time-saving optimisation,
+and judging it on tokens saved will undersell it. The two things it actually
+buys you are:
+
+1. **The long pause is amortized.** The same summarization work happens, but as
+   small increments after turns instead of one stall in the middle of a session.
+2. **Your context lasts longer.** Because the middle is continuously reclaimed,
+   occupancy stays low instead of sawtoothing up to the threshold. A session
+   runs much further — often indefinitely — before it needs a hard compaction
+   at all.
+
+So the number that matters is **occupancy**: how full the window is being kept,
+as a percentage of the compaction threshold. A session that holds steady around
+40% has headroom to keep going; one climbing through 90% is about to stall. The
+second number is **how many batch compactions actually fired** — ideally none.
+
+A session can save nothing on paper and still be a clear win on both counts.
+
 Every pass emits one content-free JSON line, in the same style as the batch
 compaction telemetry:
 
 ```
 micro compaction telemetry: {"event":"micro_compaction","outcome":"absorbed",
 "tokens_before":12739,"tokens_after":12060,"tokens_delta":-679,
+"occupancy_pct":38.4,"threshold_tokens":34816,"context_limit":40960,
 "exchange_tokens":868,"rolling_summary_tokens":31,"passes_total":1,
 "tokens_saved_total":679,"duration_ms":14,...}
 ```
+
+`occupancy_pct` is `tokens_after` as a share of the compaction threshold -- the
+headroom figure. It is null when the model's window has not been resolved yet:
+the telemetry reads only the cached value, because resolving it can issue a
+synchronous `/models` probe and telemetry must never be what blocks a turn.
 
 `tokens_delta` is negative when the pass shrank the transcript.
 `tokens_saved_total` and `passes_total` accumulate across the session, so a whole

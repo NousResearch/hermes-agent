@@ -5446,6 +5446,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                 delta = tokens_after - tokens_before
                 self._micro_compact_tokens_saved_total -= delta
             self._micro_compact_passes += 1
+            # Cached reads only. The ``threshold_tokens`` / ``context_length``
+            # properties resolve lazily and can fire a synchronous /models
+            # probe on first access (#32221) — telemetry must never be the
+            # thing that blocks a turn. Unresolved simply reports null.
+            threshold = self._threshold_tokens
+            context_limit = self._resolved_context_length
+            occupancy = None
+            if threshold and tokens_after is not None and threshold > 0:
+                occupancy = round(tokens_after / threshold * 100, 1)
             payload = {
                 "event": "micro_compaction",
                 "session_id": getattr(self, "_session_id", "") or "",
@@ -5463,6 +5472,12 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "passes_total": self._micro_compact_passes,
                 "tokens_saved_total": self._micro_compact_tokens_saved_total,
                 "duration_ms": _safe_int(duration_ms),
+                # Headroom, not efficiency: how full the window is being kept.
+                # This is the number that says whether the session can keep
+                # going without a hard batch compaction.
+                "threshold_tokens": _safe_int(threshold),
+                "context_limit": _safe_int(context_limit),
+                "occupancy_pct": occupancy,
                 "main_model": self.model or "",
                 "aux_model": self.summary_model or "",
             }

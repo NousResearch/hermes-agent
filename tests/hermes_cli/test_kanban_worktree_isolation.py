@@ -196,3 +196,99 @@ def test_resolve_worktree_own_path_on_foreign_branch_keeps_legacy_reuse(
     workspace, branch = kb._resolve_worktree_workspace(task)
     assert workspace == own.resolve()
     assert branch == "wt/foreign"
+
+
+# --- _ensure_git_worktree: stale-branch realign on reuse ----------------------
+#
+# ``_ensure_git_worktree`` reuses ``target`` whenever it is a linked worktree of
+# the same repo -- WITHOUT checking which branch it is on. A previous failed or
+# interrupted dispatch of the same task leaves the canonical
+# ``<repo>/.worktrees/<id>`` path on a stale branch, so the next dispatch of
+# that task silently runs on the wrong branch. The per-task fallback in
+# ``_resolve_worktree_workspace`` routes right back to this same canonical path,
+# so it cannot heal the case either -- this is the last gap.
+
+
+def test_ensure_git_worktree_realigns_a_stale_reused_branch(tmp_path):
+    repo = _make_repo(tmp_path)
+    target = repo / ".worktrees" / "t_abc"
+    # A previous dispatch left the canonical path on some other branch.
+    _add_worktree(repo, target, "wt/stale-previous-run")
+    assert kb._git_current_branch(target) == "wt/stale-previous-run"
+
+    kb._ensure_git_worktree(repo, target, "wt/t_abc")
+
+    assert kb._git_current_branch(target) == "wt/t_abc", (
+        "a reused worktree left on a stale branch must be realigned to the "
+        "task's own branch, not silently run on the previous run's branch"
+    )
+
+
+def test_ensure_git_worktree_same_branch_reuse_is_a_noop(tmp_path):
+    """Control: the common path (already on the right branch) must not churn."""
+    repo = _make_repo(tmp_path)
+    target = repo / ".worktrees" / "t_abc"
+    _add_worktree(repo, target, "wt/t_abc")
+    (target / "work-in-progress.txt").write_text("uncommitted\n", encoding="utf-8")
+
+    kb._ensure_git_worktree(repo, target, "wt/t_abc")
+
+    assert kb._git_current_branch(target) == "wt/t_abc"
+    # No checkout was issued, so uncommitted work is untouched.
+    assert (target / "work-in-progress.txt").exists()
+
+
+def test_ensure_git_worktree_realign_reuses_an_existing_branch(tmp_path):
+    """Realigning onto a branch that already exists must check it out, not
+    fail trying to create a duplicate."""
+    repo = _make_repo(tmp_path)
+    other = repo / ".worktrees" / "other"
+    _add_worktree(repo, other, "wt/t_target")   # branch exists, checked out elsewhere
+    _git(other, "checkout", "-b", "wt/parked")  # free the branch again
+
+    target = repo / ".worktrees" / "t_target"
+    _add_worktree(repo, target, "wt/stale")
+
+    kb._ensure_git_worktree(repo, target, "wt/t_target")
+    assert kb._git_current_branch(target) == "wt/t_target"
+
+
+def test_resolve_no_path_worktree_task_realigns_a_stale_canonical_checkout(
+    kanban_home, tmp_path, monkeypatch
+):
+    """E2E through the real resolver: a no-``workspace_path`` worktree task
+    whose canonical ``<repo>/.worktrees/<id>`` was left on a stale branch by an
+    interrupted run must come back checked out on ITS OWN branch.
+
+    This is the user-visible contract -- a worker cd's into the returned path
+    and commits there. Pre-fix, ``_ensure_git_worktree`` saw a linked worktree
+    of the right repo and returned immediately, so the worker committed to the
+    previous run's branch.
+    """
+    repo = _make_repo(tmp_path)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="resume me", assignee="w", workspace_kind="worktree",
+        )
+        conn.execute(
+            "UPDATE tasks SET workspace_path = NULL WHERE id = ?", (tid,)
+        )
+        conn.commit()
+        task = kb.get_task(conn, tid)
+
+    # A previous interrupted dispatch of THIS task left its canonical path on
+    # an unrelated branch.
+    target = _add_worktree(repo, repo / ".worktrees" / tid, "wt/interrupted-run")
+    assert kb._git_current_branch(target) == "wt/interrupted-run"
+
+    resolved, branch = kb._resolve_worktree_workspace(task, board="default")
+
+    assert Path(resolved).resolve() == target.resolve()
+    assert branch == f"wt/{tid}"
+    assert kb._git_current_branch(Path(resolved)) == f"wt/{tid}", (
+        f"resolver returned {resolved} on branch "
+        f"{kb._git_current_branch(Path(resolved))!r}; a worker would commit to "
+        "the previous run's branch"
+    )

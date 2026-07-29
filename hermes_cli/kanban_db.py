@@ -6342,12 +6342,42 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
 
 
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    """Materialize ``target`` as a linked git worktree under ``repo_root``.
+
+    When ``target`` already exists as a linked worktree of ``repo_root``,
+    reuse it — but only after confirming it is checked out on ``branch_name``.
+    A previous failed or interrupted dispatch of the same task can leave the
+    canonical ``<repo>/.worktrees/<id>`` path on a stale or unrelated branch;
+    silently reusing it would run this task's work on the wrong branch. If the
+    branch differs, switch it back (creating the branch if needed) so the
+    reused checkout matches the requested branch, and raise if the switch
+    fails rather than proceeding on the wrong tree.
+    """
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None:
         target_common = _git_common_dir(target)
         if target_common == repo_common:
+            if _git_current_branch(target) == branch_name:
+                return
+            # Reused worktree is on the wrong branch — realign it.
+            if _git_branch_exists(repo_root, branch_name):
+                switch_cmd = ["git", "-C", str(target), "checkout", branch_name]
+            else:
+                switch_cmd = ["git", "-C", str(target), "checkout", "-b", branch_name]
+            switch = subprocess.run(
+                switch_cmd,
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=60,
+                check=False,
+            )
+            if switch.returncode != 0:
+                stderr = (switch.stderr or switch.stdout or "").strip()
+                raise RuntimeError(
+                    f"git checkout {branch_name} failed for reused worktree "
+                    f"{target}: {stderr}"
+                )
             return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):

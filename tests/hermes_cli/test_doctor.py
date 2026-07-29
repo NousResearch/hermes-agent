@@ -751,6 +751,7 @@ def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
     managed_ab = home / "node" / "bin" / "agent-browser"
     managed_ab.write_text("#!/bin/sh\n", encoding="utf-8")
+    managed_ab.chmod(0o755)
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)  # no node_modules/agent-browser here
 
@@ -759,12 +760,18 @@ def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-    # node on PATH, agent-browser is NOT on PATH (only in the managed bin)
-    monkeypatch.setattr(
-        doctor_mod.shutil,
-        "which",
-        lambda cmd: "/usr/bin/node" if cmd in {"node", "npm"} else None,
-    )
+
+    # node on PATH, agent-browser is NOT on PATH (only in the managed bin).
+    # The managed-dir rung resolves via shutil.which(..., path=<dir>) so
+    # Windows picks the .cmd shim — mirror that shape here.
+    def _fake_which(cmd, path=None):
+        if path is not None:
+            if cmd == "agent-browser" and str(managed_ab.parent) == str(path):
+                return str(managed_ab)
+            return None
+        return "/usr/bin/node" if cmd in {"node", "npm"} else None
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", _fake_which)
     # agent_browser_runnable is imported into doctor's namespace
     monkeypatch.setattr(
         doctor_mod,

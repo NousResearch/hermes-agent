@@ -1817,18 +1817,32 @@ def run_doctor(args):
         # Hermes-managed node prefix, which isn't necessarily on PATH. Mirror
         # dep_ensure._has_hermes_agent_browser() so doctor and dep_ensure agree
         # on what "installed" means; otherwise doctor false-negatives (#53192).
-        _managed_ab = HERMES_HOME / "node" / "bin" / "agent-browser"
-        _legacy_ab = HERMES_HOME / "node_modules" / ".bin" / "agent-browser"
+        # Resolve with PATHEXT-aware ``shutil.which`` (not a bare is_file())
+        # so Windows picks the executable ``.cmd`` shim — the same class of
+        # miss fixed for _has_agent_browser() in #73932.
+        def _which_in(directory) -> str | None:
+            try:
+                if not directory.is_dir():
+                    return None
+                return shutil.which("agent-browser", path=str(directory))
+            except Exception:
+                return None
+
+        _managed_ab = (
+            _which_in(HERMES_HOME / "node" / "bin")
+            or _which_in(HERMES_HOME / "node")
+        )
+        _legacy_ab = _which_in(HERMES_HOME / "node_modules" / ".bin")
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
             agent_browser_ok = True
         elif _which_ab and agent_browser_runnable(_which_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
-        elif _managed_ab.is_file() and agent_browser_runnable(str(_managed_ab)):
+        elif _managed_ab and agent_browser_runnable(_managed_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
-        elif _legacy_ab.is_file() and agent_browser_runnable(str(_legacy_ab)):
+        elif _legacy_ab and agent_browser_runnable(_legacy_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
         elif _which_ab:

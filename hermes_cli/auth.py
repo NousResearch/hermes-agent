@@ -803,22 +803,14 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
 def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
     """Best-effort parse of a ``Retry-After`` header into whole seconds.
 
-    Supports the delta-seconds form (e.g. ``"120"``). HTTP-date forms and
-    missing/unparseable values return ``None`` rather than guessing.
+    Thin wrapper around :func:`agent.retry_utils.parse_retry_after_seconds`
+    (delta-seconds and HTTP-date forms; negatives clamp to 0; missing or
+    unparseable values return ``None``).
     """
-    if headers is None:
-        return None
-    try:
-        raw = headers.get("retry-after")
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    try:
-        seconds = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return None
-    return seconds if seconds >= 0 else None
+    from agent.retry_utils import parse_retry_after_seconds
+
+    seconds = parse_retry_after_seconds(headers)
+    return None if seconds is None else int(seconds)
 
 
 def format_auth_error(error: Exception) -> str:

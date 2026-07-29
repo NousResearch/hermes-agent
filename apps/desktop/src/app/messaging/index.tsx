@@ -26,7 +26,7 @@ import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { $changeEventsAvailable, $platformsChangeTick } from '@/store/live-sync'
+import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -151,22 +151,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       }
 
       try {
-        // Pairing rides the same refresh as platform status: both feed this
-        // page and a lone failure shouldn't blank the other. A backend older
-        // than the request-id endpoint just yields no rows.
-        const [result, pairingResult] = await Promise.allSettled([getMessagingPlatforms(), getPairing()])
-
-        if (result.status === 'fulfilled') {
-          setPlatforms(result.value.platforms)
-        } else if (!silent) {
-          notifyError(result.reason, m.loadFailed)
-        }
-
-        if (pairingResult.status === 'fulfilled') {
-          setPairing({
-            approved: pairingResult.value.approved ?? [],
-            pending: pairingResult.value.pending ?? []
-          })
+        const result = await getMessagingPlatforms()
+        setPlatforms(result.platforms)
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, m.loadFailed)
         }
       } finally {
         if (!silent) {
@@ -177,14 +166,46 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [m]
   )
 
-  useRefreshHotkey(() => void refreshPlatforms())
+  // Pairing has its own signal. platforms.changed tracks connect/disconnect
+  // health via gateway_state.json, which a new pairing request never moves —
+  // riding it would leave a pending row invisible until something unrelated
+  // reconnected. Failures stay silent: an older backend without the endpoint
+  // should show no rows, not an error banner over a working page.
+  const refreshPairing = useCallback(async () => {
+    try {
+      const result = await getPairing()
+      setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+    } catch {
+      // Leave the last known rows in place rather than blanking them.
+    }
+  }, [])
+
+  const refreshAll = useCallback(
+    async (silent = false) => {
+      await Promise.all([refreshPlatforms(silent), refreshPairing()])
+    },
+    [refreshPairing, refreshPlatforms]
+  )
+
+  useRefreshHotkey(() => void refreshAll())
 
   useEffect(() => {
-    void refreshPlatforms()
-  }, [refreshPlatforms])
+    void refreshAll()
+  }, [refreshAll])
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const platformsChangeTick = useStore($platformsChangeTick)
+  const pairingChangeTick = useStore($pairingChangeTick)
+
+  // A new pending request (or a grant from another surface) moves the pairing
+  // store on disk; the change watcher turns that into pairing.changed.
+  useEffect(() => {
+    if (!changeEventsAvailable || pairingChangeTick === 0 || document.hidden) {
+      return
+    }
+
+    void refreshPairing()
+  }, [changeEventsAvailable, pairingChangeTick, refreshPairing])
 
   // Connection status updates without a manual "check" click. platforms.changed
   // (the gateway persisting connect/disconnect/health to gateway_state.json)
@@ -210,7 +231,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         return
       }
 
-      void refreshPlatforms(true)
+      void refreshAll(true)
     }
 
     const id = window.setInterval(tick, 6000)
@@ -219,7 +240,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       cancelled = true
       window.clearInterval(id)
     }
-  }, [changeEventsAvailable, refreshPlatforms])
+  }, [changeEventsAvailable, refreshAll])
 
   const selected = useMemo(() => {
     if (!platforms) {
@@ -346,7 +367,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     try {
       await approvePairing(user.platform, user.request_id)
       notify({ kind: 'success', title: m.approvedUser(pairingLabel(user)), message: m.approvedHint })
-      await refreshPlatforms(true)
+      await refreshPairing()
     } catch (err) {
       setPairing(snapshot)
       // 429 is the code path's brute-force lockout — a distinct condition the
@@ -371,7 +392,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     try {
       await revokePairing(user.platform, user.user_id)
       notify({ kind: 'success', title: m.revokedUser(pairingLabel(user)), message: user.platform })
-      await refreshPlatforms(true)
+      await refreshPairing()
     } catch (err) {
       setPairing(snapshot)
       throw err

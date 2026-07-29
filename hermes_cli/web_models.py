@@ -428,7 +428,8 @@ class MCPCatalogInstall(BaseModel):
 
 class PairingApprove(BaseModel):
     platform: str
-    code: str
+    code: str = ""
+    request_id: str = ""
 
 
 class PairingRevoke(BaseModel):

@@ -846,3 +846,139 @@ async def test_skill_handler_dispatches_for_authorized(
     interaction = _make_interaction("100200300")
     await handler(interaction, "alpha", "extra args")
     assert dispatched == ["/alpha extra args"]
+
+
+# ---------------------------------------------------------------------------
+# Searchable /model autocomplete
+# ---------------------------------------------------------------------------
+
+
+def _capture_model_autocomplete(adapter, monkeypatch):
+    """Register slash commands and return the ``/model`` autocomplete callback.
+
+    The callback is a closure inside ``_register_slash_commands``, so it is
+    captured from the ``app_commands.autocomplete(name=...)`` decorator that
+    receives it.
+    """
+    import discord
+
+    captured = {}
+
+    def fake_autocomplete(**kwargs):
+        captured.update(kwargs)
+        return lambda fn: fn
+
+    monkeypatch.setattr(discord.app_commands, "autocomplete", fake_autocomplete)
+    adapter._client.tree = SimpleNamespace(
+        command=lambda **kwargs: (lambda fn: fn),
+        get_commands=lambda: [],
+        add_command=lambda cmd: None,
+    )
+    adapter._register_slash_commands()
+
+    callback = captured.get("name")
+    assert callback is not None, "/model never registered an autocomplete callback"
+    return callback
+
+
+def _allow_all(adapter, monkeypatch):
+    monkeypatch.setattr(
+        adapter, "_evaluate_slash_authorization", lambda _i: (True, "ok"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_autocomplete_preserves_values_verbatim(adapter, monkeypatch):
+    """Choice.value is the literal ``/model`` argument and must never be altered.
+
+    It is parsed downstream for ``--provider``, so a truncated value silently
+    becomes a different — or unresolvable — switch target. Values that cannot
+    be sent within Discord's 100-character cap are skipped, not trimmed.
+    """
+    long_id = "local-proxy/" + "m" * 80  # 92 chars - fits intact
+    too_long = f"{long_id} --provider openrouter"  # 114 chars - cannot be sent
+    entries = [
+        (f"{long_id} · Local", long_id),
+        (f"{too_long} · OpenRouter", too_long),
+        ("gpt-4o · OpenAI", "gpt-4o --provider openai"),
+    ]
+    monkeypatch.setattr(adapter, "_model_autocomplete_entries", lambda: entries)
+    _allow_all(adapter, monkeypatch)
+
+    callback = _capture_model_autocomplete(adapter, monkeypatch)
+    choices = await callback(_make_interaction("100200300"), "")
+
+    values = [c.value for c in choices]
+    # Every surviving value is byte-identical to the catalog entry.
+    assert set(values) <= {value for _label, value in entries}
+    assert long_id in values, "a long but representable value must survive intact"
+    assert "gpt-4o --provider openai" in values, "foreign-provider value must survive"
+    # The unrepresentable entry is dropped rather than mangled into a prefix.
+    assert too_long not in values
+    assert too_long[:100] not in values
+    # Labels are display-only, so they may be trimmed to fit.
+    assert all(len(c.name) <= 100 for c in choices)
+
+
+@pytest.mark.asyncio
+async def test_model_autocomplete_filters_and_caps_at_25(adapter, monkeypatch):
+    """Typing filters the catalog; Discord accepts at most 25 suggestions."""
+    entries = [(f"alpha-{i} · Local", f"alpha-{i}") for i in range(40)]
+    entries += [("beta-1 · Local", "beta-1")]
+    monkeypatch.setattr(adapter, "_model_autocomplete_entries", lambda: entries)
+    _allow_all(adapter, monkeypatch)
+
+    callback = _capture_model_autocomplete(adapter, monkeypatch)
+
+    assert len(await callback(_make_interaction("100200300"), "")) == 25
+    beta = await callback(_make_interaction("100200300"), "BETA")
+    assert [c.value for c in beta] == ["beta-1"], "match must be case-insensitive"
+
+
+@pytest.mark.asyncio
+async def test_model_autocomplete_offloads_catalog_build_to_thread(adapter, monkeypatch):
+    """The catalog build is synchronous disk I/O.
+
+    Running it inline on the event loop stalls the whole gateway on a cold or
+    stale cache, so it must be offloaded.
+    """
+    def build_entries():
+        return [("m · Local", "m")]
+
+    monkeypatch.setattr(adapter, "_model_autocomplete_entries", build_entries)
+    _allow_all(adapter, monkeypatch)
+
+    offloaded = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, /, *args, **kwargs):
+        offloaded.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy_to_thread)
+
+    callback = _capture_model_autocomplete(adapter, monkeypatch)
+    choices = await callback(_make_interaction("100200300"), "")
+
+    assert build_entries in offloaded, "catalog build must run via asyncio.to_thread"
+    assert [c.value for c in choices] == ["m"]
+
+
+@pytest.mark.asyncio
+async def test_model_autocomplete_denies_unauthorized_and_fails_closed(adapter, monkeypatch):
+    """Unauthorized users must not see the model catalog, even on an auth error."""
+    monkeypatch.setattr(
+        adapter, "_model_autocomplete_entries", lambda: [("m · Local", "m")],
+    )
+
+    monkeypatch.setattr(
+        adapter, "_evaluate_slash_authorization", lambda _i: (False, "denied"),
+    )
+    callback = _capture_model_autocomplete(adapter, monkeypatch)
+    assert await callback(_make_interaction("999999999"), "") == []
+
+    def _boom(_i):
+        raise RuntimeError("auth backend down")
+
+    monkeypatch.setattr(adapter, "_evaluate_slash_authorization", _boom)
+    assert await callback(_make_interaction("999999999"), "") == []

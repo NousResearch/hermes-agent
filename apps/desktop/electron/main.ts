@@ -1903,6 +1903,11 @@ function backendSupportsServe(backend) {
         env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
         timeout: PROBE_TIMEOUT_MS,
         stdio: 'ignore',
+        // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
+        // (see resolveHermesBackend step 4); execFileSync of a .cmd without
+        // shell throws EINVAL on modern Node, which the catch below would
+        // mis-cache as "serve unsupported" for the process lifetime.
+        shell: Boolean(backend.shell),
         windowsHide: true
       })
       supported = true
@@ -2059,7 +2064,10 @@ function findSystemPython() {
         const out = execFileSync(
           'reg',
           ['query', `${hive}\\SOFTWARE\\Python\\PythonCore\\${version}\\InstallPath`, '/ve', '/reg:64'],
-          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+          // Registry reads are near-instant; the bound only exists so a
+          // pathologically wedged reg.exe can't hang the synchronous boot
+          // resolver forever (this ran unbounded before).
+          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 })
         )
 
         // Output format: "    (Default)    REG_SZ    C:\Path\To\Python\"
@@ -2114,7 +2122,12 @@ function findSystemPython() {
           [`-${version}`, '-c', 'import sys; print(sys.executable)'],
           hiddenWindowsChildOptions({
             encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore']
+            stdio: ['ignore', 'pipe', 'ignore'],
+            // Bare interpreter startup — much lighter than the hermes-import
+            // probes, but still python.exe under cold cache / AV scan, so
+            // share the probe budget rather than running unbounded (this
+            // synchronous exec previously had no timeout at all).
+            timeout: PROBE_TIMEOUT_MS
           })
         )
 

@@ -120,7 +120,9 @@ def _patch_spawn(
 ) -> None:
     """Stub everything _start_sidecar touches before the healthz loop."""
     sidecar_dir = tmp_path / "sidecar"
-    (sidecar_dir / "node_modules").mkdir(parents=True)
+    # sidecar_deps_installed() checks the dependency's own directory, not just
+    # node_modules/ (9cf2046081) — mirror a real completed install.
+    (sidecar_dir / "node_modules" / "spectrum-ts").mkdir(parents=True)
     monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar_dir)
     monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
 

@@ -7818,6 +7818,12 @@ class TelegramAdapter(BasePlatformAdapter):
                         loaded = [part.strip() for part in raw.split(",") if part.strip()]
                 patterns = loaded
 
+        if patterns is None:
+            # Parity with the historical inline implementation: return before
+            # evaluating ``self.name`` (tests construct bare adapters via
+            # object.__new__ that lack the attributes ``name`` reads).
+            return []
+
         return compile_mention_patterns(
             patterns,
             log_prefix=self.name,

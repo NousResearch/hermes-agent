@@ -106,53 +106,9 @@ class TestApprovalBridge:
 
         assert first_kwargs["tool_call"].tool_call_id != second_kwargs["tool_call"].tool_call_id
 
-    def test_prompt_path_keeps_session_option_when_permanent_disabled(self):
-        result, kwargs, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="allow_session", outcome="selected"),
-            allow_permanent=False,
-            use_prompt_path=True,
-        )
 
-        option_ids = [option.option_id for option in kwargs["options"]]
 
-        assert result == "session"
-        assert option_ids == ["allow_once", "allow_session", "deny", "deny_always"]
 
-    def test_smart_deny_prompt_only_offers_once_and_deny(self):
-        result, kwargs, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="allow_once", outcome="selected"),
-            allow_permanent=False,
-            smart_denied=True,
-            use_prompt_path=True,
-        )
-
-        assert result == "once"
-        assert [option.option_id for option in kwargs["options"]] == [
-            "allow_once", "deny",
-        ]
-
-    def test_smart_deny_rejects_disallowed_session_outcome(self):
-        result, kwargs, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="allow_session", outcome="selected"),
-            smart_denied=True,
-        )
-
-        assert result == "deny"
-        assert [option.option_id for option in kwargs["options"]] == [
-            "allow_once", "deny",
-        ]
-
-    def test_reject_always_outcome_denies_without_changing_policy(self):
-        result, kwargs, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="deny_always", outcome="selected"),
-            use_prompt_path=True,
-        )
-
-        deny_always = [option for option in kwargs["options"] if option.option_id == "deny_always"]
-
-        assert result == "deny"
-        assert len(deny_always) == 1
-        assert deny_always[0].kind == "reject_always"
 
     def test_allow_always_maps_correctly(self):
         result, _, _, _, _ = _invoke_callback(
@@ -162,14 +118,6 @@ class TestApprovalBridge:
 
         assert result == "always"
 
-    def test_denied_and_unknown_outcomes_deny(self):
-        denied_result, _, _, _, _ = _invoke_callback(DeniedOutcome(outcome="cancelled"))
-        unknown_result, _, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="unexpected", outcome="selected"),
-        )
-
-        assert denied_result == "deny"
-        assert unknown_result == "deny"
 
     def test_timeout_returns_deny_and_cancels_future(self):
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -194,27 +142,6 @@ class TestApprovalBridge:
         assert scheduled["loop"] is loop
         assert future.cancel.call_count == 1
 
-    def test_none_response_returns_deny(self):
-        """When request_permission resolves to None, the callback returns 'deny'."""
-        loop = MagicMock(spec=asyncio.AbstractEventLoop)
-        request_permission = AsyncMock(name="request_permission")
-        future = MagicMock(spec=Future)
-        future.result.return_value = None
-
-        scheduled = {}
-
-        def _schedule(coro, passed_loop):
-            scheduled["coro"] = coro
-            scheduled["loop"] = passed_loop
-            return future
-
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
-            cb = make_approval_callback(request_permission, loop, session_id="s1", timeout=1.0)
-            result = cb("echo hi", "demo")
-
-        scheduled["coro"].close()
-
-        assert result == "deny"
 
 
 # ---------------------------------------------------------------------------

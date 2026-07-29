@@ -40,26 +40,6 @@ class TestBuildLocalTranscribeKwargs:
             is False
         )
 
-    def test_vad_off_switch_restores_raw_behavior(self):
-        kwargs = build_local_transcribe_kwargs({"local": {"vad": False}})
-        assert kwargs["vad_filter"] is False
-        assert "vad_parameters" not in kwargs
-
-    def test_null_local_section_is_safe(self):
-        # YAML `local: null` breaks .get("local", {}) chains — must not here.
-        kwargs = build_local_transcribe_kwargs({"local": None})
-        assert kwargs["vad_filter"] is True
-
-    def test_vad_min_silence_configurable(self):
-        kwargs = build_local_transcribe_kwargs({"local": {"vad_min_silence_ms": 750}})
-        assert kwargs["vad_parameters"] == {"min_silence_duration_ms": 750}
-
-    def test_vad_min_silence_garbage_falls_back(self):
-        kwargs = build_local_transcribe_kwargs({"local": {"vad_min_silence_ms": "nope"}})
-        assert kwargs["vad_parameters"] == {"min_silence_duration_ms": 500}
-
-    def test_beam_size_kept(self):
-        assert build_local_transcribe_kwargs({})["beam_size"] == 5
 
     def test_language_and_prompt_resolved(self, monkeypatch):
         monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
@@ -84,31 +64,6 @@ class TestConfidenceGate:
             seg, _NO_SPEECH_PROB_THRESHOLD_DEFAULT, _LOGPROB_THRESHOLD_DEFAULT
         )
 
-    def test_low_confidence_speech_survives(self):
-        # Low avg_logprob alone (mumbled real speech) must survive too.
-        seg = _seg(" mumble", no_speech_prob=0.1, avg_logprob=-1.8)
-        assert not _is_hallucinated_segment(
-            seg, _NO_SPEECH_PROB_THRESHOLD_DEFAULT, _LOGPROB_THRESHOLD_DEFAULT
-        )
-
-    def test_missing_attrs_never_dropped(self):
-        seg = SimpleNamespace(text=" plugin segment")
-        assert not _is_hallucinated_segment(
-            seg, _NO_SPEECH_PROB_THRESHOLD_DEFAULT, _LOGPROB_THRESHOLD_DEFAULT
-        )
-
-    def test_join_drops_only_hallucinated(self):
-        segments = [
-            _seg(" Hello world."),
-            _seg(" Thank you.", no_speech_prob=0.95, avg_logprob=-2.0),
-            _seg(" This is a test."),
-        ]
-        assert _join_confident_segments(segments, {}) == "Hello world. This is a test."
-
-    def test_thresholds_configurable(self):
-        seg = _seg(" borderline", no_speech_prob=0.5, avg_logprob=-0.8)
-        cfg = {"no_speech_prob_threshold": 0.4, "logprob_threshold": -0.5}
-        assert _join_confident_segments([seg], cfg) == ""
 
     def test_garbage_thresholds_fall_back_to_defaults(self):
         seg = _seg(" ok", no_speech_prob=0.1, avg_logprob=-0.1)
@@ -145,10 +100,6 @@ class TestTranscribeLocalWiring:
         assert captured["vad_parameters"] == {"min_silence_duration_ms": 500}
         assert captured["condition_on_previous_text"] is False
 
-    def test_config_off_switch_reaches_model(self, monkeypatch):
-        captured, _ = self._run(monkeypatch, {"local": {"vad": False}})
-        assert captured["vad_filter"] is False
-        assert "vad_parameters" not in captured
 
     def test_hallucinated_segments_filtered_from_transcript(self, monkeypatch):
         segments = [

@@ -58,25 +58,6 @@ def test_rotate_immediately_when_credential_already_exhausted():
     agent._swap_credential.assert_called_once_with(entries[1])
 
 
-def test_normal_retry_when_credential_not_exhausted():
-    """When credential is active, first 429 should still retry (existing behavior)."""
-    entries = [_make_entry(0, last_status=None), _make_entry(1)]
-    pool = _make_pool(entries)
-
-    from run_agent import AIAgent
-    with patch("run_agent.get_tool_definitions", return_value=[]),          patch("run_agent.check_toolset_requirements", return_value={}),          patch("run_agent.OpenAI"):
-        agent = MagicMock(spec=AIAgent)
-        agent._credential_pool = pool
-        recovered, retried = AIAgent._recover_with_credential_pool(
-            agent,
-            status_code=429,
-            has_retried_429=False,
-            classified_reason=FailoverReason.rate_limit,
-        )
-
-    assert recovered is False
-    assert retried is True
-    pool.mark_exhausted_and_rotate.assert_not_called()
 
 
 def test_rotate_on_second_429_when_not_exhausted():

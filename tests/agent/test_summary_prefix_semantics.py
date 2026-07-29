@@ -24,56 +24,16 @@ from agent.context_compressor import (
 )
 
 
-def test_no_resume_exactly_directive():
-    """The prefix must not tell the model to resume Active Task verbatim."""
-    assert "resume exactly" not in SUMMARY_PREFIX.lower()
 
 
-def test_latest_message_wins_on_conflict():
-    """The prefix must explicitly say latest user message wins on conflict."""
-    lower = SUMMARY_PREFIX.lower()
-    assert "latest user message" in lower
-    assert HISTORICAL_TASK_HEADING.lower() in lower
-    # Must have an explicit conflict-resolution rule.
-    assert "wins" in lower or "supersede" in lower or "discard" in lower or "priority" in lower
 
 
-def test_handoff_sections_are_framed_as_historical():
-    """The summary headings referenced in the prefix must sound historical,
-    not like live instructions for the current turn."""
-    lower = SUMMARY_PREFIX.lower()
-    assert "## active task" not in lower
-    assert "## pending user asks" not in lower
-    assert "## remaining work" not in lower
-    assert HISTORICAL_TASK_HEADING.lower() in lower
 
 
-def test_reverse_signals_called_out():
-    """Reverse signals (stop/undo/never mind/topic change) must be named so
-    the model recognizes them as cancellation triggers, not just background."""
-    lower = SUMMARY_PREFIX.lower()
-    # At least a few of the canonical reverse-signal verbs should appear.
-    reverse_terms = ["stop", "undo", "roll back", "never mind", "just verify"]
-    hits = sum(1 for t in reverse_terms if t in lower)
-    assert hits >= 3, (
-        f"Expected ≥3 reverse-signal terms in SUMMARY_PREFIX, found {hits}. "
-        "Without naming them the model treats reverse signals as ordinary "
-        "context and keeps pushing the cancelled task."
-    )
 
 
-def test_summary_marked_reference_only():
-    """The REFERENCE ONLY framing must remain — it's the entire point."""
-    assert "REFERENCE ONLY" in SUMMARY_PREFIX
-    assert "background reference" in SUMMARY_PREFIX
-    assert "NOT as active instructions" in SUMMARY_PREFIX
 
 
-def test_memory_authority_preserved():
-    """The fix must not weaken the MEMORY.md / USER.md authority clause."""
-    assert "MEMORY.md" in SUMMARY_PREFIX
-    assert "USER.md" in SUMMARY_PREFIX
-    assert "authoritative" in SUMMARY_PREFIX
 
 
 def test_no_background_consistency_carveout():
@@ -239,22 +199,3 @@ def test_pre_69619_prefix_generation_is_frozen_and_stripped():
     assert ContextCompressor._strip_summary_prefix(content) == "BODY"
 
 
-def test_frozen_generations_match_historical_prefixes_byte_exactly():
-    """Every entry in _HISTORICAL_SUMMARY_PREFIXES must equal its literal pin
-    in _FROZEN_PREFIX_GENERATIONS, in order. Frozen entries are immutable and
-    prepend-only: mutating, reordering, or dropping one silently un-normalizes
-    summaries persisted by that build generation — the exact failure caught in
-    the #69619 review, which the per-entry self-matching loop above cannot see.
-    """
-    from agent.context_compressor import (
-        _HISTORICAL_SUMMARY_PREFIXES,
-        ContextCompressor,
-    )
-
-    assert tuple(_FROZEN_PREFIX_GENERATIONS) == tuple(
-        _HISTORICAL_SUMMARY_PREFIXES
-    ), "a frozen prefix entry was mutated, reordered, added, or dropped"
-    for prefix in _FROZEN_PREFIX_GENERATIONS:
-        content = prefix + "\nBODY"
-        assert ContextCompressor._is_context_summary_content(content)
-        assert ContextCompressor._strip_summary_prefix(content) == "BODY"

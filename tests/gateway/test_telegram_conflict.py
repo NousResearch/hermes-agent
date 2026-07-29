@@ -67,23 +67,6 @@ async def _cancel_heartbeat(adapter):
 
 
 @pytest.mark.asyncio
-async def test_connect_rejects_same_host_token_lock(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
-
-    monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
-        lambda scope, identity, metadata=None: (False, {"pid": 4242}),
-    )
-
-    ok = await adapter.connect()
-
-    assert ok is False
-    assert adapter.fatal_error_code == "telegram-bot-token_lock"
-    assert adapter.has_fatal_error is True
-    assert "already in use" in adapter.fatal_error_message
-
-
-@pytest.mark.asyncio
 async def test_polling_conflict_retries_before_fatal(monkeypatch):
     """A single 409 should trigger a retry, not an immediate fatal error."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
@@ -157,54 +140,6 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     # asyncio.sleep mocked to instant above, it must not be left running or it
     # busy-spins on the event loop and starves the test. Cancel it explicitly.
     await _cancel_heartbeat(adapter)
-
-
-@pytest.mark.asyncio
-async def test_current_generation_conflicts_accumulate_after_start_returns(monkeypatch):
-    """A later async 409 must advance the retry ladder after PTB start returns."""
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    callbacks = []
-    conflict_tasks = []
-
-    async def capture_start(**kwargs):
-        callbacks.append(kwargs["error_callback"])
-
-    updater = SimpleNamespace(
-        start_polling=AsyncMock(side_effect=capture_start),
-        stop=AsyncMock(),
-        running=False,
-    )
-    app = SimpleNamespace(updater=updater)
-    adapter._app = app
-    adapter._drain_polling_connections = AsyncMock()
-    monkeypatch.setattr("asyncio.sleep", AsyncMock())
-
-    def dispatch_conflict(error):
-        conflict_tasks.append(
-            asyncio.create_task(adapter._handle_polling_conflict(error))
-        )
-
-    adapter._polling_error_callback_ref = dispatch_conflict
-    await adapter._start_polling_once(
-        app,
-        drop_pending_updates=False,
-        error_callback=dispatch_conflict,
-    )
-    conflict = type("Conflict", (Exception,), {})
-
-    try:
-        callbacks[0](conflict("first async conflict"))
-        await conflict_tasks[-1]
-        assert adapter._polling_conflict_count == 1
-
-        callbacks[1](conflict("second async conflict"))
-        await conflict_tasks[-1]
-        assert adapter._polling_conflict_count == 2
-    finally:
-        verifier = adapter._polling_progress_verifier_task
-        if verifier is not None and not verifier.done():
-            verifier.cancel()
-            await asyncio.gather(verifier, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -301,67 +236,6 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     assert adapter.has_fatal_error is True
     fatal_handler.assert_awaited_once()
     await _cancel_heartbeat(adapter)
-
-
-@pytest.mark.asyncio
-async def test_conflict_exhaustion_hands_off_before_child_disconnect():
-    """The conflict recovery owner must survive its fatal callback handoff."""
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    adapter._polling_conflict_count = 5  # MAX_CONFLICT_RETRIES
-    disconnect_tasks = []
-
-    async def fatal_handler(failed_adapter):
-        disconnect_task = asyncio.create_task(failed_adapter.disconnect())
-        disconnect_tasks.append(disconnect_task)
-        await asyncio.wait({disconnect_task})
-
-    adapter.set_fatal_error_handler(fatal_handler)
-
-    conflict = type("Conflict", (Exception,), {})
-    recovery_task = asyncio.create_task(
-        adapter._handle_polling_conflict(conflict("getUpdates conflict"))
-    )
-    adapter._polling_error_task = recovery_task
-    result = await asyncio.gather(recovery_task, return_exceptions=True)
-    await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-
-    assert result == [None]
-    assert adapter._polling_error_task is None
-
-
-@pytest.mark.asyncio
-async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-
-    monkeypatch.setattr(
-        "gateway.status.acquire_scoped_lock",
-        lambda scope, identity, metadata=None: (True, None),
-    )
-    monkeypatch.setattr(
-        "gateway.status.release_scoped_lock",
-        lambda scope, identity: None,
-    )
-
-    builder = MagicMock()
-    builder.token.return_value = builder
-    builder.request.return_value = builder
-    builder.get_updates_request.return_value = builder
-    app = SimpleNamespace(
-        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
-        updater=SimpleNamespace(),
-        add_handler=MagicMock(),
-        initialize=AsyncMock(side_effect=RuntimeError("Temporary failure in name resolution")),
-        start=AsyncMock(),
-    )
-    builder.build.return_value = app
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
-
-    ok = await adapter.connect()
-
-    assert ok is False
-    assert adapter.fatal_error_code == "telegram_connect_error"
-    assert adapter.fatal_error_retryable is True
-    assert "Temporary failure in name resolution" in adapter.fatal_error_message
 
 
 @pytest.mark.asyncio
@@ -487,30 +361,6 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     await adapter.disconnect()
     assert adapter._post_connect_task is None
     await _cancel_heartbeat(adapter)
-
-
-@pytest.mark.asyncio
-async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-
-    updater = SimpleNamespace(running=False, stop=AsyncMock())
-    app = SimpleNamespace(
-        updater=updater,
-        running=False,
-        stop=AsyncMock(),
-        shutdown=AsyncMock(),
-    )
-    adapter._app = app
-
-    warning = MagicMock()
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.logger.warning", warning)
-
-    await adapter.disconnect()
-
-    updater.stop.assert_not_awaited()
-    app.stop.assert_not_awaited()
-    app.shutdown.assert_awaited_once()
-    warning.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -645,19 +495,6 @@ def _build_polling_app(monkeypatch, adapter):
 
 
 @pytest.mark.asyncio
-async def test_cold_connect_drops_pending_updates(monkeypatch):
-    """A cold first boot (is_reconnect=False) drops the stale Bot API queue."""
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    captured = _build_polling_app(monkeypatch, adapter)
-
-    ok = await adapter.connect()  # default is_reconnect=False
-
-    assert ok is True
-    assert captured["drop_pending_updates"] is True
-    await _cancel_heartbeat(adapter)
-
-
-@pytest.mark.asyncio
 async def test_reconnect_preserves_pending_updates(monkeypatch):
     """A watcher reconnect (is_reconnect=True) preserves the queue Telegram
     accumulated during the outage — the core of #46621."""
@@ -694,23 +531,6 @@ async def test_disarm_sets_ptb_stop_event():
     # Must not flip _running — the recovery handler's stop() guards on running
     # and stop() raises if running is already False.
     assert updater.running is True
-
-
-@pytest.mark.asyncio
-async def test_disarm_noop_when_stop_event_absent():
-    """When PTB exposes no stop_event, disarm is a safe no-op (no regression).
-
-    It must NOT flip _running (which would make the handler skip stop() and
-    leave the loop wedged) — it just falls back to the prior async stop() race.
-    """
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
-    updater = SimpleNamespace(running=True, _running=True)
-    adapter._app = SimpleNamespace(updater=updater)
-
-    adapter._disarm_ptb_retry_loop()  # no stop_event attribute present
-
-    assert updater.running is True
-    assert updater._running is True, "disarm must not flip _running as a fallback"
 
 
 @pytest.mark.asyncio

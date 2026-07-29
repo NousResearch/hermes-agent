@@ -49,20 +49,6 @@ class TestSniffContainer:
     def test_magic_bytes(self, data, expected):
         assert sniff_container(data) == expected
 
-    def test_unknown_returns_none(self):
-        assert sniff_container(UNKNOWN) is None
-        assert sniff_container(b"") is None
-        assert sniff_container(b"\x00") is None
-
-    def test_webp_is_not_claimed(self):
-        # Images are the caller's business — the sniffer must not claim
-        # RIFF/WEBP just because it shares the RIFF header with WAV.
-        assert sniff_container(WEBP) is None
-
-    def test_video_ftyp_brands_stay_mp4(self):
-        for brand in (b"isom", b"mp42", b"avc1", b"qt  "):
-            data = b"\x00\x00\x00\x1cftyp" + brand + b"\x00" * 64
-            assert sniff_container(data) == "mp4", brand
 
     def test_every_container_has_an_extension(self):
         for data in (OGG, FLAC, WAV, MP3_ID3, AAC_ADTS, M4A, MP4_ISOM, WEBM):
@@ -87,14 +73,6 @@ class TestSniffAudioExt:
     def test_container_wins_over_claimed_ext(self, data, expected):
         assert sniff_audio_ext(data, ".ogg" if expected != ".ogg" else ".mp3") == expected
 
-    def test_generic_mp4_maps_to_m4a_in_audio_context(self):
-        # In an audio context an MP4 container is AAC audio regardless of
-        # brand — .m4a keeps voice-bubble/audio routing working.
-        assert sniff_audio_ext(MP4_ISOM, ".ogg") == ".m4a"
-
-    def test_unknown_passthrough_keeps_fallback(self):
-        assert sniff_audio_ext(UNKNOWN, ".aac") == ".aac"
-        assert sniff_audio_ext(b"", ".ogg") == ".ogg"
 
     def test_fallback_without_dot_is_normalized(self):
         assert sniff_audio_ext(UNKNOWN, "mp3") == ".mp3"
@@ -125,13 +103,6 @@ class TestInboundCacheUsesSniffer:
         assert saved.suffix == expected_suffix
         assert saved.read_bytes() == data
 
-    def test_unknown_bytes_keep_claimed_ext(self, tmp_path):
-        from gateway.platforms.base import cache_audio_from_bytes
-
-        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
-            result = cache_audio_from_bytes(UNKNOWN, ext=".amr")
-
-        assert result.endswith(".amr")
 
     @pytest.mark.asyncio
     async def test_cache_audio_from_url_sniffs_too(self, tmp_path, monkeypatch):

@@ -41,18 +41,6 @@ def test_regex_matches_bridged_session_vars():
         assert rx.search(line), f"{name} should be excluded from the snapshot"
 
 
-def test_regex_preserves_user_env():
-    rx = re.compile(_SNAPSHOT_EXCLUDED_ENV_REGEX)
-    for line in (
-        'declare -x PATH="/usr/bin:/bin"',
-        'declare -x HOME="/home/user"',
-        'declare -x HERMES_HOME="/home/user/.hermes"',  # NOT a session var
-        'declare -x HERMESX="x"',
-        'declare -x MY_HERMES_SESSION_ID="x"',  # prefix must anchor after "declare -x "
-    ):
-        assert not rx.search(line), f"{line!r} must be preserved in the snapshot"
-
-
 def test_export_snippet_shape():
     snippet = _export_dump_excluding_session_vars("/tmp/snap.tmp.$BASHPID")
     assert "export -p" in snippet

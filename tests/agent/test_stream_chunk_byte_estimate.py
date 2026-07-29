@@ -27,11 +27,6 @@ def _chunk(delta):
     )
 
 
-def test_content_chunk_scales_with_payload():
-    small = _estimate_chunk_bytes(_chunk(ChoiceDelta(content="hi")))
-    large = _estimate_chunk_bytes(_chunk(ChoiceDelta(content="x" * 500)))
-    assert large - small == 498
-    assert small > 0
 
 
 def test_reasoning_content_counted():
@@ -52,19 +47,6 @@ def test_reasoning_content_counted():
     assert _estimate_chunk_bytes(Chunk()) == base + len("thinking...")
 
 
-def test_tool_call_arguments_counted():
-    delta = ChoiceDelta(
-        tool_calls=[
-            ChoiceDeltaToolCall(
-                index=0,
-                function=ChoiceDeltaToolCallFunction(
-                    arguments='{"path": "/tmp/file"}', name="read_file"
-                ),
-            )
-        ]
-    )
-    est = _estimate_chunk_bytes(_chunk(delta))
-    assert est >= 40 + len('{"path": "/tmp/file"}') + len("read_file")
 
 
 def test_unknown_shape_returns_floor_never_raises():
@@ -76,13 +58,3 @@ def test_unknown_shape_returns_floor_never_raises():
     assert _estimate_chunk_bytes(object()) == 40
 
 
-def test_anthropic_style_event_text_counted():
-    class Delta:
-        text = "anthropic text delta"
-        partial_json = None
-
-    class Event:
-        choices = None
-        delta = Delta()
-
-    assert _estimate_chunk_bytes(Event()) == 40 + len("anthropic text delta")

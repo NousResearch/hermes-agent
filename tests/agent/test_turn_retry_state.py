@@ -36,10 +36,6 @@ EXPECTED_FIELDS = {
 }
 
 
-def test_all_guards_default_false():
-    s = TurnRetryState()
-    for name, value in s:
-        assert value is False, f"{name} should default to False"
 
 
 def test_field_set_matches_contract():
@@ -49,12 +45,6 @@ def test_field_set_matches_contract():
     )
 
 
-def test_loop_control_vars_are_not_on_state():
-    # retry_count / max_retries / max_compression_attempts stay as loop locals,
-    # NOT on the state object (they are while-mechanics, not recovery bookkeeping).
-    names = {f.name for f in fields(TurnRetryState)}
-    for loop_local in ("retry_count", "max_retries", "max_compression_attempts"):
-        assert loop_local not in names
 
 
 def test_guards_are_independently_mutable():

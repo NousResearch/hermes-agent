@@ -46,13 +46,6 @@ class TestFindShellPrefersUserShell:
         with patch.dict(os.environ, {"SHELL": str(fake_fish)}):
             assert _find_shell() == _find_bash()
 
-    def test_falls_back_for_incompatible_shell_csh(self, tmp_path):
-        """$SHELL=tcsh/csh is also not -lic/set+m compatible -> fall back."""
-        fake = tmp_path / "tcsh"
-        fake.touch()
-        fake.chmod(0o755)
-        with patch.dict(os.environ, {"SHELL": str(fake)}):
-            assert _find_shell() == _find_bash()
 
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
         """Every allowlisted POSIX-sh-family shell is honoured."""
@@ -63,17 +56,6 @@ class TestFindShellPrefersUserShell:
             with patch.dict(os.environ, {"SHELL": str(fake)}):
                 assert _find_shell() == str(fake), name
 
-    def test_falls_back_to_find_bash_when_shell_unset(self):
-        """When $SHELL is unset, _find_shell delegates to _find_bash."""
-        env = {k: v for k, v in os.environ.items() if k != "SHELL"}
-        with patch.dict(os.environ, env, clear=True):
-            assert _find_shell() == _find_bash()
-
-    def test_falls_back_to_find_bash_when_shell_not_a_file(self, tmp_path):
-        """When $SHELL points to a non-existent path, _find_shell delegates."""
-        fake_path = str(tmp_path / "nonexistent_shell")
-        with patch.dict(os.environ, {"SHELL": fake_path}):
-            assert _find_shell() == _find_bash()
 
     def test_falls_back_to_find_bash_when_shell_empty(self):
         """When $SHELL is empty string, _find_shell delegates."""

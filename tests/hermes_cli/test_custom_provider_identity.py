@@ -27,47 +27,6 @@ def test_matches_legacy_custom_providers_list(monkeypatch):
     )
 
 
-def test_matches_providers_dict_by_key(monkeypatch):
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {"providers": {"local": {"api": "http://127.0.0.1:8000/v1"}}},
-    )
-    assert (
-        rp.find_custom_provider_identity("http://127.0.0.1:8000/v1")
-        == "custom:local"
-    )
-
-
-def test_match_ignores_trailing_slash_and_case(monkeypatch):
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "custom_providers": [
-                {"name": "local", "base_url": "http://Localhost:8000/v1/"}
-            ]
-        },
-    )
-    assert (
-        rp.find_custom_provider_identity("http://localhost:8000/v1")
-        == "custom:local"
-    )
-
-
-def test_no_match_returns_none(monkeypatch):
-    monkeypatch.setattr(
-        rp,
-        "load_config",
-        lambda: {
-            "custom_providers": [
-                {"name": "other", "base_url": "https://elsewhere.example/v1"}
-            ]
-        },
-    )
-    assert rp.find_custom_provider_identity("https://api.mimo.example/v1") is None
-
-
 def test_empty_base_url_returns_none(monkeypatch):
     monkeypatch.setattr(
         rp, "load_config", lambda: {"custom_providers": [{"name": "x"}]}

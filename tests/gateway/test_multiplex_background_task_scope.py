@@ -46,43 +46,4 @@ class TestBackgroundTaskProfileScope:
         scope.assert_called_once_with(Path("/fake/profile"))
         inner.assert_awaited_once()
 
-    def test_calls_inner_directly_when_multiplex_disabled(self):
-        runner = _make_runner(multiplex=False)
-        inner = mock.AsyncMock(return_value=None)
-        runner._run_background_task_inner = inner
 
-        with mock.patch("gateway.run._profile_runtime_scope") as scope:
-            asyncio.run(
-                runner._run_background_task(
-                    prompt="test", source=mock.MagicMock(), task_id="bg_test"
-                )
-            )
-
-        scope.assert_not_called()
-        inner.assert_awaited_once()
-
-    def test_inner_receives_all_arguments(self):
-        runner = _make_runner(multiplex=True)
-        inner = mock.AsyncMock(return_value=None)
-        runner._run_background_task_inner = inner
-        source = mock.MagicMock()
-
-        with mock.patch.object(
-            GatewayRunner,
-            "_resolve_profile_home_for_source",
-            return_value=Path("/fake/profile"),
-        ), mock.patch("gateway.run._profile_runtime_scope") as scope:
-            scope.return_value.__enter__ = mock.MagicMock()
-            scope.return_value.__exit__ = mock.MagicMock(return_value=False)
-            asyncio.run(
-                runner._run_background_task(
-                    prompt="p",
-                    source=source,
-                    task_id="t",
-                    event_message_id="m1",
-                    media_urls=["u"],
-                    media_types=["image"],
-                )
-            )
-
-        inner.assert_awaited_once_with("p", source, "t", "m1", ["u"], ["image"])

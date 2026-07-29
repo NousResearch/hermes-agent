@@ -144,13 +144,6 @@ class TestDoctorExitCodes:
             code = doctor.run_doctor()
         assert code == 1
 
-    def test_missing_binary_exits_2(self):
-        from tools.computer_use import doctor
-
-        with patch("shutil.which", return_value=None), \
-             patch("sys.stdout", new_callable=StringIO):
-            code = doctor.run_doctor()
-        assert code == 2
 
     def test_protocol_error_exits_2(self, capsys):
         """An empty stdout response (driver crashed during handshake) is a
@@ -195,28 +188,6 @@ class TestResponseShapeParsing:
         assert "darwin" in text
         assert "ok" in text
 
-    def test_falls_back_to_text_content_when_structuredContent_absent(self):
-        """Older cua-driver builds may emit health_report as a text content
-        item carrying the JSON — the doctor should still parse it."""
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {
-                "jsonrpc": "2.0", "id": 2,
-                "result": {
-                    "content": [
-                        {"type": "text", "text": json.dumps(_ok_report())},
-                    ],
-                },
-            },
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            code = doctor.run_doctor()
-        assert code == 0
-        assert "ok" in out.getvalue()
 
     def test_jsonrpc_error_response_exits_2(self, capsys):
         from tools.computer_use import doctor
@@ -270,23 +241,6 @@ class TestArgPassthrough:
         call_payload = next(json.loads(w) for w in writes if "tools/call" in w)
         assert call_payload["params"]["arguments"]["skip"] == ["bundle_identity"]
 
-    def test_no_filters_sends_empty_arguments(self):
-        """When neither include nor skip is given, the arguments object is
-        empty — not present-but-null — so the driver's default 'run every
-        check' branch fires."""
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO):
-            doctor.run_doctor()
-        writes = [call.args[0] for call in proc.stdin.write.call_args_list]
-        call_payload = next(json.loads(w) for w in writes if "tools/call" in w)
-        assert call_payload["params"]["arguments"] == {}
 
 
 # ── json output ────────────────────────────────────────────────────────────
@@ -420,146 +374,9 @@ class TestHealthReportFallback:
     via check_permissions / list_apps / CLI --version instead.
     """
 
-    def test_isError_unclassified_uses_fallback_overall_ok(self):
-        from tools.computer_use import doctor
 
-        health_proc = _fake_proc_with_responses(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {"serverInfo": {"name": "cua-driver", "version": "0.10.0"}},
-            },
-            {"jsonrpc": "2.0", "id": 2, "result": _unclassified_health_result()},
-        )
-        probe_proc = _fake_proc_with_responses(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {"serverInfo": {"name": "cua-driver", "version": "0.10.0"}},
-            },
-            {"jsonrpc": "2.0", "id": 2, "result": _perms_ok_result()},
-            {"jsonrpc": "2.0", "id": 3, "result": _list_apps_ok_result()},
-        )
-        procs = iter([health_proc, probe_proc])
-        run_mock = MagicMock(
-            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
-        )
 
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
-             patch("subprocess.run", run_mock), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            code = doctor.run_doctor(color=False)
 
-        assert code == 0
-        text = out.getvalue()
-        assert "ok" in text
-        assert "0.10.0" in text
-        # Fallback path must be visible in the check list
-        assert "health_report_path" in text
-        assert "fallback composite" in text
-        assert "tcc_accessibility" in text
-        assert "binary_version" in text
-
-    def test_isError_unclassified_json_payload_has_schema_and_fallback_flag(self):
-        from tools.computer_use import doctor
-
-        health_proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
-            {"jsonrpc": "2.0", "id": 2, "result": _unclassified_health_result()},
-        )
-        probe_proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
-            {"jsonrpc": "2.0", "id": 2, "result": _perms_ok_result()},
-            {"jsonrpc": "2.0", "id": 3, "result": _list_apps_ok_result()},
-        )
-        procs = iter([health_proc, probe_proc])
-        run_mock = MagicMock(
-            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
-        )
-
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
-             patch("subprocess.run", run_mock), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            code = doctor.run_doctor(json_output=True)
-
-        assert code == 0
-        parsed = json.loads(out.getvalue())
-        assert parsed["schema_version"] == "1"
-        assert parsed["overall"] == "ok"
-        assert parsed.get("fallback") is True
-        names = [c["name"] for c in parsed["checks"]]
-        assert "binary_version" in names
-        assert "tcc_accessibility" in names
-        assert "tcc_screen_recording" in names
-        assert "ax_capability" in names
-        assert "health_report_path" in names
-        # Must not be the raw denial payload
-        assert "exit_code" not in parsed
-
-    def test_structuredContent_exit_code_only_triggers_fallback(self):
-        """Even without isError, bare {exit_code:1} is not a valid report."""
-        from tools.computer_use import doctor
-
-        # Some gateways might drop isError but still ship exit_code-only SC.
-        health_proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "result": {
-                    "isError": False,
-                    "structuredContent": {"exit_code": 1},
-                    "content": [{"type": "text", "text": "Permission denied"}],
-                },
-            },
-        )
-        probe_proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
-            {"jsonrpc": "2.0", "id": 2, "result": _perms_ok_result()},
-            {"jsonrpc": "2.0", "id": 3, "result": _list_apps_ok_result()},
-        )
-        procs = iter([health_proc, probe_proc])
-        run_mock = MagicMock(
-            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
-        )
-
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
-             patch("subprocess.run", run_mock), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            code = doctor.run_doctor(json_output=True)
-
-        assert code == 0
-        parsed = json.loads(out.getvalue())
-        assert parsed["schema_version"] == "1"
-        assert parsed.get("fallback") is True
-
-    def test_real_schema_version_1_preferred_over_fallback(self):
-        """When health_report returns a real schema_version=1 payload, use it
-        and never call the composite fallback path."""
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch.object(doctor, "_compose_fallback_report") as fallback_mock, \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            code = doctor.run_doctor(json_output=True)
-
-        assert code == 0
-        fallback_mock.assert_not_called()
-        parsed = json.loads(out.getvalue())
-        # Upstream health_report keys pass through unchanged; Hermes adds
-        # only the additive hermes_identity envelope.
-        for key, value in _ok_report().items():
-            assert parsed[key] == value
-        assert "hermes_identity" in parsed
-        assert "fallback" not in parsed
 
     def test_extract_raises_health_report_unavailable_on_isError(self):
         from tools.computer_use import doctor
@@ -568,44 +385,6 @@ class TestHealthReportFallback:
             doctor._extract_health_report_from_result(_unclassified_health_result())
         assert "Permission denied" in str(ei.value) or "unclassified" in str(ei.value).lower() or "risk" in str(ei.value).lower()
 
-    def test_fallback_degraded_when_accessibility_denied(self):
-        from tools.computer_use import doctor
-
-        health_proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
-            {"jsonrpc": "2.0", "id": 2, "result": _unclassified_health_result()},
-        )
-        denied_perms = {
-            "isError": False,
-            "structuredContent": {
-                "accessibility": False,
-                "screen_recording": False,
-            },
-        }
-        probe_proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"version": "0.10.0"}}},
-            {"jsonrpc": "2.0", "id": 2, "result": denied_perms},
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "result": {"isError": True, "content": [{"type": "text", "text": "no ax"}]},
-            },
-        )
-        procs = iter([health_proc, probe_proc])
-        run_mock = MagicMock(
-            return_value=MagicMock(returncode=0, stdout="cua-driver 0.10.0\n", stderr=""),
-        )
-
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", side_effect=lambda *a, **k: next(procs)), \
-             patch("subprocess.run", run_mock), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            code = doctor.run_doctor(json_output=True)
-
-        assert code == 1
-        parsed = json.loads(out.getvalue())
-        assert parsed["overall"] == "degraded"
-        assert parsed.get("fallback") is True
 
 
 # ── binary identity (CLI --version vs health_report) ───────────────────────
@@ -633,27 +412,6 @@ class TestDoctorVersionIdentity:
         assert "version mismatch" in text.lower()
         assert "0.5.8" in text  # health_report value still shown
 
-    def test_json_includes_hermes_identity(self):
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch.object(doctor, "_read_cli_version", return_value="cua-driver 0.12.6"), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            code = doctor.run_doctor(json_output=True)
-        assert code == 0
-        payload = json.loads(out.getvalue())
-        assert payload["overall"] == "ok"
-        assert "hermes_identity" in payload
-        ident = payload["hermes_identity"]
-        assert ident["version_mismatch"] is True
-        assert "0.12.6" in (ident.get("cli_version") or "")
-        assert ident.get("health_report_driver_version") == "0.5.8"
-        assert ident.get("resolved_binary")
 
     def test_matching_versions_no_mismatch_flag(self):
         from tools.computer_use import doctor

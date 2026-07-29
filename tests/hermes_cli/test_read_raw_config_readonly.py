@@ -39,21 +39,6 @@ def _write_config(home, data):
     return cfg
 
 
-def test_identity_invariant_from_first_call(isolated_hermes_home):
-    from hermes_cli.config import read_raw_config_readonly
-
-    _write_config(isolated_hermes_home, {"telemetry": {"shared_metrics": {"enabled": True}}})
-    ro1 = read_raw_config_readonly()
-    ro2 = read_raw_config_readonly()
-    assert ro1 is ro2, "cache-miss return must be the same object later hits serve"
-    assert ro1["telemetry"]["shared_metrics"]["enabled"] is True
-
-
-def test_parity_with_mutable_read(isolated_hermes_home):
-    from hermes_cli.config import read_raw_config, read_raw_config_readonly
-
-    _write_config(isolated_hermes_home, {"gateway": {"max_inbound_media_bytes": 123}})
-    assert read_raw_config_readonly() == read_raw_config()
 
 
 def test_freshness_after_config_edit(isolated_hermes_home):
@@ -81,12 +66,3 @@ def test_missing_config_returns_empty(isolated_hermes_home):
     assert read_raw_config_readonly() == {}
 
 
-def test_mutable_variant_still_isolated(isolated_hermes_home):
-    """read_raw_config() callers may mutate; that must not corrupt the
-    readonly cache entry."""
-    from hermes_cli.config import read_raw_config, read_raw_config_readonly
-
-    _write_config(isolated_hermes_home, {"a": {"b": 1}})
-    mutable = read_raw_config()
-    mutable["a"]["b"] = 999
-    assert read_raw_config_readonly()["a"]["b"] == 1

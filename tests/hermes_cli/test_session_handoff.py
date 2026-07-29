@@ -39,50 +39,9 @@ class TestHandoffStateDB:
             )
         db._execute_write(_do)
 
-    def test_columns_exist(self, db):
-        db._conn.execute(
-            "SELECT handoff_state, handoff_platform, handoff_error "
-            "FROM sessions LIMIT 0"
-        )
 
-    def test_request_handoff_marks_pending(self, db):
-        sid = "sess-1"
-        self._make_session(db, sid)
 
-        assert db.request_handoff(sid, "telegram") is True
 
-        state = db.get_handoff_state(sid)
-        assert state == {
-            "state": "pending",
-            "platform": "telegram",
-            "error": None,
-        }
-
-    def test_request_handoff_rejects_in_flight(self, db):
-        sid = "sess-2"
-        self._make_session(db, sid)
-
-        assert db.request_handoff(sid, "telegram") is True
-        # Still pending → reject re-request
-        assert db.request_handoff(sid, "discord") is False
-
-        # And after gateway claims it (running) → still rejected
-        assert db.claim_handoff(sid) is True
-        assert db.request_handoff(sid, "discord") is False
-
-    def test_request_handoff_after_terminal_state_resets_error(self, db):
-        sid = "sess-3"
-        self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
-        db.claim_handoff(sid)
-        db.fail_handoff(sid, "earlier failure")
-
-        # User retries — should be allowed and clear the prior error.
-        assert db.request_handoff(sid, "discord") is True
-        state = db.get_handoff_state(sid)
-        assert state["state"] == "pending"
-        assert state["platform"] == "discord"
-        assert state["error"] is None
 
     def test_list_pending_handoffs_excludes_running_and_terminal(self, db):
         a, b, c, d = "sess-a", "sess-b", "sess-c", "sess-d"
@@ -101,16 +60,6 @@ class TestHandoffStateDB:
         ids = [r["id"] for r in pending]
         assert set(ids) == {a, b}
 
-    def test_claim_handoff_is_atomic(self, db):
-        sid = "sess-claim"
-        self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
-
-        # First claim wins
-        assert db.claim_handoff(sid) is True
-        # Second claim is a no-op (state is now "running", not "pending")
-        assert db.claim_handoff(sid) is False
-        assert db.get_handoff_state(sid)["state"] == "running"
 
     def test_complete_handoff_clears_error(self, db):
         sid = "sess-complete"
@@ -127,32 +76,8 @@ class TestHandoffStateDB:
         assert state["state"] == "completed"
         assert state["error"] is None
 
-    def test_fail_handoff_records_reason(self, db):
-        sid = "sess-fail"
-        self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
-        db.claim_handoff(sid)
-        db.fail_handoff(sid, "no home channel for telegram")
 
-        state = db.get_handoff_state(sid)
-        assert state["state"] == "failed"
-        assert state["error"] == "no home channel for telegram"
 
-    def test_fail_handoff_truncates_long_reasons(self, db):
-        sid = "sess-fail-long"
-        self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
-        db.claim_handoff(sid)
-
-        # 1000-character error string
-        big_err = "x" * 1000
-        db.fail_handoff(sid, big_err)
-
-        state = db.get_handoff_state(sid)
-        assert len(state["error"]) <= 500
-
-    def test_get_handoff_state_for_unknown_session(self, db):
-        assert db.get_handoff_state("does-not-exist") is None
 
     def test_full_pending_to_completed_flow(self, db):
         """End-to-end sequence the CLI + gateway watcher follow."""

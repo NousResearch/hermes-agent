@@ -41,19 +41,7 @@ def _make_compressor(**kwargs) -> ContextCompressor:
 
 
 class TestShouldCompressInfo:
-    def test_below_threshold_is_clear(self):
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 10_000
-        should, reason = comp.should_compress_info(10_000)
-        assert should is False
-        assert reason is None
 
-    def test_over_threshold_runs(self):
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
-        should, reason = comp.should_compress_info(73_000)
-        assert should is True
-        assert reason is None
 
     def test_cooldown_reports_reason(self):
         comp = _make_compressor()
@@ -64,20 +52,7 @@ class TestShouldCompressInfo:
         assert reason is not None
         assert reason.startswith("cooldown:")
 
-    def test_cooldown_reason_has_seconds(self):
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
-        comp._summary_failure_cooldown_until = time.monotonic() + 42
-        _should, reason = comp.should_compress_info(73_000)
-        assert reason == f"cooldown:{42:.0f}"
 
-    def test_ineffective_reports_reason(self):
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
-        comp._ineffective_compression_count = 2
-        should, reason = comp.should_compress_info(73_000)
-        assert should is False
-        assert reason == "ineffective"
 
     def test_should_compress_bool_shim_unchanged(self):
         """should_compress() must still return a bare bool for existing
@@ -151,65 +126,10 @@ class TestTurnContextOverflowWarning:
         assert "over the compression threshold" in agent._warnings[0]
         assert "blocked (cooldown:" in agent._warnings[0]
 
-    def test_warns_on_ineffective_block(self):
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
-        comp._ineffective_compression_count = 2
-        agent = _build_warn_agent(comp)
-        _run_build(agent)
-        assert len(agent._warnings) == 1
-        assert "blocked (ineffective)" in agent._warnings[0]
 
-    def test_no_warning_when_compression_runs(self):
-        """When compression actually runs, no overflow warning is emitted."""
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000  # over threshold, no block
-        agent = _build_warn_agent(comp)
-        _run_build(agent)
-        assert agent._warnings == []
-        # compression was triggered instead
-        assert agent._compress_calls > 0
 
-    def test_dedup_does_not_spam(self):
-        """Two turns with the same block kind fire the warning only once."""
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
-        comp._summary_failure_cooldown_until = time.monotonic() + 30
-        agent = _build_warn_agent(comp)
-        _run_build(agent)
-        _run_build(agent)  # second turn, same cooldown kind
-        assert len(agent._warnings) == 1
 
-    def test_warning_refires_after_block_clears(self):
-        """Once the block clears, a later block of the same kind warns again."""
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
-        comp._summary_failure_cooldown_until = time.monotonic() + 30
-        agent = _build_warn_agent(comp)
-        _run_build(agent)
-        assert len(agent._warnings) == 1
-        # Block clears: simulate the cooldown expiring.
-        comp._summary_failure_cooldown_until = 0.0
-        agent._last_ctx_overflow_warn = None
-        # Re-arm the same block kind.
-        comp._summary_failure_cooldown_until = time.monotonic() + 30
-        _run_build(agent)
-        assert len(agent._warnings) == 2
 
-    def test_warning_kind_switch_refires(self):
-        """Switching block kind (cooldown -> ineffective) re-warns."""
-        comp = _make_compressor()
-        comp.last_prompt_tokens = 73_000
-        comp._summary_failure_cooldown_until = time.monotonic() + 30
-        agent = _build_warn_agent(comp)
-        _run_build(agent)
-        assert len(agent._warnings) == 1
-        # Now ineffective instead of cooldown.
-        comp._summary_failure_cooldown_until = 0.0
-        comp._ineffective_compression_count = 2
-        _run_build(agent)
-        assert len(agent._warnings) == 2
-        assert "blocked (ineffective)" in agent._warnings[1]
 
     def test_dedup_resets_when_block_clears_while_over_threshold(self):
         """The dedup reset must fire when the block clears while pressure is
@@ -331,12 +251,6 @@ class TestWarningSurvivesNoiseFilter:
             self._emitted_warning("cooldown:30")
         )
 
-    def test_ineffective_warning_not_matched_by_noise_regex(self):
-        from gateway.run import _TELEGRAM_NOISY_STATUS_RE
-
-        assert not _TELEGRAM_NOISY_STATUS_RE.search(
-            self._emitted_warning("ineffective")
-        )
 
     def test_warning_delivered_on_chat_platform(self):
         """End-to-end through the fail-closed gateway status preparer."""

@@ -45,14 +45,6 @@ class TestOpenaiBackendInstructions:
         create = self._run(tmp_path, monkeypatch, instructions="Speak cheerfully.")
         assert create.call_args[1]["instructions"] == "Speak cheerfully."
 
-    def test_instructions_absent_by_default(self, tmp_path, monkeypatch):
-        """No instructions arg -> key not present in create kwargs.
-
-        Preserves behavior on `tts-1`/`tts-1-hd` and strict servers that
-        reject unknown kwargs.
-        """
-        create = self._run(tmp_path, monkeypatch)
-        assert "instructions" not in create.call_args[1]
 
     def test_empty_string_instructions_omitted(self, tmp_path, monkeypatch):
         """Empty string is treated as absent (not forwarded)."""

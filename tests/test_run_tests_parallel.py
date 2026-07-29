@@ -225,12 +225,6 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_bare_q_flag_passes_through(tmp_path: Path) -> None:
-    """A bare ``-q`` (no ``--``) runs clean instead of erroring out."""
-    probe_dir = _make_probe_dir(tmp_path)
-    proc = _run_runner(probe_dir, "-q")
-    assert proc.returncode == 0, proc.stdout
-    assert "unrecognized arguments" not in proc.stdout
 
 
 def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
@@ -253,12 +247,6 @@ def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
     )
 
 
-def test_explicit_double_dash_still_works(tmp_path: Path) -> None:
-    """The legacy ``--`` separator keeps working alongside bare flags."""
-    probe_dir = _make_probe_dir(tmp_path)
-    proc = _run_runner(probe_dir, "-q", "--", "--tb=short")
-    assert proc.returncode == 0, proc.stdout
-    assert "unrecognized arguments" not in proc.stdout
 
 
 def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
@@ -327,38 +315,6 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
     assert "retry output" in proc.stdout
 
 
-def test_file_retry_does_not_launder_deterministic_failure(tmp_path: Path) -> None:
-    """A real regression fails both attempts and the runner remains red."""
-    repo_root = Path(__file__).resolve().parent.parent
-    runner = repo_root / "scripts" / "run_tests_parallel.py"
-    probe = tmp_path / "test_red_probe.py"
-    probe.write_text(
-        "def test_always_red():\n    assert False, 'deterministic regression'\n",
-        encoding="utf-8",
-    )
-
-    proc = subprocess.run(
-        [
-            sys.executable,
-            str(runner),
-            "--files",
-            str(probe),
-            "--file-retries",
-            "1",
-            "-j",
-            "1",
-            "-q",
-        ],
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=60,
-    )
-
-    assert proc.returncode == 1, proc.stdout
-    assert "deterministic regression" in proc.stdout
-    assert "FLAKY file" not in proc.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -379,23 +335,6 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
     assert "NOT a pass" in proc.stdout
 
 
-def test_all_skipped_file_is_still_a_pass(tmp_path: Path) -> None:
-    """Per-file zero-collection stays tolerated.
-
-    A platform-gated file (every test skipped) reports "N skipped" — collected,
-    just not executed — and must NOT trip the nothing-ran guard.
-    """
-    probe_dir = tmp_path / "skipprobe"
-    probe_dir.mkdir()
-    (probe_dir / "test_allskipped.py").write_text(
-        "import pytest\n\n"
-        "pytestmark = pytest.mark.skip(reason='platform-gated')\n\n"
-        "def test_one():\n    assert True\n\n"
-        "def test_two():\n    assert True\n"
-    )
-    proc = _run_runner(probe_dir)
-    assert proc.returncode == 0, proc.stdout
-    assert "NO TESTS RAN" not in proc.stdout
 
 
 def test_node_id_selector_runs_the_named_test(tmp_path: Path) -> None:

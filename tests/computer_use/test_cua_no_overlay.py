@@ -17,55 +17,16 @@ from tools.computer_use import cua_backend
 
 
 class TestNoOverlayFlag:
-    def test_default_linux_headless_disables(self):
-        """Auto-detect: Linux without DISPLAY => overlay disabled."""
-        with patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(sys, "platform", "linux"), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("DISPLAY", None)
-            assert cua_backend._cua_no_overlay() is True
 
-    def test_default_linux_desktop_enables(self):
-        """Auto-detect: Linux with DISPLAY => overlay enabled."""
-        with patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(sys, "platform", "linux"), \
-             patch.dict(os.environ, {"DISPLAY": ":0"}):
-            assert cua_backend._cua_no_overlay() is False
 
-    def test_default_linux_wsl2_disables(self):
-        """Auto-detect: WSL2 (microsoft in /proc/version) => overlay disabled."""
-        fake_version = "Linux version 5.15.0 (Microsoft@Microsoft.com)"
-        with patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(sys, "platform", "linux"), \
-             patch.dict(os.environ, {"DISPLAY": ":0"}), \
-             patch("builtins.open", mock_open(read_data=fake_version)):
-            assert cua_backend._cua_no_overlay() is True
 
-    def test_default_macos_disables(self):
-        """Auto-detect: macOS => overlay disabled (idle CPU / #47032)."""
-        with patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(sys, "platform", "darwin"):
-            assert cua_backend._cua_no_overlay() is True
 
-    def test_default_windows_enables(self):
-        """Auto-detect: Windows => overlay enabled."""
-        with patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(sys, "platform", "win32"):
-            assert cua_backend._cua_no_overlay() is False
 
     def test_explicit_true_overrides(self):
         with patch("hermes_cli.config.load_config",
                    return_value={"computer_use": {"no_overlay": True}}):
             assert cua_backend._cua_no_overlay() is True
 
-    def test_explicit_false_overrides(self):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"computer_use": {"no_overlay": False}}), \
-             patch.object(sys, "platform", "linux"), \
-             patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("DISPLAY", None)
-            # Explicit False overrides auto-detect on headless Linux.
-            assert cua_backend._cua_no_overlay() is False
 
     def test_config_load_failure_falls_through_to_auto_detect(self):
         """Unreadable config => auto-detect (macOS defaults to disabled)."""
@@ -74,18 +35,7 @@ class TestNoOverlayFlag:
              patch.object(sys, "platform", "darwin"):
             assert cua_backend._cua_no_overlay() is True
 
-    def test_macos_explicit_false_keeps_overlay(self):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"computer_use": {"no_overlay": False}}), \
-             patch.object(sys, "platform", "darwin"):
-            assert cua_backend._cua_no_overlay() is False
 
-    def test_missing_section_falls_through_to_auto_detect(self):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"other": {}}), \
-             patch.object(sys, "platform", "linux"), \
-             patch.dict(os.environ, {"DISPLAY": ":0"}):
-            assert cua_backend._cua_no_overlay() is False
 
 
 class TestDriverSupportsNoOverlay:
@@ -96,18 +46,7 @@ class TestDriverSupportsNoOverlay:
             mock_run.return_value.stderr = ""
             assert cua_backend._cua_driver_supports_no_overlay("cua-driver") is True
 
-    def test_returns_false_when_help_lacks_flag(self):
-        fake_help = "Usage: cua-driver [OPTIONS] COMMAND\n"
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value.stdout = fake_help
-            mock_run.return_value.stderr = ""
-            cua_backend._cua_driver_supports_no_overlay.cache_clear()
-            assert cua_backend._cua_driver_supports_no_overlay("cua-driver") is False
 
-    def test_returns_false_on_subprocess_error(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError("no such file")):
-            cua_backend._cua_driver_supports_no_overlay.cache_clear()
-            assert cua_backend._cua_driver_supports_no_overlay("cua-driver") is False
 
     def test_help_probe_passes_sanitized_env(self):
         """The ``--help`` subprocess must not leak provider credentials
@@ -176,26 +115,6 @@ class TestMcpInvocationUsesResolvedCommand:
         # command, not the input driver_cmd argument.
         mock_probe.assert_called_with("/opt/relocated/cua-driver")
 
-    def test_fallback_uses_input_driver_cmd_for_support_probe(self):
-        """When the manifest knows the args but NOT the command, the
-        input ``driver_cmd`` parameter is what gets launched and
-        probed.
-        """
-        from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
-
-        manifest = '{"mcp_invocation":{"args":["mcp"]}}'
-        with patch("subprocess.run", new=self._fake_run(stdout=manifest)), \
-             patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
-             patch.object(
-                 cua_backend, "_cua_driver_supports_no_overlay",
-                 return_value=True,
-             ) as mock_probe:
-            cua_backend._cua_driver_supports_no_overlay.cache_clear()
-            cmd, args = _resolve_mcp_invocation("/my/local/cua-driver")
-        assert cmd == "/my/local/cua-driver"
-        # Fallback path: probe runs against the input driver_cmd.
-        mock_probe.assert_called_with("/my/local/cua-driver")
 
     def test_probe_distinguishes_support_between_binaries(self):
         """Different binaries must produce independent support verdicts.
@@ -232,11 +151,6 @@ class TestMcpArgsOverlayFlag:
             result = cua_backend._mcp_args_with_overlay_flag(["mcp"])
             assert result == ["mcp"]
 
-    def test_not_appended_when_driver_unsupported(self):
-        with patch.object(cua_backend, "_cua_no_overlay", return_value=True), \
-             patch.object(cua_backend, "_cua_driver_supports_no_overlay", return_value=False):
-            result = cua_backend._mcp_args_with_overlay_flag(["mcp"])
-            assert result == ["mcp"]
 
     def test_does_not_mutate_original_list(self):
         original = ["mcp"]

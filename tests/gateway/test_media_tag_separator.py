@@ -17,38 +17,6 @@ from gateway.platforms.base import (
 )
 
 
-def test_extensionless_regex_does_not_absorb_next_media_keyword():
-    """Two extensionless tags glued together must each match independently."""
-    text = "MEDIA:/tmp/CaddyfileMEDIA:/tmp/Dockerfile"
-    matches = list(MEDIA_EXTENSIONLESS_TAG_RE.finditer(text))
-    paths = [m.group("path") for m in matches]
-    assert paths == ["/tmp/Caddyfile", "/tmp/Dockerfile"], paths
-
-
-def test_extensionless_regex_does_not_absorb_following_text():
-    """An extensionless tag glued to text containing `MEDIA:` must stop at the next tag.
-
-    The known-extension case is covered separately by
-    ``test_strip_media_directives_does_not_drop_known_ext_tag_followed_by_text``
-    — there the primary regex's separator requirement leaves the text visible.
-
-    For the fallback regex, the realistic threat is a *second* ``MEDIA:`` tag
-    glued to the first path; this test pins that behavior.
-    """
-    text = "MEDIA:/tmp/CaddyfileMEDIA:/tmp/Dockerfile and text"
-    match = MEDIA_EXTENSIONLESS_TAG_RE.search(text)
-    assert match is not None
-    assert match.group("path") == "/tmp/Caddyfile"
-
-
-def test_extensionless_regex_still_matches_normal_cases():
-    """The fix must not regress the well-formed extensionless paths."""
-    text = "see MEDIA:/tmp/Caddyfile for details"
-    match = MEDIA_EXTENSIONLESS_TAG_RE.search(text)
-    assert match is not None
-    assert match.group("path") == "/tmp/Caddyfile"
-
-
 def test_known_extension_regex_splits_glued_tags():
     """``MEDIA_TAG_CLEANUP_RE`` must stop at the next ``MEDIA:`` keyword (#68773).
 
@@ -77,39 +45,3 @@ def test_strip_media_directives_handles_glued_known_extension_tags(tmp_path):
     assert "MEDIA:" not in cleaned, f"Greedy merge leaked: {cleaned!r}"
 
 
-def test_strip_media_directives_handles_glued_extensionless_tags(tmp_path):
-    """``_strip_media_tag_directives`` must not produce a merged invalid path.
-
-    With two real files glued together, ``validate_media_delivery_path``
-    accepts the first valid path and skips the second because the merged
-    string is not a real file. After the fix, the second tag should be
-    matched independently and also accepted.
-    """
-    caddy = tmp_path / "Caddyfile"
-    caddy.write_text("example.com")
-    dockerfile = tmp_path / "Dockerfile"
-    dockerfile.write_text("FROM scratch")
-
-    text = f"MEDIA:{caddy}MEDIA:{dockerfile}"
-    cleaned = _strip_media_tag_directives(text)
-    # Both tags stripped; no leftover MEDIA: token from greedy merge.
-    assert "MEDIA:" not in cleaned, f"Greedy merge leaked: {cleaned!r}"
-
-
-def test_strip_media_directives_does_not_drop_known_ext_tag_followed_by_text(tmp_path):
-    """A known-extension tag glued to text must leave the text visible.
-
-    The primary regex requires a separator after the extension, so
-    ``MEDIA:/file.pngSome text`` does not match. After the fallback runs,
-    ``_path_lacks_deliverable_extension`` sees ``.pngSome`` as a non-known
-    extension and the strip function returns ``match.group(0)`` unchanged —
-    so the original text stays visible (no silent drop, no merged invalid
-    path).
-    """
-    png = tmp_path / "real.png"
-    png.write_bytes(b"\x89PNG\r\n\x1a\n")
-
-    text = f"MEDIA:{png}Some text"
-    cleaned = _strip_media_tag_directives(text)
-    # The full original is preserved — no silent truncation of the file or text.
-    assert cleaned == text

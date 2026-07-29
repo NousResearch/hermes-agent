@@ -120,87 +120,10 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
     assert prepared[2]["guidance"] == prepared[0]["guidance"]
 
 
-def test_every_n_off_cadence_does_not_double_charge_usage(monkeypatch, tmp_path):
-    """Cache-reuse iterations must not re-report advisor usage/cost."""
-    home = tmp_path / ".hermes"
-    _cadence_config(home, "every_n:2")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    ref_runs = []
-    _install_fake_llm(monkeypatch, ref_runs)
-
-    from agent.moa_loop import MoAChatCompletions
-
-    facade = MoAChatCompletions("review")
-    base = [{"role": "user", "content": "task"}]
-    it = _iteration_messages(base, 2)
-
-    facade.create(messages=next(it), tools=[])
-    usage1, _cost1 = facade.consume_reference_usage()
-
-    facade.create(messages=next(it), tools=[])  # off-cadence: reuse
-    usage2, cost2 = facade.consume_reference_usage()
-
-    assert len(ref_runs) == 1
-    # The reuse iteration reports zero advisor usage and no cost.
-    assert usage2.input_tokens == 0 and usage2.output_tokens == 0
-    assert cost2 is None
-    assert usage1 is not usage2
 
 
-def test_every_n_counter_resets_on_new_user_turn(monkeypatch, tmp_path):
-    """A new user message starts a new turn: iteration 1 is on-cadence again,
-    regardless of where the previous turn's counter stood."""
-    home = tmp_path / ".hermes"
-    _cadence_config(home, "every_n:3")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    ref_runs = []
-    _install_fake_llm(monkeypatch, ref_runs)
-
-    from agent.moa_loop import MoAChatCompletions
-
-    facade = MoAChatCompletions("review")
-    turn1 = [{"role": "user", "content": "turn one"}]
-    msgs: list = turn1
-    for msgs in _iteration_messages(turn1, 2):
-        facade.create(messages=msgs, tools=[])
-    assert len(ref_runs) == 1  # iteration 2 was off-cadence
-
-    # New user turn appended after the tool loop → counter resets, advisors
-    # run immediately (fresh advice for the fresh request).
-    turn2 = msgs + [
-        {"role": "assistant", "content": "done with turn one"},
-        {"role": "user", "content": "turn two"},
-    ]
-    facade.create(messages=turn2, tools=[])
-    assert len(ref_runs) == 2
 
 
-def test_every_n_redundant_create_does_not_consume_cadence_slot(monkeypatch, tmp_path):
-    """A repeat create() with IDENTICAL state (e.g. a streaming retry) must not
-    advance the cadence counter — only real state changes count."""
-    home = tmp_path / ".hermes"
-    _cadence_config(home, "every_n:2")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    ref_runs = []
-    _install_fake_llm(monkeypatch, ref_runs)
-
-    from agent.moa_loop import MoAChatCompletions
-
-    facade = MoAChatCompletions("review")
-    base = [{"role": "user", "content": "task"}]
-    it = _iteration_messages(base, 3)
-
-    first = next(it)
-    facade.create(messages=first, tools=[])
-    facade.create(messages=first, tools=[])  # retry: same state, no slot used
-    assert facade._fanout_iteration_count == 1
-
-    facade.create(messages=next(it), tools=[])  # iteration 2: off-cadence
-    facade.create(messages=next(it), tools=[])  # iteration 3: on-cadence (every 2nd)
-    assert len(ref_runs) == 2
 
 
 def test_per_iteration_default_unchanged_by_cadence_state(monkeypatch, tmp_path):

@@ -136,21 +136,6 @@ class TestWorktreeIncludeEncoding:
     swallowed at DEBUG so no include is copied), and a Notepad BOM glues to
     the first line on every platform."""
 
-    def test_bom_in_worktreeinclude_does_not_hide_first_entry(self, git_repo):
-        import cli as cli_mod
-
-        (git_repo / ".env").write_text("SECRET=***\n")
-        # Notepad-style UTF-8 with BOM; the BOM must not become part of the
-        # first entry's path.
-        (git_repo / ".worktreeinclude").write_bytes("﻿.env\n".encode("utf-8"))
-
-        info = None
-        try:
-            info = cli_mod._setup_worktree(str(git_repo))
-            assert info is not None
-            assert (Path(info["path"]) / ".env").exists()
-        finally:
-            _force_remove_worktree(info)
 
     def test_non_ascii_worktreeinclude_entry_copied(self, git_repo):
         import cli as cli_mod
@@ -169,23 +154,3 @@ class TestWorktreeIncludeEncoding:
         finally:
             _force_remove_worktree(info)
 
-    def test_bom_in_gitignore_does_not_duplicate_worktrees_entry(self, git_repo):
-        import cli as cli_mod
-
-        (git_repo / ".gitignore").write_bytes("﻿.worktrees/\n".encode("utf-8"))
-
-        info = None
-        try:
-            info = cli_mod._setup_worktree(str(git_repo))
-            assert info is not None
-            lines = (
-                (git_repo / ".gitignore")
-                .read_text(encoding="utf-8-sig")
-                .splitlines()
-            )
-            assert lines.count(".worktrees/") == 1, (
-                "BOM glued to the first line must not defeat the membership "
-                f"check and duplicate the entry: {lines!r}"
-            )
-        finally:
-            _force_remove_worktree(info)

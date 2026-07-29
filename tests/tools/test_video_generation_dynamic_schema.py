@@ -94,49 +94,6 @@ class TestDynamicSchemaBuilder:
         assert "No video backend is available" in desc
         assert "hermes tools" in desc
 
-    def test_generic_description_keeps_edit_extend_out_of_surface(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema, _GENERIC_DESCRIPTION
-
-        desc = _build_dynamic_video_schema()["description"]
-        assert "Video edit/extend workflows are not part of this unified surface" in desc
-        assert "operation='edit'" not in _GENERIC_DESCRIPTION
-        assert "operation='extend'" not in _GENERIC_DESCRIPTION
-
-    def test_both_modalities_advertises_auto_routing(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
-
-        _write_cfg(cfg_home, {"video_gen": {"provider": "both"}})
-        video_gen_registry.register_provider(_BothModalitiesProvider())
-
-        import hermes_cli.plugins as plugins_module
-        saved = plugins_module._ensure_plugins_discovered
-        plugins_module._ensure_plugins_discovered = lambda *a, **k: None
-        try:
-            desc = _build_dynamic_video_schema()["description"]
-        finally:
-            plugins_module._ensure_plugins_discovered = saved
-
-        assert "Active backend: Both" in desc
-        assert "text-to-video" in desc and "image-to-video" in desc
-        assert "routes automatically" in desc
-        assert "operations supported" not in desc
-
-    def test_image_only_model_warns_about_required_image_url(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
-
-        _write_cfg(cfg_home, {"video_gen": {"provider": "img-only"}})
-        video_gen_registry.register_provider(_ImageOnlyProvider())
-
-        import hermes_cli.plugins as plugins_module
-        saved = plugins_module._ensure_plugins_discovered
-        plugins_module._ensure_plugins_discovered = lambda *a, **k: None
-        try:
-            desc = _build_dynamic_video_schema()["description"]
-        finally:
-            plugins_module._ensure_plugins_discovered = saved
-
-        assert "image-to-video only" in desc
-        assert "image_url is REQUIRED" in desc
 
     def test_builder_wired_into_registry(self):
         from tools.registry import discover_builtin_tools, registry

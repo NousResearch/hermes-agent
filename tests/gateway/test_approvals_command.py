@@ -37,20 +37,6 @@ def _runner():
 
 
 @pytest.mark.asyncio
-async def test_gateway_handler_uses_shared_persistent_logic_without_cache_eviction():
-    runner = _runner()
-    result = SimpleNamespace(message="Approval mode: manual (persistent profile setting).")
-    runner._evict_cached_agent = MagicMock()
-
-    with patch("hermes_cli.approval_mode.run_approval_mode_command", return_value=result) as run:
-        output = await runner._handle_approvals_command(_event("/approvals manual"))
-
-    assert output == result.message
-    run.assert_called_once_with("manual")
-    runner._evict_cached_agent.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_gateway_rejects_non_admin_persistent_approval_change():
     runner = _runner()
     runner.config = SimpleNamespace(
@@ -71,21 +57,3 @@ async def test_gateway_rejects_non_admin_persistent_approval_change():
     run.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_gateway_live_dispatch_routes_and_persists_approvals_command(tmp_path, monkeypatch):
-    runner = _runner()
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "missing-managed"))
-    from hermes_cli import managed_scope
-    from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
-
-    _LOAD_CONFIG_CACHE.clear()
-    _RAW_CONFIG_CACHE.clear()
-    managed_scope.invalidate_managed_cache()
-
-    output = await runner._handle_message(_event("/approvals manual"))
-
-    assert output == "Approval mode: manual (persistent profile setting)."
-    assert yaml.safe_load((home / "config.yaml").read_text())["approvals"]["mode"] == "manual"

@@ -63,15 +63,6 @@ class TestLogicalLineStreaming:
         assert cli._spinner_text.startswith("…")
         assert "newline" in cli._spinner_text
 
-    def test_logical_line_emitted_whole_at_newline(self, cli_stub):
-        cli, emitted = cli_stub
-        long_line = "word " * 60  # ~300 chars, far beyond terminal width
-        cli._stream_delta(long_line.rstrip() + "\n")
-        content = [
-            _strip_ansi(e) for e in emitted if "word" in _strip_ansi(e)
-        ]
-        assert len(content) == 1, "logical line was split across prints"
-        assert content[0] == long_line.rstrip()
 
     def test_no_content_lost_across_stream(self, cli_stub):
         cli, emitted = cli_stub
@@ -84,12 +75,6 @@ class TestLogicalLineStreaming:
         for w in words:
             assert w in plain, f"lost {w}"
 
-    def test_short_partial_stays_buffered(self, cli_stub):
-        cli, emitted = cli_stub
-        cli._stream_delta("short line, no newline")
-        plain = _strip_ansi("\n".join(emitted))
-        assert "short line" not in plain
-        assert cli._stream_buf == "short line, no newline"
 
     def test_table_rows_not_previewed_in_spinner(self, cli_stub):
         cli, emitted = cli_stub

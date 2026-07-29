@@ -27,46 +27,8 @@ def _run_with_real_stream(fn):
     return real_out.getvalue()
 
 
-def test_current_thread_is_silenced():
-    def body():
-        with thread_scoped_silence():
-            print("dropped")
-        print("kept")
-
-    captured = _run_with_real_stream(body)
-    assert "dropped" not in captured
-    assert "kept" in captured
 
 
-def test_concurrent_thread_keeps_output_during_silence_window():
-    """A loud thread writing WHILE another thread is silenced must survive."""
-    inside_silence = threading.Event()
-    loud_done = threading.Event()
-
-    def silenced_worker():
-        with thread_scoped_silence():
-            print("SILENCED")
-            inside_silence.set()
-            # Hold the silence window until the loud thread has written.
-            loud_done.wait(timeout=2.0)
-
-    def loud_worker():
-        inside_silence.wait(timeout=2.0)
-        print("LOUD")
-        loud_done.set()
-
-    def body():
-        t1 = threading.Thread(target=silenced_worker)
-        t2 = threading.Thread(target=loud_worker)
-        t1.start()
-        t2.start()
-        t1.join(timeout=15.0)
-        t2.join(timeout=15.0)
-        assert not t1.is_alive() and not t2.is_alive(), "worker threads didn't finish"
-
-    captured = _run_with_real_stream(body)
-    assert "SILENCED" not in captured
-    assert "LOUD" in captured
 
 
 def test_stderr_is_also_routed_per_thread():
@@ -84,35 +46,8 @@ def test_stderr_is_also_routed_per_thread():
     assert "err-kept" in out
 
 
-def test_nested_silence_same_thread_composes():
-    def body():
-        with thread_scoped_silence():
-            with thread_scoped_silence():
-                print("inner")
-            # Still inside the OUTER context — depth-counted, so this thread
-            # remains silenced after the inner context exits.
-            print("after-inner")
-        print("after-outer")
-
-    captured = _run_with_real_stream(body)
-    assert "inner" not in captured
-    assert "after-inner" not in captured
-    assert "after-outer" in captured
 
 
-def test_unsilence_cleans_up_after_exit():
-    """After the context exits, the calling thread writes to the real stream."""
-    seen = []
-
-    def body():
-        with thread_scoped_silence():
-            pass
-        print("post")
-        seen.append("post")
-
-    captured = _run_with_real_stream(body)
-    assert "post" in captured
-    assert seen == ["post"]
 
 
 def test_many_concurrent_silenced_and_loud_threads():

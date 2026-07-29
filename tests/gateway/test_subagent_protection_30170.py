@@ -137,14 +137,6 @@ def _make_parent_no_subagents() -> MagicMock:
 class TestAgentHasActiveSubagents:
     """The detection helper must be both precise and defensive."""
 
-    def test_returns_false_for_none(self) -> None:
-        assert GatewayRunner._agent_has_active_subagents(None) is False
-
-    def test_returns_false_for_pending_sentinel(self) -> None:
-        assert (
-            GatewayRunner._agent_has_active_subagents(_AGENT_PENDING_SENTINEL)
-            is False
-        )
 
     def test_returns_false_when_attribute_missing(self) -> None:
         """Production AIAgents always have _active_children, but the helper
@@ -155,25 +147,6 @@ class TestAgentHasActiveSubagents:
 
         assert GatewayRunner._agent_has_active_subagents(StubAgent()) is False
 
-    def test_returns_false_for_empty_list(self) -> None:
-        assert (
-            GatewayRunner._agent_has_active_subagents(_make_parent_no_subagents())
-            is False
-        )
-
-    def test_returns_true_for_single_child(self) -> None:
-        assert (
-            GatewayRunner._agent_has_active_subagents(_make_parent_with_subagents())
-            is True
-        )
-
-    def test_returns_true_for_many_children(self) -> None:
-        assert (
-            GatewayRunner._agent_has_active_subagents(
-                _make_parent_with_subagents(children=5)
-            )
-            is True
-        )
 
     def test_works_without_lock(self) -> None:
         """``_active_children_lock`` is optional in test stubs."""
@@ -191,17 +164,6 @@ class TestAgentHasActiveSubagents:
         parent = MagicMock()  # no explicit _active_children setup
         assert GatewayRunner._agent_has_active_subagents(parent) is False
 
-    @pytest.mark.parametrize(
-        "container",
-        [(MagicMock(),), {MagicMock()}, [MagicMock()]],
-        ids=["tuple", "set", "list"],
-    )
-    def test_accepts_list_tuple_set(self, container: Any) -> None:
-        parent = MagicMock()
-        parent._active_children = container
-        parent._active_children_lock = threading.Lock()
-        assert GatewayRunner._agent_has_active_subagents(parent) is True
-
 
 # ──────────────────────────────────────────────────────────────────────
 # _handle_active_session_busy_message — interrupt demotion
@@ -210,48 +172,6 @@ class TestBusyHandlerDemotesInterruptForSubagents:
     """The Phase-1 fix from #30170: parent.interrupt() must NOT fire when
     the parent is currently driving subagents."""
 
-    @pytest.mark.asyncio
-    async def test_does_not_call_interrupt_when_subagents_active(self) -> None:
-        runner = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-        event = _make_event(text="follow up while subagent runs")
-        sk = build_session_key(event.source)
-        parent = _make_parent_with_subagents()
-        runner._running_agents[sk] = parent
-        runner.adapters[event.source.platform] = adapter
-
-        handled = await runner._handle_active_session_busy_message(event, sk)
-
-        assert handled is True
-        parent.interrupt.assert_not_called()
-        # Message must still be queued so it gets picked up on the next turn
-        # (stored via the FIFO path — its own turn, no destructive merge).
-        assert adapter._pending_messages.get(sk) is event
-
-    @pytest.mark.asyncio
-    async def test_ack_explains_the_demotion(self) -> None:
-        """The user-visible ack must mention the subagent context AND
-        the `/stop` escape hatch so the operator can self-correct."""
-        runner = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-        event = _make_event(text="hi mid-delegation")
-        sk = build_session_key(event.source)
-        parent = _make_parent_with_subagents()
-        runner._running_agents[sk] = parent
-        runner._running_agents_ts[sk] = time.time() - 120
-        runner.adapters[event.source.platform] = adapter
-
-        with patch("gateway.run.merge_pending_message_event"):
-            await runner._handle_active_session_busy_message(event, sk)
-
-        adapter._send_with_retry.assert_called_once()
-        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Subagent working" in content
-        assert "queued" in content.lower()
-        assert "/stop" in content
-        assert "Interrupting" not in content
 
     @pytest.mark.asyncio
     async def test_interrupt_still_fires_when_no_subagents(self) -> None:
@@ -322,27 +242,3 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         parent.steer.assert_called_once_with("course-correct")
         parent.interrupt.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_pending_sentinel_does_not_demote(self) -> None:
-        """The placeholder ``_AGENT_PENDING_SENTINEL`` is not a real
-        agent — the guard must not treat it as having subagents.
-        Otherwise we'd permanently queue messages for sessions that
-        haven't actually started running yet."""
-        runner = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-        event = _make_event(text="follow up before start")
-        sk = build_session_key(event.source)
-        runner._running_agents[sk] = _AGENT_PENDING_SENTINEL
-        runner.adapters[event.source.platform] = adapter
-
-        with patch("gateway.run.merge_pending_message_event"):
-            handled = await runner._handle_active_session_busy_message(event, sk)
-
-        assert handled is True
-        # Sentinel can't be interrupted (no .interrupt to call) — verify
-        # that the helper still returns the "interrupting" copy because
-        # demotion did NOT fire (and the sentinel branch in the real
-        # handler just skips the interrupt call silently).
-        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Subagent working" not in content

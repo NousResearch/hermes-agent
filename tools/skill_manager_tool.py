@@ -814,16 +814,6 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
     return target, None
 
 
-def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
-    """Atomically write text content to a file.
-
-    Thin wrapper around :func:`utils.atomic_write_text` so that every
-    destructive file rewrite in the codebase shares one implementation.
-    """
-    atomic_write_text(file_path, content, encoding=encoding,
-                      tmp_prefix=f".{file_path.name}.tmp.")
-
-
 # =============================================================================
 # Core actions
 # =============================================================================
@@ -874,7 +864,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
     # Write SKILL.md atomically
     skill_md = skill_dir / "SKILL.md"
-    _atomic_write_text(skill_md, content)
+    atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -935,13 +925,13 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
-    _atomic_write_text(skill_md, content)
+    atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            _atomic_write_text(skill_md, original_content)
+            atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
     # Extract description from new content for verbose notifications
@@ -1057,12 +1047,12 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
-    _atomic_write_text(target, new_content)
+    atomic_write_text(target, new_content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        _atomic_write_text(target, original_content)
+        atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
     result = {
@@ -1226,13 +1216,13 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
-    _atomic_write_text(target, file_content)
+    atomic_write_text(target, file_content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            _atomic_write_text(target, original_content)
+            atomic_write_text(target, original_content)
         else:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}

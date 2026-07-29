@@ -39,7 +39,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, atomic_write_text
 
 try:
     from croniter import croniter
@@ -824,24 +824,13 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 def _atomic_write_epoch(path: Path) -> None:
     """Atomically write the current epoch time to ``path``.
 
-    Uses the same tmpfile + ``atomic_replace`` pattern as ``save_jobs`` so a
-    concurrent reader in another process (``hermes cron status``) never sees a
-    torn/truncated file. Best-effort: failures are swallowed by callers.
+    Delegates to :func:`utils.atomic_write_text` (tmpfile + fsync +
+    ``atomic_replace``, same pattern as ``save_jobs``) so a concurrent reader
+    in another process (``hermes cron status``) never sees a torn/truncated
+    file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".hb_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path, str(time.time()), tmp_prefix=".hb_")
 
 
 def _atomic_write_counter(path: Path, value: int) -> None:

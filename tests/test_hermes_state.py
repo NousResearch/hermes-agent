@@ -263,10 +263,11 @@ class TestSessionLifecycle:
         assert child["display_name"] == "Chat One"
         assert child["origin_json"] == '{"p":"telegram"}'
 
-    def test_live_parent_child_does_not_inherit_gateway_origin(self, db):
+    def test_live_parent_child_does_not_inherit_gateway_routing_keys(self, db):
         """Delegate/subagent children (parent still live) must NOT inherit
         routing keys — peer recovery could otherwise repoint gateway traffic
-        into a subagent's session."""
+        into a subagent's session. ``user_id`` is exempt: it is owner
+        attribution, not a routing key (see the owner test below)."""
         db.create_session(
             session_id="parent", source="telegram",
             user_id="u1", session_key="telegram:u1:c1",
@@ -280,13 +281,73 @@ class TestSessionLifecycle:
         sub = db.get_session("sub")
         assert sub["session_key"] is None
         assert sub["chat_id"] is None
-        assert sub["user_id"] is None
+        assert sub["chat_type"] is None
+        assert sub["thread_id"] is None
+        assert sub["display_name"] is None
+        assert sub["origin_json"] is None
         # Workspace metadata still inherits — that part is safe for any child.
         db.update_session_cwd("parent", "/work/repo", git_repo_root="/work/repo")
         db.create_session(
             session_id="sub2", source="telegram", parent_session_id="parent"
         )
         assert db.get_session("sub2")["cwd"] == "/work/repo"
+
+    def test_live_parent_child_inherits_owner(self, db):
+        """A delegate/subagent child inherits ``user_id`` from its live parent.
+
+        Owner attribution answers "whose work is this", and a subagent is doing
+        its spawner's work. ``tools/delegate_tool.py`` constructs children
+        without ``user_id``, so the parent row is the only place the owner is
+        known — without this, delegated sessions are unattributable and can only
+        be reached by walking ``parent_session_id`` (#24321).
+        """
+        db.create_session(
+            session_id="parent", source="acp", user_id="dev@example.com"
+        )
+        db.create_session(
+            session_id="sub", source="subagent", parent_session_id="parent"
+        )
+
+        assert db.get_session("sub")["user_id"] == "dev@example.com"
+        # Owner inheritance must not drag routing keys along with it.
+        assert db.get_session("sub")["session_key"] is None
+
+    def test_child_owner_inheritance_is_null_fill_only(self, db):
+        """An explicitly-owned child keeps its own owner; the parent's value
+        never overwrites it (COALESCE semantics)."""
+        db.create_session(
+            session_id="parent", source="acp", user_id="spawner@example.com"
+        )
+        db.create_session(
+            session_id="sub", source="subagent", parent_session_id="parent",
+            user_id="explicit@example.com",
+        )
+
+        assert db.get_session("sub")["user_id"] == "explicit@example.com"
+
+    def test_multi_generation_lineage_inherits_owner(self, db):
+        """Owner propagates down a chain of live-parent children."""
+        db.create_session(
+            session_id="root", source="acp", user_id="dev@example.com"
+        )
+        db.create_session(
+            session_id="gen1", source="subagent", parent_session_id="root"
+        )
+        db.create_session(
+            session_id="gen2", source="subagent", parent_session_id="gen1"
+        )
+
+        assert db.get_session("gen1")["user_id"] == "dev@example.com"
+        assert db.get_session("gen2")["user_id"] == "dev@example.com"
+
+    def test_untagged_parent_leaves_child_owner_null(self, db):
+        """A child of an unowned parent (CLI/cron delegation) stays untagged."""
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(
+            session_id="sub", source="subagent", parent_session_id="parent"
+        )
+
+        assert db.get_session("sub")["user_id"] is None
 
     def test_update_session_cwd_empty_branch_does_not_clobber(self, db):
         """A failed branch probe (empty string) must not wipe a branch we

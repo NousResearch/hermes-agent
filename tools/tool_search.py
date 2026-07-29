@@ -939,7 +939,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
 
     A deferred tool's parameter schema is invisible to the model until it
     calls ``tool_describe`` — so models routinely invoke deferred tools
-    "blind" by name alone, omitting required arguments. Dispatching such a
+    "blind" by name alone, omitting required arguments.  Dispatching such a
     call produces an opaque downstream failure (``KeyError: 'document_id'``)
     that tells the model nothing about what the tool expects, and cheap
     models loop on it until the iteration budget dies.
@@ -947,14 +947,19 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
     Port of the describe-first probe-validation fix from nearai/ironclaw#5149:
     when required arguments are missing, return the tool's parameter schema
     instead of dispatching blind — the model repairs the call in one
-    round-trip. Valid calls (and any call we can't confidently validate)
+    round-trip.  Valid calls (and any call we can't confidently validate)
     dispatch untouched, so this can never block a legitimate invocation.
 
-    Only *key absence* of schema-``required`` fields counts as invalid.
-    No type checking, no null rejection — nullable/typed edge cases are the
-    tool's own business, and ``coerce_tool_args`` already handles type repair
-    downstream. Returns a JSON error string when invalid, ``None`` when the
-    call should dispatch.
+    Two-phase validation (#73175):
+    1. Fast path: check top-level ``required`` key absence (existing).
+    2. Deep path: when ``jsonschema`` is available, validate the full
+       argument object against the parameter schema — catching invalid
+       ``enum`` values, wrong ``type``, ``additionalProperties``
+       violations, and nested ``required`` errors.
+
+    Fails open: if the schema is missing, malformed, uses unsupported
+    external references, or the validator is unavailable, the call
+    dispatches untouched.
     """
     try:
         from tools.registry import registry as _registry
@@ -967,23 +972,51 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         params = fn.get("parameters")
         if not isinstance(params, dict):
             return None
+
+        # --- Phase 1: fast required-field check (existing behaviour) ---
         required = params.get("required")
-        if not isinstance(required, list) or not required:
+        if isinstance(required, list) and required:
+            missing = [r for r in required if isinstance(r, str) and r not in args]
+            if missing:
+                return json.dumps({
+                    "error": (
+                        f"tool_call to '{name}' is missing required argument(s): "
+                        f"{', '.join(missing)}. The tool was NOT invoked."
+                    ),
+                    "parameters": params,
+                    "hint": (
+                        "Retry tool_call with 'arguments' matching the parameters "
+                        "schema above."
+                    ),
+                }, ensure_ascii=False)
+
+        # --- Phase 2: full jsonschema validation ---
+        try:
+            import jsonschema  # type: ignore[import-untyped]
+        except ImportError:
+            return None  # fail open — jsonschema not installed
+
+        try:
+            jsonschema.validate(args, params)
+        except jsonschema.ValidationError as exc:
+            # Build a precise error path for the model to repair.
+            path = ".".join(str(p) for p in exc.absolute_path) if exc.absolute_path else "(root)"
+            return json.dumps({
+                "error": (
+                    f"tool_call to '{name}' has invalid argument at '{path}': "
+                    f"{exc.message}. The tool was NOT invoked."
+                ),
+                "parameters": params,
+                "hint": (
+                    "Retry tool_call with 'arguments' matching the parameters "
+                    "schema above."
+                ),
+            }, ensure_ascii=False)
+        except Exception:
+            # Schema uses unsupported features (e.g. ``$ref``) — fail open.
             return None
-        missing = [r for r in required if isinstance(r, str) and r not in args]
-        if not missing:
-            return None
-        return json.dumps({
-            "error": (
-                f"tool_call to '{name}' is missing required argument(s): "
-                f"{', '.join(missing)}. The tool was NOT invoked."
-            ),
-            "parameters": params,
-            "hint": (
-                "Retry tool_call with 'arguments' matching the parameters "
-                "schema above."
-            ),
-        }, ensure_ascii=False)
+
+        return None
     except Exception:  # pragma: no cover — never block dispatch on validator bugs
         logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)
         return None

@@ -30,6 +30,8 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver
 # integration test pins. If health_report widens its vocabulary, add here.
@@ -215,6 +217,7 @@ def _open_mcp(binary: str) -> subprocess.Popen:
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        creationflags=windows_hide_flags(),
         env=_sanitized_cua_env(),
     )
 

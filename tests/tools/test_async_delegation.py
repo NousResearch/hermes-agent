@@ -632,6 +632,34 @@ def test_completed_records_pruned_to_cap():
     assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
 
 
+def test_active_task_count_expands_batches_while_active_count_stays_unit(monkeypatch):
+    """active_count() counts dispatch UNITS (batch=1); active_task_count()
+    expands a batch to its child count. This is the batch-vs-single distinction
+    the background_work metric relies on so a 3-task fan-out isn't undercounted
+    as 1 running subagent.
+    """
+    # Deterministic: install synthetic running records directly, no real spawn.
+    with ad._records_lock:
+        saved = dict(ad._records)
+        ad._records.clear()
+        ad._records["single_a"] = {"status": "running"}  # single subagent
+        ad._records["batch_3"] = {"status": "running", "is_batch": True,
+                                   "goals": ["g1", "g2", "g3"]}  # 3-task batch
+        ad._records["batch_missing"] = {"status": "running", "is_batch": True}  # goals absent -> 1
+        ad._records["done"] = {"status": "completed", "is_batch": True,
+                                "goals": ["x", "y"]}  # not running -> ignored
+    try:
+        # 3 running UNITS (single + 2 batches); the completed one is excluded.
+        assert ad.active_count() == 3
+        # TASKS: single(1) + batch_3(3) + batch_missing(1, fallback) = 5.
+        assert ad.active_task_count() == 5
+    finally:
+        with ad._records_lock:
+            ad._records.clear()
+            ad._records.update(saved)
+
+
+
 def test_completion_is_persisted_and_delivery_can_be_acknowledged(tmp_path, monkeypatch):
     """A finished child remains pending on disk until its queue consumer acks it."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

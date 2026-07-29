@@ -533,12 +533,42 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 
 
 def active_count() -> int:
-    """Number of async delegations currently running."""
+    """Number of async delegation UNITS currently running.
+
+    A unit is one dispatch: a single subagent OR a whole fan-out batch. A batch
+    counts as ONE here because it occupies one async-pool slot (the capacity
+    semantics ``dispatch_async_delegation_batch`` relies on). For the count of
+    actual concurrent child subagents (batch expanded), use
+    ``active_task_count()``.
+    """
     with _records_lock:
         return sum(
             1 for r in _records.values()
             if r.get("status") in {"running", "stalling", "finalizing"}
         )
+
+
+def active_task_count() -> int:
+    """Number of async delegation TASKS (child subagents) currently running.
+
+    Unlike ``active_count()`` (units/slots), this expands a batch to its child
+    count: a running batch of N tasks contributes N, a single subagent
+    contributes 1. This is the truthful "how many subagents are actually
+    working right now" figure for observability, where a 3-task batch shown as
+    "1" undercounts real concurrent work. Falls back to counting a batch as 1
+    if its goal list is missing.
+    """
+    with _records_lock:
+        total = 0
+        for r in _records.values():
+            if r.get("status") not in {"running", "finalizing"}:
+                continue
+            if r.get("is_batch"):
+                goals = r.get("goals")
+                total += len(goals) if isinstance(goals, (list, tuple)) and goals else 1
+            else:
+                total += 1
+        return total
 
 
 def _new_delegation_id() -> str:

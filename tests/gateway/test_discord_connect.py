@@ -332,6 +332,76 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     assert adapter._platform_lock_identity is None
 
 
+async def _connect_raising(monkeypatch, exc, token="test-token"):
+    """Drive connect() to failure with *exc* raised from the ready wait."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token=token))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    released = []
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: released.append((scope, identity)))
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+
+    async def fake_wait_for_ready(ready_event, bot_task, timeout):
+        raise exc
+
+    monkeypatch.setattr(
+        discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
+    )
+
+    ok = await adapter.connect()
+    return adapter, ok, released
+
+
+@pytest.mark.asyncio
+async def test_connect_marks_login_failure_non_retryable(monkeypatch):
+    """A rejected token cannot start working on a retry.
+
+    Left retryable, the supervisor re-attempts on the reconnect backoff
+    forever, and every attempt is another failed identify against Discord.
+    """
+    import discord
+
+    adapter, ok, released = await _connect_raising(
+        monkeypatch,
+        discord.LoginFailure("Improper token has been passed."),
+        token="bad-token",
+    )
+
+    assert ok is False
+    assert adapter.fatal_error_code == "discord_auth_failed"
+    assert adapter.fatal_error_retryable is False
+    assert released == [("discord-bot-token", "bad-token")]
+    assert adapter._platform_lock_identity is None
+
+
+@pytest.mark.asyncio
+async def test_connect_generic_failure_stays_retryable(monkeypatch):
+    """The LoginFailure branch must not shadow the generic handler.
+
+    A transient fault (DNS, proxy, network blip) still has to be retryable, so
+    it must not be recorded as an auth failure.
+    """
+    adapter, ok, released = await _connect_raising(
+        monkeypatch, RuntimeError("proxy connect failed"),
+    )
+
+    assert ok is False
+    assert adapter.fatal_error_code != "discord_auth_failed"
+    assert adapter.fatal_error_retryable is True
+    assert released == [("discord-bot-token", "test-token")]
+
+
 @pytest.mark.asyncio
 async def test_connect_timeout_cancels_bot_task(monkeypatch):
     """Regression: connect() timeout must cancel _bot_task so the zombie

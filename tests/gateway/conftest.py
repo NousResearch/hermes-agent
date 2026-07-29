@@ -124,6 +124,10 @@ def _ensure_discord_mock() -> None:
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
+    # A real subclass, not Exception itself: connect() catches LoginFailure
+    # ahead of a generic `except Exception`, and aliasing the two would make
+    # that generic handler unreachable under test.
+    discord_mod.LoginFailure = type("LoginFailure", (Exception,), {})
     discord_mod.Message = type("Message", (), {})
 
     # Embed: accept the kwargs production code / tests use

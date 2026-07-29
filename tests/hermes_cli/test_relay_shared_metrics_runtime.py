@@ -279,15 +279,15 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     package = json.loads(packages[0].read_text(encoding="utf-8"))
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
-        "hermes.model_call.count",
+        "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
     }
-    assert metrics["hermes.model_call.count"]["dimensions"] == {
+    assert metrics["hermes.model_route.count"]["dimensions"] == {
         "model": "claude-sonnet",
         "provider": "anthropic",
     }
-    assert metrics["hermes.model_call.count"]["value"] == 1
+    assert metrics["hermes.model_route.count"]["value"] == 1
     assert metrics["hermes.task_run.started"] == {
         "name": "hermes.task_run.started",
         "type": "counter",
@@ -432,8 +432,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
 
     assert len(by_metric["hermes.task_run.started"]) == 1
     assert by_metric["hermes.task_run.started"][0]["value"] == 3
-    assert len(by_metric["hermes.model_call.count"]) == 1
-    model_counter = by_metric["hermes.model_call.count"][0]
+    assert len(by_metric["hermes.model_route.count"]) == 1
+    model_counter = by_metric["hermes.model_route.count"][0]
     assert model_counter["dimensions"] == {
         "model": model_canary,
         "provider": "custom",
@@ -468,7 +468,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         json.loads(package.read_text(encoding="utf-8")) for package in packages
     ]
     for package in package_payloads:
-        assert package["schema_version"] == "hermes.shared_metrics.v1"
+        assert package["schema_version"] == "hermes.shared_metrics.v2"
         for metric in package["metrics"]:
             key = (metric["name"], tuple(sorted(metric["dimensions"].items())))
             package_values[key] = package_values.get(key, 0) + metric["value"]

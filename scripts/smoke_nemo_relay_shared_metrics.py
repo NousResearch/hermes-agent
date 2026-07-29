@@ -222,7 +222,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     ]
     by_name = {counter["name"]: counter for counter in counters}
     if set(by_name) != {
-        "hermes.model_call.count",
+        "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
     }:
@@ -230,7 +230,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
         )
     expected_model = {
-        "name": "hermes.model_call.count",
+        "name": "hermes.model_route.count",
         "dimensions": {
             "model": MODEL_CANARY,
             "provider": "custom",
@@ -238,9 +238,9 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "value": 1,
         "packaged_value": 1,
     }
-    if by_name["hermes.model_call.count"] != expected_model:
+    if by_name["hermes.model_route.count"] != expected_model:
         raise AssertionError(
-            f"Unexpected model counter: {by_name['hermes.model_call.count']}"
+            f"Unexpected model counter: {by_name['hermes.model_route.count']}"
         )
     expected_start = {
         "name": "hermes.task_run.started",
@@ -299,20 +299,20 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
             )
     metrics = {metric["name"]: metric for metric in package.get("metrics", [])}
     if set(metrics) != {
-        "hermes.model_call.count",
+        "hermes.model_route.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
     }:
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(package.get('metrics'), indent=2)}"
         )
-    model_dimensions = metrics["hermes.model_call.count"]["dimensions"]
+    model_dimensions = metrics["hermes.model_route.count"]["dimensions"]
     if model_dimensions != {
         "model": MODEL_CANARY,
         "provider": "custom",
     }:
         raise AssertionError(
-            f"Unexpected model metric: {metrics['hermes.model_call.count']}"
+            f"Unexpected model metric: {metrics['hermes.model_route.count']}"
         )
     terminal = metrics["hermes.task_run.finished"]
     if terminal["dimensions"] != {
@@ -422,7 +422,7 @@ def main() -> int:
         / "hermes_cli"
         / "observability"
         / "schemas"
-        / "hermes.shared_metrics.v1.schema.json",
+        / "hermes.shared_metrics.v2.schema.json",
     )
 
     print("Hermes -> NeMo Relay shared-metrics smoke test passed")

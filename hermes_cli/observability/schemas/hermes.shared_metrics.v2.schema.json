@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:hermes-agent:schema:shared-metrics:v1",
-  "title": "Hermes Shared Metrics Package v1",
+  "$id": "urn:hermes-agent:schema:shared-metrics:v2",
+  "title": "Hermes Shared Metrics Package v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,13 +16,13 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "hermes.shared_metrics.v1"
+      "const": "hermes.shared_metrics.v2"
     },
     "package_id": {
       "$ref": "#/$defs/uuid"
     },
     "install_id": {
-      "description": "Random persistent identifier scoped to one HERMES_HOME; local-only in schema v1.",
+      "description": "Random persistent identifier scoped to one HERMES_HOME; local-only in schema v2.",
       "$ref": "#/$defs/uuid"
     },
     "period_start": {
@@ -58,6 +58,9 @@
         "oneOf": [
           {
             "$ref": "#/$defs/model_call_counter"
+          },
+          {
+            "$ref": "#/$defs/model_route_counter"
           },
           {
             "$ref": "#/$defs/task_started_counter"
@@ -151,6 +154,50 @@
                 "local",
                 "unknown"
               ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_route_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_route.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "provider"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
             }
           }
         },

@@ -7,12 +7,13 @@ from typing import Any
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
-SCHEMA_VERSION = "hermes.metrics.event.v1"
+SCHEMA_VERSION = "hermes.metrics.event.v2"
 MODEL_CALL_SCOPE = "hermes.model_call"
 MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
-MODEL_CALL_METRIC = "hermes.model_call.count"
+LEGACY_MODEL_CALL_METRIC = "hermes.model_call.count"
+MODEL_ROUTE_METRIC = "hermes.model_route.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
 MODEL_IDENTIFIER_MAX_LENGTH = 256
@@ -90,7 +91,48 @@ COUNT_BUCKETS: frozenset[str] = frozenset({
     "gte_11",
 })
 
+_LEGACY_PROVIDER_FAMILIES = frozenset({
+    "aggregator",
+    "custom",
+    "direct",
+    "local",
+    "unknown",
+})
+_LEGACY_MODEL_LOCALITIES = frozenset({"local", "remote", "unknown"})
+_LEGACY_MODEL_OUTCOMES = frozenset({"cancelled", "failed", "success"})
+_LEGACY_MODEL_FAMILIES = frozenset({
+    "claude",
+    "deepseek",
+    "gemini",
+    "gemma",
+    "glm",
+    "gpt",
+    "grok",
+    "kimi",
+    "llama",
+    "minimax",
+    "mimo",
+    "mistral",
+    "nemotron",
+    "nova",
+    "o1",
+    "o3",
+    "o4",
+    "qwen",
+    "step",
+    "trinity",
+    "unknown",
+})
+
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
+    # Retained only so pre-v2 pending rows remain packageable.
+    LEGACY_MODEL_CALL_METRIC: {
+        "call_role": frozenset({"primary"}),
+        "locality": _LEGACY_MODEL_LOCALITIES,
+        "model_family": _LEGACY_MODEL_FAMILIES,
+        "outcome": _LEGACY_MODEL_OUTCOMES,
+        "provider_family": _LEGACY_PROVIDER_FAMILIES,
+    },
     TASK_STARTED_METRIC: {
         "entrypoint": TASK_ENTRYPOINTS,
         "execution_surface": EXECUTION_SURFACES,
@@ -107,9 +149,11 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "tool_call_count_bucket": COUNT_BUCKETS,
     },
 }
-COUNTER_METRICS: frozenset[str] = frozenset(
-    {*_COUNTER_DIMENSION_VALUES, MODEL_CALL_METRIC}
-)
+COUNTER_METRICS: frozenset[str] = frozenset({
+    MODEL_ROUTE_METRIC,
+    TASK_FINISHED_METRIC,
+    TASK_STARTED_METRIC,
+})
 
 
 def counter_dimensions_are_valid(
@@ -117,7 +161,7 @@ def counter_dimensions_are_valid(
     dimensions: dict[str, Any],
 ) -> bool:
     """Return whether dimensions match one closed shared-metric contract."""
-    if metric_name == MODEL_CALL_METRIC:
+    if metric_name == MODEL_ROUTE_METRIC:
         return (
             set(dimensions) == {"model", "provider"}
             and dimensions["model"]
@@ -172,7 +216,7 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {field: data.get(field) for field in sorted(expected_fields)}
-    if not counter_dimensions_are_valid(MODEL_CALL_METRIC, dimensions):
+    if not counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions):
         return None
     return dimensions
 

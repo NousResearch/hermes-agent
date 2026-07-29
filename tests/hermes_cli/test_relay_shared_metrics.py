@@ -24,9 +24,13 @@ from hermes_cli.observability.shared_metrics_contract import (
     COUNT_BUCKETS,
     DURATION_BUCKETS,
     EXECUTION_SURFACES,
+    LEGACY_MODEL_CALL_METRIC,
     MODEL_CALL_PROFILE_MODEL,
     MODEL_IDENTIFIER_MAX_LENGTH,
+    MODEL_ROUTE_METRIC,
     PROVIDER_IDENTIFIER_MAX_LENGTH,
+    SCHEMA_KEY,
+    SCHEMA_VERSION,
     TASK_END_REASONS,
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
@@ -48,13 +52,14 @@ SCHEMA_PATH = (
     / "hermes_cli"
     / "observability"
     / "schemas"
-    / "hermes.shared_metrics.v1.schema.json"
+    / "hermes.shared_metrics.v2.schema.json"
 )
+LEGACY_SCHEMA_PATH = SCHEMA_PATH.with_name("hermes.shared_metrics.v1.schema.json")
 
 
-def _schema_validator():
+def _schema_validator(path: Path = SCHEMA_PATH):
     jsonschema = pytest.importorskip("jsonschema")
-    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema = json.loads(path.read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator.check_schema(schema)
     return jsonschema.Draft202012Validator(
         schema,
@@ -64,7 +69,7 @@ def _schema_validator():
 
 def _package_dimension_schema() -> dict[str, object]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    return schema["$defs"]["model_call_counter"]["properties"]["dimensions"]
+    return schema["$defs"]["model_route_counter"]["properties"]["dimensions"]
 
 
 def _task_dimension_schema(kind: str) -> dict[str, object]:
@@ -76,6 +81,16 @@ def _dimensions() -> dict[str, str]:
     return {
         "model": "anthropic/claude-sonnet-4.6",
         "provider": "openrouter",
+    }
+
+
+def _legacy_dimensions() -> dict[str, str]:
+    return {
+        "call_role": "primary",
+        "locality": "remote",
+        "model_family": "claude",
+        "outcome": "success",
+        "provider_family": "direct",
     }
 
 
@@ -106,11 +121,11 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     _schema_validator().validate(first_package)
     uuid.UUID(first_package["package_id"])
     uuid.UUID(first_package["install_id"])
-    assert first_package["schema_version"] == "hermes.shared_metrics.v1"
+    assert first_package["schema_version"] == "hermes.shared_metrics.v2"
     assert first_package["resource"] == {"hermes_version": "test-version"}
     assert first_package["metrics"] == [
         {
-            "name": "hermes.model_call.count",
+            "name": MODEL_ROUTE_METRIC,
             "type": "counter",
             "dimensions": _dimensions(),
             "value": 2,
@@ -135,6 +150,120 @@ def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_pat
     assert restarted.counter_snapshot()[0]["packaged_value"] == 3
 
 
+def test_v2_package_preserves_pending_v1_model_counters(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    period_start = shared_metrics_module._utc_now().date().isoformat()
+    legacy_dimensions_json = json.dumps(
+        _legacy_dimensions(),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO counter_aggregates(
+                period_start,
+                metric_name,
+                hermes_version,
+                dimensions_json,
+                value,
+                packaged_value
+            ) VALUES (?, ?, ?, ?, 3, 0)
+            """,
+            (
+                period_start,
+                LEGACY_MODEL_CALL_METRIC,
+                "test-version",
+                legacy_dimensions_json,
+            ),
+        )
+    store.record_model_call(_dimensions(), "test-version")
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+
+    assert package["schema_version"] == "hermes.shared_metrics.v2"
+    assert package["metrics"] == [
+        {
+            "name": LEGACY_MODEL_CALL_METRIC,
+            "type": "counter",
+            "dimensions": _legacy_dimensions(),
+            "value": 3,
+        },
+        {
+            "name": MODEL_ROUTE_METRIC,
+            "type": "counter",
+            "dimensions": _dimensions(),
+            "value": 1,
+        },
+    ]
+    assert all(
+        row["value"] == row["packaged_value"] for row in store.counter_snapshot()
+    )
+
+
+def test_v1_outbox_package_exports_unchanged_after_upgrade(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    outbox_directory = tmp_path / "outbox"
+    store = SharedMetricsStore(database_path, outbox_directory)
+    package_id = str(uuid.uuid4())
+    payload = {
+        "schema_version": "hermes.shared_metrics.v1",
+        "package_id": package_id,
+        "install_id": str(uuid.uuid4()),
+        "period_start": "2026-07-28T00:00:00Z",
+        "period_end": "2026-07-29T00:00:00Z",
+        "generated_at": "2026-07-29T01:00:00Z",
+        "resource": {"hermes_version": "legacy-version"},
+        "metrics": [
+            {
+                "name": LEGACY_MODEL_CALL_METRIC,
+                "type": "counter",
+                "dimensions": _legacy_dimensions(),
+                "value": 2,
+            }
+        ],
+    }
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    _schema_validator(LEGACY_SCHEMA_PATH).validate(payload)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO package_outbox(
+                package_id,
+                period_start,
+                period_end,
+                payload_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                package_id,
+                payload["period_start"],
+                payload["period_end"],
+                payload_json,
+                payload["generated_at"],
+            ),
+        )
+
+    assert store.create_and_export_package() == [
+        outbox_directory / f"{package_id}.json"
+    ]
+    exported = json.loads(
+        (outbox_directory / f"{package_id}.json").read_text(encoding="utf-8")
+    )
+    assert exported == payload
+    with sqlite3.connect(database_path) as connection:
+        [persisted_payload_json] = connection.execute(
+            "SELECT payload_json FROM package_outbox WHERE package_id = ?",
+            (package_id,),
+        ).fetchone()
+    assert persisted_payload_json == payload_json
+
+
 def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     tmp_path, monkeypatch
 ):
@@ -152,7 +281,7 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
     assert len(list((tmp_path / "outbox").glob("*.json"))) == 1
     assert store.counter_snapshot()[0] == {
         "period_start": "2026-07-28",
-        "metric_name": "hermes.model_call.count",
+        "metric_name": MODEL_ROUTE_METRIC,
         "hermes_version": "test-version",
         "dimensions": _dimensions(),
         "value": 2,
@@ -173,13 +302,30 @@ def test_due_export_runs_once_per_utc_day_and_catches_up_pending_deltas(
 
 
 def test_package_schema_matches_the_model_call_contract():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     properties = _package_dimension_schema()["properties"]
 
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v2"
     assert set(properties) == {"model", "provider"}
     assert properties["model"]["maxLength"] == MODEL_IDENTIFIER_MAX_LENGTH
     assert properties["provider"]["maxLength"] == PROVIDER_IDENTIFIER_MAX_LENGTH
     assert "enum" not in properties["model"]
     assert "enum" not in properties["provider"]
+
+
+def test_v1_package_schema_retains_the_legacy_model_contract():
+    schema = json.loads(LEGACY_SCHEMA_PATH.read_text(encoding="utf-8"))
+    model_counter = schema["$defs"]["model_call_counter"]
+
+    assert schema["properties"]["schema_version"]["const"] == "hermes.shared_metrics.v1"
+    assert model_counter["properties"]["name"]["const"] == LEGACY_MODEL_CALL_METRIC
+    assert set(model_counter["properties"]["dimensions"]["properties"]) == {
+        "call_role",
+        "locality",
+        "model_family",
+        "outcome",
+        "provider_family",
+    }
 
 
 def test_package_schema_matches_the_task_contract():
@@ -377,7 +523,7 @@ def test_subscriber_contract_rejects_unknown_fields_and_dimension_values():
         category_profile={"model_name": MODEL_CALL_PROFILE_MODEL},
         name="hermes.model_call",
         scope_category="end",
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v1"},
+        metadata={SCHEMA_KEY: SCHEMA_VERSION},
         data=_dimensions(),
     )
 
@@ -410,7 +556,7 @@ def test_task_subscriber_contract_accepts_only_bounded_scope_events():
         category_profile=None,
         name="hermes.task_run",
         scope_category="start",
-        metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v1"},
+        metadata={SCHEMA_KEY: SCHEMA_VERSION},
         data={"entrypoint": "interactive", "execution_surface": "cli"},
     )
     assert task_counter(start) == (
@@ -534,8 +680,21 @@ def test_store_rejects_dimensions_outside_the_metric_contract(tmp_path):
 
     with pytest.raises(ValueError, match="Unsupported dimensions"):
         store.record_counter(
-            "hermes.model_call.count",
+            MODEL_ROUTE_METRIC,
             {"prompt": "must-not-be-persisted"},
+            "test-version",
+        )
+
+    assert store.counter_snapshot() == []
+
+
+def test_store_does_not_record_the_retired_model_metric(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+
+    with pytest.raises(ValueError, match="Unsupported shared metric"):
+        store.record_counter(
+            LEGACY_MODEL_CALL_METRIC,
+            _legacy_dimensions(),
             "test-version",
         )
 
@@ -708,7 +867,7 @@ def test_package_export_does_not_chase_concurrent_updates(tmp_path, monkeypatch)
     assert create_calls == 1
     assert len(first_paths) == 1
     [counter] = store.counter_snapshot()
-    assert counter["metric_name"] == "hermes.model_call.count"
+    assert counter["metric_name"] == MODEL_ROUTE_METRIC
     assert counter["dimensions"] == _dimensions()
     assert counter["value"] == 2
     assert counter["packaged_value"] == 1

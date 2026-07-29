@@ -21,6 +21,7 @@ Two usage modes are exposed:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -249,10 +250,13 @@ def _beeps_enabled() -> bool:
     """CLI parity: voice.beep_enabled in config.yaml (default True)."""
     try:
         from hermes_cli.config import load_config
+        from utils import is_truthy_value
 
         voice_cfg = load_config().get("voice", {})
         if isinstance(voice_cfg, dict):
-            return bool(voice_cfg.get("beep_enabled", True))
+            # is_truthy_value handles quoted YAML strings like "false"
+            # which bool() would misread as True (#49883).
+            return is_truthy_value(voice_cfg.get("beep_enabled", True), default=True)
     except Exception:
         pass
     return True
@@ -297,9 +301,56 @@ _continuous_recorder: Any = None
 # leak into the mic.
 _tts_playing = threading.Event()
 _tts_playing.set()  # initially "not playing"
+
+# ── Silence-count hold (agent busy) ──────────────────────────────────
+# While the agent is mid-turn (thinking / tool-calling, possibly for
+# minutes) or TTS is playing, the user is CORRECTLY silent — those cycles
+# must not count toward the no-speech limit or a long tool run ends the
+# voice chat under the user (#silence-must-not-end-the-chat). The host
+# surface (tui_gateway) registers a probe that reports "agent busy";
+# TTS-playing is already tracked via _tts_playing above.
+_voice_busy_probe: Optional[Callable[[], bool]] = None
+
+
+def set_voice_busy_probe(probe: Optional[Callable[[], bool]]) -> None:
+    """Register a callable that returns True while the agent is mid-turn.
+
+    Called by the hosting surface (tui_gateway registers one that checks
+    every session's ``running`` flag). ``None`` clears it. The probe must
+    be cheap and thread-safe — it runs on the silence-callback thread.
+    """
+    global _voice_busy_probe
+    _voice_busy_probe = probe
+
+
+def _voice_activity_held() -> bool:
+    """True while silent cycles must NOT count toward the no-speech limit.
+
+    Held when TTS is playing (the user is listening) or when the
+    registered busy probe reports the agent mid-turn (the user is
+    waiting). Fail-open to "not held" so a broken probe can never make
+    the voice chat immortal.
+    """
+    if not _tts_playing.is_set():
+        return True
+    probe = _voice_busy_probe
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception:
+        return False
+
+
 _continuous_on_transcript: Optional[Callable[[str], None]] = None
 _continuous_on_status: Optional[Callable[[str], None]] = None
 _continuous_on_silent_limit: Optional[Callable[[], None]] = None
+# Explicit user-intent stop signal: fired when the user SAYS a bare stop
+# phrase ("stop"). Distinct from on_silent_limit (a timeout) so consumers
+# (TUI, desktop) can end the conversation like a manual stop instead of
+# reporting "no speech detected". When unset, on_silent_limit fires as a
+# fallback so older callers still turn voice off.
+_continuous_on_stop_phrase: Optional[Callable[[str], None]] = None
 _continuous_no_speech_count = 0
 _CONTINUOUS_NO_SPEECH_LIMIT = 3
 
@@ -374,6 +425,8 @@ def start_continuous(
     silence_threshold: int = 200,
     silence_duration: float = 3.0,
     auto_restart: bool = True,
+    max_recording_seconds: float = 0.0,
+    on_stop_phrase: Optional[Callable[[str], None]] = None,
 ) -> bool:
     """Start a VAD-driven continuous recording loop.
 
@@ -391,9 +444,20 @@ def start_continuous(
 
     ``on_status`` is called with ``"listening"`` / ``"transcribing"`` /
     ``"idle"`` so the UI can show a live indicator.
+
+    ``max_recording_seconds`` is the hard cap on a single recording's length
+    (``voice.max_recording_seconds``); any non-positive or non-numeric value
+    disables the cap, preserving the previous unbounded behaviour.
+
+    ``on_stop_phrase`` is called with the (stripped) transcript when the user
+    utters a bare voice stop phrase (``voice.stop_phrases``, default "stop").
+    The loop halts first, so the consumer only needs to reflect "voice off" —
+    exactly like the user pressing the manual stop control. When omitted,
+    ``on_silent_limit`` fires instead so legacy callers still turn voice off.
     """
     global _continuous_active, _continuous_recorder, _continuous_auto_restart
     global _continuous_on_transcript, _continuous_on_status, _continuous_on_silent_limit
+    global _continuous_on_stop_phrase
     global _continuous_no_speech_count
 
     with _continuous_lock:
@@ -408,6 +472,7 @@ def start_continuous(
         _continuous_on_transcript = on_transcript
         _continuous_on_status = on_status
         _continuous_on_silent_limit = on_silent_limit
+        _continuous_on_stop_phrase = on_stop_phrase
         if auto_restart:
             _continuous_no_speech_count = 0
 
@@ -416,6 +481,15 @@ def start_continuous(
 
         _continuous_recorder._silence_threshold = silence_threshold
         _continuous_recorder._silence_duration = silence_duration
+        # Same numeric-with-bool-excluded guard as the CLI wiring in
+        # cli.py:_voice_start_recording — <= 0 (or garbage) disables the cap.
+        _continuous_recorder._max_recording_seconds = (
+            max_recording_seconds
+            if isinstance(max_recording_seconds, (int, float))
+            and not isinstance(max_recording_seconds, bool)
+            and max_recording_seconds > 0
+            else 0.0
+        )
         rec = _continuous_recorder
 
     _debug(
@@ -455,6 +529,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
     """
     global _continuous_active, _continuous_on_transcript, _continuous_stopping
     global _continuous_on_status, _continuous_on_silent_limit
+    global _continuous_on_stop_phrase
     global _continuous_recorder, _continuous_no_speech_count
 
     with _continuous_lock:
@@ -465,12 +540,14 @@ def stop_continuous(force_transcribe: bool = False) -> None:
         on_status = _continuous_on_status
         on_transcript = _continuous_on_transcript
         on_silent_limit = _continuous_on_silent_limit
+        on_stop_phrase = _continuous_on_stop_phrase
         auto_restart = _continuous_auto_restart
         track_no_speech = force_transcribe and not auto_restart
         _continuous_stopping = rec is not None
         _continuous_on_transcript = None
         _continuous_on_status = None
         _continuous_on_silent_limit = None
+        _continuous_on_stop_phrase = None
         if not track_no_speech:
             _continuous_no_speech_count = 0
 
@@ -512,10 +589,25 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                 finally:
                     stop_phrase = bool(transcript and is_voice_stop_phrase(transcript))
                     if stop_phrase:
-                        # Bare stop phrase — the loop is already stopping;
-                        # swallow it instead of sending "stop" to the agent.
-                        _debug("stop_continuous: stop phrase — transcript discarded")
+                        # Bare stop phrase — explicit user intent to end the
+                        # voice chat. Never sent to the agent; fire the
+                        # dedicated signal so the consumer (TUI / desktop)
+                        # ends the conversation instead of silently re-arming
+                        # the next capture (with auto_restart=False the CLIENT
+                        # drives the loop, so discarding the transcript alone
+                        # would leave the conversation running forever).
+                        _debug(
+                            f"stop_continuous: stop phrase {transcript!r} — ending voice chat"
+                        )
+                        stop_text = transcript or ""
                         transcript = None
+                        try:
+                            if on_stop_phrase is not None:
+                                on_stop_phrase(stop_text)
+                            elif on_silent_limit is not None:
+                                on_silent_limit()
+                        except Exception:
+                            pass
                     if transcript:
                         try:
                             on_transcript(transcript)
@@ -523,9 +615,17 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                             logger.warning("on_transcript callback raised: %s", e)
 
                     if track_no_speech:
+                        held = _voice_activity_held()
                         with _continuous_lock:
                             if transcript or stop_phrase:
                                 _continuous_no_speech_count = 0
+                            elif held:
+                                # Agent busy / TTS playing — the user is
+                                # correctly silent; don't count the cycle.
+                                _debug(
+                                    "stop_continuous: silent cycle ignored "
+                                    "(agent busy or TTS playing)"
+                                )
                             else:
                                 _continuous_no_speech_count += 1
                                 should_halt = (
@@ -598,6 +698,7 @@ def _continuous_on_silence() -> None:
         on_transcript = _continuous_on_transcript
         on_status = _continuous_on_status
         on_silent_limit = _continuous_on_silent_limit
+        on_stop_phrase = _continuous_on_stop_phrase
 
     if rec is None:
         _debug("_continuous_on_silence: no recorder — abort")
@@ -651,12 +752,22 @@ def _continuous_on_silence() -> None:
                 pass
 
     stop_phrase = bool(transcript and is_voice_stop_phrase(transcript))
+    stop_text = (transcript or "") if stop_phrase else ""
     if stop_phrase:
         # User said a bare stop phrase ("stop") — end the voice chat.
-        # Not delivered to the agent; the loop halts exactly like the
-        # silent-cycle limit so every UI (TUI, desktop) turns voice off.
+        # Not delivered to the agent; the loop halts and the explicit
+        # on_stop_phrase signal (fallback: on_silent_limit) tells every UI
+        # (TUI, desktop) to end the conversation like a manual stop.
         _debug(f"_continuous_on_silence: stop phrase {transcript!r} — ending loop")
         transcript = None
+
+    # Silent cycle while the agent is mid-turn or TTS is playing: the user
+    # is CORRECTLY quiet (waiting/listening), so the cycle must not count
+    # toward the no-speech limit — a multi-minute tool run would otherwise
+    # end the voice chat under the user. Checked outside the lock (probe
+    # may call into the host surface).
+    _silence_held = (transcript is None and not stop_phrase
+                     and _voice_activity_held())
 
     with _continuous_lock:
         if not _continuous_active:
@@ -665,6 +776,11 @@ def _continuous_on_silence() -> None:
             return
         if transcript:
             _continuous_no_speech_count = 0
+        elif _silence_held:
+            _debug(
+                "_continuous_on_silence: silent cycle ignored "
+                "(agent busy or TTS playing)"
+            )
         elif not stop_phrase:
             _continuous_no_speech_count += 1
         should_halt = stop_phrase or (
@@ -686,7 +802,15 @@ def _continuous_on_silence() -> None:
         with _continuous_lock:
             _continuous_active = False
             _continuous_no_speech_count = 0
-        if on_silent_limit:
+        if stop_phrase and on_stop_phrase is not None:
+            # Explicit user-intent stop — distinct from the no-speech timeout
+            # so consumers can report "voice chat ended" instead of "no
+            # speech detected".
+            try:
+                on_stop_phrase(stop_text)
+            except Exception:
+                pass
+        elif on_silent_limit:
             try:
                 on_silent_limit()
             except Exception:
@@ -757,7 +881,40 @@ def _continuous_on_silence() -> None:
 # ── TTS API ──────────────────────────────────────────────────────────
 
 
-def speak_text(text: str) -> None:
+def _speak_text_streaming(text: str, stop_event: Optional[threading.Event] = None) -> bool:
+    """Speak ``text`` via the generic streaming dispatcher; True on success.
+
+    Bridges the one-shot ``speak_text`` contract onto the shared
+    ``stream_tts_to_speaker`` pipeline (tools.tts_tool): the full reply is
+    fed as a single delta + end-of-text sentinel, and we block until the
+    pipeline's done event fires — same blocking semantics the sync path
+    has, so callers (and the mic re-arm logic in ``speak_text``) see no
+    behavioral difference beyond earlier first audio.
+
+    ``stop_event`` (optional) is wired straight into the pipeline so
+    external barge-in / stop paths can cut streaming playback — without
+    it the pipeline's stop event was private and speech over this path
+    was uninterruptible (the desktop/TUI fallback-speak hole).
+
+    Returns False when playback produced nothing (caller falls back to the
+    whole-file sync path).
+    """
+    import queue as _queue
+    import threading as _threading
+
+    from tools.tts_tool import stream_tts_to_speaker
+
+    text_queue: "_queue.Queue" = _queue.Queue()
+    text_queue.put(text)
+    text_queue.put(None)  # end-of-text sentinel
+    if stop_event is None:
+        stop_event = _threading.Event()
+    done_event = _threading.Event()
+    stream_tts_to_speaker(text_queue, stop_event, done_event)
+    return done_event.is_set()
+
+
+def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
     Mirrors cli.py:_voice_speak_response exactly — same markdown strip
@@ -801,18 +958,41 @@ def speak_text(text: str) -> None:
     try:
         from tools.tts_tool import text_to_speech_tool
 
-        tts_text = text[:4000] if len(text) > 4000 else text
-        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
-        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
-        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
-        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
-        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
-        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
-        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
-        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
-        tts_text = tts_text.strip()
+        # One dispatcher, zero parallel streaming implementations (#58930):
+        # when the configured provider has a chunked streamer registered in
+        # tools.tts_streaming, route the whole reply through the same
+        # stream_tts_to_speaker pipeline the CLI voice mode uses — audio
+        # starts on sentence one instead of after full synthesis. Falls
+        # through to the legacy whole-file path when no streamer resolves.
+        try:
+            from tools.tts_streaming import resolve_streaming_provider
+            from tools.tts_tool import _load_tts_config
+
+            if resolve_streaming_provider(_load_tts_config()) is not None:
+                if _speak_text_streaming(text, stop_event):
+                    return
+        except Exception as e:
+            _debug(f"speak_text: streaming dispatch unavailable ({e}); using sync path")
+
+        # Shared cleaner (tools/tts_text_normalize): markdown, emoji,
+        # <think> blocks, verifier footer, units, newline flattening.
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            tts_text = prepare_spoken_text(text, max_chars=4000)
+        except Exception:
+            # Legacy fallback pipeline — keep speak_text best-effort.
+            tts_text = text[:4000] if len(text) > 4000 else text
+            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
+            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
+            tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
+            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
+            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
+            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
+            tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
+            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
+            tts_text = tts_text.strip()
         if not tts_text:
             return
 
@@ -827,20 +1007,34 @@ def speak_text(text: str) -> None:
         )
 
         _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
-        text_to_speech_tool(text=tts_text, output_path=mp3_path)
+        raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)
+        try:
+            tts_result = json.loads(raw_result) if isinstance(raw_result, str) else {}
+        except Exception:
+            tts_result = {}
 
-        if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-            _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
-            play_audio_file(mp3_path)
+        # Prefer the requested MP3 when the provider produced it. This
+        # preserves reliable local playback while still supporting providers
+        # that write to and return a different path.
+        audio_path = mp3_path
+        if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) == 0:
+            audio_path = tts_result.get("file_path") or mp3_path
+
+        if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
+            _debug(f"speak_text: playing {audio_path} ({os.path.getsize(audio_path)} bytes)")
+            play_audio_file(audio_path)
             try:
-                os.unlink(mp3_path)
-                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                if os.path.isfile(ogg_path):
-                    os.unlink(ogg_path)
+                cleanup_paths = {audio_path, mp3_path}
+                for path in list(cleanup_paths):
+                    ogg_path = path.rsplit(".", 1)[0] + ".ogg"
+                    cleanup_paths.add(ogg_path)
+                for path in cleanup_paths:
+                    if os.path.isfile(path):
+                        os.unlink(path)
             except OSError:
                 pass
         else:
-            _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
+            _debug(f"speak_text: TTS tool produced no audio at {audio_path}")
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)
         _debug(f"speak_text raised {type(e).__name__}: {e}")

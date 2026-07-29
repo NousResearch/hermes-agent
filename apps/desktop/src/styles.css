@@ -965,36 +965,42 @@ text-* variant utilities. */ .btn-arc {
      thin on mac still looks chunky. Use webkit for real thin thumbs; gate the
      standard props so only non-webkit engines (Firefox) take that path.
      https://developer.chrome.com/docs/css-ui/scrollbar-styling
-     https://syntackle.com/blog/changes-to-scrollbar-styling-in-chrome-121/ */
+     https://syntackle.com/blog/changes-to-scrollbar-styling-in-chrome-121/
+
+     Any author rule on ::-webkit-scrollbar switches that scroller from
+     platform overlay (fade in on scroll, zero gutter) to classic always-on
+     gutters. `.scrollbar-overlay` opts a surface out of the themed rules so
+     Electron keeps native overlay — used by conversation code blocks where a
+     permanent 4px track eats the card and always draws a bar. */
 
   .scrollbar-dt::-webkit-scrollbar,
-  .scrollbar-dt *::-webkit-scrollbar {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
     width: 0.25rem;
     height: 0.25rem;
   }
 
   .scrollbar-dt::-webkit-scrollbar-track,
   .scrollbar-dt::-webkit-scrollbar-corner,
-  .scrollbar-dt *::-webkit-scrollbar-track,
-  .scrollbar-dt *::-webkit-scrollbar-corner {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-track,
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-corner {
     background: transparent;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb,
-  .scrollbar-dt *::-webkit-scrollbar-thumb {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 18%, transparent);
     border-radius: 9999rem;
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb:hover,
-  .scrollbar-dt *::-webkit-scrollbar-thumb:hover {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb:hover {
     background: color-mix(in srgb, var(--dt-midground) 40%, transparent);
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-button,
-  .scrollbar-dt *::-webkit-scrollbar-button {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
     display: none;
   }
 
@@ -1029,12 +1035,19 @@ text-* variant utilities. */ .btn-arc {
 
   @supports not selector(::-webkit-scrollbar) {
     .scrollbar-dt,
-    .scrollbar-dt * {
+    .scrollbar-dt *:not(.scrollbar-overlay) {
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
     }
 
     .dt-portal-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* Firefox has no real overlay mode; thin + transparent track is the closest
+       match to the Chromium overlay opt-out above. */
+    .scrollbar-overlay {
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
     }

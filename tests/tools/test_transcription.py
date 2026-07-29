@@ -237,7 +237,14 @@ class TestTranscribeLocal:
             result = _transcribe_local(str(audio_file), "base")
 
         assert result["success"] is True
-        assert mock_model.transcribe.call_args.kwargs == {"beam_size": 5}
+        # Contract: null `stt.local:` config must not crash, and must not
+        # force a language or initial_prompt. Baseline kwargs (beam_size,
+        # VAD hardening) are pinned by test_stt_silence_hallucinations —
+        # don't exact-match the dict here (change-detector).
+        kwargs = mock_model.transcribe.call_args.kwargs
+        assert kwargs["beam_size"] == 5
+        assert "language" not in kwargs
+        assert "initial_prompt" not in kwargs
 
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
@@ -378,6 +385,44 @@ class TestTranscribeAudio:
         result = transcribe_audio("/nonexistent/file.ogg")
         assert result["success"] is False
         assert "not found" in result["error"]
+
+
+class TestLocalFallback:
+
+    def test_uses_installed_faster_whisper_without_changing_provider(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"provider": "openai", "local": {"model": "small"}},
+        ), patch(
+            "tools.transcription_tools._HAS_FASTER_WHISPER",
+            True,
+        ), patch(
+            "tools.transcription_tools._transcribe_local",
+            return_value={"success": True, "transcript": "local result"},
+        ) as mock_local:
+            from tools.transcription_tools import transcribe_audio_local_fallback
+
+            result = transcribe_audio_local_fallback(str(audio_file))
+
+        assert result["transcript"] == "local result"
+        mock_local.assert_called_once_with(str(audio_file), "small")
+
+    def test_does_not_install_when_no_local_backend_exists(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), patch(
+            "tools.transcription_tools._has_local_command", return_value=False
+        ):
+            from tools.transcription_tools import transcribe_audio_local_fallback
+
+            result = transcribe_audio_local_fallback(str(audio_file))
+
+        assert result["success"] is False
+        assert "installed local STT" in result["error"]
 
 
 # ---------------------------------------------------------------------------

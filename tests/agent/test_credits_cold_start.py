@@ -49,22 +49,21 @@ def test_cold_start_opens_already_at_90pct_warns():
     assert "credits.usage" in _cold_start_notices(s)
 
 
-def test_cold_start_grant_exhausted_grant_spent_only():
-    """Cap reached but top-up funds remain → grant_spent info notice ONLY.
+def test_cold_start_grant_exhausted_stays_silent():
+    """Cap reached but top-up funds remain → NO notice at cold start.
 
-    The usage band is suppressed whenever purchased (top-up) credits exist:
-    the sub-cap gauge is the wrong denominator for an account that can keep
-    spending, and previously the 90/100% warn banner stuck permanently
-    alongside grant_spent."""
+    The usage band is suppressed whenever purchased (top-up) credits exist (the
+    sub-cap gauge is the wrong denominator for an account that can keep
+    spending). grant_spent is gated on an in-session crossing (seen_grant_unspent)
+    — a session that OPENS in this state is observing a steady state, not an
+    event, so re-announcing it every session open is noise. /usage carries it."""
     s = _state(
         remaining_micros=12_340_000, subscription_micros=0,
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
         purchased_micros=12_340_000, denominator_kind="subscription_cap", paid_access=True,
     )
     assert s.used_fraction == 1.0
-    keys = _cold_start_notices(s)
-    assert "credits.usage" not in keys
-    assert "credits.grant_spent" in keys
+    assert _cold_start_notices(s) == []
 
 
 def test_cold_start_depleted_warns():
@@ -194,6 +193,34 @@ def test_seed_healthy_no_notice():
     a = _FakeAgent()
     assert _seed(a, "healthy") is True
     assert a.emitted == [([], [])]
+
+
+def test_seed_grant_exhausted_stays_silent():
+    """A session that OPENS with the grant already spent and top-up remaining is a
+    steady STATE, not an event. The seed must not re-announce it on every session
+    open (/usage carries the balance); only a live in-session crossing may fire
+    grant_spent. This is the every-session "Grant spent · $X top-up left" nag fix."""
+    a = _FakeAgent()
+    assert _seed(a, "grant_exhausted") is True
+    assert a._credits_state is not None
+    assert a.emitted == [([], [])]
+
+
+def test_live_crossing_after_seed_still_fires_grant_spent():
+    """The gate opens when the session observes the grant NOT yet spent — a healthy
+    seed followed by a grant-exhausted header is a real in-session crossing and must
+    still announce grant_spent once."""
+    a = _FakeAgent()
+    assert _seed(a, "healthy") is True
+    a.emitted = []
+    a._credits_state = _state(  # the grant_exhausted shape, as a live header would carry it
+        remaining_micros=12_340_000, subscription_micros=0,
+        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
+        purchased_micros=12_340_000, purchased_usd="12.34",
+        denominator_kind="subscription_cap", paid_access=True,
+    )
+    a._emit_credits_notices()
+    assert a.emitted == [(["credits.grant_spent"], [])]
 
 
 def test_seed_is_idempotent():

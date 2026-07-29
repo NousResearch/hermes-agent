@@ -109,6 +109,7 @@ const sidebars: SidebarsConfig = {
           label: 'Media & Web',
           items: [
             'user-guide/features/voice-mode',
+            'user-guide/features/wake-word',
             'user-guide/features/web-search',
             'user-guide/features/x-search',
             'user-guide/features/browser',
@@ -656,6 +657,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/mattermost',
             'user-guide/messaging/matrix',
             'user-guide/messaging/bluebubbles',
+            'user-guide/messaging/buzz',
             'user-guide/messaging/photon',
             'user-guide/messaging/google_chat',
             'user-guide/messaging/line',
@@ -676,6 +678,7 @@ const sidebars: SidebarsConfig = {
         'integrations/index',
         'integrations/nous-portal',
         'integrations/providers',
+        'integrations/buzz',
         'user-guide/features/mcp',
         'user-guide/features/acp',
         'user-guide/features/provider-routing',

@@ -6,6 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
+import time
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
@@ -194,12 +195,14 @@ def show_status(args):
 
     try:
         from hermes_cli.auth import (
-            get_nous_auth_status,
+            get_nous_auth_status_local,
             get_codex_auth_status,
             get_qwen_auth_status,
             get_minimax_oauth_auth_status,
         )
-        nous_status = get_nous_auth_status()
+        # Read-only display: use the refresh-free snapshot so `hermes status`
+        # never performs an OAuth refresh or burns a single-use refresh token.
+        nous_status = get_nous_auth_status_local()
         codex_status = get_codex_auth_status()
         qwen_status = get_qwen_auth_status()
         minimax_status = get_minimax_oauth_auth_status()
@@ -580,6 +583,40 @@ def show_status(args):
                 print("  Active:       (error reading sessions file)")
         else:
             print(f"  Active:       {_session_count if _session_count is not None else 0}")
+
+    # Slot usage, only when max_concurrent_sessions is set. The cap is shared
+    # across CLI, desktop/TUI and the messaging gateway, so the surface that
+    # gets rejected is rarely the one holding the slots — without this the only
+    # way to find out is reading runtime/active_sessions.json by hand.
+    try:
+        from hermes_cli.active_sessions import (
+            active_session_registry_snapshot,
+            format_age,
+            resolve_max_concurrent_sessions,
+        )
+
+        _cap = resolve_max_concurrent_sessions(config)
+    except Exception:
+        _cap = None
+    if _cap:
+        try:
+            _held = active_session_registry_snapshot()
+        except Exception:
+            _held = []
+        _full = len(_held) >= _cap
+        print(
+            "  Slots:        "
+            + color(
+                f"{len(_held)}/{_cap} in use", Colors.YELLOW if _full else Colors.GREEN
+            )
+        )
+        _now = time.time()
+        for _entry in sorted(_held, key=lambda e: e.get("started_at") or 0):
+            _age = format_age(_now - float(_entry.get("started_at") or _now))
+            print(
+                f"                {_entry.get('surface') or 'unknown':<17} "
+                f"{_entry.get('session_id') or '?':<24} {_age}"
+            )
 
     # =========================================================================
     # Deep checks

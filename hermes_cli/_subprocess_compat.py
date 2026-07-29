@@ -28,10 +28,11 @@ guarantee.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
-from typing import Sequence
+from typing import Mapping, Sequence
 
 __all__ = [
     "IS_WINDOWS",
@@ -42,6 +43,7 @@ __all__ = [
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
+    "noninteractive_git_env",
 ]
 
 
@@ -295,6 +297,51 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+# -----------------------------------------------------------------------------
+# Non-interactive git environment (credential-prompt hang guard)
+# -----------------------------------------------------------------------------
+
+
+def noninteractive_git_env(
+    base: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Environment for *internal* git invocations that must never prompt.
+
+    Hermes shells out to git from many non-interactive contexts — MCP catalog
+    installs, plugin install/update, profile distribution staging, worktree
+    base fetches, desktop review-pane fetch/push. When the remote is private,
+    misconfigured, or requires auth, git's default behavior is to prompt on
+    the inherited terminal (or via an askpass helper), which silently hangs
+    the operation until its timeout — or forever at call sites without one.
+    Ported from openai/codex#34540 / #34612 ("detach non-interactive
+    subprocesses from stdin"): a background tool invocation must fail fast
+    with a readable error, not wait for input nobody can type.
+
+    Returns a copy of ``base`` (default ``os.environ``) with:
+
+    * ``GIT_TERMINAL_PROMPT=0`` — git fails with "terminal prompts disabled"
+      instead of prompting for credentials.
+    * ``GCM_INTERACTIVE=Never`` — Git Credential Manager (the default
+      credential helper on Windows installs) never pops its own dialog.
+
+    ``GIT_ASKPASS`` / ``SSH_ASKPASS`` are deliberately left alone: when the
+    user has a *working* askpass helper or ssh-agent configured, auth should
+    still succeed non-interactively. The env only disables paths that block
+    on a human.
+
+    Pair with ``stdin=subprocess.DEVNULL`` so git (and any credential helper
+    it spawns) also can't read the parent's inherited stdin.
+
+    This is for internal plumbing calls only — the agent-facing terminal tool
+    has its own policy layer and user-visible PTY, where prompting can be
+    legitimate.
+    """
+    env = dict(base if base is not None else os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "Never"
+    return env
 
 
 # -----------------------------------------------------------------------------

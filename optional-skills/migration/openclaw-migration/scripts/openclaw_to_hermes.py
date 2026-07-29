@@ -450,14 +450,21 @@ def rebrand_text(text: str) -> str:
 
 
 def parse_existing_memory_entries(path: Path) -> List[str]:
+    """Parse a DESTINATION Hermes memory store (memories/MEMORY.md, USER.md).
+
+    Splits on ``ENTRY_DELIMITER`` only, matching ``MemoryStore._parse_entries``
+    in ``tools/memory_tool.py``: a store with no delimiter is ONE intact entry.
+    Do NOT fall back to :func:`extract_markdown_entries` — it is the *source*
+    parser (workspace/MEMORY.md and friends), it drops fenced code blocks and
+    table rows and splits a block into one entry per bullet, and the merged
+    result is written back over the destination.
+    """
     if not path.exists():
         return []
     raw = read_text(path)
     if not raw.strip():
         return []
-    if ENTRY_DELIMITER in raw:
-        return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-    return extract_markdown_entries(raw)
+    return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
 
 
 def extract_markdown_entries(text: str) -> List[str]:

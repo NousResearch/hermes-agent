@@ -2,6 +2,12 @@ export interface ConfigFieldSchema {
   category?: string
   description?: string
   options?: unknown[]
+  /** When true, renders a SearchableSelect (Popover + cmdk) instead of the
+   *  closed `<Select>` dropdown. For large option lists like IANA timezones. */
+  searchable?: boolean
+  /** When true, a searchable select prepends a "clear" item that resets the
+   *  value to ''. Matches the existing <Select> EMPTY_SELECT_VALUE pattern. */
+  clearable?: boolean
   type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
 }
 
@@ -325,6 +331,8 @@ export interface HermesConfig {
   voice?: {
     max_recording_seconds?: number
     auto_tts?: boolean
+    stop_phrases?: unknown
+    thinking_sound?: unknown
   }
 }
 
@@ -380,6 +388,10 @@ export interface ModelOptionProvider {
   key_env?: string
   /** True for providers defined via the user's `providers:` config block. */
   is_user_defined?: boolean
+  /** OpenAI-compatible endpoint for a user-defined provider. The backend
+   *  exposes this as `api_url`; model assignments send it back as `base_url`
+   *  so switching providers does not discard the selected local endpoint. */
+  api_url?: string
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>

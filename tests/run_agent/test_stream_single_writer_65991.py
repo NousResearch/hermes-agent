@@ -137,6 +137,21 @@ class TestSingleWriterLoop:
         assert "".join(delivered) == "first"
         assert "-stale-tail" not in "".join(delivered)
 
+    def test_chat_parser_failure_closes_managed_stream(self):
+        agent = _make_agent()
+        managed_stream = MagicMock()
+        managed_stream.__iter__.return_value = iter([object()])
+        managed_stream.final_response = None
+
+        with patch(
+            "agent.relay_llm.stream",
+            return_value=managed_stream,
+        ):
+            with pytest.raises(AttributeError):
+                agent._interruptible_streaming_api_call({})
+
+        managed_stream.close.assert_called_once()
+
 
 class TestCodexSingleWriter:
     """The codex_responses path claims the sink and stops when superseded,
@@ -207,6 +222,55 @@ class TestCodexSingleWriter:
         run_codex_stream(agent, {"model": "gpt-5.3-codex"}, client=mock_client)
 
         assert "".join(delivered) == "hello world"
+
+    def test_codex_interrupt_closes_stream_without_draining_provider(self):
+        from agent.codex_runtime import run_codex_stream
+
+        agent = _make_agent()
+        agent.api_mode = "codex_responses"
+        produced = []
+        stream_closed = threading.Event()
+
+        def interrupt_after_first_delta(_text):
+            agent._interrupt_requested = True
+
+        agent.stream_delta_callback = interrupt_after_first_delta
+        agent._stream_callback = None
+
+        def event_gen():
+            try:
+                produced.append("first")
+                yield self._codex_event(
+                    "response.output_text.delta",
+                    delta="first",
+                    item_id="i1",
+                )
+                produced.append("lookahead")
+                yield self._codex_event(
+                    "response.output_text.delta",
+                    delta="-unused",
+                    item_id="i1",
+                )
+                produced.append("terminal")
+                yield self._codex_event(
+                    "response.completed",
+                    response=SimpleNamespace(
+                        id="r1",
+                        status="completed",
+                        output=[],
+                        usage=None,
+                    ),
+                )
+            finally:
+                stream_closed.set()
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = event_gen()
+
+        run_codex_stream(agent, {"model": "gpt-5.3-codex"}, client=mock_client)
+
+        assert produced == ["first", "lookahead"]
+        assert stream_closed.is_set()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
   $connection,
+  $currentCwd,
   $currentUsage,
   $messages,
   $sessions,
@@ -1624,6 +1625,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     let handle: HarnessHandle | null = null
     render(
       <Harness
+        getRuntimeIdForStoredSession={storedId => (storedId === 'stored-session-a' ? 'rt-session-a' : null)}
         onReady={h => (handle = h)}
         onUpdateState={(sessionId, storedSessionId, state) => updates.push({ sessionId, state, storedSessionId })}
         refreshSessions={async () => undefined}
@@ -1653,6 +1655,140 @@ describe('usePromptActions submit / queue drain semantics', () => {
     ).toBe(true)
     // Offscreen queue drains must not flip the foreground composer into Thinking.
     expect($busy.get()).toBe(false)
+  })
+
+  it('a fromQueue drain carrying a stale runtime id re-homes via session.resume instead of landing in the foreground session', async () => {
+    // The session-switch window this guards: the composer's queue key has
+    // already flipped to session B (route-driven) while the foreground runtime
+    // id prop still reads session A (resume-driven, one settle behind). Without
+    // the central-binding check, prompt.submit fires with session_id=A and B's
+    // queued prompt — plus its whole answer turn — lands inside A. With no
+    // binding recorded for B yet, the stale id must be dropped and the drain
+    // re-homed through the stored-session resume path.
+    const updates: { sessionId: string; state: Record<string, unknown>; storedSessionId: null | string | undefined }[] =
+      []
+
+    const requestGateway = vi.fn(
+      async (method: string, _params?: Record<string, unknown>) =>
+        (method === 'session.resume' ? { session_id: 'rt-session-b' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={(sessionId, storedSessionId, state) => updates.push({ sessionId, state, storedSessionId })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('queued for B mid-switch', {
+      fromQueue: true,
+      sessionId: 'rt-session-a',
+      storedSessionId: 'stored-session-b'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored-session-b',
+      source: 'desktop'
+    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        queued: true,
+        session_id: 'rt-session-b',
+        text: 'queued for B mid-switch'
+      },
+      1_800_000
+    )
+    // The invariant: the stale foreground runtime never receives the prompt.
+    expect(
+      requestGateway.mock.calls.every(
+        ([method, params]) =>
+          method !== 'prompt.submit' || (params as { session_id?: string }).session_id !== 'rt-session-a'
+      )
+    ).toBe(true)
+    expect(
+      updates.some(update => update.sessionId === 'rt-session-b' && update.storedSessionId === 'stored-session-b')
+    ).toBe(true)
+  })
+
+  it('a fromQueue drain rebinds to the centrally recorded runtime when its explicit id is stale', async () => {
+    // Same window, but B's runtime binding is already known centrally — the
+    // drain should adopt the authoritative binding directly (no resume
+    // round-trip) rather than trusting the leftover foreground id.
+    const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        getRuntimeIdForStoredSession={storedId => (storedId === 'stored-session-b' ? 'rt-session-b-live' : null)}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('queued for B, B already re-bound', {
+      fromQueue: true,
+      sessionId: 'rt-session-a',
+      storedSessionId: 'stored-session-b'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        queued: true,
+        session_id: 'rt-session-b-live',
+        text: 'queued for B, B already re-bound'
+      },
+      1_800_000
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.anything())
+    expect(
+      requestGateway.mock.calls.every(
+        ([method, params]) =>
+          method !== 'prompt.submit' || (params as { session_id?: string }).session_id !== 'rt-session-a'
+      )
+    ).toBe(true)
+  })
+
+  it('a NON-queue explicit target keeps its runtime id even with no central binding recorded', async () => {
+    // The scoping invariant for the check above. A slash skill dispatch into a
+    // fresh ⌘T tab passes the same shape a stale drain does — sessionId and
+    // storedSessionId differ, and the tab has no central binding yet — but its
+    // two ids were resolved in the same tick, so the explicit target IS
+    // authoritative. Validating this caller against the (empty) binding would
+    // null the target and silently drop the kickoff into nowhere.
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('kickoff for the tab', {
+      sessionId: 'rt-tab',
+      storedSessionId: 'stored-tab'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'rt-tab',
+        text: 'kickoff for the tab'
+      },
+      1_800_000
+    )
   })
 
   it('a fromQueue drain with null runtime id does NOT land in the foreground session (cross-session leak guard)', async () => {
@@ -2128,6 +2264,7 @@ describe('usePromptActions file attachment sync', () => {
   afterEach(() => {
     cleanup()
     $connection.set(null)
+    $currentCwd.set('')
     vi.restoreAllMocks()
   })
 
@@ -2190,6 +2327,100 @@ describe('usePromptActions file attachment sync', () => {
     })
   })
 
+  it('uploads Windows file bytes when local mode fronts a POSIX WSL/Docker backend', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const attachment: ComposerAttachment = {
+      ...fileAttachment(),
+      path: 'C:\\Users\\alice\\Downloads\\report.txt',
+      refText: '@file:`C:\\Users\\alice\\Downloads\\report.txt`'
+    }
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/root/.hermes/desktop-attachments/report.txt',
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('summarize', { attachments: [attachment] })).toBe(true)
+    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Downloads\\report.txt')
+    expect(calls[0]).toEqual({
+      method: 'file.attach',
+      params: {
+        data_url: 'data:text/plain;base64,aGVsbG8=',
+        name: 'report.txt',
+        path: 'C:\\Users\\alice\\Downloads\\report.txt',
+        session_id: RUNTIME_SESSION_ID
+      }
+    })
+    expect(calls[1]).toEqual({
+      method: 'prompt.submit',
+      params: { session_id: RUNTIME_SESSION_ID, text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize' }
+    })
+  })
+
+  it('uses image.attach_bytes for a Windows image when the local backend cwd is POSIX', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/root/tmp/photo.jpg' } as never
+      }
+
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        id: 'image:photo.jpg',
+        kind: 'image',
+        label: 'photo.jpg',
+        path: 'C:\\Users\\alice\\Pictures\\photo.jpg'
+      },
+      {
+        backendCwd: '/root',
+        remote: false,
+        requestGateway,
+        sessionId: RUNTIME_SESSION_ID
+      }
+    )
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Pictures\\photo.jpg')
+    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'aGVsbG8=',
+      filename: 'photo.jpg',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
+    expect(uploaded.path).toBe('/root/tmp/photo.jpg')
+  })
+
   it('passes a path-less @file: ref straight through (no path = nothing to upload)', async () => {
     // Submit-layer contract: only attachments that carry a `path` are upload
     // candidates. A path-less ref (an @-mention/context ref or pasted text)
@@ -2237,8 +2468,20 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls[0]?.params?.text).toContain('@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`')
   })
 
-  it('passes the path directly via file.attach in local mode (no byte upload)', async () => {
+  it('passes a Windows path directly for a native Windows local backend', async () => {
     $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('C:\\Users\\alice\\project')
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,c2hvdWxkLW5vdC1iZS1yZWFk')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const attachment: ComposerAttachment = {
+      ...fileAttachment(),
+      path: 'C:\\Users\\alice\\Downloads\\report.txt',
+      refText: '@file:`C:\\Users\\alice\\Downloads\\report.txt`'
+    }
 
     const calls: { method: string; params?: Record<string, unknown> }[] = []
 
@@ -2257,11 +2500,12 @@ describe('usePromptActions file attachment sync', () => {
       <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
     )
 
-    const ok = await handle!.submitText('summarize', { attachments: [fileAttachment()] })
+    const ok = await handle!.submitText('summarize', { attachments: [attachment] })
 
     expect(ok).toBe(true)
     expect(calls[0]?.method).toBe('file.attach')
-    // Local mode sends no data_url — the gateway shares this disk.
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    // Native Windows local mode shares the same path namespace.
     expect(calls[0]?.params).not.toHaveProperty('data_url')
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
@@ -2510,6 +2754,13 @@ describe('usePromptActions sleep/wake session recovery', () => {
     let handle: HarnessHandle | null = null
     render(
       <Harness
+        // The central binding is stale in lockstep with the caller here: the
+        // sleep/wake reaper only clears the GATEWAY's in-memory session, so
+        // client-side state still swears by the old runtime id. That is what
+        // routes this case to the reactive 404→resume→retry path instead of
+        // the proactive binding check (covered by the cross-session drain
+        // tests above).
+        getRuntimeIdForStoredSession={storedId => (storedId === STORED_SESSION_ID ? 'rt-background-stale' : null)}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
@@ -3844,7 +4095,7 @@ describe('uploadComposerAttachment remote read failures', () => {
 
   it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
     // electron/hardening.ts rejects the readFileDataUrl IPC with this exact
-    // shape when a file exceeds DATA_URL_READ_MAX_BYTES.
+    // shape when a file exceeds the configured data-URL read cap.
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: {

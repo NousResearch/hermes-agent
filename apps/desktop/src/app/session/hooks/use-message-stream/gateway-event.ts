@@ -24,6 +24,13 @@ import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { applyGoalStatusText } from '@/store/goals'
+import {
+  notifyCronChanged,
+  notifyPetChanged,
+  notifySessionsChanged,
+  type PetChangeMeta,
+  setChangeEventsAvailable
+} from '@/store/live-sync'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
@@ -275,6 +282,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Seed the active skin into the desktop theme registry without applying,
         // so a fresh connect never overrides the user's persisted desktop theme.
         ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+        // Backends with the change watcher broadcast pet/cron/sessions change
+        // events; consumers demote their legacy polls to slow backstops.
+        setChangeEventsAvailable(Boolean((payload as { change_events?: boolean } | undefined)?.change_events))
 
         return
       } else if (event.type === 'skin.changed') {
@@ -285,6 +295,25 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (fromActiveProfile) {
           ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
+        }
+
+        return
+      } else if (event.type === 'pet.changed' || event.type === 'cron.changed' || event.type === 'sessions.changed') {
+        // Change-watcher broadcasts (server._broadcast_watched_changes): the
+        // backend's on-disk signature moved. Route to the live-sync ticks the
+        // former pollers now subscribe to. Only the active profile's changes
+        // apply — background profile sockets watch their own homes.
+        const fromActiveChangeProfile =
+          !event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+
+        if (fromActiveChangeProfile) {
+          if (event.type === 'pet.changed') {
+            notifyPetChanged(payload as PetChangeMeta | undefined)
+          } else if (event.type === 'cron.changed') {
+            notifyCronChanged()
+          } else {
+            notifySessionsChanged()
+          }
         }
 
         return

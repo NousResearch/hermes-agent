@@ -2332,13 +2332,19 @@ DEFAULT_CONFIG = {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
             "initial_prompt": "",
+            # Anti-hallucination hardening (faster-whisper decodes junk tokens
+            # from silence/noise without these):
+            "vad": True,  # Silero VAD filter — silence never reaches whisper. false = old raw behavior (music/ambient).
+            "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks when vad is on
+            "no_speech_prob_threshold": 0.6,  # drop a segment only if no_speech_prob is ABOVE this...
+            "logprob_threshold": -1.0,  # ...AND its avg_logprob is BELOW this (both must hit)
         },
         "groq": {
             "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
-            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "mistral": {
@@ -2365,13 +2371,52 @@ DEFAULT_CONFIG = {
         "max_recording_seconds": 120,
         "auto_tts": False,
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
+        "beep_volume": 0.3,           # Beep amplitude multiplier (0.0-1.0, default keeps prior hardcoded value)
+        "thinking_sound": True,       # Calm ambient bubble sound while the agent works in voice chat (volume follows beep_volume)
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
         "barge_in": True,             # Stop TTS playback when the user starts talking
+        "barge_in_grace_seconds": 2.0,  # Delay before the barge mic opens so VAD calibrates against live TTS playback (0 disables)
         # Saying EXACTLY one of these phrases (and nothing else) ends the
         # voice chat instead of being sent to the agent. Case-insensitive,
         # surrounding punctuation ignored. Set [] to disable.
         "stop_phrases": ["stop"],
+    },
+
+    # "Hey Hermes" hands-free wake word. Always-on, on-device hotword
+    # detection that starts a fresh voice session — the "Hey Siri" pattern.
+    # Off by default; toggle with /wake or `wake_word.enabled: true`.
+    "wake_word": {
+        "enabled": False,
+        "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
+        "provider": "openwakeword",   # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
+        "phrase": "hey hermes",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
+        "sensitivity": 0.6,           # 0.0-1.0 detection threshold, consistent across engines (higher = stricter, fewer false triggers)
+        "confirmation_frames": 3,     # openWakeWord only: consecutive over-threshold frames required to fire (higher = fewer false triggers on ambient speech, slightly more latency; 1 = old single-frame behavior)
+        "start_new_session": True,    # start a fresh session on wake vs. continue the current one
+        "profile_routing": True,      # sherpa only: also listen for every wake-enabled profile's phrase and route the wake to the matching profile
+        "openwakeword": {
+            # "hey_hermes" (the bundled, works-out-of-the-box default) OR a
+            # built-in openWakeWord name ("hey_jarvis", "alexa", "hey_mycroft",
+            # ...) OR a path to a custom .onnx/.tflite model for another phrase.
+            # See the wake-word docs for the custom-model training guide.
+            "model": "hey_hermes",
+            # "" (auto — tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite".
+            # openWakeWord's onnx backend scores near-zero on macOS ARM64
+            # (dscripka/openWakeWord#336), so auto avoids a listener that arms
+            # but never fires. Set explicitly only to override that choice.
+            "inference_framework": "",
+        },
+        "sherpa": {
+            # Optional path to a sherpa-onnx KWS model directory. Empty =
+            # auto-download the small English zipformer model on first use.
+            "model_dir": "",
+        },
+        "porcupine": {
+            # Built-in keyword ("jarvis", "computer", "bumblebee", ...) or a path
+            # to a custom .ppn from the Picovoice Console.
+            "keyword": "jarvis",
+        },
     },
     
     "human_delay": {
@@ -2716,6 +2761,13 @@ DEFAULT_CONFIG = {
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
         # pings.
         "approval_mentions": False,
+        # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
+        # keep the bot in VC until an explicit `/voice leave` / disconnect.
+        "voice_channel_inactivity_timeout_seconds": 300,
+        # Minimum seconds to wait for a VC playback before force-stopping it.
+        # The adapter also probes clip duration and extends this floor by a
+        # padding window, so long TTS readbacks are not cut at exactly 120s.
+        "voice_playback_timeout_seconds": 120,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and
@@ -2911,6 +2963,16 @@ DEFAULT_CONFIG = {
         # jobs from silently inheriting a paid default. Set to false only when
         # jobs should deliberately track changing global inference defaults.
         "model_drift_guard": True,
+        # Default inference model for cron jobs (Axis A — WHAT model an
+        # agent job runs on). Resolution at fire time: per-job user pin >
+        # cron.model > global model.default. When set, unpinned jobs follow
+        # this deliberately, so the #44585 model-drift fail-closed guard does
+        # not engage for the model axis — cron spend no longer shadows chat
+        # `/model` switches. Empty string = fall through to model.default.
+        "model": "",
+        # Inference provider paired with cron.model (NOT the scheduler
+        # provider below). Empty string = resolve from global config.
+        "model_provider": "",
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
         # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
@@ -3468,6 +3530,14 @@ DEFAULT_CONFIG = {
         "profile_build": "ask",
     },
 
+    # Privacy-safe aggregate metrics written only to this profile's local
+    # telemetry directory. Collection is opt-in and no remote sink exists.
+    "telemetry": {
+        "shared_metrics": {
+            "enabled": False,
+        },
+    },
+
     # ``hermes update`` behaviour.
     "updates": {
         # Pre-update safety backup — ONE consolidated mechanism, three modes:
@@ -3547,6 +3617,14 @@ DEFAULT_CONFIG = {
         # ``"manual"`` — only use binaries already on PATH.
         # ``"off"`` — alias for ``manual``.
         "install_strategy": "auto",
+
+        # Idle language servers are shut down automatically after this
+        # many seconds with no file activity, then respawned on demand.
+        # Prevents long-running gateway/CLI processes from accumulating
+        # stale pyright/gopls/tsserver children (hundreds of MB each,
+        # plus pipe FDs) as the agent moves across worktrees.  Set to 0
+        # to disable idle reaping and keep servers for process lifetime.
+        "idle_timeout": 600.0,
 
         # Per-server overrides.  Each key is a server_id from the
         # registry (``pyright``, ``typescript``, ``gopls``,
@@ -3799,6 +3877,15 @@ DEFAULT_CONFIG = {
         #   false   - always keep GPU acceleration on, even over a remote display.
         # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
         "disable_gpu": "auto",
+        # macOS only: optional persistent code-signing identity (a cert in the
+        # login keychain — a self-signed "Code Signing" cert from Keychain
+        # Access works; no Apple Developer account needed) used to re-sign
+        # locally rebuilt desktop apps. A certificate-anchored Designated
+        # Requirement stays stable across rebuilds, so TCC grants (Full Disk
+        # Access, Desktop/Downloads/Documents, Accessibility, Automation,
+        # microphone) survive every update. Empty keeps the default stable
+        # ad-hoc signing (identifier-pinned requirement).
+        "macos_signing_identity": "",
         # Auto-continue a turn that was killed mid-run by an app/backend/machine
         # crash: resuming that session re-submits the interrupted prompt (shown
         # as a "resumed interrupted turn" event) if the interruption is fresh.
@@ -4447,6 +4534,13 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "PORCUPINE_ACCESS_KEY": {
+        "description": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)",
+        "prompt": "Picovoice access key",
+        "url": "https://console.picovoice.ai/",
         "password": True,
         "category": "tool",
     },
@@ -8924,6 +9018,31 @@ def cron_model_drift_guard_enabled(
     return cron_config.get("model_drift_guard", True) is not False
 
 
+def _cron_fleet_default_covers_axis(
+    axis: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True when cron.model / cron.model_provider covers *axis*.
+
+    An axis covered by the explicit cron-fleet default no longer follows the
+    global model/provider at fire time, so the drift guard never engages for
+    it and switch-time warnings would be false alarms.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return False
+    if not isinstance(config, dict):
+        return False
+    cron_config = config.get("cron")
+    if not isinstance(cron_config, dict):
+        return False
+    key = "model" if axis == "model" else "model_provider"
+    value = cron_config.get(key)
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _load_cron_jobs_for_config_warning() -> List[Dict[str, Any]]:
     """Best-effort read of the active profile's cron jobs database.
 
@@ -8954,6 +9073,12 @@ def warn_unpinned_cron_jobs_after_model_config_change(
     if axis is None:
         return
     if not cron_model_drift_guard_enabled(config):
+        return
+    # A cron-fleet default covering this axis (cron.model /
+    # cron.model_provider) means unpinned jobs no longer follow the global
+    # value at all — the drift guard will not engage, so warning here would
+    # be a false alarm.
+    if _cron_fleet_default_covers_axis(axis, config):
         return
 
     new_value = str(value or "").strip().lower()

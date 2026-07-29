@@ -81,6 +81,14 @@ export function submitPrompt(
 
     deps.gw
       .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .then(r => {
+        // The gateway consumed a typed voice stop phrase server-side (voice
+        // chat ended, no turn started) — release the busy latch; the
+        // voice.transcript {stop_phrase} event handles the mode flags + notice.
+        if (r?.voice_stopped) {
+          patchUiState({ busy: false, status: 'ready' })
+        }
+      })
       .catch((e: Error) => {
         // Defensive: prompt.submit no longer rejects a mid-turn send with
         // "session busy" (the gateway queues it and returns success), but keep

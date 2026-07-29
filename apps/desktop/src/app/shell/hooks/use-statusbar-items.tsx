@@ -14,6 +14,7 @@ import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { resolveVersionStatus } from '@/lib/version-status'
 import { copyFilePath, revealFile } from '@/store/file-actions'
 import { revealFileInTree } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -218,42 +219,33 @@ export function useStatusbarItems({
       : 'text-destructive hover:text-destructive'
 
   const clientVersionItem = useMemo<StatusbarItem>(() => {
-    const appVersion = desktopVersion?.appVersion
-    const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
-    const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const remote = connection?.mode === 'remote'
 
-    const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
-    const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
-    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
-
-    const label = applying
-      ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
-
-    const tooltip = [
-      applying ? updateApply.message || copy.updateInProgress : null,
-      !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
-      appVersion && copy.desktopVersion(appVersion),
-      sha && copy.commit(sha),
-      updateStatus?.branch && copy.branch(updateStatus.branch)
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const status = resolveVersionStatus({
+      applying,
+      applyMessage: updateApply.message,
+      behind: updateStatus?.behind ?? 0,
+      branch: updateStatus?.branch,
+      copy,
+      remote: connection?.mode === 'remote',
+      restarting: updateApply.stage === 'restart',
+      sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
+      target: 'client',
+      version: desktopVersion?.appVersion
+    })
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying && !remote ? sha : undefined,
-      hidden: !appVersion && !sha,
+      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+      detail: status.detail,
+      hidden: status.unknown,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-client',
-      label,
+      label: status.label,
       // Update state is not a preference: hiding it is how a user misses that
       // their client is behind. Listed in the menu, but locked on.
       lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('client'),
-      title: tooltip || undefined,
+      title: status.tooltip,
       toggleLabel: copy.toggleVersion,
       variant: 'action'
     }
@@ -274,38 +266,29 @@ export function useStatusbarItems({
       return null
     }
 
-    const backendVersion = statusSnapshot?.version
-    const behind = backendUpdateStatus?.behind ?? 0
-    const updateAvailable = backendUpdateStatus?.updateAvailable || behind > 0
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
-    const base = copy.backendLabel(backendVersion ?? copy.unknown)
-
-    const behindHint =
-      !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
-
-    const label = applying
-      ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
-
-    const tooltip = [
-      applying ? backendUpdateApply.message || copy.updateInProgress : null,
-      !applying && behind > 0 && copy.commitsBehind(behind, 'main'),
-      !applying && behind <= 0 && updateAvailable && copy.update,
-      backendVersion && copy.backendVersion(backendVersion)
-    ]
-      .filter(Boolean)
-      .join(' · ')
+    const status = resolveVersionStatus({
+      applying,
+      applyMessage: backendUpdateApply.message,
+      behind: backendUpdateStatus?.behind ?? 0,
+      copy,
+      remote: true,
+      restarting: backendUpdateApply.stage === 'restart',
+      target: 'backend',
+      updateAvailable: backendUpdateStatus?.updateAvailable,
+      version: statusSnapshot?.version
+    })
 
     return {
-      className: !applying && updateAvailable ? 'text-primary hover:text-primary' : undefined,
-      hidden: !backendVersion,
+      className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
+      hidden: status.unknown,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
       id: 'version-backend',
-      label,
+      label: status.label,
       lockedVisible: true,
       onSelect: () => openUpdateOverlayFor('backend'),
-      title: tooltip || undefined,
+      title: status.tooltip,
       toggleLabel: copy.toggleBackendVersion,
       variant: 'action'
     }

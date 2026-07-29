@@ -833,6 +833,107 @@ class TestWebServerEndpoints:
         ]
         assert calls[-1][0] == ["brv", "--version"]
 
+    def test_post_memory_provider_setup_routes_pip_through_lazy_deps(self, monkeypatch):
+        """NS-605: dashboard pip installs must use the environment-aware
+        lazy_deps pipeline (durable-target redirect on immutable hosted
+        images), never a direct `pip install --python sys.executable`."""
+        import subprocess as _subprocess
+
+        import hermes_cli.web_server as web_server
+        from tools import lazy_deps as ld
+
+        # honcho declares pip_dependencies: [honcho-ai]; force it missing.
+        monkeypatch.setattr(web_server, "_dependency_importable", lambda dep: False)
+
+        installed = []
+
+        def fake_install_specs(specs, *, timeout=300):
+            installed.append(tuple(specs))
+            return ld.InstallSpecsResult(
+                ok=True, command="uv pip install --target /opt/data/lazy-packages honcho-ai",
+                stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(ld, "install_specs", fake_install_specs)
+
+        # Any direct pip/uv subprocess from the memory-provider pip path is
+        # a regression; external-dep checks may still run subprocess, so only
+        # trip on pip-flavored commands.
+        real_run = _subprocess.run
+
+        def guarded_run(command, **kwargs):
+            flat = command if isinstance(command, str) else " ".join(map(str, command))
+            assert "pip install" not in flat, f"direct pip call leaked: {flat}"
+            return real_run(command, **kwargs)
+
+        monkeypatch.setattr(web_server.subprocess, "run", guarded_run)
+
+        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
+        assert pip_rows and pip_rows[0]["status"] == "installed"
+        assert "--target /opt/data/lazy-packages" in pip_rows[0]["command"]
+        assert installed == [("honcho-ai",)]
+
+    def test_post_memory_provider_setup_reports_blocked_install_reason(self, monkeypatch):
+        """When installs are gated off (sealed venv, no durable target),
+        the dashboard surfaces the actionable reason instead of a raw
+        permission error."""
+        import hermes_cli.web_server as web_server
+        from tools import lazy_deps as ld
+
+        monkeypatch.setattr(web_server, "_dependency_importable", lambda dep: False)
+        monkeypatch.setattr(
+            ld, "install_specs",
+            lambda specs, *, timeout=300: ld.InstallSpecsResult(
+                ok=False, blocked=True,
+                reason=(
+                    "runtime installs are disabled on this deployment: the "
+                    "agent environment is immutable and no writable install "
+                    "target is configured (HERMES_LAZY_INSTALL_TARGET)"
+                ),
+            ),
+        )
+
+        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
+        assert pip_rows and pip_rows[0]["status"] == "failed"
+        assert "immutable" in pip_rows[0]["stderr"]
+
+    def test_post_memory_provider_setup_recheck_clears_stale_missing_state(self, monkeypatch):
+        """After a successful install, the same response's status block must
+        reflect the new availability (no restart, no stale 'missing deps')."""
+        import hermes_cli.web_server as web_server
+        from tools import lazy_deps as ld
+
+        installed_now = {"flag": False}
+
+        def fake_importable(dep):
+            return installed_now["flag"]
+
+        monkeypatch.setattr(web_server, "_dependency_importable", fake_importable)
+
+        def fake_install_specs(specs, *, timeout=300):
+            installed_now["flag"] = True  # install makes the package importable
+            return ld.InstallSpecsResult(ok=True, command="uv pip install honcho-ai")
+
+        monkeypatch.setattr(ld, "install_specs", fake_install_specs)
+
+        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        status = data["status"]
+        assert status is not None
+        assert status["setup"]["dependencies_installed"] is True
+
     def test_post_unknown_memory_provider_setup_returns_404(self):
         resp = self.client.post("/api/memory/providers/nope/setup", json={"values": {}})
 
@@ -2337,6 +2438,36 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/sessions?order=sideways")
         assert resp.status_code == 400
 
+    def test_get_sessions_source_filters_match_totals(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="chat-session", source="cli")
+            db.create_session(session_id="cron-session", source="cron")
+            db.create_session(session_id="tool-session", source="tool")
+            db.create_session(session_id="api-session", source="api_server")
+            db.create_session(session_id="acp-session", source="acp")
+        finally:
+            db.close()
+
+        chats = self.client.get(
+            "/api/sessions?exclude_sources=cron,tool,api_server,acp&limit=10"
+        ).json()
+        assert chats["total"] == 1
+        assert [s["id"] for s in chats["sessions"]] == ["chat-session"]
+
+        automation = self.client.get(
+            "/api/sessions?sources=cron,tool,api_server,acp&limit=10"
+        ).json()
+        assert automation["total"] == 4
+        assert {s["id"] for s in automation["sessions"]} == {
+            "cron-session",
+            "tool-session",
+            "api-session",
+            "acp-session",
+        }
+
     def test_get_sessions_order_recent_surfaces_compression_tip(self):
         """A long-running conversation that auto-compresses must stay on the
         first page by recency, listed under its live continuation id."""
@@ -2447,6 +2578,55 @@ class TestWebServerEndpoints:
             r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
             for r in results
         )
+
+    def test_search_sessions_respects_source_filters_for_messages_and_ids(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="filter-chat-id", source="cli")
+            db.append_message(
+                session_id="filter-chat-id",
+                role="user",
+                content="filterneedle human question",
+            )
+            db.create_session(session_id="filter-cron-id", source="cron")
+            db.append_message(
+                session_id="filter-cron-id",
+                role="user",
+                content="filterneedle scheduled run",
+            )
+            db.create_session(session_id="idmatch-chat", source="cli")
+            db.append_message(session_id="idmatch-chat", role="user", content="ordinary")
+            db.create_session(session_id="idmatch-cron", source="cron")
+            db.append_message(session_id="idmatch-cron", role="user", content="ordinary")
+        finally:
+            db.close()
+
+        message_resp = self.client.get(
+            "/api/sessions/search?q=filterneedle&exclude_sources=cron"
+        )
+        assert message_resp.status_code == 200
+        message_results = message_resp.json()["results"]
+        assert {r["session_id"] for r in message_results} == {"filter-chat-id"}
+        assert message_results[0]["id"] == "filter-chat-id"
+        assert "message_count" in message_results[0]
+
+        id_resp = self.client.get(
+            "/api/sessions/search?q=idmatch&exclude_sources=cron"
+        )
+        assert id_resp.status_code == 200
+        assert {r["session_id"] for r in id_resp.json()["results"]} == {
+            "idmatch-chat"
+        }
+
+        automation_resp = self.client.get(
+            "/api/sessions/search?q=idmatch&sources=cron"
+        )
+        assert automation_resp.status_code == 200
+        assert {r["session_id"] for r in automation_resp.json()["results"]} == {
+            "idmatch-cron"
+        }
 
     def test_get_session_messages_follows_compression_tip(self):
         """Reading a compressed session by its old id should hydrate from the
@@ -4616,6 +4796,67 @@ class TestWebServerEndpoints:
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
 
+    def test_set_model_auxiliary_persists_base_url_and_api_key(self):
+        """Aux assignments for a custom/local endpoint must persist the slot's
+        own base_url/api_key (sibling of the main-slot fix, #65254). Without
+        them the aux resolver falls back to model.base_url — which breaks the
+        moment the main slot switches away and clears it."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "custom",
+                "model": "qwen3:latest",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "sk-local",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        slot = load_config()["auxiliary"]["vision"]
+        assert slot["provider"] == "custom"
+        assert slot["model"] == "qwen3:latest"
+        assert slot["base_url"] == "http://localhost:11434/v1"
+        assert slot["api_key"] == "sk-local"
+
+    def test_set_model_auxiliary_provider_switch_still_clears_stale_endpoint(self):
+        """The existing stale-endpoint scrub on provider switch is preserved
+        when the new assignment carries no base_url."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["auxiliary"] = {
+            "vision": {
+                "provider": "custom",
+                "model": "qwen3:latest",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "sk-local",
+            },
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "openrouter",
+                "model": "google/gemini-2.5-flash",
+            },
+        )
+        assert resp.status_code == 200
+
+        slot = load_config()["auxiliary"]["vision"]
+        assert slot["provider"] == "openrouter"
+        # load_config deep-merges DEFAULT_CONFIG, which re-materializes the
+        # keys as empty strings — assert the stale endpoint VALUES are gone.
+        assert not slot.get("base_url")
+        assert not slot.get("api_key")
+
     def test_custom_endpoints_list_includes_direct_custom_config(self):
         """A bare model.provider=custom config should show up in Desktop even
         before the user has materialized it under providers.
@@ -5326,6 +5567,29 @@ class TestBuildSchemaFromConfig:
         options = set(CONFIG_SCHEMA["memory.provider"]["options"])
         missing = set(list_memory_provider_names()) - options
         assert missing == set(), f"discovered providers missing from schema options: {missing}"
+
+    def test_timezone_field_is_searchable_select(self):
+        """timezone must ship as a searchable, clearable select of IANA ids.
+
+        Desktop renders this via SearchableSelect (Popover + cmdk); the old
+        free-text input let users type invalid timezone strings (#68970).
+        Invariants, not snapshots: valid IANA entries present, sorted, no
+        blank entry server-side (the clear item is client-side via
+        ``clearable``), and never empty even without tzdata (UTC fallback).
+        """
+        from hermes_cli.web_server import CONFIG_SCHEMA, _timezone_options
+
+        entry = CONFIG_SCHEMA["timezone"]
+        assert entry["type"] == "select"
+        assert entry.get("searchable") is True
+        assert entry.get("clearable") is True
+        options = entry["options"]
+        assert len(options) >= 1
+        assert options == sorted(options)
+        assert "" not in options
+        assert "UTC" in options
+        # Fallback path: never returns an empty list.
+        assert len(_timezone_options()) >= 1
 
     def test_dynamic_merge_recomputes_memory_provider_options(self, monkeypatch):
         """The per-request schema merge re-discovers memory providers.

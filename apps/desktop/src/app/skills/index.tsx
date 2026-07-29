@@ -16,7 +16,6 @@ import {
   getSkills,
   getToolsets,
   getUsageAnalytics,
-  type HermesGateway,
   toggleSkill,
   toggleToolset
 } from '@/hermes'
@@ -26,6 +25,7 @@ import { compactNumber } from '@/lib/format'
 import { queryClient, writeCache } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -184,8 +184,10 @@ interface SkillsViewProps extends React.ComponentProps<'section'> {
 
 export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
   const { t } = useI18n()
-  const gateway = useStore($gateway) as HermesGateway | null
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
+  // $gateway only feeds the MCP tab — gate the subscription so Skills/Toolsets/Hub
+  // tabs don't re-render on connect/disconnect/reconnect.
+  const gateway = useStoreSelector($gateway, g => (mode === 'mcp' ? g : null))
 
   const [query, setQuery] = useState('')
 

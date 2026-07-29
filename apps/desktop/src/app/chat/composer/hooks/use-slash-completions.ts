@@ -11,9 +11,15 @@ import {
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
   isDesktopSlashExtensionCommand,
-  isDesktopSlashSuggestion
+  isDesktopSlashSuggestion,
+  rankSkillCommands
 } from '@/lib/desktop-slash-commands'
-import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
+import {
+  $slashCompletionsEpoch,
+  cachedSlashCompletion,
+  hasCachedSlashCompletion,
+  peekCachedSlashCompletion
+} from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
 
@@ -145,7 +151,7 @@ export function useSlashCompletions(options: {
           // backend didn't categorize.
           const sections = catalog.categories?.length ? catalog.categories : [{ name: '', pairs: catalog.pairs ?? [] }]
 
-          const items = sections.flatMap(section =>
+          const items = sections.flatMap<CompletionEntry>(section =>
             section.pairs.map(([command, meta]) => ({
               text: command,
               display: command,
@@ -161,12 +167,18 @@ export function useSlashCompletions(options: {
           // Re-add the leftovers under one Skills header (which also gives them
           // the skill pill accent and makes them offerable mid-message).
           const categorized = new Set(items.map(item => item.text.toLowerCase()))
+          const skillRows: CompletionEntry[] = []
 
           for (const [command, meta] of catalog.pairs ?? []) {
             if (!categorized.has(command.toLowerCase()) && isDesktopSlashExtensionCommand(command)) {
-              items.push({ text: command, display: command, group: 'Skills', meta })
+              skillRows.push({ text: command, display: command, group: 'Skills', meta })
             }
           }
+
+          // Browsing, not searching: rank the skills the user actually reaches
+          // for to the top and drop never-used built-ins entirely. Typing a
+          // query takes the other branch, where nothing is hidden.
+          items.push(...rankSkillCommands(skillRows, catalog.skills, { pruneUnusedBuiltins: true }))
 
           return { items, query }
         }
@@ -210,9 +222,27 @@ export function useSlashCompletions(options: {
         // Skills (stable within a group, preserving backend relevance order).
         const groupOrder = ['Commands', 'Skills', 'Options']
 
-        const items = isArgCompletion
-          ? decorated
-          : [...decorated].sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group))
+        if (isArgCompletion) {
+          return { items: decorated, query }
+        }
+
+        // Rank the matched skills by use — `/re` should lead with the /research
+        // the user lives in, not the /research-paper-writing they've never
+        // opened. Nothing is pruned here: a typed query is a search, and a
+        // search that hides a match is broken. Usage rides along on the catalog
+        // response, which the popover has already fetched by the time anyone
+        // types; if it somehow hasn't, order falls back to the backend's.
+        const catalogSkills = peekCachedSlashCompletion<CommandsCatalogLike>('catalog')?.skills
+
+        const ranked = [
+          ...decorated.filter(item => item.group !== 'Skills'),
+          ...rankSkillCommands(
+            decorated.filter(item => item.group === 'Skills'),
+            catalogSkills
+          )
+        ]
+
+        const items = [...ranked].sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group))
 
         return { items, query }
       } catch {

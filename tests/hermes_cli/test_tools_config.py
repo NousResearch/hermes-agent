@@ -1200,7 +1200,7 @@ def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
 
 def test_computer_use_skips_configuration_when_cua_driver_already_installed():
     """Installed post_setup dependencies should keep returning-user toggles no-op."""
-    def fake_which(name: str):
+    def fake_which(name: str, path=None):
         return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
 
     with patch("shutil.which", side_effect=fake_which):
@@ -1209,7 +1209,7 @@ def test_computer_use_skips_configuration_when_cua_driver_already_installed():
 
 def test_computer_use_respects_custom_cua_driver_command():
     """The setup gate should match runtime's HERMES_CUA_DRIVER_CMD override."""
-    def fake_which(name: str):
+    def fake_which(name: str, path=None):
         return "/opt/bin/custom-cua" if name == "custom-cua" else None
 
     with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
@@ -1219,7 +1219,7 @@ def test_computer_use_respects_custom_cua_driver_command():
 
 def test_computer_use_blank_custom_driver_command_falls_back_to_default():
     """Blank overrides should not make the setup gate look for an empty command."""
-    def fake_which(name: str):
+    def fake_which(name: str, path=None):
         return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
 
     with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "   "}), \
@@ -1229,7 +1229,7 @@ def test_computer_use_blank_custom_driver_command_falls_back_to_default():
 
 def test_computer_use_post_setup_respects_custom_driver_command_when_installed():
     """post_setup already-installed checks should version-probe the resolved override."""
-    def fake_which(name: str):
+    def fake_which(name: str, path=None):
         return "/opt/bin/custom-cua" if name == "custom-cua" else None
 
     with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
@@ -1250,7 +1250,7 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     """A default cua-driver binary must not satisfy a missing runtime override."""
     seen = []
 
-    def fake_which(name: str):
+    def fake_which(name: str, path=None):
         seen.append(name)
         if name == "cua-driver":
             return "/usr/local/bin/cua-driver"

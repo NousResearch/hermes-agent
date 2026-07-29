@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import threading
+import time
 from base64 import b64encode
 from pathlib import Path
 from typing import Any, Dict
+from unittest import mock
 
 import pytest
 
@@ -69,6 +73,104 @@ def test_store_and_load_photon_token(tmp_hermes_home: Path) -> None:
 
     auth_json = json.loads((tmp_hermes_home / "auth.json").read_text())
     assert auth_json["credential_pool"]["photon"][0]["access_token"] == "abc123def456"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+def test_save_auth_never_world_readable(tmp_hermes_home: Path) -> None:
+    """auth.json must be created 0o600 — no window at process umask."""
+    photon_auth.store_photon_token("secret-token")
+    mode = (tmp_hermes_home / "auth.json").stat().st_mode & 0o777
+    assert mode == 0o600
+
+
+def test_save_auth_leaves_no_temp_files(tmp_hermes_home: Path) -> None:
+    photon_auth.store_photon_token("secret-token")
+    leftovers = [
+        p.name
+        for p in tmp_hermes_home.iterdir()
+        # auth.lock is the cross-process lock sentinel from
+        # hermes_cli.auth._auth_store_lock — expected to persist.
+        if p.name not in ("auth.json", "auth.lock")
+    ]
+    assert leftovers == []
+
+
+def test_save_auth_uses_os_open_with_0o600_mode(tmp_hermes_home: Path) -> None:
+    """Regression: the writer must call ``os.open`` with O_CREAT | O_EXCL and
+    an explicit 0o600 mode so the temp file is created restricted atomically.
+    The final-mode check alone would also pass under the old open() → write →
+    chmod() writer, so this spy protects the atomic-create guarantee itself."""
+    observed_opens: list[tuple[str, int, int]] = []
+    real_os_open = os.open
+
+    def spying_os_open(path, flags, mode=0o777, *args, **kwargs):
+        observed_opens.append((str(path), flags, mode))
+        return real_os_open(path, flags, mode, *args, **kwargs)
+
+    with mock.patch.object(os, "open", spying_os_open):
+        photon_auth.store_photon_token("secret-token")
+
+    tmp_opens = [
+        (p, fl, m) for (p, fl, m) in observed_opens if "auth.json.tmp" in p
+    ]
+    assert tmp_opens, (
+        f"os.open was never called for the auth.json temp file; "
+        f"observed={observed_opens!r}"
+    )
+    for path, flags, mode in tmp_opens:
+        assert flags & os.O_CREAT, f"temp open missing O_CREAT: path={path}"
+        assert flags & os.O_EXCL, (
+            f"temp open missing O_EXCL — TOCTOU-safe pattern regressed: "
+            f"path={path}, flags={flags}"
+        )
+        expected = stat.S_IRUSR | stat.S_IWUSR
+        assert mode == expected, (
+            f"temp open mode 0o{mode:o} != 0o{expected:o} — "
+            f"umask would apply and potentially expose tokens"
+        )
+
+
+def test_save_auth_closes_raw_fd_when_fdopen_fails(tmp_hermes_home: Path) -> None:
+    """If ``os.fdopen`` raises before taking ownership of the raw descriptor,
+    the writer must close the fd itself (and still remove the temp file)."""
+    opened_fds: list[int] = []
+    closed_fds: list[int] = []
+    real_os_open = os.open
+    real_os_close = os.close
+
+    def spying_os_open(path, flags, mode=0o777, *args, **kwargs):
+        fd = real_os_open(path, flags, mode, *args, **kwargs)
+        if "auth.json.tmp" in str(path):
+            opened_fds.append(fd)
+        return fd
+
+    def spying_os_close(fd):
+        closed_fds.append(fd)
+        return real_os_close(fd)
+
+    def failing_fdopen(*args, **kwargs):
+        raise MemoryError("forced fdopen failure")
+
+    with mock.patch.object(os, "open", spying_os_open), \
+            mock.patch.object(os, "close", spying_os_close), \
+            mock.patch.object(os, "fdopen", failing_fdopen):
+        with pytest.raises(MemoryError):
+            photon_auth.store_photon_token("secret-token")
+
+    assert opened_fds, "os.open was never called for the auth.json temp file"
+    for fd in opened_fds:
+        assert fd in closed_fds, (
+            f"raw fd {fd} leaked after forced os.fdopen failure; "
+            f"closed={closed_fds!r}"
+        )
+    leftovers = [
+        p.name
+        for p in tmp_hermes_home.iterdir()
+        # auth.lock is the cross-process lock sentinel from
+        # hermes_cli.auth._auth_store_lock — expected to persist.
+        if p.name not in ("auth.json", "auth.lock")
+    ]
+    assert leftovers == [], f"temp file leaked after fdopen failure: {leftovers}"
 
 
 def test_store_project_credentials_round_trip(
@@ -175,6 +277,110 @@ def test_load_project_credentials_env_override(
     sid, secret = photon_auth.load_project_credentials()
     assert sid == "from-env"
     assert secret == "secret-env"
+
+
+# ---------------------------------------------------------------------------
+# Cross-process auth.json lock (issue: photon wrote auth.json without the
+# cross-process lock hermes_cli/auth.py's ~15 other writers all use, so a
+# concurrent refresh from elsewhere could silently lose photon's update or
+# vice versa).
+
+def _hold_auth_lock_then_release(hold_event: threading.Event, release_event: threading.Event) -> None:
+    from hermes_cli.auth import _auth_store_lock
+
+    with _auth_store_lock():
+        hold_event.set()
+        release_event.wait(timeout=5)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: photon_auth.store_photon_token("blocked-token"),
+        lambda: photon_auth.store_user_numbers(phone_number="+15551234567"),
+    ],
+)
+def test_store_functions_block_on_auth_store_lock(
+    tmp_hermes_home: Path, call,
+) -> None:
+    """store_* writers must serialize against hermes_cli.auth's cross-process lock.
+
+    Before the fix, photon's store_* functions never acquired
+    ``_auth_store_lock`` at all, so a concurrent writer elsewhere in the
+    process (e.g. a Nous OAuth token refresh) could interleave with photon's
+    load-mutate-save cycle and silently drop one side's update. This test
+    proves the lock is actually taken (not just imported) by holding it on
+    a background thread and confirming the photon writer blocks until it is
+    released.
+    """
+    holding = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(
+        target=_hold_auth_lock_then_release, args=(holding, release), daemon=True,
+    )
+    holder.start()
+    try:
+        assert holding.wait(timeout=5), "background thread never acquired the auth lock"
+
+        finished = threading.Event()
+
+        def _run_call() -> None:
+            call()
+            finished.set()
+
+        caller = threading.Thread(target=_run_call, daemon=True)
+        caller.start()
+        try:
+            # The lock is held by the background thread — the store_* call
+            # must not complete while it waits for the lock.
+            assert not finished.wait(timeout=0.3), (
+                "store_* call completed while a concurrent writer held the "
+                "auth.json lock — it is not actually taking the lock"
+            )
+        finally:
+            release.set()
+            caller.join(timeout=5)
+        assert finished.is_set(), "store_* call never completed after the lock was released"
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+
+def test_store_project_credentials_blocks_on_auth_store_lock(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(photon_auth, "_persist_runtime_env", lambda *a, **k: None)
+    holding = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(
+        target=_hold_auth_lock_then_release, args=(holding, release), daemon=True,
+    )
+    holder.start()
+    try:
+        assert holding.wait(timeout=5), "background thread never acquired the auth lock"
+
+        finished = threading.Event()
+
+        def _run_call() -> None:
+            photon_auth.store_project_credentials(
+                spectrum_project_id="sp-blocked", project_secret="secret-blocked",
+            )
+            finished.set()
+
+        caller = threading.Thread(target=_run_call, daemon=True)
+        caller.start()
+        try:
+            assert not finished.wait(timeout=0.3), (
+                "store_project_credentials completed while a concurrent writer "
+                "held the auth.json lock — it is not actually taking the lock"
+            )
+        finally:
+            release.set()
+            caller.join(timeout=5)
+        assert finished.is_set()
+    finally:
+        release.set()
+        holder.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +529,47 @@ def test_regenerate_project_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     assert photon_auth.regenerate_project_secret("tok", "p") == "rotated"
+
+
+
+def test_create_project_unwraps_success_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Photon may wrap project credentials under a top-level data object."""
+    captured: Dict[str, Any] = {}
+
+    def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
+        captured["url"] = url
+        captured["body"] = kwargs.get("json")
+        captured["headers"] = kwargs.get("headers")
+        return _FakeResponse(json_body={
+            "succeed": True,
+            "data": {
+                "id": "dashboard-project-id",
+                "spectrumProjectId": "spectrum-project-id",
+                "projectSecret": "project-secret",
+            },
+        })
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+
+    data = photon_auth.create_project("dashboard-token", name="Hermes Agent")
+
+    assert data["spectrumProjectId"] == "spectrum-project-id"
+    assert data["projectSecret"] == "project-secret"
+    assert data["id"] == "dashboard-project-id"
+    assert "spectrum" not in captured["body"]
+    assert captured["body"]["name"] == "Hermes Agent"
+    assert captured["headers"]["Authorization"] == "Bearer dashboard-token"
+    assert captured["url"].endswith("/api/projects")
+
+
+def test_create_project_raises_on_succeed_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
+        return _FakeResponse(json_body={"succeed": False, "message": "quota exceeded"})
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+
+    with pytest.raises(RuntimeError, match="quota exceeded"):
+        photon_auth.create_project("tok")
 
 
 # ---------------------------------------------------------------------------

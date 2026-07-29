@@ -169,7 +169,12 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         }
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
-          const next = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+          const next = await uploadComposerAttachment(attachment, {
+            backendCwd: readState()?.cwd,
+            remote,
+            requestGateway,
+            sessionId
+          })
 
           if (options.updateComposerAttachments ?? true) {
             scope.attachments.update(next)

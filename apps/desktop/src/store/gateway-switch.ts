@@ -5,6 +5,7 @@ import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { resetSessionsLimit } from '@/store/layout'
+import { resetLiveSync } from '@/store/live-sync'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -53,6 +54,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // $unreadFinishedSessionIds is separate, so wipe it explicitly.
   clearAllSessionStates()
   resetLiveRuntimeTracking()
+  resetLiveSync()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
   resetSessionsLimit()

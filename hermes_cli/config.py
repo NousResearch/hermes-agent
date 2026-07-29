@@ -3578,6 +3578,14 @@ DEFAULT_CONFIG = {
         # ``"off"`` — alias for ``manual``.
         "install_strategy": "auto",
 
+        # Idle language servers are shut down automatically after this
+        # many seconds with no file activity, then respawned on demand.
+        # Prevents long-running gateway/CLI processes from accumulating
+        # stale pyright/gopls/tsserver children (hundreds of MB each,
+        # plus pipe FDs) as the agent moves across worktrees.  Set to 0
+        # to disable idle reaping and keep servers for process lifetime.
+        "idle_timeout": 600.0,
+
         # Per-server overrides.  Each key is a server_id from the
         # registry (``pyright``, ``typescript``, ``gopls``,
         # ``rust-analyzer``, etc.) and accepts:

@@ -59,6 +59,7 @@ from agent.lsp.workspace import (
 logger = logging.getLogger("agent.lsp.manager")
 
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
+MIN_IDLE_TIMEOUT = 30  # floor for config values; must exceed any per-op wait budget
 
 
 class _BackgroundLoop:
@@ -209,6 +210,16 @@ class LSPService:
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
         install_strategy = lsp_cfg.get("install_strategy", "auto")
+        try:
+            idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
+        except (TypeError, ValueError):
+            idle_timeout = DEFAULT_IDLE_TIMEOUT
+        if 0 < idle_timeout < MIN_IDLE_TIMEOUT:
+            # A timeout below the per-operation wait budget could reap a
+            # client mid-flight; the resulting outer timeout would then
+            # mark the (server, workspace) pair broken for the process
+            # lifetime.  Clamp to a safe floor (0 still disables).
+            idle_timeout = MIN_IDLE_TIMEOUT
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
         binary_overrides: Dict[str, List[str]] = {}
@@ -239,6 +250,7 @@ class LSPService:
             env_overrides=env_overrides,
             init_overrides=init_overrides,
             disabled_servers=disabled,
+            idle_timeout=idle_timeout,
         )
 
     # ------------------------------------------------------------------
@@ -438,6 +450,7 @@ class LSPService:
         # ``_clients`` with a half-initialized state.
         with self._state_lock:
             client = self._clients.pop(key, None)
+            self._last_used.pop(key, None)
         if client is not None:
             try:
                 # Fire-and-forget shutdown — give it a second to cleanup,
@@ -474,7 +487,7 @@ class LSPService:
         except Exception as e:  # noqa: BLE001
             logger.debug("snapshot open/wait failed: %s", e)
             return []
-        self._last_used[(client.server_id, client.workspace_root)] = time.time()
+        self._touch(client)
         if not fresh:
             # No fresh data for the pre-edit content — an empty baseline
             # is safe: worst case the delta filter removes less, never
@@ -503,7 +516,7 @@ class LSPService:
         except Exception as e:  # noqa: BLE001
             logger.debug("open/wait failed for %s: %s", file_path, e)
             return None
-        self._last_used[(client.server_id, client.workspace_root)] = time.time()
+        self._touch(client)
         if not fresh:
             return None
         return list(client.diagnostics_for(file_path, fresh_only=True))
@@ -594,7 +607,7 @@ class LSPService:
                 return None
             with self._state_lock:
                 self._clients[key] = client
-            self._last_used[key] = time.time()
+                self._last_used[key] = time.time()
             eventlog.log_active(srv.server_id, per_server_root)
             spawn_future.set_result(client)
             return client
@@ -605,25 +618,53 @@ class LSPService:
     async def _start_idle_reaper(self) -> None:
         self._idle_reaper_task = asyncio.create_task(self._idle_reaper_loop())
 
+    def _touch(self, client: LSPClient) -> None:
+        """Refresh the last-used timestamp for a client we just used.
+
+        Guarded on membership so a reaped-mid-operation client can't
+        resurrect an orphan ``_last_used`` entry after the reaper popped
+        the key.  All writers and the reaper run on the background loop
+        thread; the lock keeps this consistent with the reader anyway.
+        """
+        key = (client.server_id, client.workspace_root)
+        with self._state_lock:
+            if key in self._clients:
+                self._last_used[key] = time.time()
+
     async def _idle_reaper_loop(self) -> None:
         interval = min(60.0, self._idle_timeout)
         while True:
             await asyncio.sleep(interval)
-            cutoff = time.time() - self._idle_timeout
-            with self._state_lock:
-                idle_keys = [
-                    key
-                    for key in self._clients
-                    if self._last_used.get(key, 0) < cutoff
-                ]
-                clients = [self._clients.pop(key) for key in idle_keys]
-                for key in idle_keys:
-                    self._last_used.pop(key, None)
-            if clients:
-                await asyncio.gather(
-                    *(client.shutdown() for client in clients),
-                    return_exceptions=True,
-                )
+            try:
+                await self._reap_idle_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                # A transient sweep error must not kill the reaper —
+                # otherwise one bad shutdown permanently re-opens the
+                # unbounded-accumulation leak this loop exists to fix.
+                logger.debug("LSP idle reaper sweep error: %s", e)
+
+    async def _reap_idle_once(self) -> None:
+        cutoff = time.time() - self._idle_timeout
+        with self._state_lock:
+            idle_keys = [
+                key
+                for key in self._clients
+                if self._last_used.get(key, 0) < cutoff
+            ]
+            clients = [self._clients.pop(key) for key in idle_keys]
+            for key in idle_keys:
+                self._last_used.pop(key, None)
+        if clients:
+            eventlog.log_reaped(
+                [(c.server_id, c.workspace_root) for c in clients],
+                self._idle_timeout,
+            )
+            await asyncio.gather(
+                *(client.shutdown() for client in clients),
+                return_exceptions=True,
+            )
 
     async def _shutdown_async(self) -> None:
         reaper = self._idle_reaper_task

@@ -15424,6 +15424,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # AudioRecorder.start(lock acquire), and config I/O
                 # never block the prompt_toolkit event loop.
                 def _start_recording():
+                    # Manual push-to-talk claims the same physical microphone
+                    # as an active wake-word listener. Unlike _on_wake_word
+                    # (which pauses before capturing because the detector
+                    # already owns the mic when it fires), this path can run
+                    # while the detector's own stream is still open — hand it
+                    # off first or AudioRecorder opens a second, independent
+                    # input stream on the same device (PortAudio init error
+                    # on single-owner-capture platforms). Setting
+                    # _wake_suspended lets the existing wake watchdog resume
+                    # the listener once recording goes idle, exactly as it
+                    # does for the wake-triggered capture.
+                    try:
+                        from tools.wake_word import pause_listening
+                        if pause_listening(owner=cli_ref):
+                            cli_ref._wake_suspended = True
+                    except Exception as e:
+                        logger.debug("wake word pause failed: %s", e)
                     try:
                         cli_ref._voice_start_recording()
                         if hasattr(cli_ref, '_app') and cli_ref._app:

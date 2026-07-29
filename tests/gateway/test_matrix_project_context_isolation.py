@@ -487,14 +487,17 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
 async def test_matrix_resume_lists_only_current_room_by_default():
     source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
     source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    current_b = _entry(source_b, "session-b-current", "Current Project B")
+    previous_b = _entry(source_b, "session-b-previous", "Project B Plan")
     runner = _make_runner(
         source_b,
-        [_entry(source_a, "session-a", "Project A Plan"), _entry(source_b, "session-b", "Project B Plan")],
+        [_entry(source_a, "session-a", "Project A Plan"), current_b, previous_b],
     )
 
     result = await runner._handle_resume_command(_event("/resume", source_b))
 
     assert "Project B Plan" in result
+    assert "Current Project B" not in result
     assert "Project A Plan" not in result
 
 
@@ -502,9 +505,11 @@ async def test_matrix_resume_lists_only_current_room_by_default():
 async def test_matrix_resume_all_lists_room_names():
     source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
     source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    current_b = _entry(source_b, "session-b-current", "Current Project B")
+    previous_b = _entry(source_b, "session-b-previous", "Project B Plan")
     runner = _make_runner(
         source_b,
-        [_entry(source_a, "session-a", "Project A Plan"), _entry(source_b, "session-b", "Project B Plan")],
+        [_entry(source_a, "session-a", "Project A Plan"), current_b, previous_b],
     )
     # Cross-room `/resume --all` listing is admin-gated (IDOR scoping), so this
     # cross-room listing test must run as a configured admin.
@@ -515,3 +520,4 @@ async def test_matrix_resume_all_lists_room_names():
     assert "Project A Plan" in result
     assert PROJECT_A_NAME in result
     assert "Project B Plan" in result
+    assert "Current Project B" not in result

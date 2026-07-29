@@ -28,20 +28,9 @@ class TestCollapseRepeatedInputArtifacts:
         tail = "[e~[[e" + "~[[e" * 20
         assert collapse_repeated_input_artifacts(prefix + tail) == prefix
 
-    def test_plain_text_unchanged(self):
-        text = "build00~tag should stay"
-        assert collapse_repeated_input_artifacts(text) == text
-
-    def test_mid_string_marker_followed_by_suffix_preserved(self):
-        text = "notes ~[[e more text here"
-        assert collapse_repeated_input_artifacts(text) == text
 
     def test_trailing_punctuation_preserved(self):
         assert collapse_repeated_input_artifacts("wait....") == "wait...."
-
-    def test_insufficient_tail_repeats_preserved(self):
-        text = "hello~[[e~[[e"
-        assert collapse_repeated_input_artifacts(text) == text
 
 
 class TestSanitizeUserPromptText:

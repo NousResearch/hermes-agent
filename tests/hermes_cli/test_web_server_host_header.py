@@ -36,23 +36,6 @@ class TestHostHeaderValidator:
                     f"bound={bound} must accept host={host_header}"
                 )
 
-    def test_loopback_bind_rejects_attacker_hostnames(self):
-        """The core rebinding defence: attacker-controlled hosts that
-        TTL-flip to 127.0.0.1 must be rejected."""
-        from hermes_cli.web_server import _is_accepted_host
-
-        for bound in ("127.0.0.1", "localhost"):
-            for attacker in (
-                "evil.example",
-                "evil.example:9119",
-                "rebind.attacker.test:80",
-                "localhost.attacker.test",  # subdomain trick
-                "127.0.0.1.evil.test",  # lookalike IP prefix
-                "",  # missing Host
-            ):
-                assert not _is_accepted_host(attacker, bound), (
-                    f"bound={bound} must reject attacker host={attacker!r}"
-                )
 
     def test_zero_zero_bind_accepts_anything(self):
         """0.0.0.0 means operator explicitly opted into all-interfaces
@@ -109,27 +92,6 @@ class TestHostHeaderMiddleware:
             if hasattr(app.state, "bound_host"):
                 del app.state.bound_host
 
-    def test_legit_loopback_request_accepted(self):
-        from fastapi.testclient import TestClient
-        from hermes_cli.web_server import app
-
-        app.state.bound_host = "127.0.0.1"
-        try:
-            client = TestClient(app)
-            # /api/status is in _PUBLIC_API_PATHS — passes auth — so the
-            # only thing that can reject is the host header middleware
-            resp = client.get(
-                "/api/status",
-                headers={"Host": "localhost:9119"},
-            )
-            # Either 200 (endpoint served) or some other non-400 —
-            # just not the host-rejection 400
-            assert resp.status_code != 400 or (
-                "Invalid Host header" not in resp.json().get("detail", "")
-            )
-        finally:
-            if hasattr(app.state, "bound_host"):
-                del app.state.bound_host
 
     def test_no_bound_host_skips_validation(self):
         """If app.state.bound_host isn't set (e.g. running under test

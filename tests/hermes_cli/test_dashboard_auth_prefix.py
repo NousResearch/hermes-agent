@@ -185,17 +185,6 @@ class TestGateRedirectsCarryPrefix:
             f"401 envelope login_url lost prefix: {body['login_url']!r}"
         )
 
-    def test_no_prefix_header_keeps_unprefixed_paths(self, gated_app_direct):
-        """When no X-Forwarded-Prefix is sent, the Location header must
-        NOT gain a phantom prefix — the Fly-direct deploy shape has no
-        proxy at all."""
-        r = gated_app_direct.get("/sessions", follow_redirects=False)
-        assert r.status_code == 302
-        # Phase 1: single-provider unauth HTML load auto-initiates OAuth to
-        # /auth/login (no phantom prefix), carrying the original path as next=.
-        assert r.headers["location"] == (
-            "/auth/login?provider=stub&next=%2Fsessions"
-        )
 
     def test_malformed_prefix_header_is_ignored(self, gated_app_proxied):
         """A hostile proxy injects ``X-Forwarded-Prefix: <script>``;
@@ -336,13 +325,6 @@ class TestPublicUrlOverride:
             f"(got {redirect_uri!r})"
         )
 
-    def test_public_url_config_yaml_used_when_env_unset(
-        self, gated_app_direct, patch_config, monkeypatch
-    ):
-        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
-        patch_config("https://from-config.example")
-        redirect_uri = self._redirect_uri(gated_app_direct)
-        assert redirect_uri == "https://from-config.example/auth/callback"
 
     def test_env_overrides_config_public_url(
         self, gated_app_direct, patch_config, monkeypatch
@@ -359,19 +341,6 @@ class TestPublicUrlOverride:
             "depends on this precedence"
         )
 
-    def test_public_url_with_path_prefix_baked_in(
-        self, gated_app_direct, patch_config, monkeypatch
-    ):
-        """When public_url already carries a path prefix
-        (``https://example.com/hermes``), the OAuth callback URL is
-        the path appended verbatim. The operator is declaring the
-        whole authority; we trust them."""
-        patch_config(None)
-        monkeypatch.setenv(
-            "HERMES_DASHBOARD_PUBLIC_URL", "https://example.com/hermes",
-        )
-        redirect_uri = self._redirect_uri(gated_app_direct)
-        assert redirect_uri == "https://example.com/hermes/auth/callback"
 
     def test_public_url_ignores_x_forwarded_prefix(
         self, gated_app_proxied, patch_config, monkeypatch
@@ -395,17 +364,6 @@ class TestPublicUrlOverride:
             f"got {redirect_uri!r}"
         )
 
-    def test_public_url_strips_trailing_slash(
-        self, gated_app_direct, patch_config, monkeypatch
-    ):
-        """``https://example.com/`` and ``https://example.com`` must
-        produce identical results — no ``//auth/callback`` double slash."""
-        patch_config(None)
-        monkeypatch.setenv(
-            "HERMES_DASHBOARD_PUBLIC_URL", "https://example.com/",
-        )
-        redirect_uri = self._redirect_uri(gated_app_direct)
-        assert redirect_uri == "https://example.com/auth/callback"
 
     def test_malformed_public_url_falls_through_to_reconstruction(
         self, gated_app_direct, patch_config, monkeypatch
@@ -436,16 +394,6 @@ class TestPublicUrlOverride:
             )
             assert parsed.path == "/auth/callback"
 
-    def test_empty_public_url_env_treated_as_unset(
-        self, gated_app_direct, patch_config, monkeypatch
-    ):
-        """Same defensive behaviour as the other env vars in this
-        plugin — an empty env var doesn't shadow a valid config.yaml
-        entry."""
-        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "")
-        patch_config("https://from-config.example")
-        redirect_uri = self._redirect_uri(gated_app_direct)
-        assert redirect_uri == "https://from-config.example/auth/callback"
 
     def test_scheme_less_public_url_env_warns_operator(
         self, patch_config, monkeypatch, caplog

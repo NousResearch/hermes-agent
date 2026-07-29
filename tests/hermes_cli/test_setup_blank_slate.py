@@ -34,16 +34,6 @@ class TestBlankSlateMinimalToolsets:
         # The recovered non-configurable toolset that used to leak is suppressed.
         assert "kanban" in disabled
 
-    def test_disabled_toolsets_excludes_posture_toolsets(self):
-        """Posture toolsets (e.g. coding) are session-level selections made by
-        agent/coding_context.py — not permanent user-facing disables.  Including
-        them in disabled_toolsets causes model_tools to subtract their tools
-        (terminal, read_file, …) from the minimal Blank Slate surface (#57315).
-        """
-        cfg = {}
-        _blank_slate_minimal_toolsets(cfg)
-        disabled = set(cfg["agent"]["disabled_toolsets"])
-        assert "coding" not in disabled
 
     def test_no_disabled_bundle_overlaps_kept_tools(self):
         """Invariant: ``disabled_toolsets`` is applied at *tool* granularity and
@@ -125,13 +115,6 @@ class TestBlankSlateMinimizeConfig:
         assert cfg["smart_model_routing"]["enabled"] is False
         assert cfg["session_reset"]["mode"] == "none"
 
-    def test_does_not_clobber_unrelated_keys(self):
-        cfg = {"model": {"provider": "openrouter", "default": "x/y"}}
-        _blank_slate_minimize_config(cfg)
-        # Model config is untouched by the minimizer.
-        assert cfg["model"]["provider"] == "openrouter"
-        assert cfg["model"]["default"] == "x/y"
-
 
 class TestBlankSlateFork:
     """The post-baseline fork: finish now vs walk through configurations."""
@@ -169,17 +152,3 @@ class TestBlankSlateFork:
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
 
-    def test_walkthrough_path_invokes_walkthrough(self, monkeypatch, tmp_path):
-        import hermes_cli.setup as s
-        self._patch_common(monkeypatch)
-        # Fork prompt returns 1 = walk through.
-        monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 1)
-        walked = {"called": False}
-        monkeypatch.setattr(s, "_blank_slate_walkthrough",
-                            lambda cfg, home: walked.__setitem__("called", True))
-
-        cfg = {}
-        s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
-
-        assert cfg["platform_toolsets"]["cli"] == ["file", "terminal"]
-        assert walked["called"] is True

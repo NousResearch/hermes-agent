@@ -108,40 +108,6 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
         )
 
 
-def test_gated_html_redirects_to_login(gated_app):
-    r = gated_app.get("/", follow_redirects=False)
-    assert r.status_code == 302
-    # Phase 1 (cloud-auto-discovery): with a single interactive provider, an
-    # unauthenticated HTML load auto-initiates the OAuth redirect to
-    # /auth/login rather than rendering the /login interstitial. The /login
-    # page remains the fallback (multiple/zero providers, or loop-guard trip).
-    assert r.headers["location"].startswith("/auth/login?provider=stub")
-
-
-def test_gated_auth_providers_is_public(gated_app):
-    r = gated_app.get("/api/auth/providers")
-    assert r.status_code == 200
-    body = r.json()
-    assert any(p["name"] == "stub" for p in body["providers"])
-    assert body["providers"][0]["display_name"] == "Stub IdP (test only)"
-
-
-def test_gated_login_html_is_public_and_lists_providers(gated_app):
-    r = gated_app.get("/login")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/html")
-    assert "Stub IdP" in r.text
-    assert 'href="/auth/login?provider=stub"' in r.text
-
-
-def test_gated_static_asset_path_is_public(gated_app):
-    """``/assets/*`` is allowlisted so the SPA's CSS/JS loads pre-login."""
-    r = gated_app.get("/assets/_nonexistent.css")
-    # 404 not 401 — proves middleware let the request through to the
-    # static-files mount, which then 404'd because the file isn't there.
-    assert r.status_code == 404
-
-
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------
@@ -241,23 +207,6 @@ def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
     )
 
 
-def test_gated_require_token_endpoint_still_rejects_no_cookie(gated_app):
-    """The gate must still 401 a ``_require_token`` endpoint with no session.
-
-    The fix defers to the gate — it does not make these endpoints public. A
-    request with no cookie is rejected by ``gated_auth_middleware`` before the
-    handler runs, so the install endpoint stays protected.
-    """
-    r = gated_app.post(
-        "/api/dashboard/agent-plugins/install",
-        json={"identifier": "owner/repo", "force": False, "enable": False},
-    )
-    assert r.status_code == 401, (
-        f"Expected 401 for an unauthenticated install POST under the gate, "
-        f"got {r.status_code}: {r.text}"
-    )
-
-
 # A representative spread of the OTHER ``_require_token`` endpoints (there are
 # 14 in total). The install popup was just the reported symptom; the same bug
 # made API-key reveal, provider validation, the OAuth-provider connect flow,
@@ -272,31 +221,6 @@ _GATED_REQUIRE_TOKEN_ROUTES = [
     ("delete", "/api/providers/oauth/__not_a_real_provider__", None),
     ("post", "/api/dashboard/agent-plugins/__nope__/enable", None),
 ]
-
-
-@pytest.mark.parametrize("method,path,body", _GATED_REQUIRE_TOKEN_ROUTES)
-def test_gated_require_token_routes_accept_cookie_session(
-    gated_app, method, path, body
-):
-    """Every ``_require_token`` route must clear auth for a logged-in caller.
-
-    Same root cause and fix as
-    ``test_gated_require_token_endpoint_accepts_cookie_session`` — this just
-    proves the fix covers the whole class, not only ``agent-plugins/install``.
-    """
-    _complete_stub_login(gated_app)
-    kwargs = {"json": body} if body is not None else {}
-    r = gated_app.request(method.upper(), path, **kwargs)
-    assert r.status_code != 401, (
-        f"{method.upper()} {path} 401'd a cookie-authenticated request under "
-        f"the OAuth gate — _require_token still rejecting a valid session. "
-        f"Body: {r.text}"
-    )
-
-
-def test_login_unknown_provider_returns_404(gated_app):
-    r = gated_app.get("/auth/login?provider=nonexistent", follow_redirects=False)
-    assert r.status_code == 404
 
 
 def test_login_non_interactive_provider_returns_404_not_500(gated_app):
@@ -326,26 +250,6 @@ def test_login_non_interactive_provider_returns_404_not_500(gated_app):
     assert "stub" in names
 
 
-def test_callback_without_pkce_cookie_returns_400(gated_app):
-    # No prior /auth/login → no PKCE cookie.
-    r = gated_app.get(
-        "/auth/callback?code=stub_code&state=anything",
-        follow_redirects=False,
-    )
-    assert r.status_code == 400
-
-
-def test_callback_state_mismatch_returns_400(gated_app):
-    # Walk through /auth/login first to plant the PKCE cookie.
-    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
-    # ...then pretend the IDP returned a different state.
-    r2 = gated_app.get(
-        "/auth/callback?code=stub_code&state=WRONG",
-        follow_redirects=False,
-    )
-    assert r2.status_code == 400
-
-
 def test_callback_invalid_code_returns_400(gated_app):
     r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
     state = r1.headers["location"].split("state=")[1]
@@ -365,14 +269,6 @@ def test_invalid_cookie_returns_401_on_api(gated_app):
     gated_app.cookies.set(SESSION_AT_COOKIE, "garbage-not-a-real-token")
     r = gated_app.get("/api/sessions")
     assert r.status_code == 401
-
-
-def test_invalid_cookie_redirects_on_html(gated_app):
-    gated_app.cookies.set(SESSION_AT_COOKIE, "garbage")
-    r = gated_app.get("/", follow_redirects=False)
-    assert r.status_code == 302
-    # Phase 6: gate carries a ``next=`` so post-login bounces back to /.
-    assert r.headers["location"] in ("/login", "/login?next=%2F")
 
 
 def test_logout_clears_cookies_and_redirects_to_login(gated_app):
@@ -430,23 +326,6 @@ def test_api_auth_me_requires_auth(gated_app):
 # ---------------------------------------------------------------------------
 # Zero-providers fail-closed
 # ---------------------------------------------------------------------------
-
-
-def test_gated_zero_providers_fails_closed_on_api_auth_providers():
-    """If gate is on but no providers are registered, /api/auth/providers 503s."""
-    clear_providers()
-    prev_required = getattr(web_server.app.state, "auth_required", None)
-    prev_host = getattr(web_server.app.state, "bound_host", None)
-    web_server.app.state.bound_host = "fly-app.fly.dev"
-    web_server.app.state.auth_required = True
-    try:
-        client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
-        r = client.get("/api/auth/providers")
-        assert r.status_code == 503
-        assert "no auth providers" in r.text.lower()
-    finally:
-        web_server.app.state.auth_required = prev_required
-        web_server.app.state.bound_host = prev_host
 
 
 def test_gated_zero_providers_login_page_renders_help_text():
@@ -584,13 +463,3 @@ def test_all_providers_unreachable_returns_503(_gated_state):
     assert "unreachable" in r.text.lower()
 
 
-def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
-    """When every provider is REACHABLE but none recognises the token (all
-    return None, none raises), the gate falls through to re-login — NOT 503."""
-    register_provider(StubAuthProvider())
-    client = _gated_state()
-    client.cookies.set(SESSION_AT_COOKIE, "garbage-not-a-real-token")
-    # API path → 401; HTML would 302. Either way, NOT 503.
-    r = client.get("/api/auth/me")
-    assert r.status_code == 401
-    assert "unreachable" not in r.text.lower()

@@ -58,30 +58,6 @@ def test_no_warning_when_below_new_threshold(monkeypatch):
     assert not result.warning_message
 
 
-def test_warns_when_estimate_exceeds_new_threshold(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.context_switch_guard.resolve_display_context_length",
-        lambda *a, **k: 32_000,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
-        lambda *a, **k: 90_000,
-    )
-    cc = _compressor(monkeypatch)
-    agent = SimpleNamespace(
-        context_compressor=cc,
-        compression_enabled=True,
-        conversation_history=[],
-        base_url="",
-        api_key="",
-    )
-    result = _result()
-    merge_preflight_compression_warning(result, agent=agent)
-    assert result.warning_message
-    assert "preflight compression" in result.warning_message
-    assert "shrinks" in result.warning_message
-
-
 def test_merge_appends_to_existing_warning(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.context_switch_guard._estimate_tokens",

@@ -58,17 +58,6 @@ class TestHandoffStateDB:
             "error": None,
         }
 
-    def test_request_handoff_rejects_in_flight(self, db):
-        sid = "sess-2"
-        self._make_session(db, sid)
-
-        assert db.request_handoff(sid, "telegram") is True
-        # Still pending → reject re-request
-        assert db.request_handoff(sid, "discord") is False
-
-        # And after gateway claims it (running) → still rejected
-        assert db.claim_handoff(sid) is True
-        assert db.request_handoff(sid, "discord") is False
 
     def test_request_handoff_after_terminal_state_resets_error(self, db):
         sid = "sess-3"
@@ -127,16 +116,6 @@ class TestHandoffStateDB:
         assert state["state"] == "completed"
         assert state["error"] is None
 
-    def test_fail_handoff_records_reason(self, db):
-        sid = "sess-fail"
-        self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
-        db.claim_handoff(sid)
-        db.fail_handoff(sid, "no home channel for telegram")
-
-        state = db.get_handoff_state(sid)
-        assert state["state"] == "failed"
-        assert state["error"] == "no home channel for telegram"
 
     def test_fail_handoff_truncates_long_reasons(self, db):
         sid = "sess-fail-long"

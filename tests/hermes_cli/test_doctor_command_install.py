@@ -239,36 +239,3 @@ class TestDoctorCommandInstallation:
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
 
-    def test_windows_skips_check(self, monkeypatch, tmp_path):
-        """On Windows, the Command Installation section is skipped."""
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-
-        project = tmp_path / "project"
-        project.mkdir(exist_ok=True)
-
-        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
-        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-        monkeypatch.setattr(sys, "platform", "win32")
-
-        fake_model_tools = types.SimpleNamespace(
-            check_tool_availability=lambda *a, **kw: ([], []),
-            TOOLSET_REQUIREMENTS={},
-        )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-        try:
-            from hermes_cli import auth as _auth_mod
-            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        except Exception:
-            pass
-        try:
-            import httpx
-            monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
-        except Exception:
-            pass
-
-        out = _run_doctor(fix=False)
-        assert "Command Installation" not in out

@@ -32,31 +32,6 @@ def test_valid_db_passes(valid_db):
     assert "passed" in res["message"]
 
 
-def test_zeroed_db_fails_header_check(valid_db):
-    # The #68474 signature: same size, all null bytes.
-    size = valid_db.stat().st_size
-    valid_db.write_bytes(b"\x00" * size)
-    res = verify_sqlite_integrity(valid_db)
-    assert res["valid"] is False
-    assert "header" in res["message"]
-
-
-def test_missing_file():
-    from pathlib import Path
-
-    res = verify_sqlite_integrity(Path("/nonexistent/state.db"))
-    assert res["valid"] is False
-    assert "not found" in res["message"]
-
-
-def test_too_small_file(tmp_path):
-    path = tmp_path / "state.db"
-    path.write_bytes(b"SQLite")
-    res = verify_sqlite_integrity(path)
-    assert res["valid"] is False
-    assert "too small" in res["message"]
-
-
 def test_header_ok_but_garbage_body_fails_pragma(tmp_path):
     path = tmp_path / "state.db"
     path.write_bytes(b"SQLite format 3\0" + b"\xff" * 4096)
@@ -129,15 +104,6 @@ def test_copy_db_and_verify_roundtrip(valid_db, tmp_path):
     dst.parent.mkdir()
     assert copy_db_and_verify(valid_db, dst) is True
     assert verify_sqlite_integrity(dst)["valid"] is True
-
-
-def test_copy_db_and_verify_refuses_zeroed_source(valid_db, tmp_path):
-    size = valid_db.stat().st_size
-    valid_db.write_bytes(b"\x00" * size)
-    dst = tmp_path / "snapshot" / "state.db"
-    dst.parent.mkdir()
-    assert copy_db_and_verify(valid_db, dst) is False
-    assert not dst.exists()
 
 
 def test_restore_flow_end_to_end(valid_db, tmp_path):

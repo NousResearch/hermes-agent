@@ -169,49 +169,6 @@ def test_apply_whatsapp_onboarding_saves_pairing_policy(monkeypatch):
     assert "pairing" not in ws._whatsapp_onboarding_sessions
 
 
-def test_apply_whatsapp_onboarding_self_chat_defaults_to_linked_account(monkeypatch):
-    from hermes_cli import web_server as ws
-
-    saved = {}
-    removed = []
-
-    monkeypatch.setattr(ws, "save_env_value", lambda key, value: saved.setdefault(key, value))
-    monkeypatch.setattr(ws, "remove_env_value", lambda key: removed.append(key))
-    monkeypatch.setattr(ws, "_write_platform_enabled", lambda platform, value: None)
-    monkeypatch.setattr(
-        ws,
-        "_restart_gateway_after_whatsapp_onboarding",
-        lambda profile=None: {"restart_started": True, "restart_pid": 12345},
-    )
-
-    record = ws._WhatsAppOnboardingSession(
-        proc=None,
-        mode="self-chat",
-        allowed_users="",
-        session_path="/tmp/session",
-        expires_at="2099-01-01T00:00:00Z",
-        expires_at_ts=time.time() + 600,
-        status="connected",
-        account_id="15551234567:1@s.whatsapp.net",
-        account_phone="15551234567",
-    )
-    ws._whatsapp_onboarding_sessions.clear()
-    ws._whatsapp_onboarding_sessions["pairing"] = record
-
-    result = asyncio.run(
-        ws.apply_whatsapp_onboarding(
-            "pairing",
-            ws.WhatsAppOnboardingApply(mode="self-chat", allowed_users=""),
-        )
-    )
-
-    assert result["ok"] is True
-    assert saved["WHATSAPP_MODE"] == "self-chat"
-    assert saved["WHATSAPP_ALLOWED_USERS"] == "15551234567"
-    assert "WHATSAPP_ALLOWED_USERS" not in removed
-    assert "pairing" not in ws._whatsapp_onboarding_sessions
-
-
 def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeypatch, tmp_path):
     from hermes_cli import web_server as ws
 

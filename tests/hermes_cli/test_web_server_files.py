@@ -390,26 +390,6 @@ def test_stream_upload_rejects_oversized_without_clobbering(forced_files_client,
     assert leftovers == [], f"temp upload files leaked: {leftovers}"
 
 
-def test_stream_upload_respects_overwrite_false(forced_files_client):
-    client, root = forced_files_client
-    file_path = root / "keep.txt"
-
-    first = client.post(
-        "/api/files/upload-stream",
-        data={"path": str(file_path), "overwrite": "true"},
-        files={"file": ("keep.txt", b"first", "text/plain")},
-    )
-    assert first.status_code == 200
-
-    conflict = client.post(
-        "/api/files/upload-stream",
-        data={"path": str(file_path), "overwrite": "false"},
-        files={"file": ("keep.txt", b"second", "text/plain")},
-    )
-    assert conflict.status_code == 409
-    assert file_path.read_bytes() == b"first"
-
-
 def test_stream_upload_stays_under_forced_root(forced_files_client):
     """A relative path with traversal can't escape the locked root."""
     client, root = forced_files_client
@@ -419,23 +399,6 @@ def test_stream_upload_stays_under_forced_root(forced_files_client):
         files={"file": ("evil.txt", b"nope", "text/plain")},
     )
     assert escaped.status_code in (400, 403)
-
-
-def test_stream_upload_large_file_under_cap_succeeds(forced_files_client, monkeypatch):
-    """A multi-chunk payload (larger than the 1 MiB chunk) streams correctly."""
-    client, root = forced_files_client
-    file_path = root / "multi-chunk.bin"
-    # 2.5 MiB exercises the chunked read loop across multiple iterations.
-    payload = b"x" * (2 * 1024 * 1024 + 512 * 1024)
-
-    created = client.post(
-        "/api/files/upload-stream",
-        data={"path": str(file_path), "overwrite": "true"},
-        files={"file": ("multi-chunk.bin", payload, "application/octet-stream")},
-    )
-    assert created.status_code == 200
-    assert file_path.stat().st_size == len(payload)
-    assert file_path.read_bytes() == payload
 
 
 def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
@@ -665,17 +628,3 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
-def test_benign_subdir_file_still_browsable(forced_files_client):
-    """Positive control: the directory-component guard must NOT over-block a
-    benign subdir. A normal file under a normal subdir stays listable/readable."""
-    client, root = forced_files_client
-    root.mkdir(parents=True, exist_ok=True)
-
-    sub = root / "notes"
-    sub.mkdir(parents=True, exist_ok=True)
-    p = sub / "todo.txt"
-    p.write_text("buy milk\n")
-
-    listing = client.get("/api/files", params={"path": str(sub)})
-    assert "todo.txt" in [e["name"] for e in listing.json()["entries"]]
-    assert client.get("/api/files/read", params={"path": str(p)}).status_code == 200

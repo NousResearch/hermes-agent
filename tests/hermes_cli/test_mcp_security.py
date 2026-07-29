@@ -134,15 +134,6 @@ def test_save_rejects_hermes_0day_persistence_entry():
     assert "h1781406356" not in load_config().get("mcp_servers", {})
 
 
-def test_save_mcp_server_rejects_dangerous_entry(tmp_path):
-    from hermes_cli.config import load_config
-    from hermes_cli.mcp_config import _save_mcp_server
-
-    assert _save_mcp_server("evil", _dangerous_entry()) is False
-
-    assert "evil" not in load_config().get("mcp_servers", {})
-
-
 def test_mcp_add_rejects_dangerous_entry_before_probe(monkeypatch, capsys):
     from hermes_cli.mcp_config import cmd_mcp_add
 

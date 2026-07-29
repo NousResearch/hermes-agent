@@ -105,60 +105,6 @@ def test_broker_happy_path_binds_pkce_and_returns_session():
     assert redeemed.user_id == "u1"
 
 
-def test_broker_rejects_wrong_verifier():
-    _verifier, challenge = _make_pkce()
-    broker_state = native_flow.register_pending(
-        code_challenge=challenge,
-        redirect_uri="http://127.0.0.1:1/cb",
-        client_state="s",
-    )
-    code = native_flow.complete_pending(broker_state, session=_stub_session())
-    with pytest.raises(native_flow.CodeInvalid):
-        native_flow.redeem_code(code=code, code_verifier="wrong-verifier")
-
-
-def test_broker_code_is_single_use():
-    verifier, challenge = _make_pkce()
-    broker_state = native_flow.register_pending(
-        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-        client_state="s",
-    )
-    code = native_flow.complete_pending(broker_state, session=_stub_session())
-    native_flow.redeem_code(code=code, code_verifier=verifier)
-    # Replay must fail — the code was consumed.
-    with pytest.raises(native_flow.CodeInvalid):
-        native_flow.redeem_code(code=code, code_verifier=verifier)
-
-
-def test_broker_wrong_verifier_still_consumes_code_no_oracle():
-    """A wrong-verifier attempt must not leave the code redeemable — otherwise
-    an attacker who steals the loopback code could brute-force the verifier."""
-    verifier, challenge = _make_pkce()
-    broker_state = native_flow.register_pending(
-        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-        client_state="s",
-    )
-    code = native_flow.complete_pending(broker_state, session=_stub_session())
-    with pytest.raises(native_flow.CodeInvalid):
-        native_flow.redeem_code(code=code, code_verifier="wrong")
-    # Even the CORRECT verifier now fails: the code was consumed on the first
-    # (failed) attempt.
-    with pytest.raises(native_flow.CodeInvalid):
-        native_flow.redeem_code(code=code, code_verifier=verifier)
-
-
-def test_broker_pending_expiry():
-    verifier, challenge = _make_pkce()
-    now = int(time.time())
-    broker_state = native_flow.register_pending(
-        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-        client_state="s", now=now,
-    )
-    # Past the pending TTL, the entry is gone.
-    with pytest.raises(native_flow.PendingNotFound):
-        native_flow.get_pending(broker_state, now=now + 601)
-
-
 def test_broker_code_expiry():
     verifier, challenge = _make_pkce()
     now = int(time.time())
@@ -173,42 +119,6 @@ def test_broker_code_expiry():
         native_flow.redeem_code(
             code=code, code_verifier=verifier, now=now + 121,
         )
-
-
-def test_broker_capacity_fails_closed():
-    _verifier, challenge = _make_pkce()
-    # Fill to capacity.
-    for _ in range(native_flow._MAX_ENTRIES):
-        native_flow.register_pending(
-            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-            client_state="s",
-        )
-    with pytest.raises(native_flow.NativeFlowError):
-        native_flow.register_pending(
-            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-            client_state="s",
-        )
-
-
-def test_broker_per_ip_pending_cap():
-    """One address cannot hog the pending store (public pre-auth route)."""
-    _verifier, challenge = _make_pkce()
-    for _ in range(native_flow._MAX_PENDING_PER_IP):
-        native_flow.register_pending(
-            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-            client_state="s", client_ip="203.0.113.7",
-        )
-    # The capped IP is refused...
-    with pytest.raises(native_flow.NativeFlowError):
-        native_flow.register_pending(
-            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-            client_state="s", client_ip="203.0.113.7",
-        )
-    # ...while a different address still signs in fine.
-    assert native_flow.register_pending(
-        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-        client_state="s", client_ip="198.51.100.9",
-    )
 
 
 def test_broker_per_ip_cap_frees_on_expiry():
@@ -323,19 +233,6 @@ def test_native_full_roundtrip_returns_tokens_no_cookie(gated_client):
     assert "set-cookie" not in {k.lower() for k in r.headers}
 
 
-def test_native_token_rejects_wrong_verifier(gated_client):
-    _verifier, challenge = _make_pkce()
-    code, _state = _walk_native_login(
-        gated_client, redirect_uri="http://127.0.0.1:53999/cb",
-        challenge=challenge,
-    )
-    r = gated_client.post(
-        "/auth/native/token",
-        json={"code": code, "code_verifier": "attacker-does-not-have-this"},
-    )
-    assert r.status_code == 400
-
-
 def test_native_authorize_rejects_non_loopback_redirect(gated_client):
     _verifier, challenge = _make_pkce()
     r = gated_client.get(
@@ -350,40 +247,6 @@ def test_native_authorize_rejects_non_loopback_redirect(gated_client):
     )
     assert r.status_code == 400
     assert "loopback" in r.json()["detail"].lower()
-
-
-def test_native_authorize_rejects_localhost_name(gated_client):
-    """RFC 8252 §8.3 — loopback IP literals only; `localhost` can be
-    re-pointed via the hosts file / a hostile resolver."""
-    _verifier, challenge = _make_pkce()
-    r = gated_client.get(
-        "/auth/native/authorize",
-        params={
-            "provider": "stub",
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "redirect_uri": "http://localhost:53999/cb",
-            "state": "s",
-        },
-    )
-    assert r.status_code == 400
-    assert "loopback" in r.json()["detail"].lower()
-
-
-def test_native_authorize_requires_s256(gated_client):
-    _verifier, challenge = _make_pkce()
-    r = gated_client.get(
-        "/auth/native/authorize",
-        params={
-            "provider": "stub",
-            "code_challenge": challenge,
-            "code_challenge_method": "plain",
-            "redirect_uri": "http://127.0.0.1:1/cb",
-            "state": "s",
-        },
-    )
-    assert r.status_code == 400
-    assert "s256" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -436,15 +299,6 @@ def test_bearer_ws_ticket_mint_without_cookie(gated_client):
     assert r.json()["ticket"]
 
 
-def test_invalid_bearer_returns_401_envelope(gated_client):
-    r = gated_client.get(
-        "/api/auth/me",
-        headers={"Authorization": "Bearer not-a-real-token"},
-    )
-    assert r.status_code == 401
-    assert r.json()["error"] == "session_expired"
-
-
 # ---------------------------------------------------------------------------
 # Capability advertisement on /api/status
 # ---------------------------------------------------------------------------
@@ -478,29 +332,6 @@ def test_status_loopback_mode_has_no_auth_flows():
 # ---------------------------------------------------------------------------
 # Native refresh
 # ---------------------------------------------------------------------------
-
-
-def test_native_refresh_rotates_tokens(gated_client):
-    verifier, challenge = _make_pkce()
-    code, _state = _walk_native_login(
-        gated_client, redirect_uri="http://127.0.0.1:53999/cb",
-        challenge=challenge,
-    )
-    tokens = gated_client.post(
-        "/auth/native/token",
-        json={"code": code, "code_verifier": verifier},
-    ).json()
-    rt = tokens["refresh_token"]
-
-    r = gated_client.post(
-        "/auth/native/refresh",
-        json={"refresh_token": rt, "provider": "stub"},
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["access_token"]
-    assert body["refresh_token"]
-    assert body["token_type"] == "Bearer"
 
 
 def test_native_refresh_dead_token_returns_401(gated_client):

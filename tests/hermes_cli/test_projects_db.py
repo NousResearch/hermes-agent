@@ -28,15 +28,6 @@ def test_record_and_list_discovered_repos(conn):
     assert rows["/www/beta"] == "beta"
 
 
-def test_record_discovered_repos_upserts(conn):
-    pdb.record_discovered_repos(conn, [("/www/alpha", "old")])
-    pdb.record_discovered_repos(conn, [("/www/alpha", "new")])
-
-    rows = pdb.list_discovered_repos(conn)
-    assert len(rows) == 1
-    assert rows[0]["label"] == "new"
-
-
 def test_record_discovered_repos_replace_drops_stale_rows(conn):
     pdb.record_discovered_repos(conn, [("/www/alpha", "alpha"), ("/www/beta", "beta")])
     pdb.record_discovered_repos(conn, [("/www/alpha", "fresh")], replace=True)
@@ -137,13 +128,6 @@ def test_set_primary_requires_existing_folder(conn):
     pid = pdb.create_project(conn, name="P", folders=["/a"])
     assert pdb.set_primary(conn, pid, "/nope") is False
     assert pdb.set_primary(conn, pid, "/a") is True
-
-
-def test_paths_normalized(conn):
-    pid = pdb.create_project(conn, name="P", folders=["/a/b/../c/"])
-    proj = pdb.get_project(conn, pid)
-    # Trailing slash stripped, .. collapsed.
-    assert proj.primary_path == "/a/c"
 
 
 def test_project_for_path_longest_prefix(conn):

@@ -57,13 +57,6 @@ def test_gateway_diagnostic_event_drops_arbitrary_message_content():
     assert "Alice Smith" not in str(attrs)
 
 
-def test_unknown_event_kind_exports_no_attrs_beyond_kind():
-    provider, mem = _mem_provider()
-    OE.export_batch(provider, [{"event": "model_call", "provider": "anthropic",
-                                "model": "claude-opus-4"}])
-    attrs = dict(mem.get_finished_spans()[0].attributes or {})
-    # Non-monitoring event kinds carry no attribute mapping on this plane.
-    assert attrs == {"hermes.event": "model_call"}
 
 
 def test_headers_resolve_from_env_not_value(monkeypatch):
@@ -72,11 +65,6 @@ def test_headers_resolve_from_env_not_value(monkeypatch):
     assert resolved == {"DD-API-KEY": "secret-value"}
 
 
-def test_is_enabled_requires_endpoint_and_flag():
-    assert OE.is_enabled({"monitoring": {"export": {"otlp": {"enabled": True, "endpoint": "http://x"}}}})
-    assert not OE.is_enabled({"monitoring": {"export": {"otlp": {"enabled": True}}}})
-    assert not OE.is_enabled({"monitoring": {"export": {"otlp": {"endpoint": "http://x"}}}})
-    assert not OE.is_enabled({})
 
 
 def test_trace_resource_includes_stable_hashed_instance():

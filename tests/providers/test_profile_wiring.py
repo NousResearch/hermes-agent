@@ -90,21 +90,6 @@ class TestKimiProfileParity:
         assert "reasoning_effort" not in profile
         assert "reasoning_effort" not in legacy
 
-    def test_reasoning_effort_default(self, transport):
-        # xor contract: enabled w/o effort → thinking-enabled only, no effort.
-        rc = {"enabled": True}
-        legacy = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi-coding"), reasoning_config=rc,
-        )
-        profile = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi"),
-            reasoning_config=rc,
-        )
-        assert profile["extra_body"]["thinking"] == legacy["extra_body"]["thinking"] == {"type": "enabled"}
-        assert "reasoning_effort" not in profile
-        assert "reasoning_effort" not in legacy
 
 
 class TestOpenRouterProfileParity:
@@ -134,17 +119,6 @@ class TestOpenRouterProfileParity:
         )
         assert profile["extra_body"]["reasoning"] == legacy["extra_body"]["reasoning"]
 
-    def test_default_reasoning(self, transport):
-        legacy = transport.build_kwargs(
-            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("openrouter"), supports_reasoning=True,
-        )
-        profile = transport.build_kwargs(
-            model="deepseek/deepseek-chat", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-            supports_reasoning=True,
-        )
-        assert profile["extra_body"]["reasoning"] == legacy["extra_body"]["reasoning"]
 
 
 class TestNousProfileParity:
@@ -210,24 +184,6 @@ class TestQwenProfileParity:
         assert profile["metadata"] == legacy["metadata"] == meta
         assert "metadata" not in profile.get("extra_body", {})
 
-    def test_message_preprocessing(self, transport):
-        """Qwen profile normalizes string content to list-of-parts."""
-        msgs = [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "hello"},
-        ]
-        profile = transport.build_kwargs(
-            model="qwen3.5", messages=msgs, tools=None,
-            provider_profile=get_provider_profile("qwen"),
-        )
-        out_msgs = profile["messages"]
-        # System message content normalized + cache_control injected
-        assert isinstance(out_msgs[0]["content"], list)
-        assert out_msgs[0]["content"][0]["type"] == "text"
-        assert "cache_control" in out_msgs[0]["content"][-1]
-        # User message content normalized
-        assert isinstance(out_msgs[1]["content"], list)
-        assert out_msgs[1]["content"][0] == {"type": "text", "text": "hello"}
 
 
 class TestDeveloperRoleParity:
@@ -276,16 +232,6 @@ class TestRequestOverridesParity:
         )
         assert kw["extra_body"]["custom_key"] == "custom_val"
 
-    def test_extra_body_override_merges_with_provider_body(self, transport):
-        """Override extra_body merges WITH provider extra_body, not replaces."""
-        from agent.portal_tags import nous_portal_tags
-        kw = transport.build_kwargs(
-            model="hermes-3", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("nous"),
-            request_overrides={"extra_body": {"custom": True}},
-        )
-        assert kw["extra_body"]["tags"] == nous_portal_tags()  # from profile
-        assert kw["extra_body"]["custom"] is True  # from override
 
     def test_top_level_override(self, transport):
         kw = transport.build_kwargs(

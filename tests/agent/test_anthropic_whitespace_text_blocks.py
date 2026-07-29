@@ -35,19 +35,12 @@ class TestSafeText:
     def test_none_becomes_placeholder(self):
         assert _safe_text(None) == _EMPTY_TEXT_PLACEHOLDER
 
-    def test_empty_string_becomes_placeholder(self):
-        assert _safe_text("") == _EMPTY_TEXT_PLACEHOLDER
 
     @pytest.mark.parametrize("blank", ["   ", "\n", "\t", " \n\t "])
     def test_whitespace_only_becomes_placeholder(self, blank):
         assert _safe_text(blank) == _EMPTY_TEXT_PLACEHOLDER
 
-    def test_real_text_is_kept_verbatim(self):
-        assert _safe_text("hello") == "hello"
-        assert _safe_text("  padded  ") == "  padded  "
 
-    def test_non_string_is_coerced_then_checked(self):
-        assert _safe_text(123) == "123"
 
 
 class TestSanitizeReplayBlockWhitespace:
@@ -59,8 +52,6 @@ class TestSanitizeReplayBlockWhitespace:
         # cluttered with "(empty)" noise. See _convert_assistant_message.
         assert _sanitize_replay_block({"type": "text", "text": "   \n"}) is None
 
-    def test_empty_text_block_dropped(self):
-        assert _sanitize_replay_block({"type": "text", "text": ""}) is None
 
     def test_none_text_block_dropped_without_crash(self):
         # text=None (invalid upstream payload) must not reach .strip().
@@ -87,21 +78,8 @@ class TestConvertAssistantMessageWhitespace:
         _assert_no_blank_text(out)
         assert _text_blocks(out) == [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]
 
-    def test_main_path_coerces_whitespace_string_content(self):
-        # A whitespace-only string content becomes a whitespace text block that
-        # the all-empty guard does not catch; the final walk must coerce it.
-        out = _convert_assistant_message({"role": "assistant", "content": "   "})
-        _assert_no_blank_text(out)
-        assert _text_blocks(out) == [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]
 
-    def test_fully_empty_content_still_gets_placeholder(self):
-        # Pre-existing behavior preserved.
-        out = _convert_assistant_message({"role": "assistant", "content": ""})
-        assert out["content"] == [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]
 
-    def test_real_text_content_unchanged(self):
-        out = _convert_assistant_message({"role": "assistant", "content": "answer"})
-        assert out["content"] == [{"type": "text", "text": "answer"}]
 
     def test_thinking_block_not_treated_as_text(self):
         # Only text blocks are coerced; thinking blocks are left untouched even

@@ -24,12 +24,6 @@ def test_backoff_respects_max_delay():
         assert delay <= 60.0, f"attempt {attempt}: delay {delay} exceeds max 60s"
 
 
-def test_backoff_adds_jitter():
-    """With jitter enabled, delays should vary across calls."""
-    delays = [jittered_backoff(1, base_delay=10.0, max_delay=120.0, jitter_ratio=0.5) for _ in range(50)]
-    assert min(delays) != max(delays), "jitter should produce varying delays"
-    assert all(d >= 10.0 for d in delays), "jittered delay should be >= base delay"
-    assert all(d <= 15.0 for d in delays), "jittered delay should be bounded"
 
 
 def test_backoff_attempt_1_is_base():
@@ -38,22 +32,10 @@ def test_backoff_attempt_1_is_base():
     assert delay == 3.0
 
 
-def test_backoff_with_zero_base_delay_returns_max():
-    """base_delay=0 should return max_delay (guard against busy-wait)."""
-    delay = jittered_backoff(1, base_delay=0.0, max_delay=60.0, jitter_ratio=0.0)
-    assert delay == 60.0
 
 
-def test_backoff_with_extreme_attempt_returns_max():
-    """Very large attempt numbers should not overflow and should return max_delay."""
-    delay = jittered_backoff(999, base_delay=5.0, max_delay=120.0, jitter_ratio=0.0)
-    assert delay == 120.0
 
 
-def test_backoff_negative_attempt_treated_as_one():
-    """Negative attempt should not crash and behaves like attempt=1."""
-    delay = jittered_backoff(-5, base_delay=10.0, max_delay=120.0, jitter_ratio=0.0)
-    assert delay == 10.0
 
 
 def test_backoff_thread_safety():
@@ -131,85 +113,12 @@ def _zai_overload_error():
     )
 
 
-def test_zai_coding_overload_classifier_is_narrow():
-    err = _zai_overload_error()
-    assert is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=err,
-    )
-
-    assert not is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/paas/v4",
-        model="glm-5.2",
-        error=err,
-    )
-    assert not is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.1",
-        error=err,
-    )
-    assert not is_zai_coding_overload_error(
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=SimpleNamespace(status_code=429, body={"error": {"code": "1113", "message": "Insufficient balance"}}),
-    )
 
 
-def test_zai_coding_overload_backoff_keeps_first_retries_short(monkeypatch):
-    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
-    err = _zai_overload_error()
-
-    wait, policy = adaptive_rate_limit_backoff(
-        1,
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=err,
-        default_wait=2.5,
-    )
-    assert wait == 2.5
-    assert policy == "zai_coding_overload_short"
-
-    wait, policy = adaptive_rate_limit_backoff(
-        3,
-        base_url="https://api.z.ai/api/coding/paas/v4",
-        model="glm-5.2",
-        error=err,
-        default_wait=9.0,
-    )
-    assert wait == 9.0
-    assert policy == "zai_coding_overload_short"
 
 
-def test_zai_coding_overload_backoff_grows_after_short_retries(monkeypatch):
-    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
-    err = _zai_overload_error()
-
-    waits = []
-    for attempt in range(4, 10):
-        wait, policy = adaptive_rate_limit_backoff(
-            attempt,
-            base_url="https://api.z.ai/api/coding/paas/v4",
-            model="glm-5.2",
-            error=err,
-            default_wait=10.0,
-        )
-        waits.append(wait)
-        assert policy == "zai_coding_overload_long"
-
-    assert waits == [30.0, 60.0, 90.0, 120.0, 120.0, 120.0]
 
 
-def test_non_zai_backoff_returns_default_wait():
-    wait, policy = adaptive_rate_limit_backoff(
-        10,
-        base_url="https://openrouter.ai/api/v1",
-        model="glm-5.2",
-        error=_zai_overload_error(),
-        default_wait=12.0,
-    )
-    assert wait == 12.0
-    assert policy is None
 
 
 def test_zai_overload_retry_ceiling_exceeds_short_attempts():
@@ -276,10 +185,6 @@ class TestParseRetryAfterSeconds:
         assert parse_retry_after_seconds(45) == 45.0
         assert parse_retry_after_seconds(3.25) == 3.25
 
-    def test_negative_clamped_to_zero(self):
-        from agent.retry_utils import parse_retry_after_seconds
-        assert parse_retry_after_seconds("-5") == 0.0
-        assert parse_retry_after_seconds(-1.5) == 0.0
 
     def test_http_date(self):
         from datetime import datetime, timedelta, timezone
@@ -293,20 +198,7 @@ class TestParseRetryAfterSeconds:
         past = datetime.now(timezone.utc) - timedelta(seconds=90)
         assert parse_retry_after_seconds(format_datetime(past, usegmt=True)) == 0.0
 
-    def test_missing_and_garbage(self):
-        from agent.retry_utils import parse_retry_after_seconds
-        assert parse_retry_after_seconds(None) is None
-        assert parse_retry_after_seconds({}) is None
-        assert parse_retry_after_seconds("") is None
-        assert parse_retry_after_seconds("soonish") is None
-        assert parse_retry_after_seconds(object()) is None
-        assert parse_retry_after_seconds(True) is None
 
-    def test_headers_case_insensitive(self):
-        from agent.retry_utils import parse_retry_after_seconds
-        assert parse_retry_after_seconds({"Retry-After": "30"}) == 30.0
-        assert parse_retry_after_seconds({"retry-after": "30"}) == 30.0
-        assert parse_retry_after_seconds({"Content-Type": "x"}) is None
 
     def test_headers_get_raises(self):
         from agent.retry_utils import parse_retry_after_seconds

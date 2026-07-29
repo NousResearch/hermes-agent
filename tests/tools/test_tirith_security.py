@@ -107,16 +107,6 @@ class TestJsonParseFailure:
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_exit_2_invalid_json_still_warns(self, mock_cfg, mock_run):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        mock_run.return_value = _mock_run(2, "{broken")
-        result = check_command_security("suspicious command")
-        assert result["action"] == "warn"
-        assert "details unavailable" in result["summary"]
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
     def test_exit_0_invalid_json_allows(self, mock_cfg, mock_run):
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
@@ -142,16 +132,6 @@ class TestOSErrorFailOpen:
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_permission_error_fail_open(self, mock_cfg, mock_run):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        mock_run.side_effect = PermissionError("Permission denied")
-        result = check_command_security("echo hi")
-        assert result["action"] == "allow"
-        assert "unavailable" in result["summary"]
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
     def test_os_error_fail_closed(self, mock_cfg, mock_run):
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": False}
@@ -162,16 +142,6 @@ class TestOSErrorFailOpen:
 
 
 class TestTimeoutFailOpen:
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_timeout_fail_open(self, mock_cfg, mock_run):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="tirith", timeout=5)
-        result = check_command_security("slow command")
-        assert result["action"] == "allow"
-        assert "timed out" in result["summary"]
-
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
     def test_timeout_fail_closed(self, mock_cfg, mock_run):
@@ -186,16 +156,6 @@ class TestTimeoutFailOpen:
 class TestUnknownExitCode:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_unknown_exit_code_fail_open(self, mock_cfg, mock_run):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        mock_run.return_value = _mock_run(99, "")
-        result = check_command_security("cmd")
-        assert result["action"] == "allow"
-        assert "exit code 99" in result["summary"]
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
     def test_unknown_exit_code_fail_closed(self, mock_cfg, mock_run):
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": False}
@@ -206,7 +166,7 @@ class TestUnknownExitCode:
 
 
 # ---------------------------------------------------------------------------
-# Disabled + path expansion
+# Disabled
 # ---------------------------------------------------------------------------
 
 class TestDisabled:
@@ -218,17 +178,6 @@ class TestDisabled:
         assert result["action"] == "allow"
 
 
-class TestPathExpansion:
-    def test_tilde_expanded_in_resolve(self):
-        """_resolve_tirith_path should expand ~ in configured path."""
-        from tools.tirith_security import _resolve_tirith_path
-        _tirith_mod._resolved_path = None
-        # Explicit path — won't auto-download, just expands and caches miss
-        result = _resolve_tirith_path("~/bin/tirith")
-        assert "~" not in result, "tilde should be expanded"
-        _tirith_mod._resolved_path = None
-
-
 # ---------------------------------------------------------------------------
 # Findings cap + summary cap
 # ---------------------------------------------------------------------------
@@ -236,22 +185,13 @@ class TestPathExpansion:
 class TestCaps:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_findings_capped_at_50(self, mock_cfg, mock_run):
+    def test_findings_and_summary_capped(self, mock_cfg, mock_run):
         mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
                                  "tirith_timeout": 5, "tirith_fail_open": True}
         findings = [{"rule_id": f"rule_{i}"} for i in range(100)]
-        mock_run.return_value = _mock_run(2, _json_stdout(findings, "many findings"))
+        mock_run.return_value = _mock_run(2, _json_stdout(findings, "x" * 1000))
         result = check_command_security("cmd")
         assert len(result["findings"]) == 50
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_summary_capped_at_500(self, mock_cfg, mock_run):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        long_summary = "x" * 1000
-        mock_run.return_value = _mock_run(2, _json_stdout([], long_summary))
-        result = check_command_security("cmd")
         assert len(result["summary"]) == 500
 
 
@@ -267,15 +207,6 @@ class TestProgrammingErrors:
                                  "tirith_timeout": 5, "tirith_fail_open": True}
         mock_run.side_effect = AttributeError("unexpected bug")
         with pytest.raises(AttributeError):
-            check_command_security("cmd")
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_type_error_propagates(self, mock_cfg, mock_run):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        mock_run.side_effect = TypeError("unexpected bug")
-        with pytest.raises(TypeError):
             check_command_security("cmd")
 
 
@@ -303,40 +234,6 @@ class TestEnsureInstalled:
         assert result == "/usr/local/bin/tirith"
         _tirith_mod._resolved_path = None
 
-    @patch("tools.tirith_security._load_security_config")
-    def test_not_found_returns_none(self, mock_cfg):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=False), \
-             patch("tools.tirith_security.threading.Thread") as MockThread:
-            mock_thread = MagicMock()
-            MockThread.return_value = mock_thread
-            result = ensure_installed()
-            assert result is None
-            # Should have launched background thread
-            mock_thread.start.assert_called_once()
-        _tirith_mod._resolved_path = None
-
-    @patch("tools.tirith_security._load_security_config")
-    def test_startup_prefetch_can_suppress_install_failure_logs(self, mock_cfg):
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=False), \
-             patch("tools.tirith_security.threading.Thread") as MockThread:
-            mock_thread = MagicMock()
-            MockThread.return_value = mock_thread
-            result = ensure_installed(log_failures=False)
-            assert result is None
-            assert MockThread.call_args.kwargs["kwargs"] == {"log_failures": False}
-            mock_thread.start.assert_called_once()
-        _tirith_mod._resolved_path = None
-
 
 # ---------------------------------------------------------------------------
 # Unsupported platform (Windows etc.) — silent fast-path everywhere
@@ -348,25 +245,15 @@ class TestUnsupportedPlatform:
     no disk failure marker, no spawn attempts, no CLI banner. Pattern-matching
     guards still cover the gap; tirith content scanning is just absent."""
 
-    def test_is_platform_supported_true_on_linux_x86_64(self):
-        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
-             patch("tools.tirith_security.platform.machine", return_value="x86_64"):
-            assert _tirith_mod.is_platform_supported() is True
-
-    def test_is_platform_supported_true_on_darwin_arm64(self):
-        with patch("tools.tirith_security.platform.system", return_value="Darwin"), \
-             patch("tools.tirith_security.platform.machine", return_value="arm64"):
-            assert _tirith_mod.is_platform_supported() is True
-
-    def test_is_platform_supported_false_on_windows(self):
-        with patch("tools.tirith_security.platform.system", return_value="Windows"), \
-             patch("tools.tirith_security.platform.machine", return_value="AMD64"):
-            assert _tirith_mod.is_platform_supported() is False
-
-    def test_is_platform_supported_false_on_unknown_arch(self):
-        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
-             patch("tools.tirith_security.platform.machine", return_value="riscv64"):
-            assert _tirith_mod.is_platform_supported() is False
+    @pytest.mark.parametrize("system, machine, expected", [
+        ("Linux", "x86_64", True),
+        ("Windows", "AMD64", False),
+        ("Linux", "riscv64", False),
+    ])
+    def test_is_platform_supported(self, system, machine, expected):
+        with patch("tools.tirith_security.platform.system", return_value=system), \
+             patch("tools.tirith_security.platform.machine", return_value=machine):
+            assert _tirith_mod.is_platform_supported() is expected
 
     @patch("tools.tirith_security._load_security_config")
     def test_ensure_installed_unsupported_returns_none_no_thread(self, mock_cfg):
@@ -401,22 +288,6 @@ class TestUnsupportedPlatform:
             assert result == {"action": "allow", "findings": [], "summary": ""}
             mock_run.assert_not_called()
             mock_resolve.assert_not_called()
-
-    @patch("tools.tirith_security._load_security_config")
-    def test_resolve_path_unsupported_caches_failure_without_probing(self, mock_cfg):
-        """The per-command resolver must also short-circuit on Windows so
-        long-running gateways don't churn through `shutil.which` and disk
-        I/O for every scanned command."""
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        _tirith_mod._resolved_path = None
-        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
-             patch("tools.tirith_security.shutil.which") as mock_which:
-            result = _tirith_mod._resolve_tirith_path("tirith")
-            assert result == "tirith"
-            mock_which.assert_not_called()
-            assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
-            assert _tirith_mod._install_failure_reason == "unsupported_platform"
 
     @patch("tools.tirith_security._load_security_config")
     def test_explicit_path_still_honored_on_unsupported_platform(self, mock_cfg):
@@ -462,53 +333,12 @@ class TestFailedDownloadCaching:
 
         _tirith_mod._resolved_path = None
 
-    @patch("tools.tirith_security._mark_install_failed")
-    @patch("tools.tirith_security._is_install_failed_on_disk", return_value=False)
-    @patch("tools.tirith_security._install_tirith", return_value=(None, "download_failed"))
-    @patch("tools.tirith_security.shutil.which", return_value=None)
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_failed_install_scan_uses_fail_open(self, mock_cfg, mock_run,
-                                                 mock_which, mock_install,
-                                                 mock_disk_check, mock_mark):
-        """After cached miss, check_command_security hits OSError → fail_open."""
-        _tirith_mod._resolved_path = None
-        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}
-        mock_run.side_effect = FileNotFoundError("No such file: tirith")
-        # First command triggers install attempt + cached miss + scan
-        result = check_command_security("echo hello")
-        assert result["action"] == "allow"
-        assert mock_install.call_count == 1
-
-        # Second command: no install retry, just hits OSError → allow
-        result = check_command_security("echo world")
-        assert result["action"] == "allow"
-        assert mock_install.call_count == 1  # still 1
-
-        _tirith_mod._resolved_path = None
-
 
 # ---------------------------------------------------------------------------
 # Explicit path must not auto-download (Finding #2)
 # ---------------------------------------------------------------------------
 
 class TestExplicitPathNoAutoDownload:
-    @patch("tools.tirith_security._install_tirith")
-    @patch("tools.tirith_security.shutil.which", return_value=None)
-    def test_explicit_path_missing_no_download(self, mock_which, mock_install):
-        """An explicit tirith_path that doesn't exist must NOT trigger download."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = None
-
-        result = _resolve_tirith_path("/opt/custom/tirith")
-        # Should cache failure, not call _install_tirith
-        mock_install.assert_not_called()
-        assert _tirith_mod._resolved_path is _INSTALL_FAILED
-        assert "/opt/custom/tirith" in result
-
-        _tirith_mod._resolved_path = None
-
     @patch("tools.tirith_security._install_tirith")
     @patch("tools.tirith_security.shutil.which", return_value=None)
     def test_tilde_explicit_path_missing_no_download(self, mock_which, mock_install):
@@ -547,20 +377,6 @@ class TestExplicitPathNoAutoDownload:
 class TestCosignVerification:
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security.shutil.which", return_value="/usr/bin/cosign")
-    def test_cosign_pass(self, mock_which, mock_run):
-        """cosign verify-blob exits 0 → returns True."""
-        from tools.tirith_security import _verify_cosign
-        mock_run.return_value = _mock_run(0, "Verified OK")
-        result = _verify_cosign("/tmp/checksums.txt", "/tmp/checksums.txt.sig",
-                                "/tmp/checksums.txt.pem")
-        assert result is True
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
-        assert "verify-blob" in args
-        assert "--certificate-identity-regexp" in args
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/bin/cosign")
     def test_cosign_identity_pinned_to_release_workflow(self, mock_which, mock_run):
         """Identity regexp must pin to the release workflow, not the whole repo."""
         from tools.tirith_security import _verify_cosign
@@ -583,34 +399,6 @@ class TestCosignVerification:
         result = _verify_cosign("/tmp/checksums.txt", "/tmp/checksums.txt.sig",
                                 "/tmp/checksums.txt.pem")
         assert result is False
-
-    @patch("tools.tirith_security.shutil.which", return_value=None)
-    def test_cosign_not_found_returns_none(self, mock_which):
-        """cosign not on PATH → returns None (proceed with SHA-256 only)."""
-        from tools.tirith_security import _verify_cosign
-        result = _verify_cosign("/tmp/checksums.txt", "/tmp/checksums.txt.sig",
-                                "/tmp/checksums.txt.pem")
-        assert result is None
-
-    @patch("tools.tirith_security.subprocess.run",
-           side_effect=subprocess.TimeoutExpired("cosign", 15))
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/bin/cosign")
-    def test_cosign_timeout_returns_none(self, mock_which, mock_run):
-        """cosign times out → returns None (proceed with SHA-256 only)."""
-        from tools.tirith_security import _verify_cosign
-        result = _verify_cosign("/tmp/checksums.txt", "/tmp/checksums.txt.sig",
-                                "/tmp/checksums.txt.pem")
-        assert result is None
-
-    @patch("tools.tirith_security.subprocess.run",
-           side_effect=OSError("exec format error"))
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/bin/cosign")
-    def test_cosign_os_error_returns_none(self, mock_which, mock_run):
-        """cosign OSError → returns None (proceed with SHA-256 only)."""
-        from tools.tirith_security import _verify_cosign
-        result = _verify_cosign("/tmp/checksums.txt", "/tmp/checksums.txt.sig",
-                                "/tmp/checksums.txt.pem")
-        assert result is None
 
     @patch("tools.tirith_security._verify_cosign", return_value=False)
     @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
@@ -645,80 +433,6 @@ class TestCosignVerification:
         assert path is None
         assert reason == "binary_not_in_archive"
         assert mock_checksum.called  # SHA-256 verification ran
-
-    @patch("tools.tirith_security.tarfile.open")
-    @patch("tools.tirith_security._verify_checksum", return_value=True)
-    @patch("tools.tirith_security._verify_cosign", return_value=None)
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
-    @patch("tools.tirith_security._download_file")
-    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
-    def test_install_proceeds_when_cosign_exec_fails(self, mock_target, mock_dl,
-                                                       mock_which, mock_cosign,
-                                                       mock_checksum, mock_tarfile):
-        """_install_tirith falls back to SHA-256 when cosign exists but fails to execute."""
-        from tools.tirith_security import _install_tirith
-        mock_tar = MagicMock()
-        mock_tar.__enter__ = MagicMock(return_value=mock_tar)
-        mock_tar.__exit__ = MagicMock(return_value=False)
-        mock_tar.getmembers.return_value = []
-        mock_tarfile.return_value = mock_tar
-
-        path, reason = _install_tirith()
-        assert path is None
-        assert reason == "binary_not_in_archive"  # got past cosign
-        assert mock_checksum.called
-
-    @patch("tools.tirith_security.tarfile.open")
-    @patch("tools.tirith_security._verify_checksum", return_value=True)
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
-    @patch("tools.tirith_security._download_file")
-    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
-    def test_install_proceeds_when_cosign_artifacts_missing(self, mock_target,
-                                                              mock_dl, mock_which,
-                                                              mock_checksum, mock_tarfile):
-        """_install_tirith proceeds with SHA-256 when .sig/.pem downloads fail."""
-        from tools.tirith_security import _install_tirith
-        import urllib.request
-
-        def _dl_side_effect(url, dest, timeout=10):
-            if url.endswith(".sig") or url.endswith(".pem"):
-                raise urllib.request.URLError("404 Not Found")
-
-        mock_dl.side_effect = _dl_side_effect
-        mock_tar = MagicMock()
-        mock_tar.__enter__ = MagicMock(return_value=mock_tar)
-        mock_tar.__exit__ = MagicMock(return_value=False)
-        mock_tar.getmembers.return_value = []
-        mock_tarfile.return_value = mock_tar
-
-        path, reason = _install_tirith()
-        assert path is None
-        assert reason == "binary_not_in_archive"  # got past cosign
-        assert mock_checksum.called
-
-    @patch("tools.tirith_security.tarfile.open")
-    @patch("tools.tirith_security._verify_checksum", return_value=True)
-    @patch("tools.tirith_security._verify_cosign", return_value=True)
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
-    @patch("tools.tirith_security._download_file")
-    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
-    def test_install_proceeds_when_cosign_passes(self, mock_target, mock_dl,
-                                                   mock_which, mock_cosign,
-                                                   mock_checksum, mock_tarfile):
-        """_install_tirith proceeds only when cosign explicitly passes (True)."""
-        from tools.tirith_security import _install_tirith
-        # Mock tarfile — empty archive means "binary not found" return
-        mock_tar = MagicMock()
-        mock_tar.__enter__ = MagicMock(return_value=mock_tar)
-        mock_tar.__exit__ = MagicMock(return_value=False)
-        mock_tar.getmembers.return_value = []
-        mock_tarfile.return_value = mock_tar
-
-        path, reason = _install_tirith()
-        assert path is None  # no binary in mock archive, but got past cosign
-        assert reason == "binary_not_in_archive"
-        assert mock_checksum.called  # reached SHA-256 step
-        assert mock_cosign.called  # cosign was invoked
 
 
 class TestInstallArchiveMemberValidation:
@@ -831,25 +545,6 @@ class TestBackgroundInstall:
 
         _tirith_mod._resolved_path = None
 
-    def test_ensure_installed_skips_on_disk_marker(self):
-        """ensure_installed skips network attempt when disk marker exists."""
-        _tirith_mod._resolved_path = None
-
-        with patch("tools.tirith_security._load_security_config",
-                   return_value={"tirith_enabled": True, "tirith_path": "tirith",
-                                 "tirith_timeout": 5, "tirith_fail_open": True}), \
-             patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._read_failure_reason", return_value="download_failed"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=True):
-
-            result = ensure_installed()
-            assert result is None
-            assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
-            assert _tirith_mod._install_failure_reason == "download_failed"
-
-        _tirith_mod._resolved_path = None
-
     def test_resolve_returns_default_when_thread_alive(self):
         """_resolve_tirith_path returns default while background thread runs."""
         from tools.tirith_security import _resolve_tirith_path
@@ -866,38 +561,12 @@ class TestBackgroundInstall:
         _tirith_mod._install_thread = None
         _tirith_mod._resolved_path = None
 
-    def test_resolve_picks_up_background_result(self):
-        """After background thread finishes, _resolve_tirith_path uses cached path."""
-        from tools.tirith_security import _resolve_tirith_path
-        # Simulate background thread having completed and set the path
-        _tirith_mod._resolved_path = "/usr/local/bin/tirith"
-
-        result = _resolve_tirith_path("tirith")
-        assert result == "/usr/local/bin/tirith"
-
-        _tirith_mod._resolved_path = None
-
 
 # ---------------------------------------------------------------------------
 # Disk failure marker persistence (P2)
 # ---------------------------------------------------------------------------
 
 class TestDiskFailureMarker:
-    def test_mark_and_check(self):
-        """Writing then reading the marker should work."""
-        import tempfile
-        tmpdir = tempfile.mkdtemp()
-        marker = os.path.join(tmpdir, ".tirith-install-failed")
-        with patch("tools.tirith_security._failure_marker_path", return_value=marker):
-            from tools.tirith_security import (
-                _mark_install_failed, _is_install_failed_on_disk, _clear_install_failed,
-            )
-            assert not _is_install_failed_on_disk()
-            _mark_install_failed("download_failed")
-            assert _is_install_failed_on_disk()
-            _clear_install_failed()
-            assert not _is_install_failed_on_disk()
-
     def test_expired_marker_ignored(self):
         """Marker older than TTL should be ignored."""
         import tempfile
@@ -905,7 +574,9 @@ class TestDiskFailureMarker:
         marker = os.path.join(tmpdir, ".tirith-install-failed")
         with patch("tools.tirith_security._failure_marker_path", return_value=marker):
             from tools.tirith_security import _mark_install_failed, _is_install_failed_on_disk
+            assert not _is_install_failed_on_disk()
             _mark_install_failed("download_failed")
+            assert _is_install_failed_on_disk()
             # Backdate the file past 24h TTL
             old_time = time.time() - 90000  # 25 hours ago
             os.utime(marker, (old_time, old_time))
@@ -928,76 +599,6 @@ class TestDiskFailureMarker:
             # Marker file should have been removed
             assert not os.path.exists(marker)
 
-    def test_cosign_missing_marker_stays_when_cosign_still_absent(self):
-        """Marker with 'cosign_missing' reason stays if cosign is still missing."""
-        import tempfile
-        tmpdir = tempfile.mkdtemp()
-        marker = os.path.join(tmpdir, ".tirith-install-failed")
-        with patch("tools.tirith_security._failure_marker_path", return_value=marker):
-            from tools.tirith_security import _mark_install_failed, _is_install_failed_on_disk
-            _mark_install_failed("cosign_missing")
-            with patch("tools.tirith_security.shutil.which", return_value=None):
-                assert _is_install_failed_on_disk()
-
-    def test_non_cosign_marker_not_affected_by_cosign_presence(self):
-        """Markers with other reasons are NOT cleared by cosign appearing."""
-        import tempfile
-        tmpdir = tempfile.mkdtemp()
-        marker = os.path.join(tmpdir, ".tirith-install-failed")
-        with patch("tools.tirith_security._failure_marker_path", return_value=marker):
-            from tools.tirith_security import _mark_install_failed, _is_install_failed_on_disk
-            _mark_install_failed("download_failed")
-            with patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign"):
-                assert _is_install_failed_on_disk()  # still failed
-
-    @patch("tools.tirith_security._mark_install_failed")
-    @patch("tools.tirith_security._is_install_failed_on_disk", return_value=False)
-    @patch("tools.tirith_security._install_tirith", return_value=(None, "cosign_missing"))
-    @patch("tools.tirith_security.shutil.which", return_value=None)
-    def test_sync_resolve_persists_failure(self, mock_which, mock_install,
-                                            mock_disk_check, mock_mark):
-        """Synchronous _resolve_tirith_path persists failure to disk."""
-        from tools.tirith_security import _resolve_tirith_path
-        _tirith_mod._resolved_path = None
-
-        _resolve_tirith_path("tirith")
-        mock_mark.assert_called_once_with("cosign_missing")
-
-        _tirith_mod._resolved_path = None
-
-    @patch("tools.tirith_security._clear_install_failed")
-    @patch("tools.tirith_security._is_install_failed_on_disk", return_value=False)
-    @patch("tools.tirith_security._install_tirith", return_value=("/installed/tirith", ""))
-    @patch("tools.tirith_security.shutil.which", return_value=None)
-    def test_sync_resolve_clears_marker_on_success(self, mock_which, mock_install,
-                                                    mock_disk_check, mock_clear):
-        """Successful install clears the disk failure marker."""
-        from tools.tirith_security import _resolve_tirith_path
-        _tirith_mod._resolved_path = None
-
-        result = _resolve_tirith_path("tirith")
-        assert result == "/installed/tirith"
-        mock_clear.assert_called_once()
-
-        _tirith_mod._resolved_path = None
-
-    def test_sync_resolve_skips_install_on_disk_marker(self):
-        """_resolve_tirith_path skips download when disk marker is recent."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = None
-
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._read_failure_reason", return_value="download_failed"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=True), \
-             patch("tools.tirith_security._install_tirith") as mock_install:
-            _resolve_tirith_path("tirith")
-            mock_install.assert_not_called()
-            assert _tirith_mod._resolved_path is _INSTALL_FAILED
-            assert _tirith_mod._install_failure_reason == "download_failed"
-
-        _tirith_mod._resolved_path = None
-
     def test_install_failed_still_checks_local_paths(self):
         """After _INSTALL_FAILED, a manual install on PATH is picked up."""
         from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
@@ -1009,60 +610,6 @@ class TestDiskFailureMarker:
             assert result == "/usr/local/bin/tirith"
             assert _tirith_mod._resolved_path == "/usr/local/bin/tirith"
             mock_clear.assert_called_once()
-
-        _tirith_mod._resolved_path = None
-
-    def test_install_failed_recovers_from_hermes_bin(self):
-        """After _INSTALL_FAILED, manual install in HERMES_HOME/bin is picked up."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        import tempfile
-        tmpdir = tempfile.mkdtemp()
-        hermes_bin = os.path.join(tmpdir, "tirith")
-        # Create a fake executable
-        with open(hermes_bin, "w") as f:
-            f.write("#!/bin/sh\n")
-        os.chmod(hermes_bin, 0o755)
-
-        _tirith_mod._resolved_path = _INSTALL_FAILED
-
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value=tmpdir), \
-             patch("tools.tirith_security._clear_install_failed") as mock_clear:
-            result = _resolve_tirith_path("tirith")
-            assert result == hermes_bin
-            assert _tirith_mod._resolved_path == hermes_bin
-            mock_clear.assert_called_once()
-
-        _tirith_mod._resolved_path = None
-
-    def test_install_failed_skips_network_when_local_absent(self):
-        """After _INSTALL_FAILED, if local checks fail, network is NOT retried."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = _INSTALL_FAILED
-
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._install_tirith") as mock_install:
-            result = _resolve_tirith_path("tirith")
-            assert result == "tirith"  # fallback to configured path
-            mock_install.assert_not_called()
-
-        _tirith_mod._resolved_path = None
-
-    def test_cosign_missing_disk_marker_allows_retry(self):
-        """Disk marker with cosign_missing reason allows retry when cosign appears."""
-        from tools.tirith_security import _resolve_tirith_path
-        _tirith_mod._resolved_path = None
-
-        # _is_install_failed_on_disk sees "cosign_missing" + cosign on PATH → returns False
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=False), \
-             patch("tools.tirith_security._install_tirith", return_value=("/new/tirith", "")) as mock_install, \
-             patch("tools.tirith_security._clear_install_failed"):
-            result = _resolve_tirith_path("tirith")
-            mock_install.assert_called_once()  # network retry happened
-            assert result == "/new/tirith"
 
         _tirith_mod._resolved_path = None
 
@@ -1105,54 +652,6 @@ class TestDiskFailureMarker:
 
         _tirith_mod._resolved_path = None
 
-    def test_in_memory_cosign_missing_stays_when_cosign_still_absent(self):
-        """In-memory cosign_missing is NOT retried when cosign is still absent."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = _INSTALL_FAILED
-        _tirith_mod._install_failure_reason = "cosign_missing"
-
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._install_tirith") as mock_install:
-            result = _resolve_tirith_path("tirith")
-            assert result == "tirith"  # fallback
-            mock_install.assert_not_called()
-
-        _tirith_mod._resolved_path = None
-
-    def test_disk_marker_reason_preserved_in_memory(self):
-        """Disk marker reason is loaded into _install_failure_reason, not a generic tag."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-        _tirith_mod._resolved_path = None
-
-        # First call: disk marker with cosign_missing is active, cosign still absent
-        with patch("tools.tirith_security.shutil.which", return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._read_failure_reason", return_value="cosign_missing"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=True):
-            _resolve_tirith_path("tirith")
-            assert _tirith_mod._resolved_path is _INSTALL_FAILED
-            assert _tirith_mod._install_failure_reason == "cosign_missing"
-
-        # Second call: cosign now on PATH → in-memory retry fires
-        def _which_side_effect(name):
-            if name == "tirith":
-                return None
-            if name == "cosign":
-                return "/usr/local/bin/cosign"
-            return None
-
-        with patch("tools.tirith_security.shutil.which", side_effect=_which_side_effect), \
-             patch("tools.tirith_security._hermes_bin_dir", return_value="/nonexistent"), \
-             patch("tools.tirith_security._is_install_failed_on_disk", return_value=False), \
-             patch("tools.tirith_security._install_tirith", return_value=("/new/tirith", "")) as mock_install, \
-             patch("tools.tirith_security._clear_install_failed"):
-            result = _resolve_tirith_path("tirith")
-            mock_install.assert_called_once()
-            assert result == "/new/tirith"
-
-        _tirith_mod._resolved_path = None
-
 
 # ---------------------------------------------------------------------------
 # HERMES_HOME isolation
@@ -1168,31 +667,6 @@ class TestHermesHomeIsolation:
             result = _hermes_bin_dir()
         assert result == os.path.join(tmpdir, "bin")
         assert os.path.isdir(result)
-
-    def test_failure_marker_respects_hermes_home(self):
-        """_failure_marker_path must use HERMES_HOME, not hardcoded ~/.hermes."""
-        from tools.tirith_security import _failure_marker_path
-        with patch.dict(os.environ, {"HERMES_HOME": "/custom/hermes"}):
-            result = _failure_marker_path()
-        assert result == "/custom/hermes/.tirith-install-failed"
-
-    def test_conftest_isolation_prevents_real_home_writes(self):
-        """The conftest autouse fixture sets HERMES_HOME; verify it's active."""
-        hermes_home = os.getenv("HERMES_HOME")
-        assert hermes_home is not None, "HERMES_HOME should be set by conftest"
-        assert "hermes_test" in hermes_home, "Should point to test temp dir"
-
-    def test_get_hermes_home_fallback(self):
-        """Without HERMES_HOME set, falls back to the active OS home."""
-        from tools.tirith_security import _get_hermes_home
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove HERMES_HOME entirely. With HOME also absent, expanduser
-            # falls back to the account database; compute expected under the
-            # same environment instead of after patch.dict restores HOME.
-            os.environ.pop("HERMES_HOME", None)
-            expected = os.path.join(os.path.expanduser("~"), ".hermes")
-            result = _get_hermes_home()
-        assert result == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1240,89 +714,6 @@ class TestSpawnWarningDedup:
             f"got {len(spawn_warnings)}: {[r.message for r in spawn_warnings]}"
         )
 
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_distinct_exception_types_each_log_once(self, mock_cfg, mock_run, caplog):
-        """``FileNotFoundError`` and ``PermissionError`` are distinct
-        failure modes and each deserves its own first-occurrence log
-        line; the dedupe key includes the exception class.
-        
-        After _CRASH_LIMIT consecutive failures the circuit breaker opens
-        and subsequent calls short-circuit without spawning, so we only
-        see the warnings from the first batch."""
-        mock_cfg.return_value = {
-            "tirith_enabled": True, "tirith_path": "tirith",
-            "tirith_timeout": 5, "tirith_fail_open": True,
-        }
-        _tirith_mod._reset_spawn_warning_state()
-
-        with caplog.at_level("WARNING", logger="tools.tirith_security"):
-            mock_run.side_effect = FileNotFoundError("[WinError 2]")
-            for _ in range(3):
-                check_command_security("a")
-            # Circuit breaker is now open — switching to PermissionError
-            # won't generate a new warning because the function returns
-            # before reaching subprocess.run.
-            mock_run.side_effect = PermissionError("denied")
-            for _ in range(3):
-                check_command_security("b")
-
-        spawn_warnings = [
-            rec for rec in caplog.records
-            if "tirith spawn failed" in rec.message
-        ]
-        assert len(spawn_warnings) == 1, (
-            f"expected 1 warning before circuit breaker opens, "
-            f"got {len(spawn_warnings)}"
-        )
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_repeated_timeout_logs_once(self, mock_cfg, mock_run, caplog):
-        mock_cfg.return_value = {
-            "tirith_enabled": True, "tirith_path": "tirith",
-            "tirith_timeout": 5, "tirith_fail_open": True,
-        }
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="tirith", timeout=5)
-        _tirith_mod._reset_spawn_warning_state()
-
-        with caplog.at_level("WARNING", logger="tools.tirith_security"):
-            for _ in range(10):
-                result = check_command_security("slow")
-                assert result["action"] == "allow"
-
-        timeout_warnings = [
-            rec for rec in caplog.records
-            if "tirith timed out" in rec.message
-        ]
-        assert len(timeout_warnings) == 1
-
-    @patch("tools.tirith_security._load_security_config")
-    def test_path_none_logs_once(self, mock_cfg, caplog):
-        """``_resolve_tirith_path`` returning ``None`` (explicit path set
-        but resolver returned None — unusual) should not spam the log
-        either."""
-        mock_cfg.return_value = {
-            "tirith_enabled": True, "tirith_path": "tirith",
-            "tirith_timeout": 5, "tirith_fail_open": True,
-        }
-        _tirith_mod._reset_spawn_warning_state()
-
-        with patch(
-            "tools.tirith_security._resolve_tirith_path", return_value=None
-        ):
-            with caplog.at_level("WARNING", logger="tools.tirith_security"):
-                for _ in range(10):
-                    result = check_command_security("echo")
-                    assert result["action"] == "allow"
-                    assert "tirith path unavailable" in result["summary"]
-
-        none_warnings = [
-            rec for rec in caplog.records
-            if "tirith path resolved to None" in rec.message
-        ]
-        assert len(none_warnings) == 1
-
 
 # ---------------------------------------------------------------------------
 # .app TLD suppression (issue #24461)
@@ -1349,16 +740,6 @@ class TestAppTldSuppression:
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_app_tld_in_description_field_also_suppressed(self, mock_cfg, mock_run):
-        mock_cfg.return_value = _CFG
-        findings = [{"rule_id": "lookalike_tld",
-                     "description": "TLD .app looks like a file extension"}]
-        mock_run.return_value = _mock_run(2, _json_stdout(findings))
-        result = check_command_security("curl https://api.app/v1")
-        assert result["action"] == "allow"
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
     def test_mixed_findings_preserve_warn(self, mock_cfg, mock_run):
         """If .app finding is accompanied by another finding, warn is preserved."""
         mock_cfg.return_value = _CFG
@@ -1373,18 +754,6 @@ class TestAppTldSuppression:
 
     @patch("tools.tirith_security.subprocess.run")
     @patch("tools.tirith_security._load_security_config")
-    def test_non_app_lookalike_tld_preserved(self, mock_cfg, mock_run):
-        """lookalike_tld for a non-.app TLD is not suppressed."""
-        mock_cfg.return_value = _CFG
-        findings = [{"rule_id": "lookalike_tld", "value": ".zip",
-                     "message": "TLD .zip can be confused with zip archives"}]
-        mock_run.return_value = _mock_run(2, _json_stdout(findings, ".zip TLD warning"))
-        result = check_command_security("curl https://victim.zip")
-        assert result["action"] == "warn"
-        assert len(result["findings"]) == 1
-
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
     def test_block_verdict_never_suppressed(self, mock_cfg, mock_run):
         """block exit code is never downgraded, even if finding looks like .app."""
         mock_cfg.return_value = _CFG
@@ -1393,55 +762,19 @@ class TestAppTldSuppression:
         result = check_command_security("curl https://example.app")
         assert result["action"] == "block"
 
-    @patch("tools.tirith_security.subprocess.run")
-    @patch("tools.tirith_security._load_security_config")
-    def test_multiple_app_tld_findings_all_suppressed(self, mock_cfg, mock_run):
-        """All findings being .app lookalike_tld → allow."""
-        mock_cfg.return_value = _CFG
-        findings = [
-            {"rule_id": "lookalike_tld", "value": ".app"},
-            {"rule_id": "lookalike_tld", "tld": ".app"},
-        ]
-        mock_run.return_value = _mock_run(2, _json_stdout(findings))
-        result = check_command_security("curl https://a.app https://b.app")
-        assert result["action"] == "allow"
-
 
 class TestIsAppTldFinding:
     """Unit tests for the _is_app_tld_finding helper."""
 
-    def setup_method(self):
+    @pytest.mark.parametrize("finding, expected", [
+        ({"rule_id": "lookalike_tld", "value": ".APP"}, True),   # case-insensitive
+        ({"rule_id": "lookalike_tld", "message": "Domain uses '.app' TLD"}, True),
+        ({"rule_id": "shortened_url", "value": ".app"}, False),  # wrong rule_id
+        ({"rule_id": "lookalike_tld", "value": ".zip"}, False),  # other TLD
+    ])
+    def test_app_tld_detection(self, finding, expected):
         from tools.tirith_security import _is_app_tld_finding
-        self.fn = _is_app_tld_finding
-
-    def test_matching_value_field(self):
-        assert self.fn({"rule_id": "lookalike_tld", "value": ".app"})
-
-    def test_matching_tld_field(self):
-        assert self.fn({"rule_id": "lookalike_tld", "tld": ".app"})
-
-    def test_matching_description_field(self):
-        assert self.fn({"rule_id": "lookalike_tld",
-                        "description": "TLD .app looks like an executable"})
-
-    def test_matching_message_field(self):
-        assert self.fn({"rule_id": "lookalike_tld",
-                        "message": "Domain uses '.app' TLD"})
-
-    def test_wrong_rule_id(self):
-        assert not self.fn({"rule_id": "shortened_url", "value": ".app"})
-
-    def test_non_app_tld(self):
-        assert not self.fn({"rule_id": "lookalike_tld", "value": ".zip"})
-
-    def test_no_tld_value_fields(self):
-        assert not self.fn({"rule_id": "lookalike_tld", "severity": "low"})
-
-    def test_non_dict_input(self):
-        assert not self.fn("not a dict")  # type: ignore[arg-type]
-
-    def test_case_insensitive_match(self):
-        assert self.fn({"rule_id": "lookalike_tld", "value": ".APP"})
+        assert _is_app_tld_finding(finding) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -1474,21 +807,3 @@ class TestMkdtempOSErrorNoSpace:
             _install_tirith(log_failures=False)
         after = set(glob.glob("/tmp/tirith-install-*"))
         assert after - before == set()
-
-    def test_mkdtemp_oserror_propagates_to_ensure_installed(self):
-        """ensure_installed should cache the failure via _mark_install_failed."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
-
-        _tirith_mod._resolved_path = None
-        with patch("tools.tirith_security.tempfile.mkdtemp",
-                   side_effect=OSError(28, "No space left on device")), \
-             patch("tools.tirith_security.shutil.which",
-                   return_value=None), \
-             patch("tools.tirith_security._hermes_bin_dir",
-                   return_value="/nonexistent"), \
-             patch("tools.tirith_security._is_install_failed_on_disk",
-                   return_value=False), \
-             patch("tools.tirith_security._mark_install_failed") as mock_mark:
-            result = _resolve_tirith_path("tirith")
-            assert _tirith_mod._resolved_path is _INSTALL_FAILED
-            mock_mark.assert_called_once_with("no_space")

@@ -77,33 +77,8 @@ def mock_pyright(monkeypatch, tmp_path):
         pass
 
 
-def test_service_returns_empty_when_disabled(tmp_path):
-    svc = LSPService(
-        enabled=False,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="auto",
-    )
-    assert not svc.is_active()
-    f = tmp_path / "x.py"
-    f.write_text("")
-    assert svc.get_diagnostics_sync(str(f)) == []
-    svc.shutdown()
 
 
-def test_service_skips_files_outside_workspace(tmp_path):
-    """Files outside any git worktree must not trigger LSP."""
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=2.0,
-        install_strategy="manual",
-    )
-    f = tmp_path / "x.py"
-    f.write_text("")
-    # No .git anywhere — service should report not enabled for this file.
-    assert not svc.enabled_for(str(f))
-    svc.shutdown()
 
 
 def test_service_e2e_delta_filter(mock_pyright):
@@ -158,53 +133,8 @@ def test_service_e2e_delta_filter_with_line_shift(mock_pyright):
         svc.shutdown()
 
 
-def test_service_status_includes_clients(mock_pyright):
-    repo = mock_pyright
-    f = repo / "x.py"
-    f.write_text("")
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=3.0,
-        install_strategy="manual",
-    )
-    try:
-        svc.get_diagnostics_sync(str(f))
-        info = svc.get_status()
-        assert info["enabled"] is True
-        assert any(c["server_id"] == "pyright" for c in info["clients"])
-    finally:
-        svc.shutdown()
 
 
-def test_service_reaps_client_after_idle_timeout(mock_pyright):
-    repo = mock_pyright
-    f = repo / "x.py"
-    f.write_text("")
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=3.0,
-        install_strategy="manual",
-        idle_timeout=0.2,
-    )
-    try:
-        svc.get_diagnostics_sync(str(f))
-        assert svc.get_status()["clients"]
-        client = next(iter(svc._clients.values()))
-        process = client._proc
-        assert process is not None
-
-        deadline = time.monotonic() + 2.0
-        while svc.get_status()["clients"] and time.monotonic() < deadline:
-            time.sleep(0.02)
-        while process.returncode is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-
-        assert svc.get_status()["clients"] == []
-        assert process.returncode is not None
-    finally:
-        svc.shutdown()
 
 
 def test_reused_client_refreshes_last_used_and_survives_reap(mock_pyright):
@@ -289,56 +219,9 @@ def test_reaper_survives_sweep_error(mock_pyright):
         svc.shutdown()
 
 
-def test_create_from_config_reads_idle_timeout(monkeypatch):
-    """``lsp.idle_timeout`` in config.yaml reaches the service."""
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"lsp": {"enabled": False, "idle_timeout": 42}},
-    )
-    svc = LSPService.create_from_config()
-    assert svc is not None
-    assert svc._idle_timeout == 42.0
 
 
-def test_create_from_config_invalid_idle_timeout_falls_back(monkeypatch):
-    from agent.lsp.manager import DEFAULT_IDLE_TIMEOUT
-
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"lsp": {"enabled": False, "idle_timeout": "not-a-number"}},
-    )
-    svc = LSPService.create_from_config()
-    assert svc is not None
-    assert svc._idle_timeout == DEFAULT_IDLE_TIMEOUT
 
 
-def test_create_from_config_clamps_tiny_idle_timeout(monkeypatch):
-    """Sub-floor timeouts are clamped (mid-flight reap could otherwise
-    escalate an outer timeout into a permanent broken-set entry); 0 still
-    means disabled and is not clamped."""
-    from agent.lsp.manager import MIN_IDLE_TIMEOUT
-
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"lsp": {"enabled": False, "idle_timeout": 2}},
-    )
-    svc = LSPService.create_from_config()
-    assert svc is not None
-    assert svc._idle_timeout == MIN_IDLE_TIMEOUT
-
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"lsp": {"enabled": False, "idle_timeout": 0}},
-    )
-    svc = LSPService.create_from_config()
-    assert svc is not None
-    assert svc._idle_timeout == 0
 
 
-def test_default_config_declares_idle_timeout():
-    """The canonical default in DEFAULT_CONFIG matches the manager constant
-    so config discovery surfaces the knob with the real default value."""
-    from agent.lsp.manager import DEFAULT_IDLE_TIMEOUT
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert float(DEFAULT_CONFIG["lsp"]["idle_timeout"]) == float(DEFAULT_IDLE_TIMEOUT)

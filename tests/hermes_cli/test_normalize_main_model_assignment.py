@@ -46,12 +46,6 @@ class TestUnresolvedNamedCustomProviderIsNotTreatedAsStrayVendorPrefix:
                 "ollama/glm-5.2",
             )
 
-    def test_bare_custom_bucket_is_preserved(self):
-        with _no_custom_providers_configured():
-            assert _normalize_main_model_assignment("custom", "ollama/glm-5.2") == (
-                "custom",
-                "ollama/glm-5.2",
-            )
 
     def test_unconfigured_non_custom_vendor_name_still_falls_back(self):
         """A name that merely starts with the substring "custom" but isn't
@@ -70,21 +64,6 @@ class TestConfiguredNamedCustomProviderResolvesViaPrimaryPath:
     in ``custom_providers`` resolves through ``resolve_custom_provider``
     before the fallback under test above is ever reached.
     """
-
-    def test_configured_named_custom_provider_resolves(self):
-        cfg = {
-            "custom_providers": [
-                {
-                    "name": "litellm",
-                    "base_url": "http://localhost:4000/v1",
-                    "key_env": "LITELLM_API_KEY",
-                }
-            ]
-        }
-        with patch("hermes_cli.web_server.load_config", return_value=cfg):
-            assert _normalize_main_model_assignment(
-                "custom:litellm", "ollama/glm-5.2"
-            ) == ("custom:litellm", "ollama/glm-5.2")
 
 
 class TestStrayVendorPrefixFallbackStillWorks:

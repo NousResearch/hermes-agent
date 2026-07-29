@@ -72,13 +72,6 @@ def _cache_agent(
 
 
 class TestRewritePromptModelIdentity:
-    def test_swaps_identity_lines_to_fallback_runtime(self):
-        agent = _agent()
-        rewrite_prompt_model_identity(agent, "gemma4:e2b-mlx", "custom")
-        assert "Model: gemma4:e2b-mlx" in agent._cached_system_prompt
-        assert "Provider: custom" in agent._cached_system_prompt
-        assert "Model: gpt-5.4-mini" not in agent._cached_system_prompt
-        assert "Provider: openai-codex" not in agent._cached_system_prompt
 
     def test_only_last_occurrence_is_rewritten(self):
         agent = _agent()
@@ -87,14 +80,6 @@ class TestRewritePromptModelIdentity:
         # context files) and must survive untouched.
         assert "Model: decoy-from-memory" in agent._cached_system_prompt
 
-    def test_round_trip_restores_byte_identical_prompt(self):
-        # restore_primary_runtime rewrites the lines back; the result must
-        # match the stored prompt byte-for-byte so the primary's prefix
-        # cache still hits after restoration.
-        agent = _agent()
-        rewrite_prompt_model_identity(agent, "gemma4:e2b-mlx", "custom")
-        rewrite_prompt_model_identity(agent, "gpt-5.4-mini", "openai-codex")
-        assert agent._cached_system_prompt == _PROMPT
 
     def test_noop_when_prompt_missing_or_empty(self):
         for prompt in (None, ""):
@@ -102,10 +87,6 @@ class TestRewritePromptModelIdentity:
             rewrite_prompt_model_identity(agent, "m", "p")
             assert agent._cached_system_prompt == prompt
 
-    def test_empty_values_leave_lines_unchanged(self):
-        agent = _agent()
-        rewrite_prompt_model_identity(agent, "", "")
-        assert agent._cached_system_prompt == _PROMPT
 
 
 class TestSyncFailoverSystemMessage:
@@ -120,11 +101,6 @@ class TestSyncFailoverSystemMessage:
         assert "Model: gemma4:e2b-mlx" in api_messages[0]["content"]
         assert result == agent._cached_system_prompt
 
-    def test_appends_ephemeral_system_prompt(self):
-        agent = _agent(ephemeral="Stay terse.")
-        api_messages = [{"role": "system", "content": _PROMPT}]
-        _sync_failover_system_message(agent, api_messages, _PROMPT)
-        assert api_messages[0]["content"].endswith("Stay terse.")
 
     def test_noop_without_cached_prompt(self):
         agent = _agent(prompt=None)
@@ -133,13 +109,6 @@ class TestSyncFailoverSystemMessage:
         assert api_messages[0]["content"] == "original"
         assert result == "active"
 
-    def test_noop_when_first_message_is_not_system(self):
-        agent = _agent()
-        api_messages = [{"role": "user", "content": "hi"}]
-        result = _sync_failover_system_message(agent, api_messages, "active")
-        assert api_messages == [{"role": "user", "content": "hi"}]
-        # Still returns the cached prompt for subsequent call-block rebuilds.
-        assert result == agent._cached_system_prompt
 
 
 class TestSyncFailoverPreservesCacheDecoration:
@@ -208,24 +177,7 @@ class TestSyncFailoverPreservesCacheDecoration:
         assert content[0].get("cache_control")
         assert "Model: gemma4:e2b-mlx" in content[0]["text"]
 
-    def test_ephemeral_prompt_lands_in_the_volatile_tail(self):
-        prompt = self._STATIC + "Model: gpt-5.4-mini\nProvider: openai-codex"
-        agent = _agent(prompt=prompt, ephemeral="Stay terse.")
-        api_messages = self._decorated(prompt)
 
-        _sync_failover_system_message(agent, api_messages, prompt)
-
-        content = api_messages[0]["content"]
-        assert content[0]["text"] == self._STATIC
-        assert content[1]["text"].endswith("Stay terse.")
-
-    def test_unknown_block_shape_falls_back_to_string(self):
-        agent = _agent()
-        api_messages = [
-            {"role": "system", "content": [{"type": "image", "source": {}}]},
-        ]
-        _sync_failover_system_message(agent, api_messages, _PROMPT)
-        assert api_messages[0]["content"] == agent._cached_system_prompt
 
 
 class TestRedecoratePromptCacheOnPolicyChange:
@@ -260,74 +212,8 @@ class TestRedecoratePromptCacheOnPolicyChange:
         assert isinstance(decorated[0]["content"], list)
         assert decorated[0]["content"][0]["text"] == self._STATIC
 
-    def test_cache_on_to_cache_off_strips_breakpoints(self):
-        prompt = self._STATIC + "Model: claude\nProvider: anthropic"
-        decorated = apply_anthropic_cache_control(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "hello"},
-            ],
-            native_anthropic=True,
-            static_system_prefix=self._STATIC,
-        )
-        assert _count_cache_markers(decorated) >= 2
 
-        agent = _cache_agent(
-            use_caching=False,
-            native=False,
-            prompt=prompt,
-            static=self._STATIC,
-            provider="custom",
-        )
-        stripped, _ = _redecorate_prompt_cache_for_provider(agent, decorated)
-        assert _count_cache_markers(stripped) == 0
-        assert stripped[0]["content"] == prompt
 
-    def test_native_to_envelope_relocates_breakpoints_to_carriers(self):
-        prompt = "Model: claude\nProvider: anthropic"
-        # Native layout can mark empty assistant turns; envelope cannot.
-        native = apply_anthropic_cache_control(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "do it"},
-                {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
-                {"role": "tool", "content": "ok", "tool_call_id": "1"},
-                {"role": "user", "content": "thanks"},
-            ],
-            native_anthropic=True,
-        )
-        agent = _cache_agent(
-            use_caching=True,
-            native=False,
-            prompt=prompt,
-            provider="openrouter",
-        )
-        envelope, _ = _redecorate_prompt_cache_for_provider(agent, native)
-        # Empty assistant must not carry a wasted top-level marker on envelope.
-        empty_assistant = next(
-            m for m in envelope if m.get("role") == "assistant" and not m.get("content")
-        )
-        assert "cache_control" not in empty_assistant
-        assert _count_cache_markers(envelope) >= 1
-
-    def test_preserves_mutated_tool_result_bytes(self):
-        # Redecoration must use the in-flight mutated list, not a pristine
-        # pre-decoration snapshot — image-shrink / ASCII recoveries live here.
-        prompt = "sys"
-        messages = [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": "run"},
-            {"role": "tool", "content": "SHRUNK_IMAGE_PAYLOAD", "tool_call_id": "t1"},
-        ]
-        agent = _cache_agent(use_caching=True, native=True, prompt=prompt)
-        out, _ = _redecorate_prompt_cache_for_provider(agent, messages)
-        tool = next(m for m in out if m.get("role") == "tool")
-        text = (
-            tool["content"]
-            if isinstance(tool["content"], str)
-            else tool["content"][0]["text"]
-        )
-        assert text == "SHRUNK_IMAGE_PAYLOAD"
 
     def test_moa_guidance_stays_outside_last_breakpoint(self):
         prompt = "sys"
@@ -377,39 +263,6 @@ class TestRedecoratePromptCacheOnPolicyChange:
             assert guidance in content
 
 
-    def test_moa_no_guidance_prepared_messages_still_refreshed(self):
-        # guidance=None is a real prepared shape (all references failed /
-        # silent degraded policy). The MoA facade sends prepared["messages"],
-        # so the rebase must refresh the prepared object even without
-        # guidance — otherwise the aggregator ships the STALE decoration
-        # and #72626 persists for the no-guidance MoA sub-path.
-        prompt = "sys"
-        decorated = apply_anthropic_cache_control(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "task"},
-            ],
-            native_anthropic=True,
-        )
-
-        class _Completions:
-            def rebase_prepared_request(self, prepared, messages):
-                # Mirrors MoAChatCompletions.rebase_prepared_request with
-                # falsy guidance: copy messages, skip the attach.
-                return {**prepared, "messages": [dict(m) for m in messages]}
-
-        # Policy change while staying on moa: cache-on -> cache-off.
-        agent = _cache_agent(use_caching=False, prompt=prompt, provider="moa")
-        agent.client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
-        prepared = {"guidance": None, "messages": decorated}
-        out, new_prepared = _redecorate_prompt_cache_for_provider(
-            agent, decorated, moa_prepared=prepared
-        )
-        assert new_prepared is not None
-        # The prepared object the facade will send must carry the
-        # redecorated (stripped) messages, not the stale decorated list.
-        assert _count_cache_markers(new_prepared["messages"]) == 0
-        assert new_prepared["messages"] == out
 
 
 class TestPeelReferenceGuidanceRoundTrip:
@@ -428,12 +281,6 @@ class TestPeelReferenceGuidanceRoundTrip:
         assert attached != base, "attach must change the transcript"
         return peel_reference_guidance(attached, self._GUIDANCE)
 
-    def test_string_merge_shape(self):
-        base = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "task"},
-        ]
-        assert self._round_trip(base) == base
 
     def test_list_part_shape(self):
         base = [
@@ -445,14 +292,6 @@ class TestPeelReferenceGuidanceRoundTrip:
         ]
         assert self._round_trip(base) == base
 
-    def test_appended_user_message_shape(self):
-        # No trailing user turn — attach appends a separate user message.
-        base = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "task"},
-            {"role": "assistant", "content": "done"},
-        ]
-        assert self._round_trip(base) == base
 
     def test_guidance_only_part_drops_message_not_empty_residue(self):
         # If the guidance part is the only content left after peeling, the

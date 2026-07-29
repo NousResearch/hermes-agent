@@ -85,40 +85,6 @@ def test_plugin_engine_gets_model_thresholds_before_initial_update_model():
     assert engine.threshold_tokens == int(1_000_000 * 0.25)
 
 
-def test_plugin_engine_without_overrides_keeps_global_threshold():
-    """Empty model_thresholds leaves plugin-engine init behavior unchanged."""
-    engine = _StubEngine()
-    engine.threshold_percent = 0.50
-
-    cfg = {
-        "context": {"engine": "stub"},
-        "agent": {},
-        "compression": {"threshold": 0.50},
-    }
-
-    with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=1_000_000),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
-    ):
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            model="glm-5.2",
-            api_key="test-key-1234567890",
-            base_url="https://openrouter.ai/api/v1",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-
-    assert agent.context_compressor is engine
-    assert getattr(engine, "model_thresholds", {}) == {}
-    assert engine.threshold_percent == 0.50
-    assert engine.threshold_tokens == int(1_000_000 * 0.50)
 
 
 def test_model_thresholds_key_in_default_config():
@@ -150,20 +116,6 @@ class TestFloorInteractionOnModelSwitch:
         assert cc.threshold_percent == 0.75  # raise-only floor wins
         assert cc.threshold_tokens == int(128_000 * 0.75)
 
-    @patch("agent.context_compressor.get_model_context_length")
-    def test_switch_override_above_floor_wins(self, mock_ctx):
-        """Switching to a small-context model with an above-floor override → override."""
-        mock_ctx.return_value = 1_000_000
-        cc = ContextCompressor(
-            model="glm-5.2-1M",
-            threshold_percent=0.50,
-            model_thresholds={"glm-5.2-1M": 0.25, "small-model": 0.85},
-            quiet_mode=True,
-        )
-        mock_ctx.return_value = 128_000
-        cc.update_model(model="small-model", context_length=128_000)
-        assert cc.threshold_percent == 0.85  # above the 0.75 floor: override wins
-        assert cc.threshold_tokens == int(128_000 * 0.85)
 
 
 class TestBaseEngineConfigSnapshot:

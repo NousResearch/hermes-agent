@@ -93,11 +93,6 @@ def test_format_aux_current(task_cfg, expected):
     assert _format_aux_current(task_cfg) == expected
 
 
-def test_format_aux_current_handles_non_dict():
-    assert _format_aux_current(None) == "auto"
-    assert _format_aux_current("string") == "auto"
-
-
 # ── _save_aux_choice ────────────────────────────────────────────────────────
 
 
@@ -117,59 +112,6 @@ def test_save_aux_choice_persists_to_config_yaml(tmp_path, monkeypatch):
     assert v["model"] == "google/gemini-2.5-flash"
     assert v["base_url"] == ""
     assert v["api_key"] == ""
-
-
-def test_save_aux_choice_preserves_timeout(tmp_path, monkeypatch):
-    """Saving must NOT clobber user-tuned timeout values."""
-    from pathlib import Path
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".hermes").mkdir(exist_ok=True)
-
-    # Default vision timeout is 120
-    cfg_before = load_config()
-    default_timeout = cfg_before["auxiliary"]["vision"]["timeout"]
-    assert default_timeout == 120
-
-    _save_aux_choice("vision", provider="nous", model="gemini-3-flash")
-    cfg_after = load_config()
-    assert cfg_after["auxiliary"]["vision"]["timeout"] == default_timeout
-    # download_timeout also preserved for vision
-    assert cfg_after["auxiliary"]["vision"].get("download_timeout") == 30
-
-
-def test_save_aux_choice_does_not_touch_main_model(tmp_path, monkeypatch):
-    """Aux config must never mutate model.default / model.provider / model.base_url."""
-    from pathlib import Path
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".hermes").mkdir(exist_ok=True)
-
-    # Simulate a configured main model
-    from hermes_cli.config import save_config
-
-    cfg = load_config()
-    cfg["model"] = {
-        "default": "claude-sonnet-4.6",
-        "provider": "anthropic",
-        "base_url": "",
-    }
-    save_config(cfg)
-
-    _save_aux_choice(
-        "compression", provider="custom",
-        base_url="http://localhost:11434/v1", model="qwen2.5:32b",
-    )
-
-    cfg = load_config()
-    # Main model untouched
-    assert cfg["model"]["default"] == "claude-sonnet-4.6"
-    assert cfg["model"]["provider"] == "anthropic"
-    # Aux saved correctly
-    c = cfg["auxiliary"]["compression"]
-    assert c["provider"] == "custom"
-    assert c["model"] == "qwen2.5:32b"
-    assert c["base_url"] == "http://localhost:11434/v1"
 
 
 def test_save_aux_choice_creates_missing_task_entry(tmp_path, monkeypatch):

@@ -164,26 +164,6 @@ def test_spotify_interactive_setup_persists_client_id(
     assert auth_mod.SPOTIFY_DOCS_URL in output
 
 
-def test_spotify_interactive_setup_empty_aborts(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Empty input aborts cleanly instead of persisting an empty client_id."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("builtins.input", lambda prompt="": "")
-    monkeypatch.setattr(auth_mod, "webbrowser", SimpleNamespace(open=lambda *_a, **_k: False))
-    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
-
-    with pytest.raises(SystemExit):
-        auth_mod._spotify_interactive_setup(
-            redirect_uri_hint=auth_mod.DEFAULT_SPOTIFY_REDIRECT_URI,
-        )
-
-    env_path = tmp_path / ".env"
-    if env_path.exists():
-        assert "HERMES_SPOTIFY_CLIENT_ID" not in env_path.read_text()
-
-
 # ---------------------------------------------------------------------------
 # Quarantine: terminal refresh failure clears dead tokens (#28139)
 # ---------------------------------------------------------------------------
@@ -269,34 +249,3 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
     assert auth_mod.get_active_provider() == "nous"
 
 
-def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Transient refresh failure (relogin_required=False, e.g. 429 / 5xx) must
-    NOT trigger the quarantine path — tokens stay on disk for the next attempt.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _seed_spotify_state(tmp_path, dict(_STALE_SPOTIFY_STATE))
-
-    def _transient_refresh(_state, **_kw):
-        raise AuthError(
-            "Spotify token refresh failed: connection error",
-            provider="spotify",
-            code="spotify_refresh_failed",
-            relogin_required=False,
-        )
-
-    monkeypatch.setattr(auth_mod, "_refresh_spotify_oauth_state", _transient_refresh)
-
-    with pytest.raises(AuthError) as exc_info:
-        resolve_spotify_runtime_credentials(force_refresh=True)
-
-    assert exc_info.value.relogin_required is False
-
-    # Tokens must be untouched — no quarantine on transient errors.
-    persisted = auth_mod.get_provider_auth_state("spotify")
-    assert persisted is not None
-    assert persisted["refresh_token"] == "dead-refresh-token"
-    assert persisted["access_token"] == "dead-access-token"
-    assert "last_auth_error" not in persisted

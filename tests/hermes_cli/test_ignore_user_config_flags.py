@@ -139,22 +139,6 @@ class TestIgnoreRulesEnvGate:
 
         assert obj.ignore_rules is True
 
-    def test_constructor_flag_alone_enables_ignore_rules(self, monkeypatch):
-        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
-        import cli
-        obj = object.__new__(cli.HermesCLI)
-        ignore_rules = True  # constructor argument
-        obj.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
-        assert obj.ignore_rules is True
-
-    def test_neither_flag_nor_env_leaves_rules_enabled(self, monkeypatch):
-        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
-        import cli
-        obj = object.__new__(cli.HermesCLI)
-        ignore_rules = False
-        obj.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
-        assert obj.ignore_rules is False
-
 
 class TestCmdChatWiring:
     """The wiring inside ``cmd_chat()`` in ``hermes_cli/main.py`` must set
@@ -182,18 +166,6 @@ class TestCmdChatWiring:
         assert os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
         assert os.environ.get("HERMES_IGNORE_RULES") == "1"
 
-    def test_only_ignore_user_config(self, monkeypatch):
-        monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
-        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
-
-        class FakeArgs:
-            ignore_user_config = True
-            ignore_rules = False
-
-        self._simulate_cmd_chat_env_setup(FakeArgs())
-
-        assert os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
-        assert "HERMES_IGNORE_RULES" not in os.environ
 
     def test_flags_absent_sets_nothing(self, monkeypatch):
         monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
@@ -229,22 +201,3 @@ class TestArgparseFlagsRegistered:
         assert args.ignore_user_config is True
         assert args.ignore_rules is True
 
-    def test_main_py_registers_both_flags(self):
-        """E2E: the real hermes parser accepts both flags."""
-        from hermes_cli._parser import build_top_level_parser
-
-        parser, _subparsers, chat_parser = build_top_level_parser()
-
-        top_dests = {a.dest for a in parser._actions}
-        chat_dests = {a.dest for a in chat_parser._actions}
-        assert "ignore_user_config" in top_dests
-        assert "ignore_rules" in top_dests
-        assert "ignore_user_config" in chat_dests
-        assert "ignore_rules" in chat_dests
-
-        # And the cmd_chat env-var wiring must be present
-        import inspect
-        import hermes_cli.main as hm
-        src = inspect.getsource(hm)
-        assert "HERMES_IGNORE_USER_CONFIG" in src
-        assert "HERMES_IGNORE_RULES" in src

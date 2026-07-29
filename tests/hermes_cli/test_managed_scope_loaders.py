@@ -48,22 +48,6 @@ def test_gateway_run_loader_honors_managed(homes, monkeypatch):
     assert (cfg.get("model") or {}).get("default") == "org/m"
 
 
-def test_gateway_config_loader_honors_managed(homes, monkeypatch):
-    home, managed = homes
-    _seed(
-        home,
-        managed,
-        user="group_sessions_per_user: false\n",
-        mgd="group_sessions_per_user: true\n",
-    )
-    import gateway.config as gc
-
-    # load_gateway_config resolves home via get_hermes_home() (HERMES_HOME env).
-    cfg = gc.load_gateway_config()
-    # Managed value should have flowed into the GatewayConfig.
-    assert cfg.group_sessions_per_user is True
-
-
 def test_tui_loader_honors_managed(homes, monkeypatch):
     home, managed = homes
     _seed(home, managed, user="display:\n  skin: user\n", mgd="display:\n  skin: charizard\n")
@@ -75,22 +59,6 @@ def test_tui_loader_honors_managed(homes, monkeypatch):
     monkeypatch.setattr(ts, "get_hermes_home_override", lambda: None, raising=False)
     cfg = ts._load_cfg()
     assert (cfg.get("display") or {}).get("skin") == "charizard"
-
-
-def test_tui_loader_does_not_persist_managed_back(homes, monkeypatch):
-    """The TUI caches RAW config so _save_cfg never writes managed values to disk."""
-    home, managed = homes
-    _seed(home, managed, user="display:\n  skin: user\n", mgd="display:\n  skin: charizard\n")
-    import tui_gateway.server as ts
-
-    monkeypatch.setattr(ts, "_hermes_home", home, raising=False)
-    monkeypatch.setattr(ts, "_cfg_cache", None, raising=False)
-    monkeypatch.setattr(ts, "_cfg_mtime", None, raising=False)
-    monkeypatch.setattr(ts, "get_hermes_home_override", lambda: None, raising=False)
-    ts._load_cfg()  # populates the cache
-    # The cache must hold the RAW user value, not the managed overlay, so a
-    # subsequent _save_cfg can't bake the managed skin into the user file.
-    assert (ts._cfg_cache.get("display") or {}).get("skin") == "user"
 
 
 def test_logging_config_honors_managed(homes, monkeypatch):

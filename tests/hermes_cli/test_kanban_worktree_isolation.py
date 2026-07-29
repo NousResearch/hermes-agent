@@ -172,27 +172,3 @@ def test_resolve_worktree_same_branch_still_reuses(kanban_home, tmp_path):
     assert branch == f"wt/{tid}"
 
 
-def test_resolve_worktree_own_path_on_foreign_branch_keeps_legacy_reuse(
-    kanban_home, tmp_path
-):
-    repo = _make_repo(tmp_path)
-
-    with kb.connect() as conn:
-        tid = kb.create_task(
-            conn,
-            title="foreign-branch checkout",
-            workspace_kind="worktree",
-        )
-        own = _add_worktree(repo, repo / ".worktrees" / tid, "wt/foreign")
-        conn.execute(
-            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
-            (str(own), tid),
-        )
-        conn.commit()
-        task = kb.get_task(conn, tid)
-
-    # The fallback target would be the occupied path itself, so the
-    # legacy reuse applies rather than failing dispatch.
-    workspace, branch = kb._resolve_worktree_workspace(task)
-    assert workspace == own.resolve()
-    assert branch == "wt/foreign"

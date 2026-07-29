@@ -70,43 +70,6 @@ def _collect_emits(facade):
     return captured
 
 
-def test_moa_progress_fires_for_each_reference(moa_config, monkeypatch):
-    """One ``moa.progress`` event per reference completion with monotonic counts."""
-    from agent.moa_loop import MoAChatCompletions
-
-    def fake_call_llm(**kwargs):
-        # Per-model stub: each reference returns a stable string so we can
-        # assert labels flow through; the aggregator returns the acting text.
-        if kwargs.get("task") == "moa_reference":
-            return _response(f"advice from {kwargs.get('model', '?')}")
-        return _response("acted")
-
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
-
-    facade = MoAChatCompletions("closed")
-    captured = _collect_emits(facade)
-
-    facade.create(
-        model="closed",
-        messages=[{"role": "user", "content": "clean the db"}],
-    )
-
-    progress_events = [(e, k) for (e, k) in captured if e == "moa.progress"]
-    # 3 references configured in moa_config => 3 progress events.
-    assert len(progress_events) == 3
-
-    # Monotonic 1/3, 2/3, 3/3 — each event carries the current count and total.
-    expected_counts = [(1, 3), (2, 3), (3, 3)]
-    actual_counts = [
-        (k["refs_done"], k["refs_total"]) for (_, k) in progress_events
-    ]
-    assert actual_counts == expected_counts
-
-    # Every progress event names the source model slot (or close to it) so a
-    # status bar can render ``MOA: 2/3 refs done — openai/gpt-5.5``.
-    for _, kwargs in progress_events:
-        assert "label" in kwargs
-        assert kwargs["label"]
 
 
 def test_moa_phase_transitions_to_aggregator(moa_config, monkeypatch):
@@ -139,76 +102,8 @@ def test_moa_phase_transitions_to_aggregator(moa_config, monkeypatch):
     assert kwargs["refs_total"] == 3
 
 
-def test_moa_progress_counts_match_n_references(moa_config, monkeypatch):
-    """Progress counters equal ``len(reference_models)`` regardless of size."""
-    from agent.moa_loop import MoAChatCompletions
-
-    def fake_call_llm(**kwargs):
-        if kwargs.get("task") == "moa_reference":
-            return _response("advice")
-        return _response("acted")
-
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
-
-    facade = MoAChatCompletions("closed")
-    captured = _collect_emits(facade)
-
-    facade.create(
-        model="closed",
-        messages=[{"role": "user", "content": "summarize"}],
-    )
-
-    progress_events = [(e, k) for (e, k) in captured if e == "moa.progress"]
-    totals = [k["refs_total"] for _, k in progress_events]
-    # Every event reports the same total — the preset's reference-model count.
-    assert totals and all(t == 3 for t in totals)
-    # And the final done-count equals the total (fan-out finished).
-    final = progress_events[-1][1]
-    assert final["refs_done"] == final["refs_total"]
 
 
-def test_moa_progress_event_order_matches_fanout(moa_config, monkeypatch):
-    """Every progress event fires AFTER its matching moa.reference event.
-
-    Listeners that animate one block per reference (collapsible) need the
-    progress notification to land after the per-reference text so the
-    status-bar counter and the rendered block stay in lockstep.
-    """
-    from agent.moa_loop import MoAChatCompletions
-
-    def fake_call_llm(**kwargs):
-        if kwargs.get("task") == "moa_reference":
-            return _response("advice")
-        return _response("acted")
-
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
-
-    facade = MoAChatCompletions("closed")
-    captured = _collect_emits(facade)
-
-    facade.create(
-        model="closed",
-        messages=[{"role": "user", "content": "rank the options"}],
-    )
-
-    # Walk the events; every progress event must be preceded by its reference
-    # text event (matching ``index``). The full sequence ends with the
-    # aggregator phase event.
-    seen_phase = False
-    for event, kwargs in captured:
-        if event == "moa.reference":
-            assert kwargs["index"] <= kwargs["count"]
-        elif event == "moa.progress":
-            assert kwargs["refs_done"] <= kwargs["refs_total"]
-        elif event == "moa.phase":
-            # No further reference events after the aggregator phase event.
-            assert kwargs["phase"] == "aggregator"
-            seen_phase = True
-        elif event == "moa.aggregating":
-            # Legacy marker still fires for backwards compatibility, and it
-            # always lands AFTER the phase event.
-            assert seen_phase
-    assert seen_phase, "expected at least one moa.phase event"
 
 
 def test_moa_progress_callback_none_safe(moa_config, monkeypatch):

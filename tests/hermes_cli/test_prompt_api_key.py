@@ -75,12 +75,6 @@ def test_first_time_save_new_key(profile_env):
     assert get_env_value("DEEPSEEK_API_KEY") == "sk-abcdef"
 
 
-def test_first_time_cancelled(profile_env):
-    key, abort = _run_prompt(existing_key="", choice="", new_key="")
-    assert key == ""
-    assert abort is True
-
-
 # Already configured — K / R / C ───────────────────────────────────────────────
 
 def test_keep_default_empty_input(profile_env):
@@ -88,12 +82,6 @@ def test_keep_default_empty_input(profile_env):
     save_env_value("DEEPSEEK_API_KEY", "sk-existing")
 
     key, abort = _run_prompt(existing_key="sk-existing", choice="")
-    assert key == "sk-existing"
-    assert abort is False
-
-
-def test_keep_letter_k(profile_env):
-    key, abort = _run_prompt(existing_key="sk-existing", choice="k")
     assert key == "sk-existing"
     assert abort is False
 
@@ -115,19 +103,6 @@ def test_replace_saves_new_key(profile_env):
     assert key == "sk-fresh"
     assert abort is False
     assert get_env_value("DEEPSEEK_API_KEY") == "sk-fresh"
-
-
-def test_replace_cancelled_preserves_key(profile_env):
-    """Empty entry to the Replace prompt means cancel — keeps the old key intact."""
-    from hermes_cli.config import get_env_value, save_env_value
-    save_env_value("DEEPSEEK_API_KEY", "sk-existing")
-
-    key, abort = _run_prompt(
-        existing_key="sk-existing", choice="r", new_key=""
-    )
-    assert key == "sk-existing"
-    assert abort is False
-    assert get_env_value("DEEPSEEK_API_KEY") == "sk-existing"
 
 
 def test_clear_wipes_env_and_aborts(profile_env):

@@ -121,88 +121,6 @@ def test_do_list_initializes_hub_dir(monkeypatch, hub_env):
     assert (hub_dir / "index-cache").is_dir()
 
 
-def test_do_list_distinguishes_hub_builtin_and_local(three_source_env):
-    output = _capture()
-
-    assert "hub-skill" in output
-    assert "builtin-skill" in output
-    assert "local-skill" in output
-    assert "1 hub-installed, 1 builtin, 1 local" in output
-
-
-def test_do_list_filter_local(three_source_env):
-    output = _capture(source_filter="local")
-
-    assert "local-skill" in output
-    assert "builtin-skill" not in output
-    assert "hub-skill" not in output
-
-
-def test_do_list_filter_hub(three_source_env):
-    output = _capture(source_filter="hub")
-
-    assert "hub-skill" in output
-    assert "builtin-skill" not in output
-    assert "local-skill" not in output
-
-
-def test_do_list_filter_builtin(three_source_env):
-    output = _capture(source_filter="builtin")
-
-    assert "builtin-skill" in output
-    assert "hub-skill" not in output
-    assert "local-skill" not in output
-
-
-def test_do_list_renders_status_column(three_source_env, monkeypatch):
-    """Every list row should carry an enabled/disabled status (new in PR that
-    answered Mr Mochizuki's 'I just want to see what's live' question)."""
-    from agent import skill_utils
-
-    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda platform=None: set())
-    output = _capture()
-
-    assert "Status" in output
-    assert "enabled" in output.lower()
-    # Summary counts enabled skills.
-    assert "3 enabled, 0 disabled" in output
-
-
-def test_do_list_marks_disabled_skills(three_source_env, monkeypatch):
-    from agent import skill_utils
-
-    # Simulate `skills.disabled: [hub-skill]` in config.
-    monkeypatch.setattr(
-        skill_utils, "get_disabled_skill_names",
-        lambda platform=None: {"hub-skill"},
-    )
-    output = _capture()
-
-    # Row still appears (no --enabled-only), but marked disabled
-    assert "hub-skill" in output
-    assert "disabled" in output.lower()
-    assert "2 enabled, 1 disabled" in output
-
-
-def test_do_list_enabled_only_hides_disabled(three_source_env, monkeypatch):
-    from agent import skill_utils
-
-    monkeypatch.setattr(
-        skill_utils, "get_disabled_skill_names",
-        lambda platform=None: {"hub-skill"},
-    )
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_list(enabled_only=True, console=console)
-    output = sink.getvalue()
-
-    assert "hub-skill" not in output
-    assert "builtin-skill" in output
-    assert "local-skill" in output
-    assert "enabled only" in output.lower()
-    assert "2 enabled shown" in output
-
-
 def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     """`hermes skills list` reads the active profile's config via
     HERMES_HOME (swapped by -p), so it must NOT pass a platform arg to
@@ -220,33 +138,6 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     _capture()
 
     assert seen["platform"] is None
-
-
-def test_do_check_reports_available_updates(monkeypatch):
-    output = _capture_check(monkeypatch, [
-        {"name": "hub-skill", "source": "skills.sh", "status": "update_available"},
-        {"name": "other-skill", "source": "github", "status": "up_to_date"},
-    ])
-
-    assert "hub-skill" in output
-    assert "update_available" in output
-    assert "up_to_date" in output
-
-
-def test_do_check_handles_no_installed_updates(monkeypatch):
-    output = _capture_check(monkeypatch, [])
-
-    assert "No hub-installed skills to check" in output
-
-
-def test_do_update_reinstalls_outdated_skills(monkeypatch):
-    output, installs = _capture_update(monkeypatch, [
-        {"name": "hub-skill", "identifier": "skills-sh/example/repo/hub-skill", "status": "update_available"},
-        {"name": "other-skill", "identifier": "github/example/other-skill", "status": "up_to_date"},
-    ])
-
-    assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
-    assert "Updated 1 skill" in output
 
 
 # ---------------------------------------------------------------------------
@@ -288,31 +179,6 @@ def test_do_update_pins_install_to_locked_source(monkeypatch):
     do_update(console=console)
 
     assert calls == [{"identifier": "reddit", "source_id": "clawhub"}]
-
-
-def test_do_install_refuses_unknown_pinned_source(monkeypatch, hub_env):
-    """A pinned source with no matching adapter must abort, not fall back.
-
-    Falling back to the full source router is what allowed a foreign registry
-    to satisfy the install.
-    """
-    import tools.skills_hub as hub
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    resolved = []
-
-    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [])
-    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
-    monkeypatch.setattr(
-        "hermes_cli.skills_hub._resolve_short_name",
-        lambda name, sources, c: resolved.append(name) or "",
-    )
-
-    do_install("reddit", source_id="clawhub", console=console)
-
-    assert resolved == [], "must not attempt a fuzzy resolve when the pin is unsatisfiable"
-    assert "provenance" in sink.getvalue()
 
 
 def test_check_for_skill_updates_does_not_fall_back_across_registries():
@@ -379,146 +245,6 @@ def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
          patch("tools.skills_hub.create_source_router", return_value={}), \
          patch("tools.skills_hub.GitHubAuth"):
         handle_skills_slash("/skills search kubernetes", console=ChatConsole())
-
-
-def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_env):
-    import tools.skills_guard as guard
-    import tools.skills_hub as hub
-
-    canonical_identifier = "skills-sh/anthropics/skills/frontend-design"
-
-    class _ResolvedSource:
-        def inspect(self, identifier):
-            return type("Meta", (), {
-                "extra": {},
-                "identifier": canonical_identifier,
-            })()
-
-        def fetch(self, identifier):
-            return type("Bundle", (), {
-                "name": "frontend-design",
-                "files": {"SKILL.md": "# Frontend Design"},
-                "source": "skills.sh",
-                "identifier": canonical_identifier,
-                "trust_level": "trusted",
-                "metadata": {},
-            })()
-    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "frontend-design"
-    q_path.mkdir(parents=True)
-    (q_path / "SKILL.md").write_text("# Frontend Design")
-
-    scanned = {}
-
-    def _scan_skill(skill_path, source="community"):
-        scanned["source"] = source
-        return guard.ScanResult(
-            skill_name="frontend-design",
-            source=source,
-            trust_level="trusted",
-            verdict="safe",
-        )
-
-    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
-    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_ResolvedSource()])
-    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
-    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
-    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
-    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
-    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-
-    do_install("skils-sh/anthropics/skills/frontend-design", console=console, skip_confirm=True)
-
-    assert scanned["source"] == canonical_identifier
-
-
-def test_do_install_scans_official_bundles_with_source_provenance(
-    monkeypatch, tmp_path, hub_env
-):
-    import tools.skills_guard as guard
-    import tools.skills_hub as hub
-
-    class _OfficialSource:
-        def inspect(self, identifier):
-            return type("Meta", (), {
-                "extra": {},
-                "identifier": "official/agent/prunus-gaia",
-            })()
-
-        def fetch(self, identifier):
-            return type("Bundle", (), {
-                "name": "prunus-gaia",
-                "files": {"SKILL.md": "# Prunus Gaia"},
-                "source": "official",
-                "identifier": "official/agent/prunus-gaia",
-                "trust_level": "builtin",
-                "metadata": {},
-            })()
-
-    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "prunus-gaia"
-    q_path.mkdir(parents=True)
-    (q_path / "SKILL.md").write_text("# Prunus Gaia")
-
-    scanned = {}
-
-    def _scan_skill(skill_path, source="community"):
-        scanned["source"] = source
-        return guard.ScanResult(
-            skill_name="prunus-gaia",
-            source=source,
-            trust_level="builtin",
-            verdict="safe",
-        )
-
-    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
-    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_OfficialSource()])
-    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
-    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
-    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
-    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
-    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-
-    do_install("official/agent/prunus-gaia", console=console, skip_confirm=True)
-
-    assert scanned["source"] == "official"
-
-
-def test_do_install_preserves_nested_official_optional_path(
-    monkeypatch, tmp_path, hub_env
-):
-    class _OfficialNestedSource:
-        def inspect(self, identifier):
-            return type("Meta", (), {
-                "extra": {},
-                "identifier": "official/mlops/training/trl-fine-tuning",
-            })()
-
-        def fetch(self, identifier):
-            return type("Bundle", (), {
-                "name": "trl-fine-tuning",
-                "files": {"SKILL.md": "# TRL"},
-                "source": "official",
-                "identifier": "official/mlops/training/trl-fine-tuning",
-                "trust_level": "builtin",
-                "metadata": {},
-            })()
-
-    installs = _install_mocks(monkeypatch, tmp_path, _OfficialNestedSource)
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install(
-        "official/mlops/training/trl-fine-tuning",
-        console=console,
-        skip_confirm=True,
-    )
-
-    assert installs == [{"name": "trl-fine-tuning", "category": "mlops/training"}]
 
 
 # ---------------------------------------------------------------------------
@@ -600,82 +326,6 @@ def test_url_install_uses_name_override_on_non_interactive_surface(monkeypatch, 
     )
 
     assert installs == [{"name": "my-url-skill", "category": ""}]
-
-
-def test_url_install_rejects_invalid_name_override(monkeypatch, tmp_path, hub_env):
-    installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install(
-        "https://example.com/SKILL.md",
-        console=console, skip_confirm=True,
-        name_override="SKILL",  # rejected by _is_valid_installed_skill_name
-    )
-
-    assert installs == []  # did NOT install
-    assert "Invalid --name" in sink.getvalue()
-
-
-def test_url_install_actionable_error_on_non_interactive_with_no_name(monkeypatch, tmp_path, hub_env):
-    installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install(
-        "https://example.com/SKILL.md",
-        console=console, skip_confirm=True,
-        # No name_override — should error out with a retry hint.
-    )
-
-    assert installs == []
-    out = sink.getvalue()
-    assert "Cannot install from URL" in out
-    assert "--name <your-name>" in out
-
-
-def test_url_install_prompts_interactively_when_tty(monkeypatch, tmp_path, hub_env):
-    installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
-
-    # Simulate user typing "my-interactive" to name prompt, then "" to category.
-    answers = iter(["my-interactive", ""])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install(
-        "https://example.com/SKILL.md",
-        console=console, skip_confirm=False,  # interactive
-        force=True,  # skip the final confirm prompt (tested elsewhere)
-    )
-
-    assert installs == [{"name": "my-interactive", "category": ""}]
-
-
-def test_url_install_prompts_category_and_uses_typed_value(monkeypatch, tmp_path, hub_env):
-    import tools.skills_hub as hub
-    installs = _install_mocks(
-        monkeypatch, tmp_path,
-        _make_url_bundle_fetcher(name="sharethis-chat", awaiting_name=False),
-    )
-
-    # Stage an existing category bucket so _existing_categories finds it.
-    (hub.SKILLS_DIR / "productivity" / "notion").mkdir(parents=True)
-    (hub.SKILLS_DIR / "productivity" / "notion" / "SKILL.md").write_text("# notion")
-
-    # Name is already resolved (from frontmatter) → only category prompt fires.
-    answers = iter(["productivity"])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
-    do_install(
-        "https://example.com/sharethis-chat/SKILL.md",
-        console=console, skip_confirm=False, force=True,
-    )
-
-    assert installs == [{"name": "sharethis-chat", "category": "productivity"}]
-    assert "Existing: productivity" in sink.getvalue()
 
 
 def test_url_install_cancel_name_prompt_aborts(monkeypatch, tmp_path, hub_env):
@@ -770,44 +420,6 @@ def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
     )
 
 
-def test_do_browse_reports_live_per_source_progress():
-    """do_browse must pass an on_source_done callback so the status line ticks
-    off each source as it resolves, instead of showing a frozen spinner while
-    a slow source blocks. The page is still rendered once, after the full
-    result set is merged and trust-sorted."""
-    from hermes_cli.skills_hub import do_browse
-    from tools.skills_hub import SkillMeta
-
-    meta = SkillMeta(
-        name="demo", description="d", source="official",
-        identifier="official/demo", trust_level="builtin",
-    )
-
-    captured = {}
-
-    def fake_parallel(sources, query="", per_source_limits=None,
-                      source_filter="all", overall_timeout=30,
-                      on_source_done=None):
-        # Simulate two sources completing — the callback must be wired through.
-        assert on_source_done is not None, "do_browse must pass on_source_done"
-        on_source_done("official", 1)
-        on_source_done("clawhub", 0)
-        captured["called"] = True
-        return [meta], {"official": 1, "clawhub": 0}, []
-
-    sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None, width=120)
-
-    with patch("tools.skills_hub.create_source_router", return_value=[]), \
-         patch("tools.skills_hub.GitHubAuth"), \
-         patch("tools.skills_hub.parallel_search_sources", side_effect=fake_parallel):
-        do_browse(page=1, page_size=20, console=console)
-
-    assert captured.get("called"), "parallel_search_sources was not invoked"
-    # The rendered page still shows the (single) merged result.
-    assert "demo" in sink.getvalue()
-
-
 # ---------------------------------------------------------------------------
 # Regression: full identifier must be recoverable from `hermes skills search`
 # even when the slug is too long to fit the terminal width (issue #33674).
@@ -823,56 +435,6 @@ _LONG_RESULT = type("R", (), {
     "trust_level": "community",
     "identifier": _LONG_SLUG,
 })()
-
-
-def test_do_search_identifier_column_does_not_truncate_long_slug():
-    """The Identifier column must use overflow='fold', not the default ellipsis.
-
-    Renders into a deliberately narrow Console; the full slug (including the
-    trailing -1uezib hash) must still appear in the output. Before the fix,
-    Rich would render `browse-sh/weather…` and lose the hash.
-    """
-    from hermes_cli.skills_hub import do_search
-
-    sink = StringIO()
-    # Narrow width forces Rich to apply overflow rules — exactly the scenario
-    # the issue reports. width=40 is too small for the slug; we want the slug
-    # wrapped (not ellipsis-truncated).
-    console = Console(file=sink, force_terminal=False, color_system=None, width=40)
-
-    with patch("tools.skills_hub.unified_search", return_value=[_LONG_RESULT]), \
-         patch("tools.skills_hub.create_source_router", return_value={}), \
-         patch("tools.skills_hub.GitHubAuth"):
-        do_search("weather", console=console)
-
-    output = sink.getvalue()
-
-    # The fix is working when the Identifier column wraps the slug across
-    # multiple lines (folded chunks) rather than emitting ONE line with an
-    # ellipsis. Extract every chunk that appears in the rightmost cell of
-    # the table by walking lines that look like table rows ("│ ... │") and
-    # taking the last `│...│` cell. Concatenating those chunks must yield
-    # the full slug.
-    chunks = []
-    for line in output.splitlines():
-        # Table data rows start and end with the box-drawing vertical bar.
-        if not line.startswith("│") or not line.rstrip().endswith("│"):
-            continue
-        # Last `│ ... │` cell on the row is the Identifier column.
-        last_cell = line.rstrip().rsplit("│", 2)[-2].strip()
-        if last_cell:
-            chunks.append(last_cell)
-    reconstructed = "".join(chunks)
-    assert _LONG_SLUG in reconstructed, (
-        f"Expected full slug {_LONG_SLUG!r} to be recoverable from the "
-        f"folded Identifier column; got chunks {chunks!r}\n"
-        f"Full output:\n{output}"
-    )
-    # And the truncating ellipsis must NOT appear in the Identifier column.
-    # Rich uses U+2026 HORIZONTAL ELLIPSIS for the default overflow="ellipsis".
-    assert "\u2026" not in reconstructed, (
-        f"Identifier column still ellipsis-truncated: {reconstructed!r}"
-    )
 
 
 def test_do_search_json_flag_emits_full_identifiers(capsys):

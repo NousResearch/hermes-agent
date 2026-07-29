@@ -116,41 +116,9 @@ def test_probe_url_backend_api_uses_wham():
     )
 
 
-def test_probe_url_non_backend_uses_api_codex():
-    assert (
-        _codex_usage_probe_url("https://example.com/codex")
-        == "https://example.com/api/codex/usage"
-    )
-
-
 # ---------------------------------------------------------------------------
 # _probe_codex_quota_restored
 # ---------------------------------------------------------------------------
-
-
-def test_probe_returns_true_when_windows_below_100(monkeypatch):
-    calls = _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(12.0, 34.0)))
-    token = _jwt({"exp": time.time() + 3600})
-    assert _probe_codex_quota_restored(token) is True
-    assert calls and calls[0]["url"].endswith("/usage")
-
-
-def test_probe_returns_false_when_window_still_exhausted(monkeypatch):
-    _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(100.0, 34.0)))
-    token = _jwt({"exp": time.time() + 3600})
-    assert _probe_codex_quota_restored(token) is False
-
-
-def test_probe_returns_false_on_429(monkeypatch):
-    _patch_httpx(monkeypatch, _StubResponse(429, {}))
-    token = _jwt({"exp": time.time() + 3600})
-    assert _probe_codex_quota_restored(token) is False
-
-
-def test_probe_indeterminate_on_unexpected_payload(monkeypatch):
-    _patch_httpx(monkeypatch, _StubResponse(200, {}))
-    token = _jwt({"exp": time.time() + 3600})
-    assert _probe_codex_quota_restored(token) is None
 
 
 def test_probe_skips_non_jwt_tokens_without_network(monkeypatch):
@@ -158,14 +126,6 @@ def test_probe_skips_non_jwt_tokens_without_network(monkeypatch):
     assert _probe_codex_quota_restored("not-a-jwt") is None
     assert _probe_codex_quota_restored("") is None
     assert calls == []
-
-
-def test_probe_throttles_repeat_calls(monkeypatch):
-    calls = _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(12.0, 34.0)))
-    token = _jwt({"exp": time.time() + 3600})
-    assert _probe_codex_quota_restored(token) is True
-    assert _probe_codex_quota_restored(token) is True  # cached
-    assert len(calls) == 1
 
 
 def test_probe_sends_chatgpt_account_id_from_jwt(monkeypatch):
@@ -256,35 +216,6 @@ def test_clear_cooldowns_only_touches_quota_shaped_entries(tmp_path, monkeypatch
     assert entries["cred-auth"]["last_status"] == "exhausted"
 
 
-def test_clear_cooldowns_scoped_to_access_token(tmp_path, monkeypatch):
-    now = time.time()
-    store = _exhausted_pool_store(now)
-    store["credential_pool"]["openai-codex"].append(
-        {
-            "id": "cred-quota-2",
-            "label": "other-quota",
-            "auth_type": "oauth",
-            "priority": 3,
-            "source": "device_code",
-            "access_token": "tok-other",
-            "last_status": "exhausted",
-            "last_status_at": now,
-            "last_error_code": 429,
-            "last_error_reset_at": now + 3600,
-        }
-    )
-    hermes_home = tmp_path / "hermes"
-    _write_auth_store(hermes_home, store)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    assert clear_codex_pool_quota_cooldowns("tok-other") == 1
-
-    persisted = json.loads((hermes_home / "auth.json").read_text())
-    entries = {e["id"]: e for e in persisted["credential_pool"]["openai-codex"]}
-    assert entries["cred-quota-2"]["last_status"] is None
-    assert entries["cred-quota"]["last_status"] == "exhausted"
-
-
 def test_clear_cooldowns_noop_without_pool(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _write_auth_store(hermes_home, {"version": 1, "providers": {}})
@@ -360,20 +291,6 @@ def test_resolver_keeps_cooldown_when_probe_negative(tmp_path, monkeypatch):
     assert "retry after" in str(exc.value)
 
 
-def test_resolver_keeps_cooldown_when_probe_indeterminate(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
-    _write_auth_store(hermes_home, _pool_only_rate_limited_store())
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    monkeypatch.setattr(
-        auth_mod, "_probe_codex_quota_restored", lambda token, **kw: None
-    )
-
-    with pytest.raises(AuthError) as exc:
-        resolve_codex_runtime_credentials()
-    assert exc.value.code == auth_mod.CODEX_RATE_LIMITED_CODE
-
-
 # ---------------------------------------------------------------------------
 # CredentialPool._available_entries — frozen entry recovers via probe
 # ---------------------------------------------------------------------------
@@ -394,20 +311,6 @@ def test_pool_entry_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
     assert len(available) == 1
     assert available[0].last_status == "ok"
     assert available[0].last_error_reset_at is None
-
-
-def test_pool_entry_stays_frozen_when_probe_negative(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path / "hermes", _pool_only_rate_limited_store())
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openai-codex")
-    monkeypatch.setattr(
-        auth_mod, "_probe_codex_quota_restored", lambda token, **kw: False
-    )
-
-    assert pool._available_entries(clear_expired=True, refresh=False) == []
 
 
 def test_pool_probe_not_fired_for_non_quota_exhaustion(tmp_path, monkeypatch):

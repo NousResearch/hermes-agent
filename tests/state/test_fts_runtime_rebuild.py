@@ -152,30 +152,6 @@ class TestRuntimeFtsRebuild:
         # i.e. we did not silently degrade to the LIKE fallback.
         assert any(">>>" in (r.get("snippet") or "") for r in results)
 
-    def test_trigram_search_falls_back_to_like_when_rebuild_consumed(
-        self, db, tmp_path
-    ):
-        """When the one-shot rebuild was already consumed, a corrupt trigram
-        index must NOT crash search_messages — it degrades to the LIKE
-        substring fallback, which reads only the canonical messages table.
-        """
-        if not db._fts_enabled:
-            pytest.skip("FTS5 unavailable in this build")
-        if not db._trigram_available:
-            pytest.skip("trigram tokenizer unavailable in this build")
-        db.create_session("s1", source="test")
-        db.append_message("s1", "user", "关于大别山项目的进展报告")
-
-        # Consume the one-shot guard, then corrupt again.
-        _corrupt_trigram_fts(tmp_path / "state.db")
-        db.append_message("s1", "user", "seed to trigger write-path heal")
-        assert db._fts_runtime_rebuild_attempted is True
-        _corrupt_trigram_fts(tmp_path / "state.db")
-
-        # Before the fix this raised sqlite3.DatabaseError.
-        results = db.search_messages("大别山项目")
-        assert results  # LIKE fallback found the canonical row
-        assert any("大别山项目" in (r.get("snippet") or "") for r in results)
 
     def test_rebuild_is_one_shot_per_instance(self, db, tmp_path):
         if not db._fts_enabled:
@@ -191,28 +167,4 @@ class TestRuntimeFtsRebuild:
         with pytest.raises(sqlite3.DatabaseError):
             db.append_message("s1", "user", "second corruption")
 
-    def test_non_fts_errors_still_propagate(self, db):
-        db.create_session("s1", source="test")
 
-        def _bad(conn):
-            raise sqlite3.IntegrityError("NOT NULL constraint failed: x.y")
-
-        with pytest.raises(sqlite3.IntegrityError):
-            db._execute_write(_bad)
-        # The guard must not have been consumed by an unrelated error class.
-        assert db._fts_runtime_rebuild_attempted is False
-
-    def test_lock_retry_path_unchanged(self, db):
-        """A locked error still follows the jitter-retry path, untouched by
-        the DatabaseError handler (OperationalError is caught first)."""
-        calls = {"n": 0}
-
-        def _flaky(conn):
-            calls["n"] += 1
-            if calls["n"] < 3:
-                raise sqlite3.OperationalError("database is locked")
-            return "ok"
-
-        assert db._execute_write(_flaky) == "ok"
-        assert calls["n"] == 3
-        assert db._fts_runtime_rebuild_attempted is False

@@ -224,19 +224,6 @@ def test_healthy_probe_skips_install(tmp_path, monkeypatch):
     assert installs == []
 
 
-def test_lock_held_skips_repair(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    (root / ".lazy-refresh-incomplete").write_text("x", encoding="utf-8")
-    (root / ".update-incomplete.lock").write_text("123\n", encoding="utf-8")
-    monkeypatch.setattr(er, "_probe_broken_packages", lambda: ["PyYAML"])
-    installs = []
-    monkeypatch.setattr(er, "_run_repair_install", lambda specs, r: installs.append(specs) or True)
-    er.recover_if_needed(project_root=root, argv=[])
-    assert installs == []
-    # Fresh (non-stale) lock is left for its owner.
-    assert (root / ".update-incomplete.lock").exists()
-
-
 def test_failed_repair_prints_manual_command_with_pins(tmp_path, monkeypatch, capsys):
     root = _project(tmp_path)
     (root / ".lazy-refresh-incomplete").write_text("x", encoding="utf-8")

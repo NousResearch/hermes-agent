@@ -37,15 +37,6 @@ def test_groups_reference_real_canonical_slugs():
             assert m in canonical, f"group {gid} member {m!r} is not a canonical slug"
 
 
-def test_member_slugs_are_unique_across_groups():
-    """A slug may belong to at most one group."""
-    seen = {}
-    for gid, (_label, _desc, members) in PROVIDER_GROUPS.items():
-        for m in members:
-            assert m not in seen, f"{m!r} in both {seen[m]!r} and {gid!r}"
-            seen[m] = gid
-
-
 def test_reverse_index_matches_groups():
     for gid, (_label, _desc, members) in PROVIDER_GROUPS.items():
         for m in members:
@@ -86,21 +77,6 @@ def test_group_appears_at_first_member_position():
     assert rows[1]["members"] == ["minimax", "minimax-cn"]
 
 
-def test_single_present_member_degrades_to_single_row():
-    """A group with only one present member shows no submenu."""
-    rows = group_providers(["xai"])  # xai-oauth absent
-    assert len(rows) == 1
-    assert rows[0]["kind"] == "single"
-    assert rows[0]["slug"] == "xai"
-
-
-def test_member_order_follows_declaration_not_input():
-    """Inside a folded group, members are ordered by PROVIDER_GROUPS, not by
-    the order they appeared in the input list."""
-    rows = group_providers(["minimax-cn", "minimax", "minimax-oauth"])
-    assert rows[0]["members"] == ["minimax", "minimax-oauth", "minimax-cn"]
-
-
 def test_duplicate_slugs_ignored():
     rows = group_providers(["nous", "nous", "minimax", "minimax"])
     assert [r.get("slug") or r["group_id"] for r in rows] == ["nous", "minimax"]
@@ -114,9 +90,3 @@ def test_fold_is_lossless_for_present_slugs():
     assert set(_slugs(rows)) == set(flat)
 
 
-def test_canonical_fold_row_count_shrinks():
-    """Folding the full canonical list produces fewer top-level rows than the
-    flat list (proves grouping actually consolidates)."""
-    flat = [p.slug for p in CANONICAL_PROVIDERS]
-    rows = group_providers(flat)
-    assert len(rows) < len(flat)

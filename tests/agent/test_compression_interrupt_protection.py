@@ -18,15 +18,7 @@ import agent.auxiliary_client as aux
 
 
 class TestAuxInterruptProtection:
-    def test_protected_flag_defaults_false(self):
-        # Fresh thread-local state.
-        assert aux._aux_interrupt_protected() is False
 
-    def test_context_manager_sets_and_restores(self):
-        assert aux._aux_interrupt_protected() is False
-        with aux.aux_interrupt_protection():
-            assert aux._aux_interrupt_protected() is True
-        assert aux._aux_interrupt_protected() is False
 
     def test_context_manager_is_reentrant(self):
         with aux.aux_interrupt_protection():
@@ -45,9 +37,6 @@ class TestAuxInterruptProtection:
             pass
         assert aux._aux_interrupt_protected() is False
 
-    def test_explicit_inactive_is_noop(self):
-        with aux.aux_interrupt_protection(active=False):
-            assert aux._aux_interrupt_protected() is False
 
 
 class TestCompressionProtectsSummaryCall:

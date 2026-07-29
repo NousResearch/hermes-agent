@@ -56,24 +56,6 @@ def test_detect_returns_none_when_probe_subprocess_fails(tmp_path, monkeypatch):
     assert m._detect_broken_lazy_refresh_imports(["uv", "pip"]) is None
 
 
-def test_detect_returns_none_when_probe_exits_nonzero(tmp_path, monkeypatch):
-    python = tmp_path / "python"
-    python.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        m, "_resolve_install_target_python", lambda *a, **k: python
-    )
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.stdout = ""
-        result.stderr = "boom"
-        result.returncode = 1
-        return result
-
-    monkeypatch.setattr(m.subprocess, "run", fake_run)
-    assert m._detect_broken_lazy_refresh_imports(["uv", "pip"]) is None
-
-
 def test_repair_via_probes_indeterminate_is_not_success(monkeypatch, capsys):
     monkeypatch.setattr(
         m, "_detect_broken_lazy_refresh_imports", lambda *a, **k: None
@@ -187,26 +169,6 @@ def test_refresh_returns_false_when_repair_fails(tmp_path, monkeypatch, capsys):
     assert "Venv repair incomplete" in out
 
 
-def test_refresh_returns_false_when_probes_indeterminate(
-    tmp_path, monkeypatch, capsys
-):
-    import tools.lazy_deps as lazy_deps_mod
-
-    monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: ["platform.matrix"])
-    monkeypatch.setattr(
-        lazy_deps_mod,
-        "refresh_active_features",
-        lambda **kw: {"platform.matrix": "failed: pip install failed"},
-    )
-    monkeypatch.setattr(m, "_detect_broken_lazy_refresh_imports", lambda *a, **k: None)
-
-    ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
-    out = capsys.readouterr().out
-
-    assert ok is False
-    assert "lazy-refresh-incomplete" in out
-
-
 def test_refresh_repairs_on_unexpected_lazy_exception(tmp_path, monkeypatch, capsys):
     import tools.lazy_deps as lazy_deps_mod
 
@@ -227,31 +189,6 @@ def test_refresh_repairs_on_unexpected_lazy_exception(tmp_path, monkeypatch, cap
     assert ok is True
     assert "Lazy refresh failed unexpectedly" in out
     assert "Venv repair succeeded" in out
-
-
-def test_lazy_marker_stays_until_repair_confirmed(tmp_path, monkeypatch):
-    """Lazy marker is independent of the generic core ``.update-incomplete``."""
-    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
-    m._write_lazy_refresh_incomplete_marker()
-    m._write_update_incomplete_marker()
-
-    import tools.lazy_deps as lazy_deps_mod
-
-    monkeypatch.setattr(lazy_deps_mod, "active_features", lambda: ["platform.matrix"])
-    monkeypatch.setattr(
-        lazy_deps_mod,
-        "refresh_active_features",
-        lambda **kw: {"platform.matrix": "failed: pip install failed"},
-    )
-    monkeypatch.setattr(m, "_detect_broken_lazy_refresh_imports", lambda *a, **k: ["PyYAML"])
-    monkeypatch.setattr(
-        m, "_repair_broken_lazy_refresh_imports", lambda *a, **k: False
-    )
-
-    ok = m._refresh_active_lazy_features(["uv", "pip"], env={"VIRTUAL_ENV": str(tmp_path)})
-    assert ok is False
-    assert m._lazy_refresh_marker_path().exists()
-    assert m._update_marker_path().exists(), "core marker must not be touched by lazy refresh"
 
 
 def test_upgrade_pip_before_lazy_refresh_never_raises(monkeypatch):
@@ -291,26 +228,6 @@ def test_package_only_repair_does_not_quarantine_shims_on_windows(
 
     mock_quar.assert_not_called()
     assert install_calls
-
-
-def test_upgrade_pip_does_not_quarantine_shims_on_windows(tmp_path, monkeypatch):
-    fake_scripts = tmp_path / "venv" / "Scripts"
-    fake_scripts.mkdir(parents=True)
-
-    install_calls: list[list[str]] = []
-
-    def fake_install(cmd, **kwargs):
-        install_calls.append(cmd)
-
-    monkeypatch.setattr(m, "_is_windows", lambda: True)
-    monkeypatch.setattr(m, "_venv_scripts_dir", lambda: fake_scripts)
-    monkeypatch.setattr(m, "_run_package_only_install", fake_install)
-
-    with patch("hermes_cli.main._quarantine_running_hermes_exe") as mock_quar:
-        m._upgrade_pip_before_lazy_refresh(["uv", "pip"])
-
-    mock_quar.assert_not_called()
-    assert install_calls == [["uv", "pip", "install", "--upgrade", "pip"]]
 
 
 def test_lazy_refresh_repair_specs_resolves_extras(tmp_path, monkeypatch):

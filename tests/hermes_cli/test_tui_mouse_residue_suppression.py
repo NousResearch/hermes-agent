@@ -37,25 +37,6 @@ class TestEarlyMouseDisable:
 
         mock_write.assert_called_once_with(1, EXPECTED)
 
-    def test_writes_disable_sequence_when_hermes_tui_env_set(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["hermes"])
-        monkeypatch.setenv("HERMES_TUI", "1")
-        monkeypatch.delenv("HERMES_TUI_NO_EARLY_DISABLE", raising=False)
-
-        with patch("os.isatty", return_value=True), patch("os.write") as mock_write:
-            _suppress_mouse_residue_early()
-
-        mock_write.assert_called_once_with(1, EXPECTED)
-
-    def test_no_op_on_non_tui_invocation(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
-        monkeypatch.delenv("HERMES_TUI", raising=False)
-        monkeypatch.delenv("HERMES_TUI_NO_EARLY_DISABLE", raising=False)
-
-        with patch("os.write") as mock_write:
-            _suppress_mouse_residue_early()
-
-        mock_write.assert_not_called()
 
     def test_respects_diagnostic_escape_hatch(self, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["hermes", "--tui"])

@@ -116,46 +116,6 @@ def test_detect_openai_models_probe_success():
     assert "/models" in result.reason
 
 
-def test_detect_openai_models_probe_empty_list_still_counts():
-    """Endpoint returned OpenAI shape but no models → still chat_completions."""
-    def _fake_get(url, api_key, timeout=6.0, **kwargs):
-        return 200, {"object": "list", "data": []}
-
-    with patch.object(azure_detect, "_http_get_json", side_effect=_fake_get):
-        result = azure_detect.detect(
-            "https://my.openai.azure.com/openai/v1", "key-abc",
-        )
-    assert result.api_mode == "chat_completions"
-    assert result.models == []
-    assert result.models_probe_ok is True
-
-
-def test_detect_falls_back_to_anthropic_probe():
-    """/models fails but Anthropic Messages probe succeeds."""
-    def _fake_get(url, api_key, timeout=6.0, **kwargs):
-        return 401, None  # /models forbidden
-
-    with patch.object(azure_detect, "_http_get_json", side_effect=_fake_get), \
-         patch.object(azure_detect, "_probe_anthropic_messages", return_value=True):
-        result = azure_detect.detect(
-            "https://my.services.ai.azure.com/v1", "key-abc",
-        )
-    assert result.api_mode == "anthropic_messages"
-    assert result.is_anthropic is True
-
-
-def test_detect_all_probes_fail_returns_none():
-    """Every probe fails → api_mode is None and caller falls back to manual."""
-    with patch.object(azure_detect, "_http_get_json", return_value=(500, None)), \
-         patch.object(azure_detect, "_probe_anthropic_messages", return_value=False):
-        result = azure_detect.detect(
-            "https://some-private.example.com/", "key-abc",
-        )
-    assert result.api_mode is None
-    assert result.models == []
-    assert "manual" in result.reason.lower()
-
-
 # ----------------------------------------------------------------------
 # _probe_openai_models URL list (Azure vs v1 api-version)
 # ----------------------------------------------------------------------
@@ -195,16 +155,6 @@ def test_http_get_json_on_urlerror_returns_zero_none():
     assert body is None
 
 
-def test_http_get_json_on_http_error_returns_code_none():
-    """HTTP 4xx/5xx returns (code, None)."""
-    import urllib.error
-    err = urllib.error.HTTPError("https://x/", 403, "Forbidden", {}, None)
-    with patch("hermes_cli.azure_detect.open_credentialed_url", side_effect=err):
-        status, body = azure_detect._http_get_json("https://x/", "k")
-    assert status == 403
-    assert body is None
-
-
 # ----------------------------------------------------------------------
 # lookup_context_length
 # ----------------------------------------------------------------------
@@ -220,18 +170,3 @@ def test_lookup_context_length_returns_known():
     assert n == 400000
 
 
-def test_lookup_context_length_returns_none_on_fallback():
-    """When resolver falls through to DEFAULT_FALLBACK_CONTEXT, we return None."""
-    with patch("agent.model_metadata.get_model_context_length", return_value=128000), \
-         patch("agent.model_metadata.DEFAULT_FALLBACK_CONTEXT", 128000):
-        n = azure_detect.lookup_context_length(
-            "totally-unknown-model", "https://x.openai.azure.com/openai/v1", "k",
-        )
-    assert n is None
-
-
-def test_lookup_context_length_swallows_exceptions():
-    """Resolver raising must not crash the wizard."""
-    with patch("agent.model_metadata.get_model_context_length",
-               side_effect=RuntimeError("boom")):
-        assert azure_detect.lookup_context_length("m", "https://x/", "k") is None

@@ -136,32 +136,3 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "honcho_search" in schema_names
 
 
-def test_aiagent_forwards_warning_callback_to_cli_memory_provider():
-    provider = RecordingMemoryProvider()
-    cfg = {"memory": {"provider": "recording"}, "agent": {}}
-
-    with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("plugins.memory.load_memory_provider", return_value=provider),
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
-    ):
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            api_key="test-key-1234567890",
-            base_url="https://openrouter.ai/api/v1",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=False,
-            session_id="sess-cli",
-            platform="cli",
-        )
-
-    assert agent._memory_manager is not None
-    assert provider.init_session_id == "sess-cli"
-    assert provider.init_kwargs["platform"] == "cli"
-    assert provider.init_kwargs["warning_callback"] == agent._emit_warning
-    assert provider.init_kwargs["status_callback"] == agent._emit_status

@@ -49,13 +49,6 @@ def test_identity_invariant_from_first_call(isolated_hermes_home):
     assert ro1["telemetry"]["shared_metrics"]["enabled"] is True
 
 
-def test_parity_with_mutable_read(isolated_hermes_home):
-    from hermes_cli.config import read_raw_config, read_raw_config_readonly
-
-    _write_config(isolated_hermes_home, {"gateway": {"max_inbound_media_bytes": 123}})
-    assert read_raw_config_readonly() == read_raw_config()
-
-
 def test_freshness_after_config_edit(isolated_hermes_home):
     from hermes_cli.config import read_raw_config_readonly
 

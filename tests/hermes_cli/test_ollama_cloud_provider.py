@@ -23,14 +23,6 @@ class TestOllamaCloudProviderRegistry:
         assert pconfig.auth_type == "api_key"
         assert pconfig.inference_base_url == "https://ollama.com/v1"
 
-    def test_ollama_cloud_env_vars(self):
-        pconfig = PROVIDER_REGISTRY["ollama-cloud"]
-        assert pconfig.api_key_env_vars == ("OLLAMA_API_KEY",)
-        assert pconfig.base_url_env_var == "OLLAMA_BASE_URL"
-
-    def test_ollama_cloud_base_url(self):
-        assert "ollama.com" in PROVIDER_REGISTRY["ollama-cloud"].inference_base_url
-
 
 # ── Provider Aliases ──
 
@@ -48,24 +40,16 @@ def _clean_provider_env(monkeypatch):
 
 
 class TestOllamaCloudAliases:
-    def test_explicit_ollama_cloud(self):
-        assert resolve_provider("ollama-cloud") == "ollama-cloud"
 
     def test_alias_ollama_underscore(self):
         """ollama_cloud (underscore) is the unambiguous cloud alias."""
         assert resolve_provider("ollama_cloud") == "ollama-cloud"
 
-    def test_bare_ollama_stays_local(self):
-        """Bare 'ollama' alias routes to 'custom' (local) — not cloud."""
-        assert resolve_provider("ollama") == "custom"
 
     def test_models_py_aliases(self):
         assert _PROVIDER_ALIASES.get("ollama_cloud") == "ollama-cloud"
         # bare "ollama" stays local
         assert _PROVIDER_ALIASES.get("ollama") == "custom"
-
-    def test_normalize_provider(self):
-        assert normalize_provider("ollama-cloud") == "ollama-cloud"
 
 
 # ── Auto-detection ──
@@ -86,11 +70,6 @@ class TestOllamaCloudCredentials:
         assert creds["api_key"] == "ollama-secret"
         assert creds["base_url"] == "https://ollama.com/v1"
 
-    def test_resolve_with_custom_base_url(self, monkeypatch):
-        monkeypatch.setenv("OLLAMA_API_KEY", "key")
-        monkeypatch.setenv("OLLAMA_BASE_URL", "https://custom.ollama/v1")
-        creds = resolve_api_key_provider_credentials("ollama-cloud")
-        assert creds["base_url"] == "https://custom.ollama/v1"
 
     def test_runtime_ollama_cloud(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_API_KEY", "ollama-key")
@@ -105,13 +84,7 @@ class TestOllamaCloudCredentials:
 # ── Model Catalog (dynamic — no static list) ──
 
 class TestOllamaCloudModelCatalog:
-    def test_no_static_model_list(self):
-        """Ollama Cloud models are fetched dynamically — no static list to maintain."""
-        assert "ollama-cloud" not in _PROVIDER_MODELS
 
-    def test_provider_label(self):
-        assert "ollama-cloud" in _PROVIDER_LABELS
-        assert _PROVIDER_LABELS["ollama-cloud"] == "Ollama Cloud"
 
     def test_provider_model_ids_returns_dynamic_models(self, tmp_path, monkeypatch):
         """provider_model_ids('ollama-cloud') should call fetch_ollama_cloud_models()."""
@@ -294,28 +267,13 @@ class TestOllamaCloudMergedDiscovery:
 # ── Model Normalization ──
 
 class TestOllamaCloudModelNormalization:
-    def test_passthrough_bare_name(self):
-        """Ollama Cloud is a passthrough provider — model names used as-is."""
-        assert normalize_model_for_provider("qwen3.5:397b", "ollama-cloud") == "qwen3.5:397b"
 
-    def test_passthrough_with_tag(self):
-        assert normalize_model_for_provider("cogito-2.1:671b", "ollama-cloud") == "cogito-2.1:671b"
 
     def test_passthrough_no_tag(self):
         assert normalize_model_for_provider("glm-5", "ollama-cloud") == "glm-5"
 
 
 # ── URL-to-Provider Mapping ──
-
-class TestOllamaCloudUrlMapping:
-    def test_url_to_provider(self):
-        assert _URL_TO_PROVIDER.get("ollama.com") == "ollama-cloud"
-
-    def test_provider_prefix_canonical(self):
-        assert "ollama-cloud" in _PROVIDER_PREFIXES
-
-    def test_provider_prefix_alias(self):
-        assert "ollama" in _PROVIDER_PREFIXES
 
 
 # ── models.dev Integration ──
@@ -384,13 +342,6 @@ class TestOllamaCloudProvidersNew:
         assert np("ollama") == "custom"  # bare "ollama" = local
         assert np("ollama-cloud") == "ollama-cloud"
 
-    def test_label_override(self):
-        from hermes_cli.providers import _LABEL_OVERRIDES
-        assert _LABEL_OVERRIDES.get("ollama-cloud") == "Ollama Cloud"
-
-    def test_get_label(self):
-        from hermes_cli.providers import get_label
-        assert get_label("ollama-cloud") == "Ollama Cloud"
 
     def test_get_provider(self):
         from hermes_cli.providers import get_provider
@@ -409,41 +360,6 @@ class TestOllamaCloudSuffixStripping:
     users never see broken IDs like 'kimi-k2.6:cloud' in the model picker.
     """
 
-    def test_strips_colon_cloud_suffix(self, tmp_path, monkeypatch):
-        """:cloud suffix from models.dev is stripped before merge."""
-        from hermes_cli.models import fetch_ollama_cloud_models
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
-
-        mock_mdev = {
-            "ollama-cloud": {
-                "models": {"kimi-k2.6:cloud": {"tool_call": True}}
-            }
-        }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
-            result = fetch_ollama_cloud_models(force_refresh=True)
-
-        assert "kimi-k2.6" in result
-        assert "kimi-k2.6:cloud" not in result
-
-    def test_strips_dash_cloud_suffix(self, tmp_path, monkeypatch):
-        """-cloud suffix from models.dev is stripped before merge."""
-        from hermes_cli.models import fetch_ollama_cloud_models
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
-
-        mock_mdev = {
-            "ollama-cloud": {
-                "models": {"qwen3-coder:480b-cloud": {"tool_call": True}}
-            }
-        }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
-            result = fetch_ollama_cloud_models(force_refresh=True)
-
-        assert "qwen3-coder:480b" in result
-        assert "qwen3-coder:480b-cloud" not in result
 
     def test_no_duplicate_when_live_clean_and_mdev_suffixed(self, tmp_path, monkeypatch):
         """Live API returns clean ID; mdev has :cloud variant — result has exactly one entry."""

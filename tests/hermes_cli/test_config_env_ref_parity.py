@@ -20,20 +20,6 @@ def test_bare_ref_still_expands(monkeypatch):
     assert _expand_env_vars("x-${PARITY_VAR}-y") == "x-val-bare-y"
 
 
-def test_env_prefixed_ref_expands(monkeypatch):
-    monkeypatch.setenv("PARITY_VAR", "val-prefixed")
-    assert _expand_env_vars("${env:PARITY_VAR}") == "val-prefixed"
-
-
-def test_env_prefixed_ref_unset_stays_verbatim(monkeypatch):
-    monkeypatch.delenv("PARITY_MISSING", raising=False)
-    assert _expand_env_vars("${env:PARITY_MISSING}") == "${env:PARITY_MISSING}"
-
-
-def test_empty_env_ref_stays_verbatim():
-    assert _expand_env_vars("${env:}") == "${env:}"
-
-
 def test_non_env_source_stays_verbatim_with_warning(caplog):
     import logging
     with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):

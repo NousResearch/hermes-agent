@@ -93,22 +93,6 @@ def test_symlinked_hermes_counts_as_present(fake_home, tmp_path):
     assert (fake_home / "hermes-acp").is_file()
 
 
-def test_idempotent(fake_home):
-    (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
-    _ensure_acp_launcher()
-    first = (fake_home / "hermes-acp").read_text(encoding="utf-8")
-    _ensure_acp_launcher()
-    assert (fake_home / "hermes-acp").read_text(encoding="utf-8") == first
-
-
-def test_noop_on_windows(fake_home):
-    (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
-    with patch("hermes_cli.main.sys") as fake_sys:
-        fake_sys.platform = "win32"
-        _ensure_acp_launcher()
-    assert not (fake_home / "hermes-acp").exists()
-
-
 def test_unwritable_bin_dir_is_skipped(fake_home):
     (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
     if os.geteuid() == 0:

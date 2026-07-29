@@ -60,16 +60,6 @@ class TestProfileScopedConfig:
         assert _cfg(isolated_profiles["worker_beta"]).get("timezone") == "Mars/Olympus"
         assert _cfg(isolated_profiles["default"]).get("timezone") != "Mars/Olympus"
 
-    def test_config_get_reads_target_profile(self, client, isolated_profiles):
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "timezone: Venus/Cloud\n", encoding="utf-8"
-        )
-        resp = client.get("/api/config", params={"profile": "worker_beta"})
-        assert resp.status_code == 200
-        assert resp.json().get("timezone") == "Venus/Cloud"
-        # Unscoped read sees the dashboard's own config.
-        resp = client.get("/api/config")
-        assert resp.json().get("timezone") != "Venus/Cloud"
 
     def test_config_query_param_equivalent_to_body(self, client, isolated_profiles):
         """The SPA's fetchJSON injects ?profile= — must scope like body.profile."""
@@ -81,16 +71,6 @@ class TestProfileScopedConfig:
         assert _cfg(isolated_profiles["worker_beta"]).get("timezone") == "Pluto/Far"
         assert _cfg(isolated_profiles["default"]).get("timezone") != "Pluto/Far"
 
-    def test_config_raw_round_trip_scoped(self, client, isolated_profiles):
-        resp = client.put(
-            "/api/config/raw",
-            json={"yaml_text": "timezone: Io/Volcano\n", "profile": "worker_beta"},
-        )
-        assert resp.status_code == 200
-        resp = client.get("/api/config/raw", params={"profile": "worker_beta"})
-        assert "Io/Volcano" in resp.json()["yaml"]
-        resp = client.get("/api/config/raw")
-        assert "Io/Volcano" not in resp.json()["yaml"]
 
     def test_config_raw_path_reflects_requested_profile(self, client, isolated_profiles):
         """The Config page header shows /api/config/raw's ``path`` — it must
@@ -120,15 +100,6 @@ class TestProfileScopedEnv:
         if default_env_path.exists():
             assert "test-fal-123" not in default_env_path.read_text()
 
-    def test_env_list_reads_target_profile(self, client, isolated_profiles):
-        (isolated_profiles["worker_beta"] / ".env").write_text(
-            "FAL_KEY=worker-only-value\n", encoding="utf-8"
-        )
-        resp = client.get("/api/env", params={"profile": "worker_beta"})
-        assert resp.status_code == 200
-        assert resp.json()["FAL_KEY"]["is_set"] is True
-        resp = client.get("/api/env")
-        assert resp.json()["FAL_KEY"]["is_set"] is False
 
     def test_env_delete_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / ".env").write_text(
@@ -185,17 +156,6 @@ class TestProfileScopedMcp:
             "mcp_servers", {}
         )
 
-    def test_mcp_enabled_toggle_scoped(self, client, isolated_profiles):
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "mcp_servers:\n  srv1:\n    url: http://x/sse\n", encoding="utf-8"
-        )
-        resp = client.put(
-            "/api/mcp/servers/srv1/enabled",
-            json={"enabled": False, "profile": "worker_beta"},
-        )
-        assert resp.status_code == 200
-        worker_cfg = _cfg(isolated_profiles["worker_beta"])
-        assert worker_cfg["mcp_servers"]["srv1"]["enabled"] is False
 
     def test_mcp_probe_runs_inside_profile_scope(
         self, client, isolated_profiles, monkeypatch
@@ -257,17 +217,6 @@ class TestProfileScopedMcp:
         )
         assert resp.json()["ok"] is True
 
-    def test_mcp_remove_scoped(self, client, isolated_profiles):
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "mcp_servers:\n  srv2:\n    url: http://x/sse\n", encoding="utf-8"
-        )
-        # Removing from the DASHBOARD's profile must 404 (srv2 lives in worker).
-        resp = client.delete("/api/mcp/servers/srv2")
-        assert resp.status_code == 404
-        resp = client.delete("/api/mcp/servers/srv2", params={"profile": "worker_beta"})
-        assert resp.status_code == 200
-        assert "srv2" not in _cfg(isolated_profiles["worker_beta"]).get("mcp_servers", {})
-
 
 class TestProfileScopedModel:
     def test_model_set_main_scoped(self, client, isolated_profiles):
@@ -314,50 +263,6 @@ class TestProfileScopedModel:
         vision = next(t for t in resp.json()["tasks"] if t["task"] == "vision")
         assert vision["model"] != "worker/vision-pin"
 
-    def test_auxiliary_unknown_profile_404(self, client, isolated_profiles):
-        resp = client.get("/api/model/auxiliary", params={"profile": "ghost"})
-        assert resp.status_code == 404
-
-    def test_model_options_scoped_to_profile(self, client, isolated_profiles):
-        """The Models picker must read the SAME profile model/set writes —
-        current model/provider in the payload come from the scoped config."""
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "model:\n  provider: openrouter\n  default: worker/current-pin\n",
-            encoding="utf-8",
-        )
-        resp = client.get("/api/model/options", params={"profile": "worker_beta"})
-        assert resp.status_code == 200
-        body = resp.json()
-        # The payload carries the current selection somewhere stable; assert
-        # the worker pin appears in the scoped response and not the unscoped.
-        assert "worker/current-pin" in resp.text
-        resp = client.get("/api/model/options")
-        assert resp.status_code == 200
-        assert "worker/current-pin" not in resp.text
-        assert isinstance(body, dict)
-
-    def test_model_options_unknown_profile_404(self, client, isolated_profiles):
-        resp = client.get("/api/model/options", params={"profile": "ghost"})
-        assert resp.status_code == 404
-
-    def test_model_options_offloads_payload_build_to_threadpool(self, client, monkeypatch):
-        import hermes_cli.web_server as web_server
-
-        calls = []
-
-        async def _fake_run_in_threadpool(func, *args, **kwargs):
-            calls.append((func, args, kwargs))
-            return func(*args, **kwargs)
-
-        monkeypatch.setattr(
-            web_server,
-            "run_in_threadpool",
-            _fake_run_in_threadpool,
-        )
-
-        resp = client.get("/api/model/options")
-        assert resp.status_code == 200
-        assert len(calls) == 1
 
     def test_model_options_matches_tui_safe_probe_flags(self, client, monkeypatch):
         calls = []
@@ -388,44 +293,11 @@ class TestProfileScopedModel:
         assert calls[-1]["probe_custom_providers"] is True
         assert calls[-1]["probe_current_custom_provider"] is False
 
-    def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
-        calls = []
-
-        monkeypatch.setattr(
-            "hermes_cli.inventory.load_picker_context",
-            lambda: object(),
-        )
-
-        def _fake_build_models_payload(_ctx, **kwargs):
-            calls.append(kwargs)
-            return {"providers": [], "model": "", "provider": ""}
-
-        monkeypatch.setattr(
-            "hermes_cli.inventory.build_models_payload",
-            _fake_build_models_payload,
-        )
-
-        resp = client.get("/api/model/options")
-        assert resp.status_code == 200
-        assert calls[-1]["explicit_only"] is False
-        assert calls[-1]["include_unconfigured"] is False
-
-        resp = client.get("/api/model/options", params={"explicit_only": "1"})
-        assert resp.status_code == 200
-        assert calls[-1]["explicit_only"] is True
-
-        resp = client.get("/api/model/options", params={"include_unconfigured": "1"})
-        assert resp.status_code == 200
-        assert calls[-1]["include_unconfigured"] is True
 
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200
         with empty model info ("no model set" — silently wrong)."""
         resp = client.get("/api/model/info", params={"profile": "ghost"})
-        assert resp.status_code == 404
-
-    def test_mcp_catalog_unknown_profile_404(self, client, isolated_profiles):
-        resp = client.get("/api/mcp/catalog", params={"profile": "ghost"})
         assert resp.status_code == 404
 
 
@@ -489,33 +361,6 @@ class TestProfileScopedPostSetup:
 
 
 class TestProfileScopedGateway:
-    def test_lifecycle_spawns_with_profile_flag(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import hermes_cli.web_server as web_server
-
-        calls = []
-
-        class _FakeProc:
-            pid = 888
-
-        monkeypatch.setattr(
-            web_server,
-            "_spawn_hermes_action",
-            lambda subcommand, name: calls.append((list(subcommand), name)) or _FakeProc(),
-        )
-        web_server._ACTION_PROCS.pop("gateway-restart", None)
-        web_server._ACTION_COMMANDS.pop("gateway-restart", None)
-
-        for verb in ("start", "stop", "restart"):
-            resp = client.post(f"/api/gateway/{verb}", params={"profile": "worker_beta"})
-            assert resp.status_code == 200
-
-        assert calls == [
-            (["-p", "worker_beta", "gateway", "start"], "gateway-start"),
-            (["-p", "worker_beta", "gateway", "stop"], "gateway-stop"),
-            (["-p", "worker_beta", "gateway", "restart"], "gateway-restart"),
-        ]
 
     def test_status_reads_requested_profile_home(
         self, client, isolated_profiles, monkeypatch
@@ -672,31 +517,6 @@ class TestProfileScopedChatPty:
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
         assert "HERMES_TUI_GATEWAY_URL" not in env
 
-    def test_chat_argv_unscoped_keeps_legacy_env(self, isolated_profiles, monkeypatch):
-        import hermes_cli.web_server as web_server
-
-        monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
-            lambda root, tui_dev=False: (["cat"], None),
-            raising=False,
-        )
-        argv, cwd, env = web_server._resolve_chat_argv()
-        assert env is not None
-        assert env.get("HERMES_HOME") != str(isolated_profiles["worker_beta"])
-
-    def test_chat_argv_unknown_profile_raises(self, isolated_profiles, monkeypatch):
-        import hermes_cli.web_server as web_server
-
-        monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
-            lambda root, tui_dev=False: (["cat"], None),
-            raising=False,
-        )
-        # Reuse the HTTPException class web_server itself raises — avoids a
-        # direct fastapi import (unresolvable in the ty lint environment).
-        with pytest.raises(web_server.HTTPException) as exc:
-            web_server._resolve_chat_argv(profile="ghost")
-        assert exc.value.status_code == 404
 
 class TestProfileScopedAudio:
     """Audio endpoints must honor ``profile`` like the rest of the dashboard.

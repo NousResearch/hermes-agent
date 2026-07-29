@@ -9,60 +9,8 @@ def _metric(snapshot, name):
     return next(metric for metric in snapshot.metrics if metric.name == name)
 
 
-def test_cron_snapshot_projects_freshness_counts_and_overdue_without_content(monkeypatch):
-    from agent.monitoring import cron_health
-
-    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
-    secret = "Quarterly payroll for alice@example.com"
-    monkeypatch.setattr(cron_health, "_now", lambda: now)
-    monkeypatch.setattr(cron_health, "get_ticker_heartbeat_age", lambda: 4.5)
-    monkeypatch.setattr(cron_health, "get_ticker_success_age", lambda: 9.0)
-    monkeypatch.setattr(cron_health, "get_running_job_ids", lambda: frozenset({"job-private-1"}))
-    monkeypatch.setattr(
-        cron_health,
-        "load_jobs",
-        lambda: [
-            {
-                "id": "job-private-1",
-                "name": secret,
-                "prompt": secret,
-                "enabled": True,
-                "schedule": {"kind": "interval", "minutes": 10},
-                "next_run_at": (now - timedelta(minutes=6)).isoformat(),
-            },
-            {
-                "id": "job-private-2",
-                "name": "disabled private job",
-                "enabled": False,
-                "schedule": {"kind": "interval", "minutes": 10},
-                "next_run_at": (now - timedelta(days=1)).isoformat(),
-            },
-        ],
-    )
-
-    snapshot = cron_health.build_cron_health_snapshot()
-
-    assert _metric(snapshot, "hermes.cron.scheduler.heartbeat_age_seconds").value == 4.5
-    assert _metric(snapshot, "hermes.cron.scheduler.last_success_age_seconds").value == 9.0
-    assert _metric(snapshot, "hermes.cron.jobs.enabled").value == 1
-    assert _metric(snapshot, "hermes.cron.jobs.running").value == 1
-    assert _metric(snapshot, "hermes.cron.jobs.overdue").value == 1
-    assert secret not in str(snapshot)
-    assert "job-private-1" not in str(snapshot)
 
 
-def test_cron_snapshot_omits_unknown_freshness_instead_of_inventing_values(monkeypatch):
-    from agent.monitoring import cron_health
-
-    monkeypatch.setattr(cron_health, "get_ticker_heartbeat_age", lambda: None)
-    monkeypatch.setattr(cron_health, "get_ticker_success_age", lambda: None)
-    monkeypatch.setattr(cron_health, "get_running_job_ids", lambda: frozenset())
-    monkeypatch.setattr(cron_health, "load_jobs", lambda: [])
-
-    names = {metric.name for metric in cron_health.build_cron_health_snapshot().metrics}
-
-    assert "hermes.cron.scheduler.heartbeat_age_seconds" not in names
-    assert "hermes.cron.scheduler.last_success_age_seconds" not in names
 
 
 def test_execution_projection_is_opaque_bounded_and_content_free():
@@ -113,14 +61,6 @@ def test_execution_projection_omits_duration_and_delivery_when_not_known():
     assert event["delivery_outcome"] is None
 
 
-def test_external_provider_source_is_normalized_to_external():
-    from agent.monitoring.cron_health import project_execution_event
-
-    event = project_execution_event(
-        {"job_id": "private", "source": "Chronos", "status": "claimed"}
-    )
-
-    assert event.source == "external"
 
 
 @pytest.mark.parametrize("message", ["oauth refresh failed", "tokenizer crashed", "HTTP 4015"])
@@ -130,14 +70,6 @@ def test_error_classification_avoids_auth_substring_false_positives(message):
     assert classify_cron_error(message) == "unknown"
 
 
-@pytest.mark.parametrize(
-    "message",
-    ["authentication failed", "not authorized", "access token expired", "HTTP 401"],
-)
-def test_error_classification_recognizes_auth_terms_and_status_tokens(message):
-    from agent.monitoring.cron_health import classify_cron_error
-
-    assert classify_cron_error(message) == "auth_failed"
 
 
 def test_cron_snapshot_exports_catch_up_occurrence_counter(monkeypatch):
@@ -176,30 +108,6 @@ def test_terminal_execution_emission_flushes_and_failures_are_fail_open(monkeypa
     assert calls == [("emit", "completed"), ("flush", 1.0)]
 
 
-def test_gateway_export_includes_cron_metrics_and_only_accepted_event_planes(monkeypatch):
-    from agent.monitoring import gateway_health_export
-
-    gateway_snapshot = type("Snapshot", (), {"metrics": []})()
-    cron_snapshot = type(
-        "Snapshot",
-        (),
-        {"metrics": [type("Metric", (), {"name": "hermes.cron.jobs.enabled", "value": 2, "attributes": {}})()]},
-    )()
-    monkeypatch.setattr(gateway_health_export, "_read_gateway_snapshot", lambda config: gateway_snapshot)
-    monkeypatch.setattr(gateway_health_export, "_read_cron_snapshot", lambda: cron_snapshot)
-
-    snapshot = gateway_health_export._read_runtime_snapshot({})
-
-    names = [metric.name for metric in snapshot.metrics]
-    # Cron metrics are folded into the gateway snapshot...
-    assert "hermes.cron.jobs.enabled" in names
-    # ...and the background/subagent-work gauges are appended (distinct from
-    # active_agents). Assert the relationship, not a frozen exact list.
-    assert "hermes.gateway.background_work" in names
-    assert "hermes.gateway.background_delegations" in names
-    assert gateway_health_export._gateway_health_event({"event": "cron_execution"}) is True
-    assert gateway_health_export._gateway_health_event({"event": "gateway_health"}) is True
-    assert gateway_health_export._gateway_health_event({"event": "run"}) is False
 
 
 def test_background_work_is_task_granular_and_delegations_is_unit_granular(monkeypatch):

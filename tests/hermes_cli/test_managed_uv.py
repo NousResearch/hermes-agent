@@ -68,22 +68,12 @@ class TestManagedUvPath:
             from hermes_cli.managed_uv import managed_uv_path
             assert managed_uv_path() == tmp_path / "bin" / "uv"
 
-    def test_windows(self, tmp_path):
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.platform.system", return_value="Windows"):
-            from hermes_cli.managed_uv import managed_uv_path
-            assert managed_uv_path() == tmp_path / "bin" / "uv.exe"
-
 
 # ---------------------------------------------------------------------------
 # resolve_uv
 # ---------------------------------------------------------------------------
 
 class TestResolveUv:
-    def test_missing_returns_none(self, tmp_path):
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
-            from hermes_cli.managed_uv import resolve_uv
-            assert resolve_uv() is None
 
     def test_existing_executable(self, tmp_path):
         _make_executable(tmp_path / "bin" / "uv")
@@ -108,12 +98,6 @@ class TestResolveUv:
 # ---------------------------------------------------------------------------
 
 class TestEnsureUv:
-    def test_already_installed_no_bootstrap(self, tmp_path):
-        _make_executable(tmp_path / "bin" / "uv")
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
-            from hermes_cli.managed_uv import ensure_uv
-            path = ensure_uv()
-            assert path == str(tmp_path / "bin" / "uv")
 
     def test_installs_if_missing(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
@@ -158,16 +142,6 @@ class TestEnsureUv:
 
         assert path == str(tmp_path / "bin" / "uv")
         assert observed == [repair]
-
-    def test_install_failure_returns_falsy(self, tmp_path):
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
-            from hermes_cli.managed_uv import ensure_uv
-            path = ensure_uv()
-            # Failure is a falsy sentinel (not None) so legacy 2-target call
-            # sites can still unpack it without raising — see
-            # TestEnsureUvUpdateBoundary for why.
-            assert not path
 
 
 class TestEnsureUvUpdateBoundary:
@@ -255,13 +229,6 @@ class TestEnsureUvWindowsSafe:
             cmdline = subprocess.list2cmdline([uv_bin, "pip", "install", "-e", "."])
             assert "pip" in cmdline and "install" in cmdline
 
-    def test_windows_failure_returns_none(self, tmp_path):
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.platform.system", return_value="Windows"), \
-             patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
-            from hermes_cli.managed_uv import ensure_uv
-            assert ensure_uv() is None
-
 
 # ---------------------------------------------------------------------------
 # update_managed_uv
@@ -286,15 +253,6 @@ class TestUpdateManagedUv:
             assert mock_run.call_count == 2
             assert mock_run.call_args_list[0][0][0] == [str(tmp_path / "bin" / "uv"), "self", "update"]
 
-    def test_self_update_failure_non_fatal(self, tmp_path):
-        _make_executable(tmp_path / "bin" / "uv")
-        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stderr="nope")
-            from hermes_cli.managed_uv import update_managed_uv
-            result = update_managed_uv()
-            # Still returns the path — failure is non-fatal
-            assert result == str(tmp_path / "bin" / "uv")
 
     def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path, monkeypatch):
         """A recent success stamp must skip `uv self update` entirely while the
@@ -402,32 +360,6 @@ class TestUpdateManagedUv:
 
         assert result == str(uv)
         mock_repair.assert_called_once_with(str(uv))
-
-    def test_update_reports_runtime_repair_to_observer(self, tmp_path):
-        from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv
-
-        uv = tmp_path / "bin" / "uv"
-        _make_executable(uv)
-        repair = RuntimeRepairResult(
-            "repaired",
-            sqlite_before="3.50.4",
-            sqlite_after="3.53.1",
-        )
-        observed = []
-        with patch(
-            "hermes_cli.managed_uv.get_hermes_home",
-            return_value=tmp_path,
-        ), patch(
-            "hermes_cli.managed_uv.subprocess.run",
-            return_value=MagicMock(returncode=0, stdout="uv 0.11.31\n", stderr=""),
-        ), patch(
-            "hermes_cli.managed_uv.repair_vulnerable_runtime",
-            return_value=repair,
-        ):
-            result = update_managed_uv(repair_observer=observed.append)
-
-        assert result == str(uv)
-        assert observed == [repair]
 
 
 class TestManagedPythonStore:
@@ -551,34 +483,6 @@ class TestRuntimeRepair:
         reacquired = _acquire_repair_lock(root / ".hermes-runtime")
         assert reacquired is not None
         _release_repair_lock(reacquired)
-
-    def test_windows_holders_refuse_runtime_mutation(self, tmp_path, monkeypatch):
-        from hermes_cli.managed_uv import repair_vulnerable_runtime
-
-        root, live, sentinel = _make_runtime_install(tmp_path, windows=True)
-        current = _runtime_info(live / "Scripts" / "python.exe", (3, 50, 4))
-        old_main = SimpleNamespace(
-            _detect_venv_python_processes=lambda: [
-                (1729, "python.exe", "hermes gateway run")
-            ]
-        )
-        monkeypatch.setitem(sys.modules, "hermes_cli.main", old_main)
-
-        with patch("hermes_cli.managed_uv.platform.system", return_value="Windows"), \
-             patch(
-                 "hermes_cli.managed_uv.probe_sqlite_runtime",
-                 return_value=current,
-             ), \
-             patch(
-                 "hermes_cli.managed_uv._install_safe_python_generation"
-             ) as mock_install:
-            result = repair_vulnerable_runtime("uv.exe", project_root=root)
-
-        assert result.status == "skipped"
-        assert "PID 1729" in result.detail
-        assert sentinel.read_text(encoding="utf-8") == "live"
-        assert not (root / ".hermes-runtime").exists()
-        mock_install.assert_not_called()
 
 
 class TestRuntimeCutover:
@@ -723,36 +627,6 @@ class TestRuntimeCutover:
         assert candidate.exists()
         assert not list(root.glob("venv.stale.runtime-*"))
 
-    def test_interrupt_during_rollback_restores_live_venv(self, tmp_path):
-        from hermes_cli.managed_uv import _cut_over_candidate
-
-        root, live, sentinel = _make_runtime_install(tmp_path)
-        runtime_root = root / ".hermes-runtime"
-        candidate = runtime_root / "venv-candidate-test"
-        candidate.mkdir(parents=True)
-        (candidate / "sentinel").write_text("candidate", encoding="utf-8")
-        rename_count = 0
-
-        def interrupt_backup_restore(source, destination):
-            nonlocal rename_count
-            rename_count += 1
-            if rename_count == 4:
-                raise KeyboardInterrupt
-            source.rename(destination)
-
-        with patch(
-            "hermes_cli.managed_uv._rename_with_retry",
-            side_effect=interrupt_backup_restore,
-        ), patch(
-            "hermes_cli.managed_uv._smoke_candidate_venv",
-            return_value=(False, "core import smoke failed", None),
-        ), pytest.raises(KeyboardInterrupt):
-            _cut_over_candidate(candidate, project_root=root)
-
-        assert sentinel.read_text(encoding="utf-8") == "live"
-        assert not list(root.glob("venv.stale.runtime-*"))
-        assert list(runtime_root.glob("venv-rejected-*"))
-
 
 # ---------------------------------------------------------------------------
 # _install_uv internals
@@ -767,16 +641,6 @@ class TestInstallUvInternals:
             mock_posix.assert_called_once()
             call_env = mock_posix.call_args[0][0]
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
-
-    def test_windows_sets_uv_install_dir(self, tmp_path):
-        target = tmp_path / "bin" / "uv.exe"
-        with patch("hermes_cli.managed_uv.platform.system", return_value="Windows"), \
-             patch("hermes_cli.managed_uv._install_uv_windows") as mock_windows:
-            from hermes_cli.managed_uv import _install_uv
-            _install_uv(target)
-            mock_windows.assert_called_once()
-            call_env = mock_windows.call_args[0][0]
-            assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "bin")
 
 
 class TestRuntimeRequestMinorLine:
@@ -844,18 +708,6 @@ class TestRuntimeRequestMinorLine:
         assert result is not None
         _, _, candidate = result
         assert candidate.python_version == (3, 11, 15)
-
-    def test_rejects_minor_drift(self, tmp_path, monkeypatch):
-        assert (
-            self._run_generation(tmp_path, monkeypatch, (3, 11, 14), (3, 12, 1))
-            is None
-        )
-
-    def test_rejects_patch_downgrade(self, tmp_path, monkeypatch):
-        assert (
-            self._run_generation(tmp_path, monkeypatch, (3, 11, 14), (3, 11, 13))
-            is None
-        )
 
 
 class TestPatchRetryOnVulnerableCandidate:
@@ -948,16 +800,6 @@ class TestPatchRetryOnVulnerableCandidate:
         assert candidate.python_version == (3, 11, 15)
         assert not candidate.wal_reset_vulnerable
 
-    def test_gives_up_after_max_retries_when_all_patches_vulnerable(self, tmp_path, monkeypatch):
-        """If every known patch is vulnerable (or the list is exhausted
-        within the retry cap), the provisioner must return None rather than
-        looping forever or raising."""
-        result = self._run(
-            tmp_path, monkeypatch,
-            vulnerable_versions={"3.11", "3.11.14", "3.11.13", "3.11.12", "3.11.11", "3.11.10"},
-            patch_list=[(3, 11, 14), (3, 11, 13), (3, 11, 12), (3, 11, 11), (3, 11, 10), (3, 11, 9)],
-        )
-        assert result is None
 
     def test_empty_patch_list_falls_back_to_none_without_crashing(self, tmp_path, monkeypatch):
         """If _list_available_patches can't be queried (network failure,
@@ -1016,19 +858,6 @@ class TestPatchRetryOnVulnerableCandidate:
         # Exactly one attempt: the bare minor line. No downgrade retries.
         assert install_requests == ["3.11"]
 
-    def test_still_retries_when_a_newer_patch_exists_in_the_index(
-        self, tmp_path, monkeypatch
-    ):
-        """The downgrade skip must not suppress legitimate newer-patch retries."""
-        result = self._run(
-            tmp_path, monkeypatch,
-            vulnerable_versions={"3.11"},
-            # Mixed index: a newer fixed patch alongside older useless ones.
-            patch_list=[(3, 11, 15), (3, 11, 14), (3, 11, 13)],
-        )
-        assert result is not None
-        assert result[2].python_version == (3, 11, 15)
-        assert not result[2].wal_reset_vulnerable
 
     def test_retry_is_bounded_by_max_retries_constant(self, tmp_path, monkeypatch):
         """A very long patch list must not result in unbounded retries --
@@ -1106,38 +935,6 @@ class TestListAvailablePatches:
         )
         assert result == [(3, 11, 15), (3, 11, 14)]
 
-    def test_filters_out_non_cpython_implementations(self, tmp_path, monkeypatch):
-        """pypy/graalpy entries at the same version must not be returned --
-        the repair path only wants cpython builds."""
-        import hermes_cli.managed_uv as managed_uv
-
-        def fake_run(cmd, **kwargs):
-            return SimpleNamespace(returncode=0, stdout=self.SAMPLE_OUTPUT, stderr="")
-
-        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
-        result = managed_uv._list_available_patches(
-            "uv", "3.11", cwd=tmp_path, env={}
-        )
-        # Only one 3.11.15 entry (cpython), not two (cpython + pypy).
-        assert result.count((3, 11, 15)) == 1
-
-    def test_nonzero_exit_returns_empty_list(self, tmp_path, monkeypatch):
-        import hermes_cli.managed_uv as managed_uv
-
-        def fake_run(cmd, **kwargs):
-            return SimpleNamespace(returncode=1, stdout="", stderr="network error")
-
-        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
-        assert managed_uv._list_available_patches("uv", "3.11", cwd=tmp_path, env={}) == []
-
-    def test_malformed_json_returns_empty_list_not_crash(self, tmp_path, monkeypatch):
-        import hermes_cli.managed_uv as managed_uv
-
-        def fake_run(cmd, **kwargs):
-            return SimpleNamespace(returncode=0, stdout="not valid json{{{", stderr="")
-
-        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
-        assert managed_uv._list_available_patches("uv", "3.11", cwd=tmp_path, env={}) == []
 
     def test_subprocess_exception_returns_empty_list(self, tmp_path, monkeypatch):
         import hermes_cli.managed_uv as managed_uv

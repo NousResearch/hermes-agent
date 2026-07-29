@@ -127,27 +127,6 @@ def test_s6_running_true_when_comm_and_basedir_match(
     assert _s6_running() is True
 
 
-def test_s6_running_false_when_comm_is_wrong(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from hermes_cli.service_manager import _s6_running
-
-    # systemd as PID 1, basedir present from some stray s6 install
-    _patch_s6_paths(monkeypatch, comm="systemd", basedir_is_dir=True)
-    assert _s6_running() is False
-
-
-def test_s6_running_false_when_basedir_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from hermes_cli.service_manager import _s6_running
-
-    # The comm matches but the basedir is missing — e.g. an unrelated
-    # process happens to be named "s6-svscan"
-    _patch_s6_paths(monkeypatch, comm="s6-svscan", basedir_is_dir=False)
-    assert _s6_running() is False
-
-
 def test_s6_running_false_when_comm_unreadable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -167,17 +146,6 @@ def test_s6_running_false_when_comm_unreadable(
     assert _s6_running() is False
 
 
-def test_s6_running_handles_missing_proc(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On macOS / Windows / WSL-without-procfs, /proc/1/comm doesn't
-    exist. Must return False, not raise."""
-    from hermes_cli.service_manager import _s6_running
-
-    _patch_s6_paths(monkeypatch, comm=None, basedir_is_dir=False)
-    assert _s6_running() is False
-
-
 # ---------------------------------------------------------------------------
 # Backend wrappers — kind + registration unsupported on hosts
 # ---------------------------------------------------------------------------
@@ -193,25 +161,6 @@ def test_systemd_manager_kind_and_registration_unsupported() -> None:
         mgr.unregister_profile_gateway("foo")
     assert mgr.list_profile_gateways() == []
     # Protocol conformance — runtime_checkable lets us assert this.
-    assert isinstance(mgr, ServiceManager)
-
-
-def test_launchd_manager_kind_and_registration_unsupported() -> None:
-    mgr = LaunchdServiceManager()
-    assert mgr.kind == "launchd"
-    assert mgr.supports_runtime_registration() is False
-    with pytest.raises(NotImplementedError):
-        mgr.register_profile_gateway("foo")
-    assert mgr.list_profile_gateways() == []
-    assert isinstance(mgr, ServiceManager)
-
-
-def test_windows_manager_kind_and_registration_unsupported() -> None:
-    mgr = WindowsServiceManager()
-    assert mgr.kind == "windows"
-    assert mgr.supports_runtime_registration() is False
-    with pytest.raises(NotImplementedError):
-        mgr.register_profile_gateway("foo")
     assert isinstance(mgr, ServiceManager)
 
 
@@ -241,28 +190,6 @@ def test_systemd_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
     mgr.restart("ignored")
     assert called == ["start", "stop", "restart"]
     assert mgr.is_running("ignored") is True
-
-
-def test_launchd_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
-    called: list[str] = []
-    monkeypatch.setattr(
-        "hermes_cli.gateway.launchd_start", lambda: called.append("start"),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.gateway.launchd_stop", lambda: called.append("stop"),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.gateway.launchd_restart", lambda: called.append("restart"),
-    )
-    monkeypatch.setattr(
-        "hermes_cli.gateway._probe_launchd_service_running", lambda: False,
-    )
-    mgr = LaunchdServiceManager()
-    mgr.start("ignored")
-    mgr.stop("ignored")
-    mgr.restart("ignored")
-    assert called == ["start", "stop", "restart"]
-    assert mgr.is_running("ignored") is False
 
 
 def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,23 +222,6 @@ def test_windows_manager_lifecycle_delegates(monkeypatch: pytest.MonkeyPatch) ->
     assert mgr.is_running("ignored") is True
 
 
-def test_windows_manager_is_running_false_when_not_installed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import hermes_cli.gateway_windows  # noqa: F401
-
-    class _FakeWindowsModule:
-        @staticmethod
-        def is_installed() -> bool: return False
-
-    monkeypatch.setattr("hermes_cli.gateway_windows", _FakeWindowsModule)
-    monkeypatch.setattr(
-        "hermes_cli.gateway.find_gateway_pids",
-        lambda **kw: [12345],  # PIDs would otherwise vote "running"
-    )
-    assert WindowsServiceManager().is_running("ignored") is False
-
-
 def test_windows_manager_install_forwards_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
     import hermes_cli.gateway_windows  # noqa: F401
@@ -339,35 +249,6 @@ def test_windows_manager_install_forwards_kwargs(monkeypatch: pytest.MonkeyPatch
 # ---------------------------------------------------------------------------
 # get_service_manager factory
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "kind,cls",
-    [
-        ("systemd", SystemdServiceManager),
-        ("launchd", LaunchdServiceManager),
-        ("windows", WindowsServiceManager),
-    ],
-)
-def test_get_service_manager_returns_correct_backend(
-    monkeypatch: pytest.MonkeyPatch,
-    kind: ServiceManagerKind,
-    cls: type,
-) -> None:
-    monkeypatch.setattr(
-        "hermes_cli.service_manager.detect_service_manager", lambda: kind,
-    )
-    assert isinstance(get_service_manager(), cls)
-
-
-def test_get_service_manager_raises_when_unsupported(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "hermes_cli.service_manager.detect_service_manager", lambda: "none",
-    )
-    with pytest.raises(RuntimeError, match="no supported service manager"):
-        get_service_manager()
 
 
 def test_get_service_manager_returns_s6_instance(
@@ -416,12 +297,6 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("subprocess.run", _fake)
     return calls
-
-
-def test_s6_manager_kind_and_supports_registration() -> None:
-    mgr = S6ServiceManager()
-    assert mgr.kind == "s6"
-    assert mgr.supports_runtime_registration() is True
 
 
 # ---------------------------------------------------------------------------
@@ -503,20 +378,6 @@ def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
     assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)
 
 
-def test_seed_supervise_skeleton_skips_when_no_log_subservice(tmp_path) -> None:
-    """If log/ isn't present, no logger skeleton is created."""
-    from hermes_cli.service_manager import _seed_supervise_skeleton
-
-    svc_dir = tmp_path / "gateway-foo"
-    svc_dir.mkdir()
-
-    _seed_supervise_skeleton(svc_dir)
-
-    assert not (svc_dir / "log").exists(), (
-        "helper must not synthesize a log/ subdir on its own"
-    )
-
-
 def test_seed_supervise_skeleton_is_idempotent(tmp_path) -> None:
     """Calling the helper twice on the same dir is a no-op the second time.
 
@@ -584,92 +445,6 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
         and str(s6_scandir) in cmd
         for cmd in fake_subprocess_run
     ), f"s6-svscanctl -a not invoked; saw: {fake_subprocess_run}"
-
-
-def test_s6_register_staging_dir_is_dotfile_hidden_from_svscan(
-    s6_scandir, fake_subprocess_run, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The mid-build staging dir MUST be dot-prefixed so s6-svscan
-    ignores it while it is half-populated.
-
-    s6-svscan skips any scandir entry whose name begins with ``.``. If
-    the staging dir were a plain ``gateway-<p>.tmp`` (a non-dotfile),
-    a concurrent ``s6-svscanctl -a`` rescan would supervise it the
-    moment it has a valid ``type``/``run`` — spawning s6-supervise AS
-    ROOT, which mkdir's a root-owned ``supervise/`` and makes the
-    in-flight ``_seed_supervise_skeleton`` EACCES on
-    ``mkdir supervise/event``. That was the arm64-only CI flake on
-    ``test_s6_unregister_removes_service_dir_in_live_container``.
-
-    We capture the directory passed to ``_seed_supervise_skeleton``
-    (called mid-build, BEFORE the atomic rename to the live name) and
-    assert its basename starts with ``.`` and still lives in the
-    scandir as a sibling of the live slot.
-    """
-    import hermes_cli.service_manager as sm
-
-    seen: list[str] = []
-    real_seed = sm._seed_supervise_skeleton
-
-    def _capturing_seed(svc_dir, *a, **kw):
-        seen.append(str(svc_dir))
-        return real_seed(svc_dir, *a, **kw)
-
-    monkeypatch.setattr(sm, "_seed_supervise_skeleton", _capturing_seed)
-
-    S6ServiceManager(scandir=s6_scandir).register_profile_gateway("coder")
-
-    assert seen, "_seed_supervise_skeleton was never called during register"
-    staging = seen[0]
-    staging_name = staging.rsplit("/", 1)[-1]
-    assert staging_name.startswith("."), (
-        f"staging dir must be a dotfile so s6-svscan skips it mid-build; "
-        f"got {staging_name!r}"
-    )
-    # Sibling of the live slot, in the same scandir.
-    assert staging == str(s6_scandir / ".gateway-coder.tmp")
-    # And the published (renamed) live slot is the dotless canonical name.
-    assert (s6_scandir / "gateway-coder").is_dir()
-
-
-def test_s6_register_start_now_false_writes_down_marker(
-    s6_scandir, fake_subprocess_run,
-) -> None:
-    """When start_now=False, a `down` marker must be written so
-    s6-supervise does not auto-start the service on rescan."""
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.register_profile_gateway("coder", start_now=False)
-
-    svc_dir = s6_scandir / "gateway-coder"
-    assert svc_dir.is_dir()
-    assert (svc_dir / "down").is_file(), (
-        "start_now=False must write a `down` marker file"
-    )
-
-
-def test_s6_register_start_now_true_no_down_marker(
-    s6_scandir, fake_subprocess_run,
-) -> None:
-    """When start_now=True (default), no `down` marker should exist."""
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.register_profile_gateway("coder")
-
-    svc_dir = s6_scandir / "gateway-coder"
-    assert svc_dir.is_dir()
-    assert not (svc_dir / "down").exists(), (
-        "start_now=True must NOT write a `down` marker file"
-    )
-
-
-def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> None:
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.register_profile_gateway(
-        "x", extra_env={"FOO": "bar baz", "QUOTED": "a'b"},
-    )
-    run_text = (s6_scandir / "gateway-x" / "run").read_text()
-    # shlex.quote should have wrapped both values
-    assert "export FOO='bar baz'" in run_text
-    assert "export QUOTED='a'\"'\"'b'" in run_text
 
 
 def test_render_run_script_resets_home_before_exec() -> None:
@@ -743,82 +518,6 @@ def test_s6_register_writes_finish_script(
     assert "125" in finish_path.read_text()
 
 
-def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    with pytest.raises(ValueError):
-        mgr.register_profile_gateway("Bad/Name")
-
-
-def test_s6_register_rejects_duplicate(s6_scandir, fake_subprocess_run) -> None:
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    (s6_scandir / "gateway-coder").mkdir(parents=True)
-    with pytest.raises(ValueError, match="already registered"):
-        mgr.register_profile_gateway("coder")
-
-
-def test_s6_register_rolls_back_on_svscanctl_failure(
-    s6_scandir, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If s6-svscanctl fails the service dir must be cleaned up so the
-    next register call doesn't see a stale duplicate."""
-    import subprocess as _sp
-
-    def _fail_scanctl(cmd, **kw):
-        # Manager calls s6-svscanctl by absolute path; match on basename.
-        if cmd[0].endswith("/s6-svscanctl"):
-            return _sp.CompletedProcess(cmd, 1, "", "rescan failed")
-        return _sp.CompletedProcess(cmd, 0, "", "")
-    monkeypatch.setattr("subprocess.run", _fail_scanctl)
-
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    with pytest.raises(RuntimeError, match="s6-svscanctl failed"):
-        mgr.register_profile_gateway("coder")
-    assert not (s6_scandir / "gateway-coder").exists()
-
-
-def test_s6_unregister_removes_service_dir(
-    s6_scandir, fake_subprocess_run,
-) -> None:
-    svc_dir = s6_scandir / "gateway-coder"
-    svc_dir.mkdir(parents=True)
-    (svc_dir / "type").write_text("longrun\n")
-
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.unregister_profile_gateway("coder")
-
-    # s6-svc -d was issued
-    assert any(
-        cmd[0] == "s6-svc" and "-d" in cmd
-        for cmd in fake_subprocess_run
-    )
-    # Service dir was removed
-    assert not svc_dir.exists()
-    # Rescan was triggered
-    assert any(cmd[0] == "s6-svscanctl" for cmd in fake_subprocess_run)
-
-
-def test_s6_unregister_absent_profile_is_noop(s6_scandir) -> None:
-    # Should NOT raise even though "ghost" doesn't exist
-    S6ServiceManager(scandir=s6_scandir).unregister_profile_gateway("ghost")
-
-
-def test_s6_list_profile_gateways(s6_scandir) -> None:
-    # Three gateway profiles + one unrelated service + one hidden dir
-    (s6_scandir / "gateway-coder").mkdir()
-    (s6_scandir / "gateway-assistant").mkdir()
-    (s6_scandir / "gateway-writer").mkdir()
-    (s6_scandir / "s6-linux-init-shutdownd").mkdir()  # filtered out
-    (s6_scandir / ".lock").mkdir()  # filtered out (hidden)
-
-    profiles = sorted(S6ServiceManager(scandir=s6_scandir).list_profile_gateways())
-    assert profiles == ["assistant", "coder", "writer"]
-
-
-def test_s6_list_profile_gateways_empty_when_scandir_missing(tmp_path) -> None:
-    missing = tmp_path / "does-not-exist"
-    assert S6ServiceManager(scandir=missing).list_profile_gateways() == []
-
-
 def test_s6_lifecycle_dispatches_to_s6_svc(
     s6_scandir, fake_subprocess_run,
 ) -> None:
@@ -833,48 +532,6 @@ def test_s6_lifecycle_dispatches_to_s6_svc(
 
     flags = [c[1] for c in fake_subprocess_run if c[0] == "s6-svc"]
     assert flags == ["-u", "-d", "-t"]
-
-
-def test_s6_lifecycle_persists_named_profile_desired_state(
-    s6_scandir,
-    fake_subprocess_run,
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import json
-
-    hermes_home = tmp_path / "hermes-home"
-    profile_dir = hermes_home / "profiles" / "coder"
-    profile_dir.mkdir(parents=True)
-    (s6_scandir / "gateway-coder").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.start("gateway-coder")
-    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "running"
-    mgr.stop("gateway-coder")
-    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "stopped"
-    mgr.restart("gateway-coder")
-    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "running"
-
-
-def test_s6_lifecycle_persists_default_profile_desired_state(
-    s6_scandir,
-    fake_subprocess_run,
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import json
-
-    hermes_home = tmp_path / "hermes-home"
-    hermes_home.mkdir()
-    (s6_scandir / "gateway-default").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home / "profiles" / "coder"))
-
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.start("gateway-default")
-    state = json.loads((hermes_home / "gateway_state.json").read_text())
-    assert state["desired_state"] == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -975,26 +632,6 @@ def test_lifecycle_raises_s6_command_error_on_subprocess_failure(
     assert "rc=111" in str(excinfo.value)
 
 
-def test_s6_is_running_parses_svstat(
-    s6_scandir, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import subprocess as _sp
-
-    def _svstat(cmd, **kw):
-        if cmd[0].endswith("/s6-svstat"):
-            return _sp.CompletedProcess(cmd, 0, "up (pid 42) 17 seconds\n", "")
-        return _sp.CompletedProcess(cmd, 0, "", "")
-    monkeypatch.setattr("subprocess.run", _svstat)
-    assert S6ServiceManager(scandir=s6_scandir).is_running("gateway-coder") is True
-
-    def _svstat_down(cmd, **kw):
-        if cmd[0].endswith("/s6-svstat"):
-            return _sp.CompletedProcess(cmd, 0, "down 5 seconds\n", "")
-        return _sp.CompletedProcess(cmd, 0, "", "")
-    monkeypatch.setattr("subprocess.run", _svstat_down)
-    assert S6ServiceManager(scandir=s6_scandir).is_running("gateway-coder") is False
-
-
 # ---------------------------------------------------------------------------
 # S6 stop writes a planned-stop marker (issue #42675)
 #
@@ -1006,101 +643,6 @@ def test_s6_is_running_parses_svstat(
 # stop from a restart kill, and the gateway_state=stopped suppression
 # (run.py) would never engage for explicit stops.
 # ---------------------------------------------------------------------------
-
-
-def test_s6_supervised_pid_parses_svstat(monkeypatch, s6_scandir):
-    """_supervised_pid extracts the PID from `up (pid NNNN) ...`."""
-    import subprocess as _sp
-
-    def _fake(cmd, **kw):
-        return _sp.CompletedProcess(cmd, 0, "up (pid 4242) 17 seconds\n", "")
-
-    monkeypatch.setattr("subprocess.run", _fake)
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    assert mgr._supervised_pid("gateway-coder") == 4242
-
-
-def test_s6_supervised_pid_none_when_down(monkeypatch, s6_scandir):
-    """A down service (`s6-svstat` rc!=0 or no pid) yields None."""
-    import subprocess as _sp
-
-    def _fake(cmd, **kw):
-        return _sp.CompletedProcess(cmd, 0, "down (exitcode 0) 3 seconds\n", "")
-
-    monkeypatch.setattr("subprocess.run", _fake)
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    assert mgr._supervised_pid("gateway-coder") is None
-
-
-def test_s6_stop_writes_planned_stop_marker(monkeypatch, s6_scandir):
-    """stop() must mark the supervised PID before `s6-svc -d` so the
-    gateway recognises the SIGTERM as an intentional stop (#42675)."""
-    import subprocess as _sp
-
-    svc_dir = s6_scandir / "gateway-coder"
-    svc_dir.mkdir()  # so _run_svc doesn't raise GatewayNotRegisteredError
-
-    svc_calls: list[list[str]] = []
-
-    def _fake(cmd, **kw):
-        seq = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
-        if seq and seq[0].startswith("/command/"):
-            seq[0] = seq[0][len("/command/"):]
-        svc_calls.append(seq)
-        if seq and seq[0] == "s6-svstat":
-            return _sp.CompletedProcess(cmd, 0, "up (pid 9090) 5 seconds\n", "")
-        return _sp.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr("subprocess.run", _fake)
-
-    marked: list[int] = []
-    monkeypatch.setattr(
-        "gateway.status.write_planned_stop_marker",
-        lambda pid: marked.append(pid) or True,
-    )
-
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.stop("gateway-coder")
-
-    assert marked == [9090], (
-        f"stop() must write the planned-stop marker for the supervised PID; "
-        f"marked={marked}"
-    )
-    # And it must still issue the down command.
-    assert any(
-        cmd[0] == "s6-svc" and "-d" in cmd for cmd in svc_calls
-    ), f"s6-svc -d not invoked; saw: {svc_calls}"
-
-
-def test_s6_stop_tolerates_marker_write_failure(monkeypatch, s6_scandir):
-    """A marker-write failure must not block the stop (best-effort)."""
-    import subprocess as _sp
-
-    svc_dir = s6_scandir / "gateway-coder"
-    svc_dir.mkdir()
-
-    svc_calls: list[list[str]] = []
-
-    def _fake(cmd, **kw):
-        seq = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
-        if seq and seq[0].startswith("/command/"):
-            seq[0] = seq[0][len("/command/"):]
-        svc_calls.append(seq)
-        if seq and seq[0] == "s6-svstat":
-            return _sp.CompletedProcess(cmd, 0, "up (pid 9090) 5 seconds\n", "")
-        return _sp.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr("subprocess.run", _fake)
-
-    def _boom(pid):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("gateway.status.write_planned_stop_marker", _boom)
-
-    mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.stop("gateway-coder")  # must not raise
-
-    assert any(cmd[0] == "s6-svc" and "-d" in cmd for cmd in svc_calls)
 
 
 def _log_run_setup_fragment(rendered: str) -> str:

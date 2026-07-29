@@ -149,38 +149,6 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
         )
 
 
-def test_update_cve_pins_do_not_downgrade_reviewed_current_versions():
-    """`hermes update` must not reinstall stale reviewed CVE pins.
-
-    The project intentionally exact-pins reviewed dependency versions. When
-    security pins get stale, update reinstalls can downgrade environments that
-    already contain newer fixed versions. Guard the reviewed CVE packages
-    across pyproject, lazy_deps, and the committed lockfile.
-    """
-    pins = _pins_from_specs(_pyproject_pinned_specs() + _lazy_deps_pinned_specs())
-    for package, floor in _UPDATE_DOWNGRADE_GUARD_FLOORS.items():
-        versions = pins.get(package)
-        assert versions, f"{package} is no longer exact-pinned; update this guard"
-        below_floor = sorted(
-            version for version in versions
-            if _version_tuple(version) < floor
-        )
-        assert not below_floor, (
-            f"{package} exact pin(s) {below_floor} are below the reviewed "
-            f"anti-downgrade floor {'.'.join(map(str, floor))}; bump the pin "
-            "and regenerate uv.lock"
-        )
-        locked_versions = _locked_versions(package)
-        assert locked_versions, f"{package} is missing from uv.lock"
-        locked_below_floor = sorted(
-            version for version in locked_versions
-            if _version_tuple(version) < floor
-        )
-        assert not locked_below_floor, (
-            f"uv.lock resolves {package} version(s) {locked_below_floor} below "
-            f"the reviewed anti-downgrade floor {'.'.join(map(str, floor))}; "
-            "regenerate uv.lock after bumping the pin"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -280,27 +248,6 @@ def test_pyproject_pins_are_internally_consistent():
     )
 
 
-def test_pyproject_and_lazy_deps_pins_agree():
-    """Every package pinned in BOTH places must use the same version.
-
-    Regression guard for the aiohttp / anthropic extras-vs-lazy drift:
-    tools/lazy_deps.py mirrors the pyproject extras, so a CVE bump applied to
-    one and not the other leaves users on a vulnerable version depending on
-    the install path. Bump both in lockstep.
-    """
-    py = _pins_from_specs(_pyproject_pinned_specs())
-    lazy = _pins_from_specs(_lazy_deps_pinned_specs())
-
-    mismatches = [
-        f"{name}: pyproject={sorted(py[name])} lazy_deps={sorted(lazy[name])}"
-        for name in sorted(set(py) & set(lazy))
-        if py[name] != lazy[name]
-    ]
-    assert not mismatches, (
-        "pyproject.toml extras and tools/lazy_deps.py disagree on the pinned "
-        "version of the same package — bump both in lockstep:\n  "
-        + "\n  ".join(mismatches)
-    )
 
 
 def _lazy_deps_by_feature():

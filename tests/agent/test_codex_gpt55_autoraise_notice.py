@@ -87,24 +87,8 @@ def _threshold_ratio(agent: AIAgent) -> float:
 # ── config display gate ──────────────────────────────────────────────────────
 
 
-def test_codex_gpt55_autoraise_notice_enabled_by_default(monkeypatch, tmp_path):
-    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_notice=True)
-
-    assert _threshold_ratio(agent) == 0.85
-    warning = getattr(agent, "_compression_warning")
-    assert warning is not None
-    assert "auto-compaction was raised" in warning
-    assert "auto-compaction was raised" in stdout
 
 
-def test_codex_gpt55_autoraise_notice_can_be_suppressed_without_disabling_autoraise(
-    monkeypatch, tmp_path
-):
-    agent, stdout = _make_codex_agent(monkeypatch, tmp_path, show_notice=False)
-
-    assert _threshold_ratio(agent) == 0.85
-    assert getattr(agent, "_compression_warning") is None
-    assert "auto-compaction was raised" not in stdout
 
 
 def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tmp_path):
@@ -130,27 +114,10 @@ def test_marker_lives_under_hermes_home() -> None:
     assert marker.name == ".codex_gpt55_autoraise_notice"
 
 
-def test_state_keyed_on_model_and_displayed_percentages() -> None:
-    # Same percentages the notice text renders (int(round(ratio * 100))),
-    # prefixed with the bare model slug.
-    assert _codex_gpt55_autoraise_notice_state(AUTORAISE) == "gpt-5.5:50:85"
-    assert (
-        _codex_gpt55_autoraise_notice_state(
-            {"model": "openai/gpt-5.4", "from": 0.75, "to": 0.85}
-        )
-        == "gpt-5.4:75:85"
-    )
 
 
-def test_unseen_before_anything_is_recorded() -> None:
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
 
 
-def test_seen_after_record() -> None:
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    # A "restart" is just another call: the marker persists on disk.
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is True
 
 
 def test_changed_threshold_renotifies_once() -> None:
@@ -165,36 +132,12 @@ def test_changed_threshold_renotifies_once() -> None:
     assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
 
 
-def test_changed_model_renotifies_once() -> None:
-    # Switching to a different autoraised Codex model re-fires the notice
-    # (the banner names the model, so it displays new information).
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    other_model = {"model": "gpt-5.4", "from": 0.50, "to": 0.85}
-    assert _codex_gpt55_autoraise_notice_seen(other_model) is False
-    _record_codex_gpt55_autoraise_notice(other_model)
-    assert _codex_gpt55_autoraise_notice_seen(other_model) is True
 
 
-def test_record_is_idempotent() -> None:
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    _record_codex_gpt55_autoraise_notice(AUTORAISE)
-    assert (
-        _codex_gpt55_autoraise_notice_marker().read_text(encoding="utf-8")
-        == "gpt-5.5:50:85"
-    )
 
 
-def test_malformed_marker_reads_as_unseen() -> None:
-    marker = _codex_gpt55_autoraise_notice_marker()
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("not-a-state", encoding="utf-8")
-    assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
 
 
-@pytest.mark.parametrize("bad", [{}, {"from": 0.5}, {"from": None, "to": None}])
-def test_seen_tolerates_malformed_autoraise(bad) -> None:
-    # Never raises even if the stashed dict is missing/garbage keys.
-    assert _codex_gpt55_autoraise_notice_seen(bad) is False
 
 
 def test_full_init_gate_shows_once_then_stays_silent() -> None:

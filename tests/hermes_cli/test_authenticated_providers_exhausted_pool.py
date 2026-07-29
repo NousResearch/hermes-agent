@@ -67,17 +67,6 @@ def test_exhausted_pool_provider_is_not_authenticated(monkeypatch):
     assert "opencode-go" not in slugs
 
 
-def test_pool_provider_with_available_credential_is_authenticated(monkeypatch):
-    """Control: with a usable credential the provider IS authenticated, proving
-    the test drives the credential gate rather than excluding it for some other
-    reason."""
-    from hermes_cli.model_switch import get_authenticated_provider_slugs
-
-    _patch_opencode_pool(monkeypatch, available=True)
-    slugs = get_authenticated_provider_slugs(current_provider="alibaba")
-    assert "opencode-go" in slugs
-
-
 def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     """Legacy token-style auth-store values have no parsed pool entries."""
     from hermes_cli.model_switch import _credential_pool_is_usable

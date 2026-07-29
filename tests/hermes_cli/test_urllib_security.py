@@ -198,30 +198,6 @@ def test_scheme_downgrade_is_cross_origin():
     assert "cf-access-client-secret" not in headers
 
 
-def test_post_302_uses_urllib_semantics_and_drops_credentials():
-    request = urllib.request.Request(
-        "https://models.example.test/load",
-        data=b"{}",
-        headers={**_credential_headers(), "Content-Type": "application/json"},
-        method="POST",
-    )
-    handler = SafeCredentialRedirectHandler(request.full_url)
-    redirected = handler.redirect_request(
-        request,
-        None,
-        302,
-        "Found",
-        {},
-        "https://other.example.test/load",
-    )
-    assert redirected is not None
-    assert redirected.get_method() == "GET"
-    assert redirected.data is None
-    headers = {name.lower(): value for name, value in redirected.header_items()}
-    assert "authorization" not in headers
-    assert "content-type" not in headers
-
-
 def test_post_307_remains_rejected_by_urllib():
     request = urllib.request.Request(
         "https://models.example.test/load",

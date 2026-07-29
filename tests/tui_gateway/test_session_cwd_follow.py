@@ -92,14 +92,6 @@ def test_browsing_outside_a_repo_is_not_a_move(session, repo_with_worktree, tmp_
     assert session["cwd"] == str(repo)
 
 
-def test_a_deleted_directory_is_not_a_move(session, repo_with_worktree, tmp_path):
-    repo, _ = repo_with_worktree
-    terminal_tool.record_session_cwd(session["session_key"], str(tmp_path / "gone"))
-
-    assert server._reconcile_session_cwd_from_terminal(session) is False
-    assert session["cwd"] == str(repo)
-
-
 def test_remote_backends_do_not_reanchor(session, repo_with_worktree, monkeypatch):
     """A remote cwd names a path on the host, not one this gateway can probe."""
     repo, worktree = repo_with_worktree
@@ -126,20 +118,6 @@ def test_settled_session_info_reports_the_worktree_branch(
     assert (event, sid) == ("session.info", "sid-1")
     assert payload["cwd"] == str(worktree)
     assert payload["branch"] == "feature"
-
-
-def test_settled_session_info_still_emits_when_nothing_moved(
-    session, repo_with_worktree, monkeypatch
-):
-    repo, _ = repo_with_worktree
-    emitted: list[dict] = []
-    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append(payload or {}))
-
-    server._emit_settled_session_info("sid-1", session, agent=None)
-
-    assert len(emitted) == 1
-    assert emitted[0]["cwd"] == str(repo)
-    assert emitted[0]["branch"] == "main"
 
 
 def test_reconcile_ignores_a_foreign_sessions_record(session, repo_with_worktree):

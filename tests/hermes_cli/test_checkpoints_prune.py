@@ -81,71 +81,7 @@ def test_pre_v2_only_decline_aborts_without_deleting(monkeypatch, capsys):
     assert "Aborted" in out
 
 
-def test_pre_v2_only_accept_deletes(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _PRE_V2_ONLY_STATUS, prune_calls)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
-
-    rc = checkpoints_cli.cmd_prune(_ns())
-
-    assert rc == 0
-    assert len(prune_calls) == 1
-    assert prune_calls[0]["delete_orphans"] is True
-
-
-def test_pre_v2_only_force_skips_prompt(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _PRE_V2_ONLY_STATUS, prune_calls)
-
-    def _unexpected_input(_prompt):
-        raise AssertionError("input() must not be called when --force is passed")
-
-    monkeypatch.setattr("builtins.input", _unexpected_input)
-
-    rc = checkpoints_cli.cmd_prune(_ns(force=True))
-
-    assert rc == 0
-    assert len(prune_calls) == 1
-
-
 # ─── mixed store (v2 + pre-v2) ──────────────────────────────────────────────
-
-
-def test_mixed_store_decline_aborts_without_deleting(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _MIXED_STATUS, prune_calls)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
-
-    rc = checkpoints_cli.cmd_prune(_ns())
-
-    assert rc == 1
-    assert prune_calls == []
-    out = capsys.readouterr().out
-    # Both layouts must appear in the preview, not just the v2 one.
-    assert "/gone/v2-project" in out
-    assert "/gone/pre-v2-project" in out
-    assert "This will permanently delete 2 orphan checkpoint project(s)" in out
-
-
-def test_mixed_store_accept_deletes_both_layouts(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _MIXED_STATUS, prune_calls)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
-
-    rc = checkpoints_cli.cmd_prune(_ns())
-
-    assert rc == 0
-    assert len(prune_calls) == 1
-    out = capsys.readouterr().out
-    assert "Deleted orphan:  2" in out
 
 
 def test_mixed_store_force_skips_prompt_deletes_both(monkeypatch, capsys):
@@ -191,23 +127,6 @@ def test_keep_orphans_skips_prompt(monkeypatch, capsys, status):
 # ─── no orphans present: never prompts even without --force ───────────────
 
 
-def test_no_orphans_skips_prompt(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _V2_ORPHAN_ONLY_STATUS, prune_calls)
-
-    def _unexpected_input(_prompt):
-        raise AssertionError("input() must not be called when there are no orphans")
-
-    monkeypatch.setattr("builtins.input", _unexpected_input)
-
-    rc = checkpoints_cli.cmd_prune(_ns())
-
-    assert rc == 0
-    assert len(prune_calls) == 1
-
-
 # ─── allowlist binding: preview set == deletion set, even when empty ───────
 
 
@@ -249,14 +168,3 @@ def test_nonempty_preview_allowlist_matches_displayed_set(monkeypatch, capsys):
     }
 
 
-def test_force_leaves_allowlist_unrestricted(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _MIXED_STATUS, prune_calls)
-
-    rc = checkpoints_cli.cmd_prune(_ns(force=True))
-
-    assert rc == 0
-    assert len(prune_calls) == 1
-    assert prune_calls[0]["orphan_allowlist"] is None

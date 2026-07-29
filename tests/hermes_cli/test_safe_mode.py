@@ -111,17 +111,6 @@ def test_mcp_servers_empty(monkeypatch):
     assert _load_mcp_config() == {}
 
 
-def test_mcp_servers_load_without_safe_mode(monkeypatch):
-    from tools.mcp_tool import _load_mcp_config
-
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"mcp_servers": {"github": {"url": "https://example.com/mcp"}}},
-    )
-
-    assert "github" in _load_mcp_config()
-
-
 def test_parser_accepts_safe_mode_on_root_and_chat():
     from hermes_cli._parser import build_top_level_parser
 

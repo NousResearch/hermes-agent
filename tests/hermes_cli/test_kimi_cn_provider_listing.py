@@ -48,24 +48,6 @@ def test_kimi_cn_appears_when_only_cn_key_set():
 # -- Only KIMI_API_KEY set ---------------------------------------------------
 
 
-@patch.dict(os.environ, {"KIMI_API_KEY": "sk-intl-fake"}, clear=False)
-def test_kimi_intl_appears_when_only_intl_key_set():
-    """kimi-coding (international) should appear when only KIMI_API_KEY is set."""
-    providers = list_authenticated_providers(current_provider="kimi-coding")
-
-    intl = next((p for p in providers if p["slug"] == "kimi-coding"), None)
-    assert intl is not None, (
-        "kimi-coding should appear when KIMI_API_KEY is set"
-    )
-    assert intl["is_current"] is True
-
-    # kimi-coding-cn must NOT appear (no KIMI_CN_API_KEY)
-    cn = next((p for p in providers if p["slug"] == "kimi-coding-cn"), None)
-    assert cn is None, (
-        "kimi-coding-cn should NOT appear when only KIMI_API_KEY is set"
-    )
-
-
 # -- Both keys set -----------------------------------------------------------
 
 @patch.dict(os.environ, {

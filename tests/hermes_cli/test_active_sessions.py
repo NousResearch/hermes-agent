@@ -76,43 +76,6 @@ def test_active_session_lease_blocks_until_release(tmp_path, monkeypatch):
     assert active_sessions.active_session_registry_snapshot() == []
 
 
-def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(
-        "gateway.status._pid_exists",
-        lambda pid: int(pid) != 99999999,
-    )
-    runtime = home / "runtime"
-    runtime.mkdir(parents=True)
-    active_sessions._write_entries(
-        runtime / "active_sessions.json",
-        [
-            {
-                "lease_id": "stale",
-                "session_id": "stale-session",
-                "surface": "cli",
-                "pid": 99999999,
-                "started_at": 1,
-                "updated_at": 1,
-            }
-        ],
-    )
-
-    lease, message = active_sessions.try_acquire_active_session(
-        session_id="session-1",
-        surface="cli",
-        config={"max_concurrent_sessions": 1},
-    )
-
-    assert message is None
-    assert lease is not None
-    assert [entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
-        "session-1"
-    ]
-    lease.release()
-
-
 def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

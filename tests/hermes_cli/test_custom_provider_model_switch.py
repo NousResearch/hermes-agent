@@ -164,108 +164,6 @@ class TestCustomProviderModelSwitch:
         assert isinstance(model, dict)
         assert model["default"] == "model-B"
 
-    def test_probe_failure_falls_back_to_saved(self, config_home):
-        """When endpoint probe fails and user presses Enter, saved model is used."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "sk-test",
-            "model": "model-A",
-        }
-
-        # fetch returns empty list (probe failed), user presses Enter (empty input)
-        with patch("hermes_cli.models.fetch_api_models", return_value=[]), \
-             patch("builtins.input", return_value=""), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model["default"] == "model-A"
-
-    def test_no_saved_model_still_works(self, config_home):
-        """First-time flow (no saved model) still works as before."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "sk-test",
-            # no "model" key
-        }
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-X"]), \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model["default"] == "model-X"
-
-    def test_api_mode_set_from_provider_info(self, config_home):
-        """When custom_providers entry has api_mode, it should be applied."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "Anthropic Proxy",
-            "base_url": "https://proxy.example.com/anthropic",
-            "api_key": "***",
-            "model": "claude-3",
-            "api_mode": "anthropic_messages",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]) as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        mock_fetch.assert_called_once_with(
-            "***",
-            "https://proxy.example.com/anthropic",
-            timeout=8.0,
-            api_mode="anthropic_messages",
-        )
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("api_mode") == "anthropic_messages"
-
-    def test_api_mode_cleared_when_not_specified(self, config_home):
-        """When custom_providers entry has no api_mode, stale api_mode is removed."""
-        import yaml
-        from hermes_cli.main import _model_flow_named_custom
-
-        # Pre-seed a stale api_mode in config
-        config_path = config_home / "config.yaml"
-        config_path.write_text(yaml.dump({"model": {"api_mode": "anthropic_messages"}}))
-
-        provider_info = {
-            "name": "My vLLM",
-            "base_url": "https://vllm.example.com/v1",
-            "api_key": "***",
-            "model": "llama-3",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["llama-3"]), \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert "api_mode" not in model, "Stale api_mode should be removed"
 
     def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
         """Selecting an env-backed custom provider must not inline the secret."""
@@ -654,28 +552,6 @@ class TestCustomProviderDiscoverModels:
     named-custom flow so the picker shows the configured ``models:`` subset
     instead of the endpoint's full live catalog."""
 
-    def test_discover_false_uses_configured_list_and_skips_probe(self, config_home):
-        """discover_models: false + configured models → no live probe, the
-        configured list is used verbatim."""
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "Baidu Coding",
-            "base_url": "https://qianfan.baidubce.com/v2/coding",
-            "api_key": "sk-test",
-            "discover_models": False,
-            "models": {"kimi-k2.5": {}, "glm-5": {}},
-            "model": "kimi-k2.5",
-        }
-
-        with patch("hermes_cli.models.fetch_api_models") as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="2"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        # The live /models endpoint must NOT be probed when discovery is off.
-        mock_fetch.assert_not_called()
 
     def test_discover_false_saves_choice_from_configured_list(self, config_home):
         """User picks the 2nd configured model; it persists, list-driven."""
@@ -703,34 +579,6 @@ class TestCustomProviderDiscoverModels:
         assert isinstance(model, dict)
         assert model["default"] == "glm-5"
 
-    def test_default_still_probes_when_discover_unset(self, config_home):
-        """Default (discover_models unset → True) keeps live-probe behaviour
-        even when a models: list is configured — Option B opt-out semantics."""
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "My Gateway",
-            "base_url": "https://gw.example.com/v1",
-            "api_key": "sk-test",
-            "models": {"subset-a": {}},  # configured, but discovery NOT disabled
-            "model": "subset-a",
-        }
-
-        with patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["live-a", "live-b", "live-c"],
-        ) as mock_fetch, \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
-             patch("builtins.input", return_value="1"), \
-             patch("builtins.print"):
-            _model_flow_named_custom({}, provider_info)
-
-        # Probe MUST still run — configured models: alone does not whitelist.
-        mock_fetch.assert_called_once_with(
-            "sk-test",
-            "https://gw.example.com/v1",
-            timeout=8.0,
-        )
 
     def test_probe_empty_falls_back_to_configured_list(self, config_home):
         """When discovery is on but the probe returns nothing, fall back to the

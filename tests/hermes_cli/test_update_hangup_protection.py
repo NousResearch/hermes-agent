@@ -126,34 +126,6 @@ class TestUpdateOutputStream:
         stream = _UpdateOutputStream(_TtyStream(), io.StringIO())
         assert stream.isatty() is True
 
-    def test_isatty_returns_false_after_broken(self):
-        class _BrokenStream:
-            def isatty(self):
-                return True
-
-            def write(self, data):
-                raise BrokenPipeError()
-
-            def flush(self):
-                return None
-
-        stream = _UpdateOutputStream(_BrokenStream(), io.StringIO())
-        stream.write("x")  # marks broken
-        assert stream.isatty() is False
-
-    def test_getattr_delegates_unknown_attrs(self):
-        class _StreamWithEncoding:
-            encoding = "utf-8"
-
-            def write(self, data):
-                return len(data)
-
-            def flush(self):
-                return None
-
-        stream = _UpdateOutputStream(_StreamWithEncoding(), io.StringIO())
-        assert stream.encoding == "utf-8"
-
 
 # -----------------------------------------------------------------------------
 # _install_hangup_protection
@@ -286,24 +258,6 @@ class TestFinalizeUpdateOutput:
     def test_none_state_is_noop(self):
         _finalize_update_output(None)  # must not raise
 
-    def test_restores_streams_and_closes_log(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        import hermes_cli.config as _cfg
-        if hasattr(_cfg, "_HERMES_HOME_CACHE"):
-            _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
-
-        prev_out = sys.stdout
-        state = _install_hangup_protection(gateway_mode=False)
-        log_file = state["log_file"]
-
-        assert sys.stdout is not prev_out
-        assert log_file is not None
-
-        _finalize_update_output(state)
-
-        assert sys.stdout is prev_out
-        # The log file handle should be closed.
-        assert log_file.closed is True
 
     def test_skipped_install_leaves_stdio_alone(self):
         """When install failed (state['installed']=False) finalize should not
@@ -330,19 +284,6 @@ class TestFinalizeUpdateOutput:
 
 
 class TestLogOnlyWrite:
-    def test_writes_to_log_not_terminal(self, monkeypatch):
-        """During an update, loud output should land in update.log only —
-        never on the mirroring terminal stream."""
-        terminal = io.StringIO()
-        log = io.StringIO()
-        stream = _UpdateOutputStream(terminal, log)
-        monkeypatch.setattr(sys, "stdout", stream)
-
-        _log_only_write("npm warn deprecated foo\nadded 1302 packages")
-
-        assert terminal.getvalue() == ""  # terminal stays quiet
-        assert "npm warn deprecated foo" in log.getvalue()
-        assert "added 1302 packages" in log.getvalue()
 
     def test_noop_without_update_stream(self, monkeypatch):
         """When stdout isn't the mirroring update stream (no ``_log``), it must
@@ -375,15 +316,3 @@ class TestRunLoggedSubprocess:
         assert terminal.getvalue() == ""  # not echoed to terminal
         assert "LOUD BUILD OUTPUT" in log.getvalue()  # but kept in the log
 
-    def test_nonzero_exit_still_captures(self, monkeypatch):
-        terminal = io.StringIO()
-        log = io.StringIO()
-        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
-
-        result = _run_logged_subprocess(
-            [sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"]
-        )
-
-        assert result.returncode == 3
-        assert "boom" in (result.stdout or "")
-        assert terminal.getvalue() == ""

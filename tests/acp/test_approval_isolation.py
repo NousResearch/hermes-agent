@@ -15,6 +15,30 @@ Both fixed together by:
 
 import threading
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_approval_state(monkeypatch):
+    """Keep these security regression tests hermetic.
+
+    Earlier tests (e.g. tests/acp/test_permissions.py) lazily load the
+    developer's real ``~/.hermes/config.yaml`` command allowlist into
+    ``tools.approval._permanent_approved``. If that allowlist contains a
+    pattern like "recursive delete", ``rm -rf …`` is auto-approved before
+    the interactive callback fires and the GHSA regression assertions fail
+    for reasons unrelated to the code under test.
+    """
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "_permanent_approved", set())
+    monkeypatch.setattr(_approval, "_session_approved", {})
+    # These tests assert the *manual* interactive-callback path. The default
+    # config is approvals.mode=smart, whose guardian LLM can auto-approve the
+    # command before the callback is consulted (test-order dependent, since
+    # load_config() caching decides which config file is in effect). Pin the
+    # mode so the GHSA regression path is what actually runs.
+    monkeypatch.setattr(_approval, "_get_approval_mode", lambda: "manual")
 
 
 class TestThreadLocalApprovalCallback:

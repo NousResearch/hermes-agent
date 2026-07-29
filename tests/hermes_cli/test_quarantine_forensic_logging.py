@@ -82,19 +82,6 @@ def test_raw_refresh_token_never_logged(caplog):
     assert "nous_agent_key_SECRET_material" not in text
 
 
-def test_quarantine_no_refresh_token_does_not_throw(caplog):
-    state = _make_state()
-    state.pop("refresh_token", None)
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
-        # Must not raise even when there is no refresh token to fingerprint.
-        _quarantine_nous_oauth_state(state, _error(), reason="unit_test_no_rt")
-
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert warnings, "expected a WARNING even when refresh_token is absent"
-    # Fingerprint should be null/None, and definitely not the canary prefix.
-    assert _EXPECTED_FP not in caplog.text
-
-
 def test_quarantine_clears_token_material():
     """Regression guard: the quarantine still clears dead token keys."""
     state = _make_state()

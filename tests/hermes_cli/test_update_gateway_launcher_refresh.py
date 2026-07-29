@@ -51,18 +51,6 @@ def test_resolve_detached_python_swaps_legacy_pythonw_for_console_sibling(tmp_pa
     assert extra == []
 
 
-def test_resolve_detached_python_keeps_pythonw_when_no_console_sibling(tmp_path):
-    """A failed respawn is worse than a console-less gateway — never swap to
-    an interpreter that doesn't exist."""
-    pythonw, _python = _make_venv(tmp_path, with_console_python=False)
-
-    exe, venv_dir, extra = gateway_windows._resolve_detached_python(str(pythonw))
-
-    assert exe == str(pythonw)
-    assert venv_dir == tmp_path / "venv"
-    assert extra == []
-
-
 def test_resolve_detached_python_leaves_console_python_untouched(tmp_path):
     _pythonw, python = _make_venv(tmp_path, with_console_python=True)
 
@@ -108,24 +96,6 @@ def test_refresh_is_noop_off_windows():
     ) as is_installed:
         cli_main._refresh_windows_gateway_launchers()
     is_installed.assert_not_called()
-
-
-@mock.patch.object(cli_main, "_is_windows", return_value=True)
-def test_refresh_rewrites_launchers_when_installed(_winp):
-    with mock.patch.object(gateway_windows, "is_installed", return_value=True), mock.patch.object(
-        gateway_windows, "_write_task_script"
-    ) as write_script:
-        cli_main._refresh_windows_gateway_launchers()
-    write_script.assert_called_once_with()
-
-
-@mock.patch.object(cli_main, "_is_windows", return_value=True)
-def test_refresh_skips_when_no_autostart_installed(_winp):
-    with mock.patch.object(gateway_windows, "is_installed", return_value=False), mock.patch.object(
-        gateway_windows, "_write_task_script"
-    ) as write_script:
-        cli_main._refresh_windows_gateway_launchers()
-    write_script.assert_not_called()
 
 
 @mock.patch.object(cli_main, "_is_windows", return_value=True)

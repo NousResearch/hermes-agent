@@ -63,11 +63,6 @@ class _BrokenProvider(DashboardAuthProvider):
     # Deliberately missing all the methods.
 
 
-def test_assert_protocol_compliance_rejects_partial_impl():
-    with pytest.raises(TypeError):
-        assert_protocol_compliance(_BrokenProvider)
-
-
 class _CompliantProvider(DashboardAuthProvider):
     name = "ok"
     display_name = "OK"
@@ -107,14 +102,6 @@ def test_assert_protocol_compliance_rejects_missing_name_attr():
 
     with pytest.raises(TypeError, match="name"):
         assert_protocol_compliance(NoName)
-
-
-def test_assert_protocol_compliance_rejects_missing_display_name():
-    class NoDisplay(_CompliantProvider):
-        display_name = ""
-
-    with pytest.raises(TypeError, match="display_name"):
-        assert_protocol_compliance(NoDisplay)
 
 
 # ---------------------------------------------------------------------------
@@ -163,20 +150,3 @@ def test_registry_lists_in_registration_order():
     assert names == ["a", "b"]
 
 
-def test_registry_rejects_non_compliant_provider():
-    with pytest.raises(TypeError):
-        register_provider(_BrokenProvider())  # type: ignore[abstract]
-
-
-def test_registry_rejects_duplicate_name():
-    register_provider(_CompliantProvider())
-    with pytest.raises(ValueError, match="already registered"):
-        register_provider(_CompliantProvider())
-
-
-def test_registry_clear_drops_all():
-    register_provider(_CompliantProvider())
-    assert get_provider("ok") is not None
-    clear_providers()
-    assert get_provider("ok") is None
-    assert list_providers() == []

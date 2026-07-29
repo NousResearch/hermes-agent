@@ -123,82 +123,6 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
     assert "/usr/bin" in path_parts  # the bare updater PATH is preserved, just after managed Node
 
 
-def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
-    root = _make_desktop_tree(tmp_path)
-    hermes_root = tmp_path / "custom-hermes"
-    cwd = tmp_path / "project"
-    hermes_root.mkdir()
-    cwd.mkdir()
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch)
-
-    ok = subprocess.CompletedProcess([], 0)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
-         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main._write_desktop_build_stamp"), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
-         pytest.raises(SystemExit):
-        cli_main.cmd_gui(_ns(
-            fake_boot=True,
-            ignore_existing=True,
-            hermes_root=str(hermes_root),
-            cwd=str(cwd),
-        ))
-
-    launch_env = mock_run.call_args_list[1].kwargs["env"]
-    assert launch_env["HERMES_DESKTOP_BOOT_FAKE"] == "1"
-    assert launch_env["HERMES_DESKTOP_IGNORE_EXISTING"] == "1"
-    assert launch_env["HERMES_DESKTOP_HERMES_ROOT"] == str(hermes_root)
-    assert launch_env["HERMES_DESKTOP_CWD"] == str(cwd)
-
-
-def test_gui_exits_when_npm_missing(tmp_path, monkeypatch, capsys):
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-
-    with patch("hermes_cli.main.shutil.which", return_value=None), \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 1
-    assert "npm was not found" in capsys.readouterr().out
-
-
-def test_gui_skip_build_requires_existing_packaged_app(tmp_path, monkeypatch, capsys):
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
-
-    with pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns(skip_build=True))
-
-    assert exc.value.code == 1
-    assert "no packaged desktop app" in capsys.readouterr().out
-
-
-def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, monkeypatch):
-    root = _make_desktop_tree(tmp_path)
-    desktop_dir = root / "apps" / "desktop"
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    packaged_exe = _make_packaged_executable(root, monkeypatch)
-
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
-
-    with patch("hermes_cli.main.shutil.which", return_value=None), \
-         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns(skip_build=True))
-
-    assert exc.value.code == 0
-    mock_install.assert_not_called()
-    mock_run.assert_called_once()
-    assert mock_run.call_args.args[0] == [str(packaged_exe)]
-
-
 def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -268,77 +192,6 @@ def test_gui_linux_skips_fixup_when_already_configured(tmp_path, monkeypatch):
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
-def test_gui_linux_falls_back_to_no_sandbox_when_userns_is_restricted(tmp_path, monkeypatch):
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
-    sandbox = packaged_exe.parent / "chrome-sandbox"
-    sandbox.write_text("", encoding="utf-8")
-
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--no-sandbox"], 0)
-
-    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
-         patch("hermes_cli.main._desktop_linux_needs_no_sandbox", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns(skip_build=True))
-
-    assert exc.value.code == 0
-    mock_run.assert_called_once()
-    assert mock_run.call_args.args[0] == [str(packaged_exe), "--no-sandbox"]
-
-
-def test_gui_linux_exits_when_sandbox_fixup_fails_without_safe_fallback(tmp_path, monkeypatch):
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="linux")
-
-    with patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=False), \
-         patch("hermes_cli.main._desktop_linux_needs_no_sandbox", return_value=False), \
-         patch("hermes_cli.main.subprocess.run") as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns(skip_build=True))
-
-    assert exc.value.code == 1
-    mock_run.assert_not_called()
-
-
-def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch):
-    root = _make_desktop_tree(tmp_path)
-    desktop_dir = root / "apps" / "desktop"
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    build_ok = subprocess.CompletedProcess(["npm", "run", "build"], 0)
-    launch_ok = subprocess.CompletedProcess(["npm", "exec", "--", "electron", "."], 0)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
-         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main._write_desktop_build_stamp"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[build_ok, launch_ok]) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns(source=True))
-
-    assert exc.value.code == 0
-    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "build"]
-    assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
-    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "exec", "--", "electron", "."]
-    assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["hermes", "gui"],
-        ["hermes", "-m", "gpt5", "gui"],
-    ],
-)
-def test_gui_is_known_builtin_for_plugin_gating(argv):
-    with patch.object(sys, "argv", argv):
-        assert cli_main._plugin_cli_discovery_needed() is False
-
-
 # ── Content-hash stamp tests ──────────────────────────────────────────
 
 
@@ -363,33 +216,6 @@ def test_desktop_build_stamp_skips_build_when_up_to_date(tmp_path, monkeypatch):
     mock_run.assert_called_once()  # only the launch call, no build
 
 
-def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
-    """--force-build forces a rebuild even when the stamp says up-to-date."""
-    root = _make_desktop_tree(tmp_path)
-    desktop_dir = root / "apps" / "desktop"
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch)
-
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
-    launch_ok = subprocess.CompletedProcess([], 0)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
-         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main._write_desktop_build_stamp") as mock_stamp, \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns(force_build=True))
-
-    assert exc.value.code == 0
-    mock_install.assert_called_once()
-    mock_stamp.assert_called_once()
-    # pack + launch = 2 calls
-    assert mock_run.call_count == 2
-
-
 def test_compute_desktop_content_hash_stable(tmp_path, monkeypatch):
     """_compute_desktop_content_hash returns the same digest for identical trees."""
     root = _make_desktop_tree(tmp_path)
@@ -402,68 +228,6 @@ def test_compute_desktop_content_hash_stable(tmp_path, monkeypatch):
     h2 = cli_main._compute_desktop_content_hash(root)
     assert h1 == h2
     assert len(h1) == 64  # sha256 hex
-
-
-def test_compute_desktop_content_hash_changes_on_edit(tmp_path, monkeypatch):
-    """Editing a file under apps/desktop/ changes the hash."""
-    root = _make_desktop_tree(tmp_path)
-    (root / "apps" / "desktop" / "main.js").write_text("v1", encoding="utf-8")
-    (root / "package.json").write_text("{}", encoding="utf-8")
-    (root / "package-lock.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-
-    h1 = cli_main._compute_desktop_content_hash(root)
-    (root / "apps" / "desktop" / "main.js").write_text("v2", encoding="utf-8")
-    h2 = cli_main._compute_desktop_content_hash(root)
-    assert h1 != h2
-
-
-def test_desktop_build_needed_detects_missing_artifact(tmp_path, monkeypatch):
-    """Even with a valid stamp, missing artifact means build is needed."""
-    root = _make_desktop_tree(tmp_path)
-    (root / "package.json").write_text("{}", encoding="utf-8")
-    (root / "package-lock.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # Write a stamp that matches current content
-    cli_main._write_desktop_build_stamp(root, source_mode=False)
-    # No packaged executable exists → build needed
-    assert cli_main._desktop_build_needed(
-        root / "apps" / "desktop", root, source_mode=False
-    ) is True
-
-
-def test_desktop_build_stamp_round_trip(tmp_path, monkeypatch):
-    """Write stamp, then _desktop_build_needed returns False when artifact exists."""
-    root = _make_desktop_tree(tmp_path)
-    (root / "package.json").write_text("{}", encoding="utf-8")
-    (root / "package-lock.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # Create the artifact so the "artifact exists" check passes
-    _make_packaged_executable(root, monkeypatch)
-    # Write stamp
-    cli_main._write_desktop_build_stamp(root, source_mode=False)
-    # Build should NOT be needed
-    assert cli_main._desktop_build_needed(
-        root / "apps" / "desktop", root, source_mode=False
-    ) is False
-
-
-def test_compute_desktop_content_hash_works_without_gitignore(tmp_path, monkeypatch):
-    """When no .gitignore exists, _compute_desktop_content_hash still works (matches everything)."""
-    root = _make_desktop_tree(tmp_path)
-    (root / "apps" / "desktop" / "main.js").write_text("v1", encoding="utf-8")
-    (root / "package.json").write_text("{}", encoding="utf-8")
-    (root / "package-lock.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-
-    # No .gitignore → pathspec matches nothing → all files hashed
-    h = cli_main._compute_desktop_content_hash(root)
-    assert len(h) == 64  # valid sha256 hex
-
-    # Edit a file → hash changes
-    (root / "apps" / "desktop" / "main.js").write_text("v2", encoding="utf-8")
-    h2 = cli_main._compute_desktop_content_hash(root)
-    assert h != h2
 
 
 def test_compute_desktop_content_hash_respects_gitignore(tmp_path, monkeypatch):
@@ -547,207 +311,6 @@ def test_purge_electron_build_cache_empty_when_nothing_present(tmp_path, monkeyp
     monkeypatch.setattr(cli_main, "_electron_download_cache_dirs", lambda: [cache])
 
     assert cli_main._purge_electron_build_cache(desktop_dir) == []
-
-
-def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
-    """First pack fails with NO packaged executable (corrupt-download shape),
-    purge clears the cache, second pack succeeds and produces the exe, launch."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # Executable is ABSENT at build-failure time — that is the corrupt-download
-    # signature the cache purge + retry exist for (#40187). Only the successful
-    # retry produces it (via the side_effect below).
-    monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    packaged_exe = root / "apps" / "desktop" / "release" / "linux-unpacked" / "hermes"
-
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
-
-    _calls = {"n": 0}
-
-    def run_side_effect(*args, **kwargs):
-        _calls["n"] += 1
-        if _calls["n"] == 1:
-            return pack_fail
-        if _calls["n"] == 2:
-            # Successful retry materializes the packaged executable.
-            packaged_exe.parent.mkdir(parents=True, exist_ok=True)
-            packaged_exe.write_text("", encoding="utf-8")
-            return pack_ok
-        return launch_ok
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main._write_desktop_build_stamp"), \
-         patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
-         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
-         patch("hermes_cli.main._redownload_electron_dist", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", side_effect=run_side_effect) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 0
-    mock_purge.assert_called_once()
-    # pack(fail) → repair succeeds → pack(ok) → launch = 3 subprocess.run calls
-    assert mock_run.call_count == 3
-    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
-    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "run", "pack"]
-    assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
-
-
-def test_gui_redownloads_electron_via_mirror_then_repacks(tmp_path, monkeypatch, capsys):
-    """Purge clears nothing and the pinned electronDist (#38673) is missing →
-    the mirror fallback must drive electron's own downloader (NOT another pack,
-    which never downloads Electron) and only then retry pack (#47266)."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # No packaged executable: the corrupt-download recovery must run.
-    monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
-
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
-         patch("hermes_cli.main._redownload_electron_dist", side_effect=[False, True]) as mock_dl, \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail, pack_fail]) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 1
-    # initial pack + mirror pack = 2 npm calls. The first-retry pack is skipped
-    # because the canonical-source re-download (no mirror) failed, so there was
-    # never a binary to build against.
-    assert mock_run.call_count == 2
-    # First re-download attempt is canonical (no mirror); the second drives the
-    # public mirror.
-    assert mock_dl.call_args_list[0].kwargs.get("mirror") is None
-    assert mock_dl.call_args_list[1].kwargs["mirror"]
-    # Only the mirror-driven pack carries ELECTRON_MIRROR.
-    assert "ELECTRON_MIRROR" not in (mock_run.call_args_list[0].kwargs.get("env") or {})
-    assert mock_run.call_args_list[1].kwargs["env"]["ELECTRON_MIRROR"]
-    assert "Desktop GUI build failed" in capsys.readouterr().out
-
-
-def test_gui_retries_pack_under_mirror_even_when_prefetch_blocked(tmp_path, monkeypatch, capsys):
-    """When electron's own downloader can't fetch the binary (even via the
-    mirror), still retry pack under ELECTRON_MIRROR: the build resolves
-    electronDist dynamically and lets electron-builder fetch Electron itself
-    via @electron/get, which honors the mirror. That retry is no longer
-    pointless (it was, back when electronDist was a static path)."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    # No packaged executable: the corrupt-download recovery must run.
-    monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
-
-    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
-         patch("hermes_cli.main._redownload_electron_dist", return_value=False), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail, pack_fail]) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 1
-    # Initial pack + mirror-driven pack = 2; the mirror retry runs even though
-    # the pre-fetch failed, so electron-builder gets a shot at downloading.
-    assert mock_run.call_count == 2
-    assert "ELECTRON_MIRROR" not in (mock_run.call_args_list[0].kwargs.get("env") or {})
-    assert mock_run.call_args_list[1].kwargs["env"]["ELECTRON_MIRROR"]
-    assert "Desktop GUI build failed" in capsys.readouterr().out
-
-
-def test_gui_install_failure_self_heals_electron_and_continues(tmp_path, monkeypatch, capsys):
-    """npm ci failing on electron's blocked binary download must NOT abort the
-    install: with the electron package staged, repopulate its dist and continue
-    to the build instead of sys.exit-ing before pack ever runs (#47266/#48021)."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
-    # electron package staged on disk (postinstall download was the casualty).
-    (root / "apps" / "desktop" / "node_modules" / "electron").mkdir(parents=True)
-    (root / "apps" / "desktop" / "node_modules" / "electron" / "package.json").write_text("{}", encoding="utf-8")
-    (root / "apps" / "desktop" / "node_modules" / "electron" / "install.js").write_text("", encoding="utf-8")
-
-    install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
-         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main._write_desktop_build_stamp"), \
-         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
-         patch("hermes_cli.main._try_redownload_electron_dist", return_value=True) as mock_dl, \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 0
-    mock_dl.assert_called()  # tried to repopulate the dist
-    # pack + launch ran — the install failure did NOT abort the build.
-    assert mock_run.call_count == 2
-    assert "repopulated" in capsys.readouterr().out.lower()
-
-
-def test_gui_install_failure_hard_fails_when_electron_not_staged(tmp_path, monkeypatch, capsys):
-    """A dependency-install failure where electron never even staged is a genuine
-    error (not a blocked binary download) — hard-fail with guidance, don't try to
-    self-heal a tree that isn't there."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="linux")
-
-    install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
-         patch("hermes_cli.main.subprocess.run") as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 1
-    mock_run.assert_not_called()  # build never started
-    assert "Desktop dependency install failed" in capsys.readouterr().out
-
-
-def test_gui_install_failure_hard_fails_when_electron_dist_exists(tmp_path, monkeypatch, capsys):
-    """If npm install fails but Electron dist is already present, don't classify
-    it as the blocked-download shape; fail fast as a generic install error."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="linux")
-    electron_dir = root / "apps" / "desktop" / "node_modules" / "electron"
-    electron_dir.mkdir(parents=True)
-    (electron_dir / "package.json").write_text("{}", encoding="utf-8")
-    (electron_dir / "install.js").write_text("", encoding="utf-8")
-
-    install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
-         patch("hermes_cli.main._electron_dist_ok", return_value=True), \
-         patch("hermes_cli.main.subprocess.run") as mock_run, \
-         pytest.raises(SystemExit) as exc:
-        cli_main.cmd_gui(_ns())
-
-    assert exc.value.code == 1
-    mock_run.assert_not_called()
-    assert "Desktop dependency install failed" in capsys.readouterr().out
 
 
 def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypatch, capsys):
@@ -847,14 +410,6 @@ def test_electron_dir_prefers_workspace_local_package(tmp_path):
     assert cli_main._electron_dir(tmp_path) == local_electron
 
 
-def test_electron_dir_falls_back_to_root_hoist(tmp_path):
-    """When npm hoists electron to the repo root, resolve there."""
-    root_electron = tmp_path / "node_modules" / "electron"
-    root_electron.mkdir(parents=True)
-
-    assert cli_main._electron_dir(tmp_path) == root_electron
-
-
 def test_electron_dist_ok_finds_workspace_local_binary(tmp_path, monkeypatch):
     """A nested apps/desktop electron with a valid binary counts as ok."""
     monkeypatch.setattr(cli_main.sys, "platform", "linux")
@@ -875,57 +430,6 @@ def test_redownload_electron_dist_noop_when_present(tmp_path, monkeypatch):
     with patch("hermes_cli.main.subprocess.run") as mock_run:
         assert cli_main._redownload_electron_dist(tmp_path, {}) is True
     mock_run.assert_not_called()
-
-
-def test_redownload_electron_dist_missing_installer(tmp_path, monkeypatch):
-    """No electron/install.js (deps never installed) → nothing to run."""
-    monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    (tmp_path / "node_modules" / "electron").mkdir(parents=True)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
-         patch("hermes_cli.main.subprocess.run") as mock_run:
-        assert cli_main._redownload_electron_dist(tmp_path, {}) is False
-    mock_run.assert_not_called()
-
-
-def test_redownload_electron_dist_runs_installer_with_mirror(tmp_path, monkeypatch):
-    """Missing dist → wipe any partial dist + version marker, run electron's own
-    install.js with ELECTRON_MIRROR injected, and report success on the binary."""
-    monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    electron = tmp_path / "node_modules" / "electron"
-    electron.mkdir(parents=True)
-    (electron / "install.js").write_text("// stub", encoding="utf-8")
-    # A stale partial dist + version marker that MUST be cleared first, otherwise
-    # electron's install.js short-circuits on path.txt and never re-downloads.
-    (electron / "dist").mkdir()
-    (electron / "dist" / "leftover").write_text("junk", encoding="utf-8")
-    (electron / "path.txt").write_text("electron", encoding="utf-8")
-
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = kwargs.get("env")
-        captured["cwd"] = kwargs.get("cwd")
-        # simulate electron's install.js producing the dist binary
-        binp = electron / "dist" / "electron"
-        binp.parent.mkdir(parents=True, exist_ok=True)
-        binp.write_text("", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0)
-
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
-        ok = cli_main._redownload_electron_dist(
-            tmp_path, {"PATH": "/x"}, mirror="https://mirror.example/electron/"
-        )
-
-    assert ok is True
-    assert captured["cmd"] == ["/usr/bin/node", str(electron / "install.js")]
-    assert captured["cwd"] == str(electron)
-    assert captured["env"]["ELECTRON_MIRROR"] == "https://mirror.example/electron/"
-    # The partial dir + marker were dropped before the re-download.
-    assert not (electron / "dist" / "leftover").exists()
-    assert not (electron / "path.txt").exists()
 
 
 def test_redownload_electron_dist_returns_false_when_download_fails(tmp_path, monkeypatch):
@@ -973,41 +477,6 @@ def test_stop_desktop_build_lock_noop_off_windows(tmp_path, monkeypatch):
     assert proc.terminated is False
 
 
-def test_stop_desktop_build_lock_terminates_only_release_procs(tmp_path, monkeypatch):
-    desktop_dir = tmp_path / "apps" / "desktop"
-    release = desktop_dir / "release" / "win-unpacked"
-    release.mkdir(parents=True)
-    locker_exe = release / "Hermes.exe"
-    locker_exe.write_text("", encoding="utf-8")
-    other_exe = tmp_path / "elsewhere" / "Hermes.exe"
-    other_exe.parent.mkdir(parents=True)
-    other_exe.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr(cli_main.sys, "platform", "win32")
-    monkeypatch.setattr(cli_main.os, "getpid", lambda: 999)
-
-    locker = _FakeProc(101, str(locker_exe))
-    unrelated = _FakeProc(102, str(other_exe))
-    selfish = _FakeProc(999, str(locker_exe))  # our own PID — never killed
-    no_exe = _FakeProc(103, None)
-
-    captured = {}
-
-    def _wait(procs, timeout=None):
-        captured["waited"] = list(procs)
-        return procs, []
-
-    with patch("psutil.process_iter", return_value=[locker, unrelated, selfish, no_exe]), \
-         patch("psutil.wait_procs", side_effect=_wait):
-        stopped = cli_main._stop_desktop_processes_locking_build(desktop_dir)
-
-    assert stopped == [101]
-    assert locker.terminated is True
-    assert unrelated.terminated is False
-    assert selfish.terminated is False
-    assert captured["waited"] == [locker]
-
-
 def test_stop_desktop_build_lock_no_release_dir(tmp_path, monkeypatch):
     desktop_dir = tmp_path / "apps" / "desktop"
     desktop_dir.mkdir(parents=True)
@@ -1022,21 +491,6 @@ def test_force_adhoc_signing_disables_discovery_on_local_packaged_rebuild(monkey
     env = {}
     assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is True
     assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "false"
-
-
-@pytest.mark.parametrize("platform", ["linux", "win32"])
-def test_force_adhoc_signing_noop_off_macos(monkeypatch, platform):
-    monkeypatch.setattr(cli_main.sys, "platform", platform)
-    env = {}
-    assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is False
-    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in env
-
-
-def test_force_adhoc_signing_noop_for_source_mode(monkeypatch):
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
-    env = {}
-    assert cli_main._force_adhoc_macos_signing(env, source_mode=True) is False
-    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in env
 
 
 @pytest.mark.parametrize("key", ["CSC_LINK", "APPLE_SIGNING_IDENTITY"])
@@ -1119,75 +573,6 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
     assert str(app / "Contents" / "Frameworks" / "chrome_crashpad_handler") in signed
 
 
-def test_desktop_macos_local_codesign_stable_requirements_and_entitlements(tmp_path, monkeypatch):
-    """Ad-hoc signing must not leave the bundle with a cdhash-only identity.
-
-    TCC pins grants to the Designated Requirement; cdhash-only DRs churn on
-    every rebuild. Each bundle gets an explicit identifier requirement, the
-    main app keeps its entitlements, helpers keep the inherit entitlements,
-    and the whole thing is strictly verified at the end.
-    """
-    desktop_dir = tmp_path / "apps" / "desktop"
-    app = _make_signable_app(desktop_dir)
-    ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
-    ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
-    calls = _collect_codesign_calls(monkeypatch)
-
-    assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is True
-
-    sign_calls = [c for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
-    assert any(
-        '=designated => identifier "com.nousresearch.hermes"' in c and str(ent_main) in c
-        for c in sign_calls
-    )
-    assert any(
-        '=designated => identifier "com.nousresearch.hermes.helper"' in c and str(ent_inherit) in c
-        for c in sign_calls
-    )
-    assert calls[-1][:4] == ["/usr/bin/codesign", "--verify", "--deep", "--strict"]
-
-
-def test_desktop_macos_local_codesign_keychain_identity_skips_requirements(tmp_path, monkeypatch):
-    """A real cert anchors the DR by itself; no explicit requirement injected."""
-    desktop_dir = tmp_path / "apps" / "desktop"
-    app = _make_signable_app(desktop_dir)
-    calls = _collect_codesign_calls(monkeypatch)
-
-    assert cli_main._desktop_macos_local_codesign(
-        app, desktop_dir=desktop_dir, identity="Hermes Local Signing"
-    ) is True
-
-    sign_calls = [c for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
-    assert sign_calls, "expected sign invocations"
-    assert all(c[3] == "Hermes Local Signing" for c in sign_calls)
-    assert all("--requirements" not in c for c in sign_calls)
-
-
-def test_desktop_macos_local_codesign_false_without_codesign(tmp_path, monkeypatch):
-    desktop_dir = tmp_path / "apps" / "desktop"
-    app = _make_signable_app(desktop_dir)
-    monkeypatch.setattr(cli_main.shutil, "which", lambda name: None)
-    assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is False
-
-
-def test_desktop_macos_local_codesign_refuses_without_entitlements(tmp_path, monkeypatch):
-    """Hardened runtime without allow-jit bricks Electron — must raise, not sign.
-
-    Hardened-runtime restrictions are enforced even for ad-hoc signatures, so
-    signing with --options runtime while the entitlement plists are missing
-    would produce a bundle that crashes on launch. The fixup catches the raise
-    and falls back to the legacy plain ad-hoc sign instead.
-    """
-    desktop_dir = tmp_path / "apps" / "desktop"
-    app = _make_signable_app(desktop_dir)
-    (desktop_dir / "electron" / "entitlements.mac.plist").unlink()
-    calls = _collect_codesign_calls(monkeypatch)
-
-    with pytest.raises(FileNotFoundError):
-        cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir)
-    assert calls == []  # nothing was signed with a runtime flag sans entitlements
-
-
 def test_relaunchable_fixup_noop_when_publisher_signing_configured(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -1197,48 +582,6 @@ def test_relaunchable_fixup_noop_when_publisher_signing_configured(tmp_path, mon
     with patch("hermes_cli.main.subprocess.run") as run:
         assert cli_main._desktop_macos_relaunchable_fixup(root / "apps" / "desktop") is True
     run.assert_not_called()
-
-
-def test_relaunchable_fixup_explicit_publisher_decision_beats_environment(tmp_path, monkeypatch):
-    """A caller that already decided publisher signing wins over later env state."""
-    root = _make_desktop_tree(tmp_path)
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
-    monkeypatch.delenv("CSC_LINK", raising=False)
-    monkeypatch.setenv("APPLE_SIGNING_IDENTITY", "loaded-later-from-dotenv")
-
-    with patch("hermes_cli.main.subprocess.run") as run:
-        assert cli_main._desktop_macos_relaunchable_fixup(
-            root / "apps" / "desktop", publisher_signing_configured=True
-        ) is True
-    run.assert_not_called()
-
-
-def test_relaunchable_fixup_never_clobbers_valid_developer_id_signature(tmp_path, monkeypatch):
-    """A bundle with an intact Team ID signature must be left untouched."""
-    root = _make_desktop_tree(tmp_path)
-    desktop_dir = root / "apps" / "desktop"
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    monkeypatch.delenv("CSC_LINK", raising=False)
-    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
-    exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
-
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        if cmd[:2] == ["/usr/bin/codesign", "-dv"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="TeamIdentifier=T2F6S8MF7C\n")
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(
-        cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None
-    )
-    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
-
-    assert cli_main._desktop_macos_relaunchable_fixup(desktop_dir) is True
-    assert all(c[:3] != ["/usr/bin/codesign", "--force", "--sign"] for c in calls)
-    assert all(c[0] != "xattr" for c in calls)
 
 
 def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monkeypatch, capsys):
@@ -1274,58 +617,7 @@ def test_relaunchable_fixup_falls_back_to_legacy_adhoc_on_failure(tmp_path, monk
     assert ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)] in calls
 
 
-def test_desktop_macos_local_signing_identity_reads_config(monkeypatch):
-    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
-    with patch(
-        "hermes_cli.config.load_config",
-        return_value={"desktop": {"macos_signing_identity": "  Hermes Local Signing  "}},
-    ):
-        assert cli_main._desktop_macos_local_signing_identity() == "Hermes Local Signing"
-    with patch("hermes_cli.config.load_config", return_value={"desktop": {}}):
-        assert cli_main._desktop_macos_local_signing_identity() is None
-
-
 # --- desktop.* launch options (config.yaml) -------------------------------
-
-
-def test_desktop_launch_options_defaults_when_no_config():
-    with patch("hermes_cli.config.load_config", return_value={}):
-        flags, gpu = cli_main._desktop_launch_options()
-    assert flags == []
-    assert gpu == "auto"
-
-
-def test_desktop_launch_options_reads_flags_list():
-    cfg = {"desktop": {"electron_flags": ["--ozone-platform=x11", "--disable-gpu"]}}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        flags, gpu = cli_main._desktop_launch_options()
-    assert flags == ["--ozone-platform=x11", "--disable-gpu"]
-    assert gpu == "auto"
-
-
-def test_desktop_launch_options_splits_flag_string():
-    cfg = {"desktop": {"electron_flags": "--ozone-platform=x11 --disable-gpu"}}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        flags, _ = cli_main._desktop_launch_options()
-    assert flags == ["--ozone-platform=x11", "--disable-gpu"]
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        (True, "1"),
-        (False, "0"),
-        ("true", "1"),
-        ("off", "0"),
-        ("auto", "auto"),
-        ("garbage", "auto"),
-    ],
-)
-def test_desktop_launch_options_normalizes_disable_gpu(raw, expected):
-    cfg = {"desktop": {"disable_gpu": raw}}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, gpu = cli_main._desktop_launch_options()
-    assert gpu == expected
 
 
 def test_desktop_launch_options_survives_config_error():

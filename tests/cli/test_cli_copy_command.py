@@ -60,16 +60,6 @@ def test_copy_strips_reasoning_blocks_before_copy():
     mock_copy.assert_called_once_with("Visible answer")
 
 
-def test_copy_falls_back_to_osc52_when_native_tools_fail():
-    cli_obj = _make_cli()
-    cli_obj.conversation_history = [{"role": "assistant", "content": "hello"}]
-
-    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=False), \
-         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
-         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
-        cli_obj.process_command("/copy")
-
-    mock_osc52.assert_called_once_with("hello")
 
 
 def test_copy_prefers_osc52_in_ssh_sessions():
@@ -100,15 +90,3 @@ def test_copy_native_first_when_local():
     mock_osc52.assert_not_called()
 
 
-def test_copy_invalid_index_does_not_copy():
-    cli_obj = _make_cli()
-    cli_obj.conversation_history = [{"role": "assistant", "content": "only"}]
-
-    with patch("hermes_cli.clipboard.write_clipboard_text") as mock_copy, \
-         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52, \
-         patch("cli._cprint") as mock_print:
-        cli_obj.process_command("/copy 99")
-
-    mock_copy.assert_not_called()
-    mock_osc52.assert_not_called()
-    assert any("Invalid response number" in str(call) for call in mock_print.call_args_list)

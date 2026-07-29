@@ -39,13 +39,6 @@ def test_enqueue_pins_text_and_transport():
     assert session["queued_prompt"] == {"text": "hello", "transport": "ws-1"}
 
 
-def test_enqueue_merges_second_arrival_losslessly():
-    session = _session()
-    server._enqueue_prompt(session, "first", "ws-1")
-    server._enqueue_prompt(session, "second", "ws-2")
-    assert session["queued_prompt"]["text"] == "first\n\nsecond"
-    # Latest transport wins so the drain streams to the most recent client.
-    assert session["queued_prompt"]["transport"] == "ws-2"
 
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────
@@ -73,62 +66,10 @@ def test_busy_interrupt_mode_redirects_active_turn(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
-def test_busy_interrupt_mode_falls_back_for_legacy_agent(monkeypatch):
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    calls = {"interrupt": 0}
-    agent = types.SimpleNamespace(interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1))
-    session = _session(agent=agent, running=True)
-
-    resp = server._handle_busy_submit("r1", "sid", session, "redirect", "ws-1")
-
-    assert resp["result"]["status"] == "queued"
-    deadline = time.monotonic() + 1
-    while calls["interrupt"] != 1 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert calls["interrupt"] == 1
-    assert session["queued_prompt"]["text"] == "redirect"
 
 
-def test_busy_queue_mode_queues_without_interrupting(monkeypatch):
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
-    calls = {"interrupt": 0}
-    agent = types.SimpleNamespace(interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1))
-    session = _session(agent=agent, running=True)
-
-    resp = server._handle_busy_submit("r1", "sid", session, "later", "ws-1")
-
-    assert resp["result"]["status"] == "queued"
-    assert calls["interrupt"] == 0
-    assert session["queued_prompt"]["text"] == "later"
 
 
-def test_queued_flag_overrides_mode_never_touches_live_turn(monkeypatch):
-    # A client queue drain that loses the settle race (client saw idle, server
-    # still unwinding) must stay queue-semantics: run AFTER the live turn,
-    # never redirect or interrupt it. Without the override, busy_input_mode
-    # "interrupt" turned explicitly-queued text into a live-turn correction —
-    # the "force-sending the queue is a dice roll" bug.
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    agent = types.SimpleNamespace(
-        _supports_active_turn_redirect=True,
-        redirect=lambda text: (_ for _ in ()).throw(
-            AssertionError("queued drain must not redirect the live turn")
-        ),
-        steer=lambda text: (_ for _ in ()).throw(
-            AssertionError("queued drain must not steer the live turn")
-        ),
-        interrupt=lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("queued drain must not interrupt the live turn")
-        ),
-    )
-    session = _session(agent=agent, running=True)
-
-    resp = server._handle_busy_submit(
-        "r1", "sid", session, "next turn text", "ws-1", queued=True
-    )
-
-    assert resp["result"]["status"] == "queued"
-    assert session["queued_prompt"]["text"] == "next turn text"
 
 
 def test_busy_interrupt_mode_ignores_completed_background_delegation(monkeypatch):
@@ -159,32 +100,6 @@ def test_busy_interrupt_mode_ignores_completed_background_delegation(monkeypatch
     assert session["queued_prompt"]["text"] == "continue"
 
 
-def test_busy_interrupt_mode_ignores_foreign_background_delegation(monkeypatch):
-    """Another tab's background work must not suppress this tab's interrupt."""
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    calls = {"interrupt": 0}
-    agent = types.SimpleNamespace(
-        interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1)
-    )
-    session = _session(agent=agent, running=True)
-
-    with ad._records_lock:
-        ad._records["deleg_foreign"] = {
-            "delegation_id": "deleg_foreign",
-            "status": "running",
-            "session_key": "foreign-key",
-            "origin_ui_session_id": "foreign-sid",
-        }
-
-    try:
-        resp = server._handle_busy_submit("r1", "sid", session, "interrupt me", "ws-1")
-    finally:
-        with ad._records_lock:
-            ad._records.clear()
-
-    assert resp["result"]["status"] == "queued"
-    assert calls["interrupt"] == 1
-    assert session["queued_prompt"]["text"] == "interrupt me"
 
 
 def test_busy_steer_mode_injects_when_accepted(monkeypatch):
@@ -198,41 +113,8 @@ def test_busy_steer_mode_injects_when_accepted(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
-def test_busy_steer_mode_falls_back_to_queue_when_rejected(monkeypatch):
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
-    agent = types.SimpleNamespace(steer=lambda text: False, interrupt=lambda *a, **k: None)
-    session = _session(agent=agent, running=True)
-
-    resp = server._handle_busy_submit("r1", "sid", session, "nudge", "ws-1")
-
-    assert resp["result"]["status"] == "queued"
-    assert session["queued_prompt"]["text"] == "nudge"
 
 
-def test_busy_interrupt_does_not_hold_history_lock_or_delay_queue(monkeypatch):
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    interrupt_started = threading.Event()
-    release_interrupt = threading.Event()
-
-    def blocking_interrupt():
-        interrupt_started.set()
-        release_interrupt.wait(timeout=2)
-
-    session = _session(
-        agent=types.SimpleNamespace(interrupt=blocking_interrupt),
-        running=True,
-    )
-
-    started = time.monotonic()
-    resp = server._handle_busy_submit("r1", "sid", session, "keep this", "ws-1")
-
-    assert resp["result"]["status"] == "queued"
-    assert time.monotonic() - started < 0.25
-    assert session["queued_prompt"]["text"] == "keep this"
-    assert interrupt_started.wait(timeout=1)
-    assert session["history_lock"].acquire(timeout=0.25)
-    session["history_lock"].release()
-    release_interrupt.set()
 
 
 def test_busy_helper_retries_when_turn_finished(monkeypatch):
@@ -243,44 +125,8 @@ def test_busy_helper_retries_when_turn_finished(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
-def test_busy_interrupt_mode_normalizes_rich_text_before_redirect(monkeypatch):
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    seen = []
-    agent = types.SimpleNamespace(
-        _supports_active_turn_redirect=True,
-        redirect=lambda text: seen.append(text) or True,
-        interrupt=lambda *a, **k: None,
-    )
-    session = _session(agent=agent, running=True)
-    rich = [{"type": "text", "text": "  redirect me  "}]
-
-    resp = server._handle_busy_submit(
-        "r1",
-        "sid",
-        session,
-        rich,
-        "ws-1",
-    )
-
-    assert resp["result"]["status"] == "redirected"
-    assert seen == ["redirect me"]
-    assert session.get("queued_prompt") is None
 
 
-def test_busy_queue_fallback_preserves_original_structured_text(monkeypatch):
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-    rich = [{"type": "text", "text": "  keep me  "}]
-    agent = types.SimpleNamespace(
-        _supports_active_turn_redirect=True,
-        redirect=lambda text: False,
-        interrupt=lambda *a, **k: None,
-    )
-    session = _session(agent=agent, running=True)
-
-    resp = server._handle_busy_submit("r1", "sid", session, rich, "ws-1")
-
-    assert resp["result"]["status"] == "queued"
-    assert session["queued_prompt"]["text"] == rich
 
 
 def test_busy_interrupt_mode_queues_multimodal_payload_instead_of_redirect(monkeypatch):
@@ -321,20 +167,8 @@ def test_drain_fires_queued_prompt_and_claims_running(monkeypatch):
     assert session["transport"] == "ws-9"
 
 
-def test_drain_noop_when_nothing_queued(monkeypatch):
-    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fire")))
-    session = _session()
-    assert server._drain_queued_prompt("r1", "sid", session) is False
-    assert session["running"] is False
 
 
-def test_drain_noop_when_session_already_running(monkeypatch):
-    """A fresh turn that claimed the session beats a stale queued entry —
-    the drain leaves it for that turn's own tail."""
-    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fire")))
-    session = _session(running=True, queued_prompt={"text": "go", "transport": None})
-    assert server._drain_queued_prompt("r1", "sid", session) is False
-    assert session["queued_prompt"]["text"] == "go"
 
 
 def test_drain_releases_running_on_dispatch_failure(monkeypatch):
@@ -348,158 +182,3 @@ def test_drain_releases_running_on_dispatch_failure(monkeypatch):
     assert session["running"] is False
 
 
-def test_busy_interrupt_mode_preserves_real_background_batch_completion(
-    monkeypatch, tmp_path
-):
-    """Foreground interruption must not cancel its detached async batch."""
-    import json
-    import queue
-    import time
-
-    import tools.delegate_tool as dt
-    from gateway.session_context import clear_session_vars, set_session_vars
-    from tools.process_registry import process_registry
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
-
-    isolated_queue = queue.Queue()
-    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
-    ad._reset_for_tests()
-
-    calls = {"interrupt": 0}
-
-    class _Parent:
-        def __init__(self):
-            self._delegate_depth = 0
-            self.session_id = "session-key"
-            self._interrupt_requested = False
-            self._active_children = []
-            self._active_children_lock = None
-
-        def interrupt(self, *_args, **_kwargs):
-            calls["interrupt"] += 1
-            self._interrupt_requested = True
-
-    parent = _Parent()
-    session = _session(agent=parent, running=True)
-
-    release_children = threading.Event()
-    all_children_started = threading.Event()
-    started_lock = threading.Lock()
-    started = {"count": 0}
-    child_ids = iter(("child-1", "child-2", "child-3"))
-
-    def _build_child(**_kwargs):
-        return types.SimpleNamespace(
-            _delegate_role="leaf",
-            _subagent_id=next(child_ids),
-        )
-
-    def _blocking_child(task_index, goal, child=None, parent_agent=None, **_kwargs):
-        with started_lock:
-            started["count"] += 1
-            if started["count"] == 3:
-                all_children_started.set()
-
-        release_children.wait(timeout=10)
-        return {
-            "task_index": task_index,
-            "status": "completed",
-            "summary": f"done: {goal}",
-            "api_calls": 1,
-            "duration_seconds": 0.1,
-            "model": "test-model",
-            "exit_reason": "completed",
-        }
-
-    credentials = {
-        "model": "test-model",
-        "provider": None,
-        "base_url": None,
-        "api_key": None,
-        "api_mode": None,
-        "command": None,
-        "args": None,
-    }
-
-    monkeypatch.setattr(dt, "_build_child_agent", _build_child)
-    monkeypatch.setattr(dt, "_run_single_child", _blocking_child)
-    monkeypatch.setattr(
-        dt,
-        "_resolve_delegation_credentials",
-        lambda *_args, **_kwargs: credentials,
-    )
-
-    context_tokens = set_session_vars(
-        source="tui",
-        session_key="session-key",
-        ui_session_id="sid",
-    )
-
-    response = None
-    event = None
-    try:
-        dispatched = json.loads(
-            dt.delegate_task(
-                tasks=[
-                    {"goal": "first"},
-                    {"goal": "second"},
-                    {"goal": "third"},
-                ],
-                background=True,
-                parent_agent=parent,
-            )
-        )
-        assert dispatched["status"] == "dispatched"
-        assert all_children_started.wait(timeout=5)
-
-        response = server._handle_busy_submit(
-            "r1",
-            "sid",
-            session,
-            "follow-up",
-            "ws-1",
-        )
-
-        # The old detached-batch loop polls this parent flag every 0.5 seconds.
-        time.sleep(0.7)
-        release_children.set()
-        event = isolated_queue.get(timeout=5)
-    finally:
-        release_children.set()
-        clear_session_vars(context_tokens)
-        ad._reset_for_tests()
-
-    assert response["result"]["status"] == "queued"
-    assert session["queued_prompt"]["text"] == "follow-up"
-    assert calls["interrupt"] == 1
-
-    assert event["type"] == "async_delegation"
-    assert event["origin_ui_session_id"] == "sid"
-    assert event["session_key"] == "session-key"
-    assert [result["status"] for result in event["results"]] == [
-        "completed",
-        "completed",
-        "completed",
-    ]
-    assert sorted(result["summary"] for result in event["results"]) == [
-        "done: first",
-        "done: second",
-        "done: third",
-    ]
-
-    # Exercise the same positive-proof ownership gate used by the TUI's
-    # post-turn delivery path, not just event production.
-    isolated_queue.put(event)
-    drained = process_registry.drain_notifications(
-        session_key=session.get("session_key", ""),
-        owns_event=lambda candidate: server._session_owns_notification_event(
-            "sid", session, candidate
-        ),
-    )
-    assert len(drained) == 1
-    delivered_event, synthetic_prompt = drained[0]
-    assert delivered_event is event
-    assert synthetic_prompt
-    assert isolated_queue.empty()

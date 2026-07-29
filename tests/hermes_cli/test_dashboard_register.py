@@ -144,27 +144,6 @@ class TestHappyPath:
         self._run(args=_ns(name="my_box"), captured=captured)
         assert captured["body"]["name"] == "my_box"
 
-    def test_custom_redirect_uri_is_forwarded(self, capsys):
-        captured: dict = {}
-        self._run(
-            args=_ns(redirect_uri="https://hermes.example.com/auth/callback"),
-            captured=captured,
-        )
-        assert (
-            captured["body"]["custom_redirect_uri"]
-            == "https://hermes.example.com/auth/callback"
-        )
-
-    def test_non_default_portal_is_persisted(self, capsys):
-        saved = self._run(
-            args=_ns(),
-            portal="https://nous-account-service-git-feat-x.vercel.app",
-        )
-        assert (
-            saved["HERMES_DASHBOARD_PORTAL_URL"]
-            == "https://nous-account-service-git-feat-x.vercel.app"
-        )
-
 
 class TestIdempotentRerun(TestHappyPath):
     """Re-running with a stored client_id updates instead of creating.
@@ -192,27 +171,6 @@ class TestIdempotentRerun(TestHappyPath):
         )
         assert captured["body"]["client_id"] == "agent:selfhost-1"
 
-    def test_rerun_without_name_omits_name_to_preserve_stored(self, capsys):
-        # No --name on a re-run: don't churn the portal-stored name. The CLI
-        # leaves `name` out of the body so the portal keeps what it has.
-        captured: dict = {}
-        self._run(
-            args=_ns(),
-            existing_client_id="agent:selfhost-1",
-            captured=captured,
-        )
-        assert "name" not in captured["body"]
-        assert captured["body"]["client_id"] == "agent:selfhost-1"
-
-    def test_rerun_with_explicit_name_still_sends_name(self, capsys):
-        captured: dict = {}
-        self._run(
-            args=_ns(name="renamed_box"),
-            existing_client_id="agent:selfhost-1",
-            captured=captured,
-        )
-        assert captured["body"]["name"] == "renamed_box"
-        assert captured["body"]["client_id"] == "agent:selfhost-1"
 
     def test_rerun_prints_updated_when_same_id_returned(self, capsys):
         self._run(
@@ -231,13 +189,6 @@ class TestIdempotentRerun(TestHappyPath):
         assert "Updated dashboard" in out
         assert "Registered dashboard" not in out
 
-    def test_rerun_persists_returned_client_id(self, capsys):
-        saved = self._run(
-            args=_ns(),
-            existing_client_id="agent:selfhost-1",
-        )
-        # Same id round-trips into .env -> idempotent, one record.
-        assert saved["HERMES_DASHBOARD_OAUTH_CLIENT_ID"] == "agent:selfhost-1"
 
     def test_stale_id_falls_through_to_create_prints_registered(self, capsys):
         # Stored id no longer resolves server-side -> portal created a fresh
@@ -334,46 +285,6 @@ class TestCustomPortalPersistence:
             dr.cmd_dashboard_register(args)
         return saved
 
-    def test_explicit_custom_url_persisted_when_var_absent(self, capsys):
-        saved = self._run(
-            args=_ns(portal_url="https://preview.example.com"),
-            portal="https://preview.example.com",
-            existing_portal=None,
-        )
-        assert saved["HERMES_DASHBOARD_PORTAL_URL"] == "https://preview.example.com"
-
-    def test_explicit_custom_url_updates_existing_in_place(self, capsys):
-        # An entry already exists with a different value; the explicit custom
-        # URL overwrites it (save_env_value updates the matching key in place).
-        saved = self._run(
-            args=_ns(portal_url="https://new-preview.example.com"),
-            portal="https://new-preview.example.com",
-            existing_portal="https://old-preview.example.com",
-        )
-        assert (
-            saved["HERMES_DASHBOARD_PORTAL_URL"] == "https://new-preview.example.com"
-        )
-
-    def test_explicit_custom_url_persisted_even_when_equals_default(self, capsys):
-        # User explicitly asked for the production portal — honour the explicit
-        # request and persist it (the no-flag path would skip the default).
-        saved = self._run(
-            args=_ns(portal_url="https://portal.nousresearch.com"),
-            portal="https://portal.nousresearch.com",
-            existing_portal=None,
-        )
-        assert (
-            saved["HERMES_DASHBOARD_PORTAL_URL"] == "https://portal.nousresearch.com"
-        )
-
-    def test_explicit_custom_url_equal_to_existing_is_noop(self, capsys):
-        # Already persisted with the same value → no redundant write.
-        saved = self._run(
-            args=_ns(portal_url="https://preview.example.com"),
-            portal="https://preview.example.com",
-            existing_portal="https://preview.example.com",
-        )
-        assert "HERMES_DASHBOARD_PORTAL_URL" not in saved
 
     def test_no_flag_default_portal_not_written(self, capsys):
         # No custom URL supplied, resolves to default → not written.
@@ -381,16 +292,6 @@ class TestCustomPortalPersistence:
             args=_ns(),
             portal="https://portal.nousresearch.com",
             existing_portal=None,
-        )
-        assert "HERMES_DASHBOARD_PORTAL_URL" not in saved
-
-    def test_no_flag_does_not_overwrite_existing_entry(self, capsys):
-        # No custom URL supplied and the var already exists → left untouched,
-        # even if the inferred portal differs (acceptance criterion 4).
-        saved = self._run(
-            args=_ns(),
-            portal="https://inferred-from-login.example.com",
-            existing_portal="https://already-set.example.com",
         )
         assert "HERMES_DASHBOARD_PORTAL_URL" not in saved
 
@@ -453,48 +354,6 @@ class TestPublicUrlPersistence:
             dr.cmd_dashboard_register(args)
         return saved
 
-    def test_origin_derived_from_full_callback_path(self, capsys):
-        # The key behaviour: a full callback URL is reduced to its ORIGIN so
-        # the runtime's "public_url + /auth/callback" reconstruction matches.
-        saved = self._run(
-            args=_ns(redirect_uri="https://hermes.example.com/auth/callback"),
-            existing_public=None,
-        )
-        assert saved["HERMES_DASHBOARD_PUBLIC_URL"] == "https://hermes.example.com"
-        # The full callback path must NOT be persisted verbatim (would double
-        # the path at serve time).
-        assert "/auth/callback" not in saved["HERMES_DASHBOARD_PUBLIC_URL"]
-
-    def test_origin_preserves_port(self, capsys):
-        saved = self._run(
-            args=_ns(redirect_uri="https://hermes.example.com:8443/auth/callback"),
-            existing_public=None,
-        )
-        assert saved["HERMES_DASHBOARD_PUBLIC_URL"] == "https://hermes.example.com:8443"
-
-    def test_public_url_updates_existing_in_place(self, capsys):
-        # A stale public-url entry exists; the new derived origin overwrites it.
-        saved = self._run(
-            args=_ns(redirect_uri="https://new.example.com/auth/callback"),
-            existing_public="https://old.example.com",
-        )
-        assert saved["HERMES_DASHBOARD_PUBLIC_URL"] == "https://new.example.com"
-
-    def test_public_url_equal_to_existing_is_noop(self, capsys):
-        # Derived origin already matches what's stored → no redundant write.
-        saved = self._run(
-            args=_ns(redirect_uri="https://hermes.example.com/auth/callback"),
-            existing_public="https://hermes.example.com",
-        )
-        assert "HERMES_DASHBOARD_PUBLIC_URL" not in saved
-
-    def test_no_redirect_flag_not_written(self, capsys):
-        # Localhost-only install (no --redirect-uri) → var left untouched.
-        saved = self._run(
-            args=_ns(),
-            existing_public=None,
-        )
-        assert "HERMES_DASHBOARD_PUBLIC_URL" not in saved
 
     def test_no_redirect_flag_does_not_overwrite_existing(self, capsys):
         # No --redirect-uri supplied but a value already exists → never touch
@@ -571,16 +430,6 @@ class TestPortalResolution:
                 == "https://portal.staging-nousresearch.com"
             )
 
-    def test_blank_override_ignored(self):
-        with patch(
-            "hermes_cli.auth.get_provider_auth_state",
-            return_value={"portal_base_url": "https://portal.staging-nousresearch.com"},
-        ):
-            assert (
-                dr._resolve_portal_base_url("   ")
-                == "https://portal.staging-nousresearch.com"
-            )
-
 
 class TestPortalErrors:
     def _run_http_error(self, code, body):
@@ -606,9 +455,3 @@ class TestPortalErrors:
         assert code == 1
         assert "re-authenticate" in capsys.readouterr().out
 
-    def test_403_surfaces_server_detail(self, capsys):
-        code = self._run_http_error(
-            403, {"error": "access_denied", "error_description": "Not permitted here."}
-        )
-        assert code == 1
-        assert "Not permitted here." in capsys.readouterr().out

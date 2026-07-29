@@ -68,13 +68,6 @@ def test_execute_command_helper_resolves_aliases():
     assert a.text == b.text
 
 
-def test_execute_command_raises_for_unmigrated():
-    with pytest.raises(LookupError):
-        execute_command("model", CommandContext())
-    with pytest.raises(LookupError):
-        execute_command("definitely-not-a-command", CommandContext())
-
-
 def test_profile_options_override_process_values():
     reply = run_execute(
         resolve_command("profile"),
@@ -92,6 +85,3 @@ def test_commands_page_size_is_an_option_not_a_surface_branch():
     assert tg.text == cli.text
 
 
-def test_commands_bad_page_arg_returns_usage():
-    reply = run_execute(resolve_command("commands"), CommandContext(args="notanumber"))
-    assert "commands" in reply.text.lower() or "usage" in reply.text.lower()

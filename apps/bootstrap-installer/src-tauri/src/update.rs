@@ -211,18 +211,30 @@ impl UpdateMarkerGuard {
         }
         Ok(Self { path, owned: true })
     }
-}
 
-impl Drop for UpdateMarkerGuard {
-    fn drop(&mut self) {
+    /// Release the marker as soon as every mutating stage has completed.
+    ///
+    /// The updater still owns a Tauri/Cocoa event loop while it relaunches the
+    /// desktop, and that loop can outlive `app.exit(0)`. Relying on `Drop`
+    /// alone therefore leaves a *successful* update looking active — a live
+    /// pid holding a fresh marker — which blocks desktop startup and every
+    /// other updater for the full age ceiling. Idempotent: `Drop` still runs
+    /// and tolerates an already-removed marker.
+    fn complete(&self) {
         if !self.owned {
             return;
         }
         if let Err(err) = std::fs::remove_file(&self.path) {
             if err.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(path = ?self.path, %err, "could not remove update-in-progress marker");
+                tracing::warn!(path = ?self.path, %err, "could not remove completed update marker");
             }
         }
+    }
+}
+
+impl Drop for UpdateMarkerGuard {
+    fn drop(&mut self) {
+        self.complete();
     }
 }
 
@@ -569,6 +581,12 @@ async fn run_update(app: AppHandle) -> Result<()> {
             marker: None,
         },
     );
+    // Every install-tree mutation is finished. Release the lock BEFORE the
+    // relaunch: this process can stay wedged in its native event loop even
+    // after a successful app.exit(), and a live pid on a fresh marker would
+    // make a completed update look active — blocking desktop startup and
+    // every other updater until the age ceiling expires.
+    _update_marker.complete();
 
     if let Some(target_app) = launch_target {
         if let Err(err) = launch_macos_app_and_exit(&app, &target_app).await {
@@ -593,7 +611,24 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
     }
 
+    // The launch helpers normally request exit themselves, but their failure
+    // paths must still close a successful updater. A native event loop can
+    // ignore that graceful request, so arm a process-exit fallback now that
+    // all update state and the marker have been settled.
+    exit_after_success(&app);
     Ok(())
+}
+
+/// Ask the app to exit, with a hard `process::exit` fallback for a native
+/// event loop that ignores the graceful request. Without it a finished updater
+/// can linger as a live pid forever.
+fn exit_after_success(app: &AppHandle) {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        tracing::warn!("graceful updater exit timed out; forcing process exit");
+        std::process::exit(0);
+    });
+    app.exit(0);
 }
 
 /// Poll until the venv shim AND packaged desktop app bundle are no longer locked
@@ -1324,6 +1359,25 @@ mod tests {
         let guard = UpdateMarkerGuard::acquire(marker.clone())
             .unwrap_or_else(|_| panic!("a marker past the ceiling must be reclaimable"));
         drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn completed_update_releases_marker_before_guard_drop() {
+        let dir = unique_tmp_dir("marker-complete");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+        guard.complete();
+
+        assert!(
+            !marker.exists(),
+            "a successful update must unblock desktop startup before relaunch/exit"
+        );
+        drop(guard);
+        assert!(!marker.exists(), "Drop stays idempotent after completion");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

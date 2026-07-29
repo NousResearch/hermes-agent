@@ -3072,6 +3072,16 @@ def _sessions_sig():
     return sig
 
 
+def _platforms_sig():
+    """mtime of gateway_state.json — the messaging gateway process persists
+    platform connect/disconnect/health there, so its movement is the
+    "connection status changed" signal for the Messaging page."""
+    try:
+        return (_watcher_home() / "gateway_state.json").stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 # Watched change signals: event → (check interval, signature fn, payload fn).
 # Signatures are stat/dict-lookup cheap, same bar as the skin watcher; the
 # check interval keeps the pricier probes (pet resolves the active sheet off
@@ -3080,12 +3090,14 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
     "cron.changed": (1.0, _cron_sig, lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
+    "platforms.changed": (2.0, _platforms_sig, lambda: {}),
 }
 
-# state.db moves on every message append during a streaming turn; the floor
-# coalesces that burst to one broadcast per window (trailing edge included —
-# a floored change keeps its old signature and re-fires next tick).
-_CHANGE_BROADCAST_FLOOR_S = {"sessions.changed": 2.0}
+# state.db moves on every message append during a streaming turn, and the
+# gateway rewrites gateway_state.json for in-flight-count bookkeeping; the
+# floor coalesces those bursts to one broadcast per window (trailing edge
+# included — a floored change keeps its old signature and re-fires next tick).
+_CHANGE_BROADCAST_FLOOR_S = {"sessions.changed": 2.0, "platforms.changed": 5.0}
 
 _change_sigs: dict[str, Any] = {}
 _change_checked_at: dict[str, float] = {}

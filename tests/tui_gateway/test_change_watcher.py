@@ -62,6 +62,16 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     assert ("sessions.changed", {}) in events
 
 
+def test_gateway_state_move_broadcasts_platforms_changed(watcher_home):
+    home, events = watcher_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (home / "gateway_state.json").write_text('{"platforms": {}}')
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("platforms.changed", {}) in events
+
+
 def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)

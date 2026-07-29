@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -20,6 +21,7 @@ import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $changeEventsAvailable, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -141,9 +143,26 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     void refreshPlatforms()
   }, [refreshPlatforms])
 
-  // Auto-poll while the user is on the messaging page so connection status
-  // updates without a manual "check" click. Pause when the tab is hidden.
+  const changeEventsAvailable = useStore($changeEventsAvailable)
+  const platformsChangeTick = useStore($platformsChangeTick)
+
+  // Connection status updates without a manual "check" click. platforms.changed
+  // (the gateway persisting connect/disconnect/health to gateway_state.json)
+  // drives the refresh on event-capable backends — no timer; older backends
+  // keep the legacy visible-tab poll.
   useEffect(() => {
+    if (!changeEventsAvailable || platformsChangeTick === 0 || document.hidden) {
+      return
+    }
+
+    void refreshPlatforms(true)
+  }, [changeEventsAvailable, platformsChangeTick, refreshPlatforms])
+
+  useEffect(() => {
+    if (changeEventsAvailable) {
+      return
+    }
+
     let cancelled = false
 
     function tick() {
@@ -160,7 +179,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       cancelled = true
       window.clearInterval(id)
     }
-  }, [refreshPlatforms])
+  }, [changeEventsAvailable, refreshPlatforms])
 
   const selected = useMemo(() => {
     if (!platforms) {

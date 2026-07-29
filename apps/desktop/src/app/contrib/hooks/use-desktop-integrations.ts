@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profileInitialized } from '@/store/profile'
 import {
   $sessions,
   getRememberedRoute,
@@ -87,11 +87,33 @@ export function useDesktopIntegrations({
 
   const restoredRef = useRef(false)
 
+  // Reactive mirror of $profileInitialized so the restore effect below can
+  // depend on it. nanostores atoms are not React-reactive on their own — a
+  // bare `.get()` inside the effect body reads the value at call time but
+  // doesn't re-trigger when it changes.
+  const [profileReady, setProfileReady] = useState(() => $profileInitialized.get())
+
+  useEffect(() => {
+    return $profileInitialized.subscribe(setProfileReady)
+  }, [])
+
   // Restore once on cold start — only when the renderer booted at the default
-  // route (a hidden-then-shown window keeps its own route). Prefer the full
-  // remembered route (covers pages); fall back to the last session id.
+  // route (a hidden-then-shown window keeps its own route) AND the gateway
+  // profile has been resolved so profile-scoped localStorage keys read the
+  // correct entry. Prefer the full remembered route (covers pages); fall back
+  // to the last session id.
+  //
+  // Without the profileReady gate, the effect fires on mount with
+  // $activeGatewayProfile still at its initial value ('default') because
+  // adoptPrimaryProfile() resolves asynchronously during boot. The real
+  // profile is resolved after an IPC round-trip to the Electron main process
+  // — by the time it lands, restoredRef already blocks a second run.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
+    if (!profileReady) {
+      return
+    }
+
     if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
       restoredRef.current = true
 
@@ -113,7 +135,7 @@ export function useDesktopIntegrations({
     if (last) {
       navigate(sessionRoute(last), { replace: true })
     }
-  }, [locationPathname, navigate])
+  }, [locationPathname, navigate, profileReady])
 
   useEffect(() => {
     if (!resumeExhaustedSessionId) {

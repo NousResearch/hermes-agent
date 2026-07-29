@@ -30,6 +30,12 @@ export function normalizeProfileKey(name: string | null | undefined): string {
 // preference (which may be unset) lives in the Electron main process.
 export const $activeProfile = atom<string>('default')
 
+// True once adoptPrimaryProfile() (or adoptBoot() during HMR) has resolved the
+// real gateway profile. The cold-start restore effect in use-desktop-integrations
+// gates on this so it reads the correct profile-scoped localStorage key instead
+// of the initial 'default' value.
+export const $profileInitialized = atom(false)
+
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
 export const $profiles = atom<ProfileInfo[]>([])

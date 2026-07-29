@@ -25,7 +25,7 @@ import {
 } from '@/store/gateway'
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, $profileInitialized, touchActiveGatewayBackend } from '@/store/profile'
 import {
   $activeSessionId,
   $connection,
@@ -245,6 +245,8 @@ export function useGatewayBoot({
       } catch {
         $activeGatewayProfile.set('default')
       }
+
+      $profileInitialized.set(true)
     }
 
     // Seed the working dir from the backend default on a fresh view (nothing
@@ -550,6 +552,7 @@ export function useGatewayBoot({
 
       const profile = survivor?.profile ?? $activeGatewayProfile.get()
       $activeGatewayProfile.set(profile)
+      $profileInitialized.set(true)
       void ensureGatewayForProfile(profile)
 
       // Mirror the current (already-open) socket state into the composer so the

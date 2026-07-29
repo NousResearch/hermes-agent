@@ -231,8 +231,14 @@ interface GatewayEventDeps {
   failAssistantMessage: (sessionId: string, errorMessage: string, occurredAt?: number) => void
   flushQueuedDeltas: (sessionId?: string) => void
   finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
+  hydrateFromStoredSession: (
+    attempts?: number,
+    storedSessionId?: string | null,
+    runtimeSessionId?: string | null
+  ) => Promise<void>
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
+  scheduleSessionsRefresh: () => void
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
@@ -263,8 +269,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     failAssistantMessage,
     flushQueuedDeltas,
     finalizeInterimAssistantMessage,
+    hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,
+    scheduleSessionsRefresh,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState,
@@ -566,7 +574,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // mutates the per-runtime cache entry, and syncSessionStateToView
         // guards the view publish to the active session, so this is safe.
         if (runningChanged && sessionId) {
-          updateSessionState(
+          // Set when THIS event released a turn that ended without ever
+          // producing an assistant payload, so the catch-up side effects below
+          // run on that edge only. The updater is invoked exactly once,
+          // synchronously, by updateSessionState.
+          let recoveredWithoutPayload = false
+
+          const nextState = updateSessionState(
             sessionId,
             state => {
               const busy = Boolean(payload!.running)
@@ -592,9 +606,29 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 }
               }
 
-              if (state.awaitingResponse && !state.sawAssistantPayload) {
+              // The turn has not started backend-side yet. submit arms
+              // busy/awaitingResponse optimistically, so a running=false
+              // heartbeat that lands in the gap before the turn spins up is a
+              // pre-start report, not a finished turn — settling on it would
+              // drop the spinner and re-open the send guard mid-flight.
+              // turnStartedAt is stamped only once the backend reports the turn
+              // live (message.start, the running=true edge, or a resumed
+              // in-flight turn) and is cleared by every settle, so a null value
+              // here is exactly "no turn has been reported running yet".
+              if (state.awaitingResponse && !state.sawAssistantPayload && !state.turnStartedAt) {
                 return state
               }
+
+              // Past that gate the turn DID start and the backend now reports it
+              // finished. When no assistant payload ever arrived (gateway crash
+              // mid-stream, provider error before the first delta, agent-build
+              // failure) message.complete never fires, so this is the only event
+              // that can release the session. Bailing here instead left
+              // awaitingResponse/busy latched until app restart (#46517): the
+              // per-session busy flag is authoritative for isTargetSessionBusy,
+              // so submitPrompt and the slash dispatcher silently returned false
+              // and the session accepted no further input.
+              recoveredWithoutPayload = state.awaitingResponse && !state.sawAssistantPayload
 
               return {
                 ...state,
@@ -617,6 +651,25 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             },
             payload?.stored_session_id || undefined
           )
+
+          if (recoveredWithoutPayload) {
+            // Stays unscoped, like the settle above: a background session's
+            // sidebar row has to drop its working dot without the user opening
+            // it. This fires on the recovery edge only — once awaitingResponse
+            // is false the `state.busy === busy` guard above short-circuits
+            // every later heartbeat — so it costs one coalesced refresh per
+            // broken turn, not one per tick.
+            scheduleSessionsRefresh()
+
+            // The transcript catch-up IS scoped. The stream died, but the turn
+            // itself may have completed and been persisted, so refetch stored
+            // history for the session actually on screen; a background session
+            // reads its history when the user opens it, and hydrating every one
+            // of them here would fan a REST call out per idle session.
+            if (isActiveEvent) {
+              void hydrateFromStoredSession(3, nextState.storedSessionId, sessionId)
+            }
+          }
         }
 
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
@@ -1461,10 +1514,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       failAssistantMessage,
       finalizeInterimAssistantMessage,
       flushQueuedDeltas,
+      hydrateFromStoredSession,
       lastCwdInfoSessionRef,
       nativeSubagentSessionsRef,
       queryClient,
       scheduleConfigRefresh,
+      scheduleSessionsRefresh,
       sessionInterrupted,
       sessionStateByRuntimeIdRef,
       updateSessionState,

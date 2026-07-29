@@ -44,9 +44,33 @@ followed it. In tool-heavy work that's where the bulk of the tokens live — a
 file read or a command's output dwarfs the surrounding prose — which is why
 absorbing one exchange at a time is worth doing at all.
 
+## Your messages are never compacted
+
+An exchange deliberately starts at the *assistant* message. Micro-compaction
+walks straight past user messages to get there, so **what you typed is never
+summarized** — your prompts stay verbatim for the entire session, no matter how
+long it runs or how many times compaction fires.
+
+This is the most useful property of the whole design, and it's worth being
+explicit about why. What the assistant produces is largely an account of what it
+did: it read this file, it ran that command, it got this result. That kind of
+narration survives summarising with very little loss — "it did it this way" is
+about as informative compressed as it was in full. Your instructions are a
+different kind of thing. They're the intent everything else is derived from, and
+they cannot be reconstructed from the work that followed. Paraphrasing "use the
+existing retry helper, don't add a new one" into a summary is exactly how an
+agent ends up confidently doing the thing you told it not to, six turns later.
+
+So the asymmetry is on purpose: compact the derived material, keep the source of
+truth. The cost is a floor on how small the middle can get, since user turns
+accumulate and are never absorbed. In practice that floor is low — a prompt is
+normally a tiny fraction of what a single tool result costs — but it is a real
+floor. If you routinely paste 10–20K-token prompts, that weight stays in context
+by design.
+
 ## What it never touches
 
-Two regions are protected and stay verbatim:
+Two more regions are protected and stay verbatim:
 
 - **The head** — the system prompt and the opening messages, so the session's
   founding instructions are never paraphrased.

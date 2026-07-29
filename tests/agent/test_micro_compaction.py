@@ -101,6 +101,27 @@ class TestMicroCompaction:
         assert result[0] == messages[0], "system prompt must be preserved"
         assert result[-1] == messages[-1], "most recent turn must be preserved"
 
+    def test_user_messages_are_never_absorbed(self):
+        """User turns stay verbatim for the life of the session — by design.
+
+        Assistant output is largely an account of what was done and survives
+        summarising; the user's own words are the intent everything else is
+        derived from and can't be reconstructed from it. So an exchange starts
+        at the assistant message and the walk skips past user turns.
+        """
+        cc = _compressor()
+        messages = _conversation(exchanges=10)
+        originals = [m["content"] for m in messages if m["role"] == "user"]
+
+        for _ in range(5):
+            messages = cc._micro_compact(messages)
+
+        surviving = [
+            m["content"] for m in messages
+            if m.get("role") == "user" and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        ]
+        assert surviving == originals, "user turns must survive verbatim"
+
     def test_short_conversation_is_untouched(self):
         cc = _compressor()
         messages = [

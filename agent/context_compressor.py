@@ -5043,14 +5043,24 @@ This compaction should PRIORITISE preserving all information related to the focu
     ) -> Optional[tuple[int, int]]:
         """Find the next complete exchange starting at *start*.
 
-        An exchange is: (optional) user message + assistant message + its tool
-        results.  Returns ``(exchange_start, exchange_end)`` indices into
-        *messages*, or ``None`` if no complete exchange is available before
-        *tail_start*.
+        An exchange is an assistant message plus its tool results.  Returns
+        ``(exchange_start, exchange_end)`` indices into *messages*, or ``None``
+        if no complete exchange is available before *tail_start*.
 
         Tool results are consumed as a group following the assistant message
         (consecutive ``tool``-role messages).  The assistant message itself must
         exist; without one there is nothing to summarise.
+
+        User messages are deliberately NOT part of an exchange.  The walk skips
+        past them to reach the assistant message, and ``exchange_start`` is that
+        assistant index, so user turns are never absorbed into the rolling
+        summary and stay verbatim for the life of the session.  This is the
+        intended behaviour, not an oversight: what the assistant emits is
+        largely an account of what it did, which survives summarising, while the
+        user's own words are the instructions everything else is derived from
+        and are the one thing that cannot be reconstructed from context.  They
+        are also cheap — a prompt is normally a tiny fraction of the tokens a
+        single tool result costs.
         """
         idx = start
         n = len(messages)

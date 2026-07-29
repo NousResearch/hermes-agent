@@ -5197,7 +5197,9 @@ def copilot_model_api_mode(
                 for endpoint in (catalog_entry.get("supported_endpoints") or [])
                 if str(endpoint).strip()
             }
-            # For non-GPT-5 models, check if they support messages API
+            # For non-GPT-5 models, check catalog endpoints
+            if "/responses" in supported_endpoints:
+                return "codex_responses"
             if "/v1/messages" in supported_endpoints:
                 return "anthropic_messages"
 

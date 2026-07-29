@@ -167,6 +167,119 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
 
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("task_id,filename,uri_spec", [
+        ("bg_qqbot_file", "shot.png", "two_slash"),
+        ("bg_win_file_url", "win_test.png", "three_slash_windows"),
+    ])
+    async def test_qqbot_background_task_file_url_routes_to_send_image_file(self, tmp_path, monkeypatch, task_id, filename, uri_spec):
+        """Background-task finalizer sees ``file://`` images and routes them
+        through ``send_multiple_images`` (which decodes to ``send_image_file``)
+        rather than passing the ``file://`` string verbatim to ``send_image``.
+
+        Regression: before the fix, `_run_background_task` looped over the
+        extracted images and called ``adapter.send_image(image_url=...)`` for
+        each. QQBot's ``_is_url`` only recognises ``http(s)``, so a
+        ``file:///C:/.../foo.png`` URI was treated as a literal local
+        pathname and forwarded to ``_send_media``'s local-file branch.
+        """
+        from urllib.parse import quote as _urlquote
+
+        from gateway import run as gateway_run
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        png = tmp_path / filename
+        png.write_bytes(b"png")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (tmp_path.resolve(),),
+        )
+
+        class _QQBotLikeAdapter(BasePlatformAdapter):
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True, token="test"), Platform.QQBOT)
+                self.send_calls = []
+
+            async def connect(self, *, is_reconnect: bool = False):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content=None, **kwargs):
+                self.send_calls.append(("send", chat_id, content))
+                return SendResult(success=True, message_id="text")
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id, "type": "dm"}
+
+        adapter = _QQBotLikeAdapter()
+        adapter.send_image = AsyncMock(return_value=SendResult(success=True, message_id="img"))
+        adapter.send_image_file = AsyncMock(
+            return_value=SendResult(success=True, message_id="img-file")
+        )
+
+        runner.adapters[Platform.QQBOT] = adapter
+
+        source = SessionSource(
+            platform=Platform.QQBOT,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        file_url = ("file://" + _urlquote(str(png), safe="/:\\") if uri_spec == "two_slash"
+                    else "file:///" + _urlquote(str(png.resolve()), safe="/:\\\\"))
+
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={
+                "final_response": f"see attached ![pic]({file_url})",
+                "messages": [],
+            }
+        )
+
+        await runner._run_background_task(
+            "make pic", source, task_id,
+        )
+
+        # Verify send_image was NOT called with the raw file:// URI
+        for call in adapter.send_image.await_args_list or []:
+            url_arg = call.kwargs.get("image_url") or (
+                call.args[1] if len(call.args) > 1 else None
+            )
+            assert not (url_arg and str(url_arg).startswith("file://")), (
+                f"send_image should not receive raw file:// URI, got {url_arg!r}"
+            )
+        # send_image_file must be called once with the decoded path,
+        # proving the file:// URI flowed through send_multiple_images.
+        adapter.send_image_file.assert_awaited_once()
+        _, kwargs = adapter.send_image_file.call_args
+        received_path = kwargs.get("image_path")
+        assert received_path is not None
+        expected = str(png).replace("/", "\\\\").casefold()
+        got = str(received_path).replace("/", "\\\\").casefold()
+        assert expected in got, (
+            f"decoded image_path mismatch: expected {expected!r}, got {got!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # /background in help and known_commands
 # ---------------------------------------------------------------------------

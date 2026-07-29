@@ -18446,7 +18446,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # post-stream delivery is explicit-only (#20834). Bare local paths
             # in an already-streamed reply are text the user has seen (or
             # stale inspected content), not an attachment request.
-            adapter.extract_images(cleaned)
+            # Capture extracted images for dedup with MEDIA paths below
+            _stream_extracted_images, cleaned = adapter.extract_images(cleaned)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
@@ -18457,23 +18458,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
             # set, image-extension files skip the photo path and route to
             # send_document below — preserving original bytes.
-            image_paths: list = []
+            image_delivery: list = []
             non_image_media: list = []
+            delivery_keys: set = set()
             for media_path, is_voice in media_files:
                 ext = Path(media_path).suffix.lower()
                 if (ext in _IMAGE_EXTS
                         and not is_voice
                         and not force_document_attachments):
-                    image_paths.append(media_path)
+                    image_delivery.append((f"file://{_quote(media_path)}", ""))
+                    delivery_keys.add(("local", os.path.normcase(media_path)))
                 else:
                     non_image_media.append((media_path, is_voice))
 
-            if image_paths:
+            # Also include explicit image tags (HTTP(S) or file:// URIs)
+            # from extract_images, deduplicated against MEDIA paths.
+            # Uses canonical local-path keys from the resolved MEDIA paths
+            # and `_normalize_file_url` for file:// extracted images so:
+            #   - foo.png and foo.png.backup.png (different files) both deliver
+            #   - file://C:/a.png and file:///C:/a.png (same file) deliver once
+            #   - MEDIA:/a.png and file:///C:/a.png (same file) deliver once
+            # HTTP(S) URLs use exact-string comparison.
+            # Namespace tuples prevent accidental collision between local paths
+            # and URL strings.
+            for img_url, img_alt in _stream_extracted_images:
+                if img_url.lower().startswith('file://'):
+                    normed = BasePlatformAdapter._normalize_file_url(img_url)
+                    if normed:
+                        key = ("local", os.path.normcase(normed))
+                        if key in delivery_keys:
+                            continue
+                        delivery_keys.add(key)
+                elif ("local", img_url) in delivery_keys or ("url", img_url) in delivery_keys:
+                    continue
+                else:
+                    delivery_keys.add(("url", img_url))
+                image_delivery.append((img_url, img_alt))
+
+            if image_delivery:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
-                        images=images,
+                        images=image_delivery,
                         metadata=_thread_meta,
                     )
                 except Exception as e:
@@ -18673,13 +18699,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=_thread_metadata,
                     )
 
-                # Send extracted images
-                for image_url, alt_text in (images or []):
+                # Send extracted images via send_multiple_images so that
+                # ``file://`` URIs reach ``send_image_file`` (decoded) instead
+                # of being passed as a literal pathname to ``send_image``.
+                if images:
                     try:
-                        await adapter.send_image(
+                        await adapter.send_multiple_images(
                             chat_id=source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text,
+                            images=images,
                             metadata=_thread_metadata,
                         )
                     except Exception:

@@ -27,7 +27,8 @@ input stack under the hood:
 |---|---|---|
 | macOS | AX (private SkyLight SPIs) | `SLPSPostEventRecordTo` — pid-scoped, no cursor warp |
 | Windows | UIAutomation | `SendInput` + `PostMessage` — no focus steal |
-| Linux | AT-SPI (X11 + Wayland) | XTest (X11) / virtual-keyboard (Wayland) |
+| Linux/X11 | AT-SPI | Target-addressed X11 delivery |
+| Linux/native Wayland | AT-SPI over the user D-Bus | Compositor-approved routes only: semantic AT-SPI actions, wlroots protocols where exposed, or XDG RemoteDesktop/libei after portal consent and verified target activation |
 
 The result is the same on every platform: the agent can read the
 accessibility tree of any visible window AND post synthesized events
@@ -65,7 +66,65 @@ platform-appropriate prereqs:
 |---|---|
 | **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording** → allow your terminal (or Hermes app). `hermes computer-use doctor` will tell you which permission is missing. |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
-| **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
+| **Linux/X11** | A reachable `DISPLAY` and the user session's AT-SPI bus. |
+| **Linux/Wayland** | A verified `WAYLAND_DISPLAY`, user D-Bus, AT-SPI bus, `xdg-desktop-portal`, PipeWire, and the portal backend for your desktop. Hermes detects this automatically; it will not inject input until the driver has a safe target activation route. |
+
+### Native Wayland on Arch Linux
+
+Run this from the **same graphical desktop session** that will be driven:
+
+```bash
+hermes computer-use status
+hermes computer-use doctor
+```
+
+`doctor` reports the detected session (`x11`, native `wayland`, or
+`wayland-xwayland`), portal and AT-SPI D-Bus availability, PipeWire, the one
+portal backend relevant to the detected desktop, the selected capture/input
+candidate, and a copyable `pacman` command if a package is missing. It never
+installs packages, opens a portal dialog, or approves a permission request.
+
+On Arch, shared requirements are `xdg-desktop-portal`, `pipewire`,
+`at-spi2-core`, `libei`, and `libxkbcommon`. Install **one** matching portal
+backend rather than every backend:
+
+- GNOME: `xdg-desktop-portal-gnome`
+- KDE Plasma: `xdg-desktop-portal-kde`
+- Hyprland: `xdg-desktop-portal-hyprland`
+- Sway and compatible wlroots sessions: `xdg-desktop-portal-wlr`
+
+Native Wayland is configured at `computer_use.linux.wayland.enabled`:
+`auto` (default), `enabled`, or `disabled`. `auto` only exports the upstream
+experimental Wayland flag when the resolved driver advertises a machine-readable
+native-Wayland feature. This avoids treating a binary that merely exists on
+`PATH` as safe. `disabled` is the emergency off switch and wins over an
+inherited shell export. `enabled` is a deliberate operator override for testing
+newer driver builds; it does not bypass portal consent or target verification.
+
+The first portal-backed capture/input operation may ask the user for desktop
+permission. Hermes never accepts that dialog. Portal restore tokens remain
+owned by cua-driver and are stored mode `0600`; revoke them in the desktop's
+Screen Sharing/Remote Desktop privacy settings.
+
+SSH, a system service, `su`, and a process launched outside the graphical login
+usually lack the user's D-Bus and Wayland sockets. Do not copy socket paths into
+system services or run the driver as root. Start Hermes as the logged-in desktop
+user and run the doctor there.
+
+#### Compositor tiers
+
+| Desktop | Current Hermes policy |
+|---|---|
+| X11 / XWayland target | Existing supported route. |
+| Sway / wlroots | Driver may use foreign-toplevel, screencopy, and virtual-pointer protocols when advertised; otherwise it refuses unsupported input. |
+| Hyprland | Same protocol-dependent path; run doctor because versions/protocol exposure differ. |
+| GNOME | AT-SPI plus portal/libei can be used only with a verified GNOME helper for exact target activation. Hermes does not install or enable that extension. |
+| KDE Plasma | AT-SPI and portal discovery are diagnosed. Raw foreground input stays refused until the driver exposes a verified target-addressable KWin activation adapter. |
+
+A successful socket write is not success. Every action result carries the driver
+path, verification state, structured refusal code, and recommended escalation.
+On standard Wayland, input to an unverified or non-targetable window is refused
+rather than sent to whatever currently has focus.
 
 Then start a session with the toolset enabled:
 

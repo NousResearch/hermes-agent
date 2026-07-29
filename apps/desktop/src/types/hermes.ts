@@ -1047,6 +1047,25 @@ export interface ComputerUseCheck {
   message: string
 }
 
+export interface LinuxWaylandSummary {
+  session?: { kind?: string; desktop?: string | null }
+  native_wayland_enabled?: boolean
+  driver_native_wayland_capable?: boolean
+  selected_portal_package?: string | null
+  missing_packages?: string[]
+  portal_dbus_available?: boolean
+  atspi_dbus_available?: boolean
+  pipewire_service?: boolean
+  capabilities?: {
+    capture_path?: string | null
+    input_path?: string | null
+    activation_path?: string | null
+    consent_expected?: boolean
+    degraded_reasons?: string[]
+    hard_failures?: string[]
+  }
+}
+
 export interface ComputerUseStatus {
   /** `sys.platform`: "darwin" | "win32" | "linux" | ... */
   platform: string
@@ -1067,6 +1086,9 @@ export interface ComputerUseStatus {
   screen_recording: boolean | null
   screen_recording_capturable: boolean | null
   source: ComputerUsePermissionSource | null
+  /** Linux-only native Wayland/session/package diagnosis. */
+  linux_wayland?: LinuxWaylandSummary
+  remediation?: string
   /** Populated when the status probe itself failed. */
   error: string | null
 }

@@ -253,18 +253,36 @@ def _computer_use_max_image_dimension() -> Optional[int]:
     return dim if dim > 0 else None
 
 
-def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    """Return the environment dict for spawning cua-driver.
+def cua_driver_child_env(
+    base_env: Optional[Dict[str, str]] = None,
+    *,
+    driver_cmd: Optional[str] = None,
+) -> Dict[str, str]:
+    """Return the safe, policy-complete environment for cua-driver.
 
-    Starts from ``base_env`` (defaults to ``os.environ``) and, when telemetry
-    is disabled (the default), injects ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``.
-    When the user has opted in, the var is left untouched so cua-driver uses
-    its own default. Used by every cua-driver spawn site (MCP backend, status,
-    doctor, install) so the policy is applied consistently.
+    Native Wayland is enabled here — the one process-spawn choke point — rather
+    than relying on a user finding an upstream environment flag. The Linux
+    policy is intentionally conservative: ``auto`` requires a verified
+    graphical Wayland session and a driver that passes Hermes' capability gate;
+    ``disabled`` overrides even an inherited upstream flag. No portal consent
+    is requested by this helper.
     """
     env = dict(base_env if base_env is not None else os.environ)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    if sys.platform == "linux":
+        try:
+            from tools.computer_use.linux_wayland import native_wayland_child_env
+            env = native_wayland_child_env(
+                driver_cmd,
+                _computer_use_cfg(),
+                env,
+            )
+        except Exception as exc:
+            # Never make an existing X11 session unusable because an optional
+            # diagnostic helper failed. The helper's absence simply leaves the
+            # upstream Wayland opt-in untouched.
+            logger.debug("native Wayland environment policy unavailable: %s", exc)
     return env
 
 
@@ -409,8 +427,8 @@ class _EmbeddedCuaDaemon:
                 tempfile.gettempdir(), f"hc-{token}.sock"
             )
 
-    def child_env(self) -> Dict[str, str]:
-        env = cua_driver_child_env()
+    def child_env(self, driver_cmd: Optional[str] = None) -> Dict[str, str]:
+        env = cua_driver_child_env(driver_cmd=driver_cmd)
         env["CUA_DRIVER_PERMISSION_MODE"] = "unrestricted"
         env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
@@ -438,7 +456,7 @@ class _EmbeddedCuaDaemon:
         if not self._driver_cmd:
             raise RuntimeError(cua_driver_install_hint())
         self._command, self._mcp_args = _resolve_mcp_invocation(self._driver_cmd)
-        env = _sanitize_subprocess_env(self.child_env())
+        env = _sanitize_subprocess_env(self.child_env(self._driver_cmd))
         command = [
             self._command,
             "serve",
@@ -515,7 +533,7 @@ class _EmbeddedCuaDaemon:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=3.0,
-                    env=_sanitize_subprocess_env(self.child_env()),
+                    env=_sanitize_subprocess_env(self.child_env(self._driver_cmd)),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
@@ -570,7 +588,7 @@ def _resolve_mcp_invocation(
             # cua-driver is a third-party binary — never hand it provider
             # API keys via inherited env (same policy as the MCP and CLI
             # fallback spawns below; #53503/#55709/#58889 lineage).
-            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            env=_sanitize_subprocess_env(cua_driver_child_env(driver_cmd=driver_cmd)),
         )
     except Exception:
         return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS), driver_cmd=driver_cmd)
@@ -639,7 +657,7 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
-            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            env=_sanitize_subprocess_env(cua_driver_child_env(driver_cmd=driver_cmd)),
         )
         help_text = (proc.stdout or "") + (proc.stderr or "")
         return "--no-overlay" in help_text
@@ -784,7 +802,7 @@ def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict
             creationflags=windows_hide_flags(),
             # Sanitized like every other cua-driver spawn: third-party
             # binary, no inherited provider keys (#53503/#55709/#58889).
-            env=_sanitize_subprocess_env(cua_driver_child_env()),
+            env=_sanitize_subprocess_env(cua_driver_child_env(driver_cmd=driver_cmd)),
         )
     except Exception:
         return None
@@ -1154,10 +1172,10 @@ class _CuaDriverSession:
             self._startup_phase = "manifest-discovery"
             if self._embedded_daemon is not None:
                 command, args = self._embedded_daemon.proxy_invocation()
-                child_env = self._embedded_daemon.child_env()
+                child_env = self._embedded_daemon.child_env(driver_cmd)
             else:
                 command, args = _resolve_mcp_invocation(driver_cmd)
-                child_env = cua_driver_child_env()
+                child_env = cua_driver_child_env(driver_cmd=driver_cmd)
             _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
@@ -1550,12 +1568,12 @@ class _CuaDriverSession:
         driver_command = resolve_cua_driver_cmd()
         if not driver_command:
             raise RuntimeError(cua_driver_install_hint())
-        child_env = cua_driver_child_env()
+        child_env = cua_driver_child_env(driver_cmd=driver_command)
         socket_args: List[str] = []
         embedded_daemon = getattr(self, "_embedded_daemon", None)
         if embedded_daemon is not None:
             driver_command = embedded_daemon.proxy_invocation()[0]
-            child_env = embedded_daemon.child_env()
+            child_env = embedded_daemon.child_env(driver_command)
             socket_args = ["--socket", embedded_daemon.socket_path]
         cmd = [
             driver_command,

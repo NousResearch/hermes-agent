@@ -13,7 +13,9 @@ import {
 } from './wake-word'
 
 const requester = (impl: (method: string, params?: Record<string, unknown>) => unknown) =>
-  vi.fn(async (method: string, params: Record<string, unknown> = {}) => impl(method, params)) as unknown as WakeRequester
+  vi.fn(async (method: string, params: Record<string, unknown> = {}) =>
+    impl(method, params)
+  ) as unknown as WakeRequester
 
 beforeEach(() => {
   resetWakeWordState()
@@ -108,9 +110,7 @@ describe('toggleWakeWord', () => {
   it('marks the feature unavailable when start refuses with reason unavailable', async () => {
     applyWakeStatus({ available: true, listening: false, phrase: 'hey hermes' })
 
-    await toggleWakeWord(
-      requester(() => ({ hint: 'Set PORCUPINE_ACCESS_KEY', reason: 'unavailable', started: false }))
-    )
+    await toggleWakeWord(requester(() => ({ hint: 'Set PORCUPINE_ACCESS_KEY', reason: 'unavailable', started: false })))
 
     const state = $wakeWord.get()
     expect(state.available).toBe(false)

@@ -186,6 +186,7 @@ export function useComposerVoice({
   // it guards resumeWakeIfPaused from resuming a detector another surface owns.
   const pauseWakeForVoice = useCallback(() => {
     wakePausedRef.current = true
+
     const barrier = (async () => {
       try {
         await $gateway.get()?.request('wake.pause', {})
@@ -193,6 +194,7 @@ export function useComposerVoice({
         // No wake listener / older backend — nothing held the mic.
       }
     })()
+
     wakePauseBarrierRef.current = barrier
 
     return barrier

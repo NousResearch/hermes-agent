@@ -35,7 +35,15 @@ import { requestVoiceConversationStart } from '@/store/composer'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $previewTarget } from '@/store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, ensureGatewayProfile, newSessionInProfile, normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileScope,
+  ensureGatewayProfile,
+  newSessionInProfile,
+  normalizeProfileKey,
+  refreshActiveProfile
+} from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -667,9 +675,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       emitGatewayEvent(event)
 
       if (event.type === 'wake.detected') {
-        const payload = event.payload as
-          | { profile?: null | string; start_new_session?: boolean }
-          | undefined
+        const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
 
         // Audible confirmation that the wake registered, before voice capture
         // starts. Gated by the shared sound-mute toggle.

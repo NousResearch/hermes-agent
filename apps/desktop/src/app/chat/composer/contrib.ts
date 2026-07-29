@@ -133,10 +133,7 @@ export function useComposerMicroActionProviders(): ComposerMicroActionProvider[]
   const contributions = useContributions(COMPOSER_AREAS.microActions)
 
   return useMemo(
-    () =>
-      contributions
-        .map(c => c.data as ComposerMicroActionProvider)
-        .filter(p => typeof p?.resolve === 'function'),
+    () => contributions.map(c => c.data as ComposerMicroActionProvider).filter(p => typeof p?.resolve === 'function'),
     [contributions]
   )
 }

@@ -23,6 +23,7 @@ gRPC traffic occurs.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -239,6 +240,13 @@ async def test_monitor_still_raises_fatal_when_zombie_degrades_stream(
     monkeypatch.setattr(adapter, "_notify_fatal_error", _fake_notify)
 
     await adapter._monitor_sidecar_health()
+
+    # Fatal notification is dispatched from a detached task (so callers can't
+    # cancel their own handoff) — drain pending tasks before asserting.
+    for _ in range(50):
+        if notified:
+            break
+        await asyncio.sleep(0)
 
     assert adapter.has_fatal_error is True
     assert adapter.fatal_error_code == "UPSTREAM_STREAM_DEGRADED"

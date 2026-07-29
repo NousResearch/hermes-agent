@@ -37,7 +37,7 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
-import { canImportHermesCli, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
+import { canImportHermesCli, execProbeSync, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
@@ -1886,10 +1886,16 @@ function backendSupportsServe(backend) {
   if (supported === null) {
     try {
       const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
-      execFileSync(backend.command, [...prefix, 'serve', '--help'], {
+      // Same cold-Windows Python-startup class as the runtime probes
+      // (#61764/#72632/#72707): `serve --help` imports at least as much as
+      // `hermes --version` (~10.5s measured cold), and a false negative here
+      // is cached for the process lifetime, silently routing a modern
+      // runtime through the legacy `dashboard` form. Share the probe budget
+      // and its timeout-only retry instead of a thinner local bound.
+      execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
         cwd: backend.root || undefined,
         env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
-        timeout: 15000,
+        timeout: PROBE_TIMEOUT_MS,
         stdio: 'ignore',
         windowsHide: true
       })
@@ -3879,17 +3885,20 @@ function resolveHermesBackend(backendArgs) {
       // through to the install-script bootstrap if the optional probe times
       // out under load; the pinned backend is the only valid runtime there.
       if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-        return (
-          unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
-            label: `existing Hermes CLI at ${hermesCommand}`,
-            command: hermesCommand,
-            args: backendArgs,
-            bootstrap: false,
-            env: {},
-            kind: 'command',
-            shell: shellForProbe
-          }
-        )
+        // `unwrapped` above already answered "is this a Windows venv shim?" —
+        // it was null (not a shim, or its import probe failed). Do NOT re-run
+        // unwrapWindowsVenvHermesCommand here: the second call repeats the
+        // same un-memoized import probe, costing up to another full probe
+        // timeout on the boot path for an answer we already have.
+        return {
+          label: `existing Hermes CLI at ${hermesCommand}`,
+          command: hermesCommand,
+          args: backendArgs,
+          bootstrap: false,
+          env: {},
+          kind: 'command',
+          shell: shellForProbe
+        }
       }
 
       rememberLog(

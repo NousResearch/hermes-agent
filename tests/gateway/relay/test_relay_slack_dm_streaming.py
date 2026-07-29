@@ -87,7 +87,7 @@ async def test_slack_dm_reply_keeps_anchor_in_thread_per_message_mode():
     assert frame["reply_to"] == "1700.0001", (
         "thread-per-message: the triggering ts anchors the final reply"
     )
-    # QA-7: the connector's Slack sender threads on metadata.thread_id ONLY
+    # The connector's Slack sender threads on metadata.thread_id ONLY
     # (threadTs() never reads the frame's reply_to), so the surviving anchor
     # must be promoted into metadata for the send to actually thread.
     assert (frame["metadata"] or {}).get("thread_id") == "1700.0001"
@@ -263,3 +263,99 @@ async def test_slack_dm_stream_consumer_threads_in_thread_per_message_mode():
     assert consumer.message_id and consumer.message_id != "__no_edit__"
     edit_ids = {f["message_id"] for f in stub.sent if f["op"] == "edit"}
     assert edit_ids <= {stub.next_send_result["message_id"]}
+
+
+# ---------------------------------------------------------------------------
+# The media lane obeys the SAME thread-anchor contract as the text lane.
+#
+# send() and _send_media() both egress through the connector's Slack sender,
+# so an anchor resolved on only one of them threads an image under the user's
+# DM message in flat mode, and loses the per-message thread in thread mode
+# (threadTs() reads metadata only). Both lanes route through
+# _apply_slack_thread_anchor; these pin that they stay in agreement.
+# ---------------------------------------------------------------------------
+def _media_wire(chat_id: str, chat_type: str):
+    """Like _wire, but the descriptor advertises the send_media op."""
+    desc = _slack_desc(supported_ops=("send", "edit", "typing", "send_media"))
+    stub = StubConnector(desc)
+    adapter = RelayAdapter(PlatformConfig(), desc, transport=stub)
+    src = SessionSource(
+        platform=Platform.SLACK,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        user_id="U1",
+    )
+    adapter._capture_scope(
+        MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+    )
+    return adapter, stub
+
+
+@pytest.mark.asyncio
+async def test_slack_dm_media_keeps_and_promotes_anchor_in_thread_mode():
+    """Thread-per-message: an image must land in the per-message thread. The
+    connector threads on metadata.thread_id only, so the surviving anchor has
+    to be promoted there — a bare reply_to would post to the home channel."""
+    adapter, stub = _media_wire("D1", "dm")
+    await adapter.send_image("D1", "https://example.com/x.png", reply_to="1700.0001")
+    frame = [f for f in stub.sent if f["op"] == "send_media"][-1]
+    assert frame["reply_to"] == "1700.0001"
+    assert (frame["metadata"] or {}).get("thread_id") == "1700.0001", (
+        "media frame must carry the anchor where the connector reads it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_slack_dm_media_drops_synthetic_anchor_in_flat_mode():
+    """Flat mode: the media frame drops the synthetic self-anchor exactly as
+    the text lane does, so the image posts flat at the DM root instead of
+    threading under the user's message, and invents no thread (#18859)."""
+    adapter, stub = _media_wire("D1", "dm")
+    adapter.config.extra = {"reply_in_thread": False}
+    await adapter.send_image("D1", "https://example.com/x.png", reply_to="1700.0001")
+    frame = [f for f in stub.sent if f["op"] == "send_media"][-1]
+    assert frame["reply_to"] is None
+    assert "thread_id" not in (frame["metadata"] or {})
+    assert "thread_ts" not in (frame["metadata"] or {})
+
+
+@pytest.mark.asyncio
+async def test_slack_channel_media_anchor_untouched():
+    """Non-DM chats are outside the synthetic-anchor rule: a channel media
+    send keeps its reply_to unchanged."""
+    adapter, stub = _media_wire("C1", "channel")
+    await adapter.send_image("C1", "https://example.com/x.png", reply_to="1700.0009")
+    frame = [f for f in stub.sent if f["op"] == "send_media"][-1]
+    assert frame["reply_to"] == "1700.0009"
+
+
+@pytest.mark.asyncio
+async def test_media_caller_metadata_not_mutated():
+    """The anchor promotion must not leak into the caller's dict — media
+    helpers are called in loops with a shared metadata mapping."""
+    adapter, stub = _media_wire("D1", "dm")
+    caller_md = {"user_id": "U1"}
+    await adapter.send_image(
+        "D1", "https://example.com/x.png", reply_to="1700.0001", metadata=caller_md
+    )
+    assert caller_md == {"user_id": "U1"}, "caller metadata was mutated in place"
+
+
+# ---------------------------------------------------------------------------
+# The status clear targets the same thread the heartbeat set.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_typing_and_clear_share_one_status_anchor():
+    """send_typing and stop_typing resolve the anchor through one helper: a
+    clear that no-ops threadless leaves the status line stuck until Slack's
+    own timeout."""
+    adapter, stub = _wire("D1", "dm")
+    adapter._last_inbound_ts_by_chat["D1"] = "1700.0001"
+    await adapter.send_typing("D1")
+    await adapter.stop_typing("D1")
+    typing_frames = [f for f in stub.sent if f["op"] == "typing"]
+    assert len(typing_frames) == 2
+    anchors = [(f["metadata"] or {}).get("thread_id") for f in typing_frames]
+    assert anchors == ["1700.0001", "1700.0001"], (
+        "the clear must target the thread the heartbeat set"
+    )

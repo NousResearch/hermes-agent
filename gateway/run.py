@@ -24718,6 +24718,23 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 
+            # Skill Sync — best-effort periodic pull on the same cadence.
+            # Inert unless the access gate is open and a sync base URL is
+            # configured; never raises.
+            try:
+                from tools.skills_sync_client import maybe_pull_skills
+                maybe_pull_skills()
+            except Exception as e:
+                logger.debug("Sync pull tick error: %s", e)
+
+            # Org-shared skills. Gated on real org membership (the token must
+            # carry an org role), so a solo account never reaches the network.
+            try:
+                from tools.skills_sync_client import maybe_pull_org_skills
+                maybe_pull_org_skills()
+            except Exception as e:
+                logger.debug("Org sync pull tick error: %s", e)
+
         # Stale-session auto-archive — a live timer, so gateways that stay up
         # for weeks keep sweeping on schedule (the startup hook fires once).
         # maybe_auto_archive() is gated by sessions.min_interval_hours in

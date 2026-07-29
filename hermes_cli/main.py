@@ -694,6 +694,7 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # separate config.yaml reads (saves ~17ms on every CLI startup — the second
 # `load_config()` was doing a full deep-merge for one boolean lookup).
 _FORCE_IPV4_EARLY = False
+_IPV4_FIRST_EARLY = False
 try:
     import yaml as _yaml_early
 
@@ -720,8 +721,13 @@ try:
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
         _early_net_cfg = _early_cfg_raw.get("network", {})
-        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
-            _FORCE_IPV4_EARLY = True
+        if isinstance(_early_net_cfg, dict):
+            if _early_net_cfg.get("force_ipv4"):
+                _FORCE_IPV4_EARLY = True
+            # ipv4_first defaults to True — apply the lighter-weight IPv4-first
+            # DNS ordering unless explicitly disabled.
+            if _early_net_cfg.get("ipv4_first", True):
+                _IPV4_FIRST_EARLY = True
         del _early_cfg_raw
     del _cfg_path
 except Exception:
@@ -753,6 +759,17 @@ if _FORCE_IPV4_EARLY:
         from hermes_constants import apply_ipv4_preference as _apply_ipv4
 
         _apply_ipv4(force=True)
+    except Exception:
+        pass  # best-effort — don't crash if hermes_constants not importable yet
+
+# Apply the lighter-weight IPv4-first DNS ordering (issue #71215).  This sorts
+# getaddrinfo results so A records are tried before AAAA, avoiding the 10-30 s
+# IPv6 connect timeout on dual-stack hosts with dead IPv6 routes.  On by default.
+if _IPV4_FIRST_EARLY:
+    try:
+        from hermes_constants import apply_ipv6_fallback_ordering as _apply_ipv4first
+
+        _apply_ipv4first(enabled=True)
     except Exception:
         pass  # best-effort — don't crash if hermes_constants not importable yet
 

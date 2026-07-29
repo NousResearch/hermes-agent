@@ -3226,10 +3226,13 @@ def run_job(
 
         # Apply IPv4 preference if configured.
         try:
-            from hermes_constants import apply_ipv4_preference
+            from hermes_constants import apply_ipv4_preference, apply_ipv6_fallback_ordering
             _net_cfg = _cfg.get("network", {})
-            if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
-                apply_ipv4_preference(force=True)
+            if isinstance(_net_cfg, dict):
+                if _net_cfg.get("ipv4_first", True):
+                    apply_ipv6_fallback_ordering(enabled=True)
+                if _net_cfg.get("force_ipv4"):
+                    apply_ipv4_preference(force=True)
         except Exception:
             pass
 

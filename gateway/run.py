@@ -2118,10 +2118,13 @@ if _config_path.exists():
 
 # Apply IPv4 preference if configured (before any HTTP clients are created).
 try:
-    from hermes_constants import apply_ipv4_preference
+    from hermes_constants import apply_ipv4_preference, apply_ipv6_fallback_ordering
     _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
-    if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
-        apply_ipv4_preference(force=True)
+    if isinstance(_network_cfg, dict):
+        if _network_cfg.get("ipv4_first", True):
+            apply_ipv6_fallback_ordering(enabled=True)
+        if _network_cfg.get("force_ipv4"):
+            apply_ipv4_preference(force=True)
 except Exception as _bootstrap_exc:
     print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
 

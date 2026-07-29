@@ -3201,6 +3201,11 @@ DEFAULT_CONFIG = {
         # Python tries AAAA records first and hangs for the full TCP timeout
         # before falling back to IPv4.  Set to true to skip IPv6 entirely.
         "force_ipv4": False,
+        # Try IPv4 before IPv6 in DNS resolution ordering.  Lighter-weight than
+        # force_ipv4: keeps IPv6 available but sorts A records before AAAA so
+        # that dual-stack hosts with dead IPv6 routes don't pay the TCP connect
+        # timeout on every call before falling back to IPv4.  On by default.
+        "ipv4_first": True,
     },
 
     # Gateway settings — control how messaging platforms (Telegram, Discord,

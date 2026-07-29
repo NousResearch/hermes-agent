@@ -2008,10 +2008,9 @@ class GatewaySlashCommandsMixin:
                                     _persist_model_cfg = {}
                                     _persist_cfg["model"] = _persist_model_cfg
                                 try:
-                                    from hermes_cli.route_identity import should_clear_context_pin
+                                    from hermes_cli.route_identity import should_clear_context_pin_async
 
-                                    if await asyncio.to_thread(
-                                        should_clear_context_pin,
+                                    if await should_clear_context_pin_async(
                                         _persist_model_cfg.get("default")
                                         or _persist_model_cfg.get("model"),
                                         result.new_model,
@@ -2337,10 +2336,9 @@ class GatewaySlashCommandsMixin:
                         model_cfg = {}
                         cfg["model"] = model_cfg
                     try:
-                        from hermes_cli.route_identity import should_clear_context_pin
+                        from hermes_cli.route_identity import should_clear_context_pin_async
 
-                        if await asyncio.to_thread(
-                            should_clear_context_pin,
+                        if await should_clear_context_pin_async(
                             model_cfg.get("default") or model_cfg.get("model"),
                             result.new_model,
                             model_cfg.get("base_url"),

@@ -273,27 +273,52 @@ def _mark_stale_cache_grace() -> None:
         _models_dev_cache_time = grace_time
 
 
+def _commit_registry(data: Dict[str, Any], *, where: str) -> None:
+    """Persist a freshly fetched registry: disk + in-mem + clear backoff.
+
+    Callers must hold ``_models_dev_fetch_lock`` so a failing refresh on one
+    path can never stomp the state a succeeding refresh on the other path
+    just committed (e.g. a failing background worker re-arming the backoff
+    immediately after a successful ``force_refresh``).
+    """
+    global _models_dev_cache, _models_dev_cache_time, _models_dev_retry_after
+    _save_disk_cache(data)
+    _models_dev_cache = data
+    _models_dev_cache_time = time.time()
+    _models_dev_retry_after = 0
+    logger.debug(
+        "Refreshed models.dev registry (%s): %d providers, %d total models",
+        where,
+        len(data),
+        sum(len(p.get("models", {})) for p in data.values() if isinstance(p, dict)),
+    )
+
+
+def _note_refresh_failure(exc: Exception, *, where: str) -> None:
+    """Record a failed refresh: arm the process-wide 5-minute backoff.
+
+    Callers must hold ``_models_dev_fetch_lock`` (see ``_commit_registry``).
+    """
+    global _models_dev_retry_after
+    _models_dev_retry_after = time.time() + _MODELS_DEV_RETRY_DELAY
+    logger.debug(
+        "models.dev refresh failed (%s); retry suppressed for %ds: %s",
+        where,
+        _MODELS_DEV_RETRY_DELAY,
+        exc,
+    )
+
+
 def _background_refresh_models_dev() -> None:
     """Best-effort refresh after serving stale cache data."""
-    global _models_dev_cache, _models_dev_cache_time
-    global _models_dev_retry_after, _models_dev_refresh_in_flight
+    global _models_dev_refresh_in_flight
     try:
         data = _fetch_models_dev_from_network()
-        _save_disk_cache(data)
-        _models_dev_cache = data
-        _models_dev_cache_time = time.time()
-        _models_dev_retry_after = 0
-        logger.debug(
-            "Refreshed models.dev registry in background: %d providers",
-            len(data),
-        )
+        with _models_dev_fetch_lock:
+            _commit_registry(data, where="background")
     except Exception as e:
-        _models_dev_retry_after = time.time() + _MODELS_DEV_RETRY_DELAY
-        logger.debug(
-            "Background models.dev refresh failed; retry suppressed for %ds: %s",
-            _MODELS_DEV_RETRY_DELAY,
-            e,
-        )
+        with _models_dev_fetch_lock:
+            _note_refresh_failure(e, where="background")
     finally:
         with _models_dev_refresh_lock:
             _models_dev_refresh_in_flight = False
@@ -436,27 +461,10 @@ def fetch_models_dev(
 
         try:
             data = _fetch_models_dev_from_network()
-            _save_disk_cache(data)
-            _models_dev_cache = data
-            _models_dev_cache_time = time.time()
-            _models_dev_retry_after = 0
-            logger.debug(
-                "Fetched models.dev registry: %d providers, %d total models",
-                len(data),
-                sum(
-                    len(p.get("models", {}))
-                    for p in data.values()
-                    if isinstance(p, dict)
-                ),
-            )
+            _commit_registry(data, where="foreground")
             return data
         except Exception as e:
-            _models_dev_retry_after = time.time() + _MODELS_DEV_RETRY_DELAY
-            logger.debug(
-                "Failed to fetch models.dev; retry suppressed for %ds: %s",
-                _MODELS_DEV_RETRY_DELAY,
-                e,
-            )
+            _note_refresh_failure(e, where="foreground")
 
         # Stage 5: network failed — return any stale memory/disk cache. Cache
         # freshness remains expired; the retry-after timestamp controls when

@@ -170,10 +170,8 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
   useEffect(() => {
     // Resolve the owning surface while the composer is still attached; the
-    // unmount cleanup runs after React detached the node, where closest()
-    // can no longer find [data-chat-surface] and would clear the document
-    // root instead of this surface (same class of bug as the status stack's
-    // stale-clearance leak).
+    // unmount cleanup runs after React detached the node, where closest() can
+    // no longer find [data-chat-surface].
     const root = chatSurfaceRoot(composerRef.current)
 
     return () => {

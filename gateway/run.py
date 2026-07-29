@@ -2191,6 +2191,12 @@ from gateway.delivery import (
     resolve_delivery_transport,
 )
 from gateway.turn_lease import SessionTurnLeaseRegistry
+from gateway.session_state import (
+    SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET,
+    SessionState,
+    legacy_dict_property,
+    legacy_lease_token_property,
+)
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -2279,14 +2285,17 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 
-# Conversation-scoped per-session state registry.  Every GatewayRunner dict
-# keyed by session_key whose entries must NOT survive a conversation boundary
-# (/new, /resume, auto-reset, expiry finalization, compression-exhausted
-# reset) is listed here, and _clear_conversation_scope() pops them all.
-# Boundaries used to each carry a hand-copied pop-list that drifted whenever
-# a new dict was added (#48031, #58403, #10702, #35809). Adding a new
-# conversation-scoped dict means adding its attribute name HERE — every
-# boundary then handles it automatically.
+# Conversation-scoped per-session state registry (legacy contract).
+# The state itself now lives in ``SessionState.conversation`` (see
+# gateway/session_state.py) and boundaries clear it structurally via
+# ``ConversationState.clear()`` — adding a field to ConversationState means
+# every boundary picks it up automatically.  This tuple is retained for:
+#   (a) plain-dict conversation-scoped stores not yet folded into
+#       SessionState (currently ``_pending_model_notes``), which
+#       _clear_conversation_scope still pops per-key; and
+#   (b) the public test contract (tests import and iterate this tuple).
+# History: boundaries used to each carry a hand-copied pop-list that drifted
+# whenever a new dict was added (#48031, #58403, #10702, #35809).
 #
 # NOT in this list (different lifecycles):
 # - _running_agents/_running_agents_ts/_active_session_leases/_busy_ack_ts/
@@ -3338,7 +3347,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
-    _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -3355,14 +3363,82 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
-    _session_model_overrides: Dict[str, Dict[str, str]] = {}
-    _pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
-    _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
-    _session_service_tier_overrides: Dict[str, Optional[str]] = {}
-    _pending_turn_sidecar_notes: Dict[str, List[str]] = {}
-    _session_ephemeral_pin: Dict[str, tuple] = {}
-    _session_vc_last: Dict[str, str] = {}
     _startup_restore_in_progress: bool = False
+
+    # ------------------------------------------------------------------
+    # Legacy per-session dict adapters.  All per-session state lives in
+    # ``self._sessions`` (Dict[str, SessionState]); these properties expose
+    # the pre-consolidation dict attributes as LIVE MutableMapping views so
+    # the extensive test surface (and a few mixin/adapter call sites) that
+    # read/write ``runner._running_agents`` etc. keeps working unchanged.
+    # New production code should use ``self._session_state(key)`` directly.
+    # ------------------------------------------------------------------
+    _running_agents = legacy_dict_property("_running_agents")
+    _running_agents_ts = legacy_dict_property("_running_agents_ts")
+    _active_session_leases = legacy_dict_property("_active_session_leases")
+    _busy_ack_ts = legacy_dict_property("_busy_ack_ts")
+    _turn_lease_tokens = legacy_lease_token_property()
+    _session_run_generation = legacy_dict_property("_session_run_generation")
+    _session_model_overrides = legacy_dict_property("_session_model_overrides")
+    _pending_one_turn_model_restores = legacy_dict_property(
+        "_pending_one_turn_model_restores"
+    )
+    _session_reasoning_overrides = legacy_dict_property("_session_reasoning_overrides")
+    _session_service_tier_overrides = legacy_dict_property(
+        "_session_service_tier_overrides"
+    )
+    _last_resolved_model = legacy_dict_property("_last_resolved_model")
+    _queued_events = legacy_dict_property("_queued_events")
+    _pending_turn_sidecar_notes = legacy_dict_property("_pending_turn_sidecar_notes")
+    _pending_messages = legacy_dict_property("_pending_messages")
+    _pending_native_image_paths_by_session = legacy_dict_property(
+        "_pending_native_image_paths_by_session"
+    )
+    _session_ephemeral_pin = legacy_dict_property("_session_ephemeral_pin")
+    _session_vc_last = legacy_dict_property("_session_vc_last")
+    _pending_approvals = legacy_dict_property("_pending_approvals")
+    _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
+
+    # -- SessionState accessors -----------------------------------------
+    def _sessions_map(self) -> Dict[str, "SessionState"]:
+        """The per-session state map; lazily created so bare test runners
+        built via ``object.__new__`` work without ``__init__``."""
+        sessions = self.__dict__.get("_sessions")
+        if sessions is None:
+            sessions = {}
+            self.__dict__["_sessions"] = sessions
+        return sessions
+
+    def _session_state(self, session_key: str) -> "SessionState":
+        """Get-or-create the :class:`SessionState` for ``session_key``."""
+        sessions = self._sessions_map()
+        state = sessions.get(session_key)
+        if state is None:
+            state = SessionState()
+            sessions[session_key] = state
+        return state
+
+    def _peek_session_state(self, session_key: str) -> Optional["SessionState"]:
+        """Return the SessionState for ``session_key`` without creating one."""
+        sessions = self.__dict__.get("_sessions")
+        if not sessions:
+            return None
+        return sessions.get(session_key)
+
+    def _is_session_running(self, session_key: str) -> bool:
+        """True when the session holds a running-turn slot (agent or sentinel)."""
+        state = self._peek_session_state(session_key)
+        return state is not None and state.turn.agent is not None
+
+    def _running_agent_items(self) -> List[tuple]:
+        """(session_key, agent) pairs for sessions with a running turn
+        (including pending sentinels), matching the old ``_running_agents``
+        dict contents."""
+        return [
+            (key, state.turn.agent)
+            for key, state in self._sessions_map().items()
+            if state.turn.agent is not None
+        ]
     # Loop-liveness heartbeat / watchdog handles (#66892, #69089). Class-level
     # defaults so partial construction in tests doesn't blow up on access; the
     # real values are set in __init__ / start() / stop().
@@ -3489,11 +3565,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect
         # the pool during a real shutdown.
         self._executor_closing = False
-        # Track running agents per session for interrupt support
-        # Key: session_key, Value: AIAgent instance
-        self._running_agents: Dict[str, Any] = {}
-        self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
-        self._active_session_leases: Dict[str, Any] = {}
+        # ALL per-session state (turn / conversation / persistent scopes)
+        # lives in one container — see gateway/session_state.py.  Access via
+        # self._session_state(key) (get-or-create) or
+        # self._peek_session_state(key) (read-only).
+        self._sessions: Dict[str, SessionState] = {}
         # Per-SESSION_ID turn lease (#64934): serializes the
         # [load history → run → flush] region when two ROUTING KEYS resolve
         # to one session_id (switch_session's many-to-one mapping). The
@@ -3504,16 +3580,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Tokens for held turn leases, keyed by (routing key, run generation)
         # so release is granted per-turn and a stale unwind can never free a
         # newer turn's lease (#28686 ownership lesson).
-        self._turn_lease_tokens: Dict[tuple, Any] = {}
-        self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        # Held turn-lease tokens live on SessionState.turn.lease_token /
+        # .lease_generation (the old dict was keyed (routing key, generation)
+        # so a stale unwind could never free a newer turn's lease — the
+        # generation field preserves that ownership check, #28686).
+        # Runner-level queued interrupt text lives on
+        # SessionState.persistent.pending_command_text (NOTE: distinct from
+        # the adapter-level _pending_messages Dict[str, MessageEvent] in
+        # gateway/platforms/base.py, which shares the legacy name).
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
         # model (e.g. an mtime-keyed config-cache miss during a post-interrupt
         # recovery turn). Without this, the agent is built with model="" and
         # every API call fails HTTP 400 "No models provided" — the session goes
-        # silent until the user manually re-sends. See #35314. ``"*"`` holds a
-        # process-wide last-known-good for sessions seen for the first time.
-        self._last_resolved_model: Dict[str, str] = {}
+        # silent until the user manually re-sends. See #35314. The ``"*"``
+        # session entry holds a process-wide last-known-good for sessions
+        # seen for the first time.  Lives on
+        # SessionState.conversation.last_resolved_model.
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -3522,11 +3605,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # When the slot is occupied, additional /queue items land here and
         # are promoted one-at-a-time after each run's drain.  Cleared on
         # /new and /reset.  /model and other mid-session operations
-        # preserve the queue.
-        self._queued_events: Dict[str, List[MessageEvent]] = {}
-        self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
-        self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
-        self._session_run_generation: Dict[str, int] = {}
+        # preserve the queue.  Lives on SessionState.conversation.queued_events;
+        # native image paths, busy-ack debounce timestamps and the monotonic
+        # run-generation counter (#28686, NEVER reset) live on SessionState too.
         # Startup restore gate: while restart-interrupted sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
         # with the synthetic resume turns for the same session.  The queued
@@ -3569,35 +3650,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
 
-        # Per-session model overrides from /model command.
-        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
-        self._pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
-        # Per-session reasoning effort overrides from /reasoning.
-        # Key: session_key, Value: parsed reasoning config dict.
-        self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
-        # Per-session fast-mode overrides from /fast.
-        # Key: session_key, Value: "priority" or None (explicit normal).
-        self._session_service_tier_overrides: Dict[str, Optional[str]] = {}
-        # Per-turn must-deliver notes relocated out of the ephemeral system
-        # prompt (auto-reset note, first-contact intro, voice-channel change).
-        # Staged by _handle_message_with_agent, consumed once by run_sync and
-        # delivered on the current user message (api_content sidecar).
-        self._pending_turn_sidecar_notes: Dict[str, List[str]] = {}
-        # Pinned session-context bytes keyed by the renderer-input change
-        # key.  Key hit → reuse pinned bytes verbatim; key miss → re-render
-        # + re-pin (a legitimate cache bust).
-        self._session_ephemeral_pin: Dict[str, tuple] = {}
-        # Last voice-channel context delivered per session — the VC note is
-        # injected only when the live state differs from this value.
-        self._session_vc_last: Dict[str, str] = {}
+        # Conversation-scoped per-session state (/model, /model --once,
+        # /reasoning, /fast overrides; per-turn sidecar notes; ephemeral
+        # context pin; last-delivered voice-channel context) lives on
+        # SessionState.conversation — see gateway/session_state.py.
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
-        # Track pending exec approvals per session
-        # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
-        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        # Pending exec approvals live on SessionState.persistent.approvals.
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
@@ -3607,9 +3668,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # _handle_adapter_fatal_error) so the event loop can't GC them mid-run.
         self._fatal_handler_tasks: set = set()
 
-        # Track pending /update prompt responses per session.
-        # Key: session_key, Value: True when a prompt is waiting for user input.
-        self._update_prompt_pending: Dict[str, bool] = {}
+        # Pending /update prompt flags live on
+        # SessionState.persistent.update_prompt_pending.
 
         # Slash-confirm state lives in tools.slash_confirm (module-level),
         # so platform adapters can resolve callbacks without a backref to
@@ -4465,7 +4525,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         model = _resolve_gateway_model(user_config)
         if resolved_session_key:
             self._rehydrate_session_model_override(resolved_session_key)
-        override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        _override_state = (
+            self._peek_session_state(resolved_session_key)
+            if resolved_session_key
+            else None
+        )
+        override = (
+            _override_state.conversation.model_override if _override_state else None
+        )
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -4497,7 +4564,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug(
                 "No session model override: session=%s config_model=%s override_keys=%s",
                 resolved_session_key or "", model,
-                list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
+                [
+                    _key
+                    for _key, _st in list(self._sessions_map().items())
+                    if _st.conversation.model_override is not None
+                ][:5] or "[]",
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -4570,23 +4641,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # makes every API call fail HTTP 400 "No models provided" and the
         # session goes silent until the user manually re-sends. ``getattr``
         # guards against bare test runners built via ``object.__new__``.
-        _last_good = getattr(self, "_last_resolved_model", None)
-        if _last_good is not None:
-            if not model:
-                _recovered = _last_good.get(resolved_session_key or "") or _last_good.get("*")
-                if _recovered:
-                    logger.warning(
-                        "Empty model resolved for session=%s — recovering "
-                        "last-known-good model %s (config read likely returned "
-                        "empty; see #35314)",
-                        resolved_session_key or "", _recovered,
-                    )
-                    model = _recovered
-            elif model:
-                # Cache the good resolution for future recovery turns.
-                if resolved_session_key:
-                    _last_good[resolved_session_key] = model
-                _last_good["*"] = model
+        if not model:
+            _lr_state = (
+                self._peek_session_state(resolved_session_key)
+                if resolved_session_key
+                else None
+            )
+            _lr_star = self._peek_session_state("*")
+            _recovered = (
+                (_lr_state.conversation.last_resolved_model if _lr_state else "")
+                or (_lr_star.conversation.last_resolved_model if _lr_star else "")
+            )
+            if _recovered:
+                logger.warning(
+                    "Empty model resolved for session=%s — recovering "
+                    "last-known-good model %s (config read likely returned "
+                    "empty; see #35314)",
+                    resolved_session_key or "", _recovered,
+                )
+                model = _recovered
+        elif model:
+            # Cache the good resolution for future recovery turns.
+            if resolved_session_key:
+                self._session_state(
+                    resolved_session_key
+                ).conversation.last_resolved_model = model
+            self._session_state("*").conversation.last_resolved_model = model
 
         return model, runtime_kwargs
 
@@ -5187,12 +5267,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
             return
-        queued_events = getattr(self, "_queued_events", None)
-        if queued_events is None:
-            queued_events = {}
-            self._queued_events = queued_events
         if session_key in pending_slot:
-            queued_events.setdefault(session_key, []).append(queued_event)
+            self._session_state(session_key).conversation.queued_events.append(
+                queued_event
+            )
         else:
             pending_slot[session_key] = queued_event
 
@@ -5213,28 +5291,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             the slot so the NEXT recursion picks it up.
         Returns the (possibly updated) pending_event for drain to use.
         """
-        queued_events = getattr(self, "_queued_events", None)
-        if not queued_events:
-            return pending_event
-        overflow = queued_events.get(session_key)
+        _q_state = self._peek_session_state(session_key)
+        overflow = _q_state.conversation.queued_events if _q_state else None
         if not overflow:
             return pending_event
         next_queued = overflow.pop(0)
-        if not overflow:
-            queued_events.pop(session_key, None)
         if pending_event is None:
             return next_queued
         if adapter is not None and hasattr(adapter, "_pending_messages"):
             adapter._pending_messages[session_key] = next_queued
         else:
             # No adapter — push back so we don't silently drop the item.
-            queued_events.setdefault(session_key, []).insert(0, next_queued)
+            overflow.insert(0, next_queued)
         return pending_event
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
-        queued_events = getattr(self, "_queued_events", None) or {}
-        depth = len(queued_events.get(session_key, []))
+        _q_state = self._peek_session_state(session_key)
+        depth = len(_q_state.conversation.queued_events) if _q_state else 0
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
         return depth
@@ -5265,20 +5339,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pending_slot.pop(session_key, None)
                 removed += 1
 
-        queued_events = getattr(self, "_queued_events", None)
-        if isinstance(queued_events, dict):
-            overflow = queued_events.get(session_key) or []
-            if overflow:
-                kept = []
-                for queued_event in overflow:
-                    if self._is_goal_continuation_event(queued_event):
-                        removed += 1
-                    else:
-                        kept.append(queued_event)
-                if kept:
-                    queued_events[session_key] = kept
+        _q_state = self._peek_session_state(session_key)
+        overflow = _q_state.conversation.queued_events if _q_state else []
+        if overflow:
+            kept = []
+            for queued_event in overflow:
+                if self._is_goal_continuation_event(queued_event):
+                    removed += 1
                 else:
-                    queued_events.pop(session_key, None)
+                    kept.append(queued_event)
+            _q_state.conversation.queued_events = kept
         return removed
 
     def _goal_still_active_for_session(self, session_id: str) -> bool:
@@ -5678,9 +5748,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 resolved_session_key = None
 
-        overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
-        if resolved_session_key and resolved_session_key in overrides:
-            return overrides[resolved_session_key]
+        if resolved_session_key:
+            _r_state = self._peek_session_state(resolved_session_key)
+            if _r_state is not None and _r_state.conversation.reasoning_override is not None:
+                return _r_state.conversation.reasoning_override
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(
@@ -5691,12 +5762,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Set or clear the session-scoped reasoning override."""
         if not session_key:
             return
-        if not hasattr(self, "_session_reasoning_overrides"):
-            self._session_reasoning_overrides = {}
-        if reasoning_config is None:
-            self._session_reasoning_overrides.pop(session_key, None)
-        else:
-            self._session_reasoning_overrides[session_key] = dict(reasoning_config)
+        # Per-session field write — the old lazy ``self._session_reasoning_overrides
+        # = {}`` init replaced the WHOLE dict, racing concurrent sessions'
+        # overrides; a SessionState field reset cannot cross sessions.
+        self._session_state(session_key).conversation.reasoning_override = (
+            None if reasoning_config is None else dict(reasoning_config)
+        )
 
     def _resolve_session_service_tier(
         self,
@@ -5716,9 +5787,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 resolved_session_key = None
 
-        overrides = getattr(self, "_session_service_tier_overrides", {}) or {}
-        if resolved_session_key and resolved_session_key in overrides:
-            return overrides[resolved_session_key]
+        if resolved_session_key:
+            _t_state = self._peek_session_state(resolved_session_key)
+            if (
+                _t_state is not None
+                and _t_state.conversation.service_tier_override
+                is not _SERVICE_TIER_UNSET
+            ):
+                return _t_state.conversation.service_tier_override
         return self._load_service_tier()
 
     def _set_session_service_tier_override(
@@ -5734,15 +5810,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
-        if "_session_service_tier_overrides" not in self.__dict__:
-            # Force an instance-level dict: the class attribute is a shared
-            # default for partially-constructed test runners, and mutating it
-            # would leak overrides across runner instances.
-            self._session_service_tier_overrides = {}
-        if clear:
-            self._session_service_tier_overrides.pop(session_key, None)
-        else:
-            self._session_service_tier_overrides[session_key] = service_tier
+        # Presence-sensitive: "priority" or None (explicit normal) both count
+        # as an override; the sentinel means "no override".  Old code
+        # wholesale-replaced the dict on lazy init (cross-session race) —
+        # per-session field writes eliminate that class of bug.
+        self._session_state(session_key).conversation.service_tier_override = (
+            _SERVICE_TIER_UNSET if clear else service_tier
+        )
 
     @staticmethod
     def _load_service_tier() -> str | None:
@@ -5973,7 +6047,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
             session_key: agent
-            for session_key, agent in self._running_agents.items()
+            for session_key, agent in self._running_agent_items()
             if agent is not _AGENT_PENDING_SENTINEL
         }
 
@@ -5991,9 +6065,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         max_sessions = self._get_max_concurrent_sessions()
         if max_sessions is None:
             return None
-        if session_key in getattr(self, "_running_agents", {}):
+        if self._is_session_running(session_key):
             return None
-        active_count = len(getattr(self, "_running_agents", {}))
+        active_count = self._running_agent_count()
         if active_count < max_sessions:
             return None
         from hermes_cli.active_sessions import active_session_limit_message
@@ -6006,7 +6080,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
     ) -> tuple[Any, Optional[str]]:
         """Claim a cross-process active-session slot for a new gateway turn."""
-        if session_key in getattr(self, "_running_agents", {}):
+        if self._is_session_running(session_key):
             return None, None
         local_limit_message = self._active_session_limit_message(session_key)
         if local_limit_message is not None:
@@ -6353,7 +6427,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(event, "internal", False):
             return False
 
-        running_agent = self._running_agents.get(session_key)
+        _busy_state = self._peek_session_state(session_key)
+        running_agent = _busy_state.turn.agent if _busy_state else None
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
@@ -6510,7 +6585,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # read just to discover that no ack will be sent.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
-        last_ack = self._busy_ack_ts.get(session_key, 0)
+        last_ack = _busy_state.turn.busy_ack_ts if _busy_state else 0
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
@@ -6538,7 +6613,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Busy steer ack suppressed for session %s", session_key)
                 return True
 
-        self._busy_ack_ts[session_key] = now
+        self._session_state(session_key).turn.busy_ack_ts = now
 
         # Build a status-rich acknowledgment. Mobile chat defaults keep this
         # terse; detailed iteration/tool state is still available in logs and
@@ -6559,7 +6634,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 iteration = summary.get("api_call_count", 0)
                 max_iter = summary.get("max_iterations", 0)
                 current_tool = summary.get("current_tool")
-                start_ts = self._running_agents_ts.get(session_key, 0)
+                start_ts = _busy_state.turn.started_ts if _busy_state else 0
                 if start_ts:
                     elapsed_min = int((now - start_ts) / 60)
                     if elapsed_min > 0:
@@ -6698,7 +6773,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         deadline = asyncio.get_running_loop().time() + timeout
         while (
             (
-                self._running_agents
+                len(self._running_agents)
                 or self._active_cron_job_count()
                 or self._active_api_run_count()
             )
@@ -6707,7 +6782,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _maybe_update_status()
             await asyncio.sleep(0.1)
         timed_out = (
-            bool(self._running_agents)
+            bool(len(self._running_agents))
             or bool(self._active_cron_job_count())
             or bool(self._active_api_run_count())
         )
@@ -7012,8 +7087,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         if executor_task is not None and executor_task.done():
             return False
-        if session_key and self._running_agents.get(session_key) is not agent:
-            return False
+        if session_key:
+            _hb_state = self._peek_session_state(session_key)
+            if (_hb_state.turn.agent if _hb_state else None) is not agent:
+                return False
         return True
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
@@ -7613,7 +7690,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # before spawning this task.  If adapter.handle_message raises
             # before _handle_message takes ownership, release that pre-claim;
             # otherwise the real run's normal cleanup owns the slot.
-            if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+            _pre_state = self._peek_session_state(session_key)
+            if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
                 self._release_running_agent_state(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
@@ -7905,7 +7983,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Already being resumed (e.g. scheduled at startup and still
             # in-flight) — don't synthesize a second continuation turn.
-            if entry.session_key in self._running_agents:
+            if self._is_session_running(entry.session_key):
                 continue
 
             source = entry.origin
@@ -7944,8 +8022,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # first await (where _process_message_background sets the real
             # sentinel) sees the slot as occupied and queues behind it
             # instead of spinning up a duplicate AIAgent (#45456).
-            self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
-            self._running_agents_ts[entry.session_key] = time.time()
+            _resume_state = self._session_state(entry.session_key)
+            _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
+            _resume_state.turn.started_ts = time.time()
             self._persist_active_agents()
 
             # Empty-text internal event — the _is_resume_pending branch in
@@ -9346,7 +9425,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # Fall back to _running_agents in case the agent is
                         # still mid-turn when the expiry fires.
                         if _cached_agent is None:
-                            _cached_agent = self._running_agents.get(key)
+                            _exp_state = self._peek_session_state(key)
+                            _cached_agent = _exp_state.turn.agent if _exp_state else None
                         if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
                             await self._cleanup_agent_resources_off_loop(
                                 _cached_agent, context="session expiry"
@@ -10103,19 +10183,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.adapters.clear()
             for _session_key in list(self._running_agents):
                 self._release_running_agent_state(_session_key)
+            # Flush pending messages to disk before clearing (#72680).
+            # When FTS5 corruption prevents message persistence, the
+            # in-memory pending text is the only surviving copy.  Clearing
+            # without flushing causes permanent data loss.
+            try:
+                from gateway.shutdown_flush import flush_pending_to_file
+                flush_pending_to_file(dict(self._pending_messages), reason="shutdown")
+            except Exception:
+                pass
+            # On the real runner these are live SessionState views whose
+            # clear() resets one field per session — never a wholesale dict
+            # swap, so a concurrent writer on another session can't lose its
+            # entry.  Test fakes borrowing _stop_impl keep plain dicts.
             self._running_agents.clear()
             self._running_agents_ts.clear()
             if hasattr(self, "_active_session_leases"):
                 self._active_session_leases.clear()
-            # Flush pending messages to disk before clearing (#72680).
-            # When FTS5 corruption prevents message persistence, the
-            # in-memory _pending_messages dict holds the only surviving
-            # copy.  Clearing without flushing causes permanent data loss.
-            try:
-                from gateway.shutdown_flush import flush_pending_to_file
-                flush_pending_to_file(self._pending_messages, reason="shutdown")
-            except Exception:
-                pass
             self._pending_messages.clear()
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
@@ -11346,7 +11430,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return "Usage: /steer <prompt>"
-        running_agent = self._running_agents.get(quick_key)
+        _steer_state = self._peek_session_state(quick_key)
+        running_agent = _steer_state.turn.agent if _steer_state else None
         if running_agent is _AGENT_PENDING_SENTINEL:
             # Agent hasn't started yet — queue as turn-boundary fallback.
             adapter = self._adapter_for_source(source)
@@ -11582,8 +11667,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
-        _update_prompts = getattr(self, "_update_prompt_pending", {})
-        if _update_prompts.get(_quick_key):
+        _up_state = self._peek_session_state(_quick_key)
+        if _up_state is not None and _up_state.persistent.update_prompt_pending:
             raw = (event.text or "").strip()
             # Accept /approve and /deny as shorthand for yes/no
             cmd = event.get_command()
@@ -11619,7 +11704,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except OSError as e:
                     logger.warning("Failed to write update response: %s", e)
                     return f"✗ Failed to send response to update process: {e}"
-                _update_prompts.pop(_quick_key, None)
+                _up_state.persistent.update_prompt_pending = False
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
             # Recognized slash command during a pending update prompt:
@@ -11647,7 +11732,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Failed to write cancel response for pending update prompt: %s",
                         e,
                     )
-                _update_prompts.pop(_quick_key, None)
+                _up_state.persistent.update_prompt_pending = False
 
         # Intercept messages that are responses to a pending clarify.
         # Open-ended prompts and "Other" responses are captured as free text;
@@ -11770,10 +11855,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # has been *idle* beyond the inactivity threshold (or when the agent
         # object has no activity tracker and wall-clock age is extreme).
         _raw_stale_timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
-        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
-        if _quick_key in self._running_agents and _stale_ts:
+        _quick_state = self._peek_session_state(_quick_key)
+        _stale_ts = _quick_state.turn.started_ts if _quick_state else 0
+        if _quick_state is not None and _quick_state.turn.agent is not None and _stale_ts:
             _stale_age = time.time() - _stale_ts
-            _stale_agent = self._running_agents.get(_quick_key)
+            _stale_agent = _quick_state.turn.agent
             # Never evict the pending sentinel — it was just placed moments
             # ago during the async setup phase before the real agent is
             # created.  Sentinels have no get_activity_summary(), so the
@@ -11816,7 +11902,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._release_running_agent_state(_quick_key)
 
-        if _quick_key in self._running_agents:
+        if self._is_session_running(_quick_key):
             # Resolve the command once; every command's mid-run behavior is
             # declared on its CommandDef (busy_policy / busy_handler in
             # hermes_cli/commands.py) and dispatched through the single
@@ -11863,7 +11949,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _telegram_followup_grace = float(
                 os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
             )
-            _started_at = self._running_agents_ts.get(_quick_key, 0)
+            _grace_state = self._peek_session_state(_quick_key)
+            _started_at = _grace_state.turn.started_ts if _grace_state else 0
             if (
                 source.platform == Platform.TELEGRAM
                 and event.message_type == MessageType.TEXT
@@ -11889,7 +11976,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                 return None
 
-            running_agent = self._running_agents.get(_quick_key)
+            _ra_state = self._peek_session_state(_quick_key)
+            running_agent = _ra_state.turn.agent if _ra_state else None
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
                 if event.get_command() == "stop":
@@ -12434,8 +12522,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             preset = moa_cfg["default_preset"]
             try:
                 event.text = moa_payload
-                event._moa_restore_override = self._session_model_overrides.get(_quick_key)
-                self._session_model_overrides[_quick_key] = {
+                _moa_state = self._session_state(_quick_key)
+                event._moa_restore_override = _moa_state.conversation.model_override
+                _moa_state.conversation.model_override = {
                     "provider": "moa",
                     "model": preset,
                     "base_url": "moa://local",
@@ -12733,12 +12822,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _quick_key,
             )
             return _limit_message
+        _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
-            if not hasattr(self, "_active_session_leases"):
-                self._active_session_leases = {}
-            self._active_session_leases[_quick_key] = _active_session_lease
-        self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-        self._running_agents_ts[_quick_key] = time.time()
+            _claim_state.turn.lease = _active_session_lease
+        _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
+        _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
@@ -12810,10 +12898,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
         try:
             _restore = getattr(event, "_moa_restore_override", None)
-            if _restore is None:
-                self._session_model_overrides.pop(quick_key, None)
-            else:
-                self._session_model_overrides[quick_key] = _restore
+            self._session_state(quick_key).conversation.model_override = _restore
             self._evict_cached_agent(quick_key)
         except Exception:
             pass
@@ -12823,7 +12908,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key:
             return
         try:
-            snapshot = self._pending_one_turn_model_restores.pop(session_key, None)
+            _otr_state = self._peek_session_state(session_key)
+            snapshot = _otr_state.conversation.one_turn_restore if _otr_state else None
+            if _otr_state is not None:
+                _otr_state.conversation.one_turn_restore = None
             if not snapshot:
                 return
             self._restore_session_model_override(session_key, snapshot)
@@ -12941,11 +13029,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _img_mode == "native":
                     # Defer attachment to the run_conversation call site.
-                    pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
-                    if pending_native is None:
-                        pending_native = {}
-                        self._pending_native_image_paths_by_session = pending_native
-                    pending_native[session_key] = list(image_paths)
+                    self._session_state(
+                        session_key
+                    ).persistent.native_image_paths = list(image_paths)
                     logger.info(
                         "Image routing: native (model supports vision). %d image(s) will be attached inline.",
                         len(image_paths),
@@ -13279,10 +13365,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
-        pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
-        if not pending_native:
+        state = self._peek_session_state(session_key)
+        if state is None or not state.persistent.native_image_paths:
             return []
-        return list(pending_native.pop(session_key, []) or [])
+        paths = list(state.persistent.native_image_paths)
+        state.persistent.native_image_paths = []
+        return paths
 
     def _cache_session_source(self, session_key: str, source) -> None:
         if not session_key or source is None:
@@ -13643,9 +13731,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 timeout=_float_env("HERMES_AGENT_TIMEOUT", 1800),
             )
             if _lease_token is not None:
-                if not hasattr(self, "_turn_lease_tokens"):
-                    self._turn_lease_tokens = {}
-                self._turn_lease_tokens[(_quick_key, run_generation)] = _lease_token
+                _lease_state = self._session_state(_quick_key).turn
+                _lease_state.lease_token = _lease_token
+                _lease_state.lease_generation = run_generation
 
         # Load conversation history from transcript
         history = await self.async_session_store.load_transcript(session_entry.session_id)
@@ -15453,7 +15541,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ["agent:main", platform, chat_type, str(chat_id), str(thread_id)]
         )
         matches = []
-        for key, agent in list(self._running_agents.items()):
+        for key, agent in self._running_agent_items():
             if key == own_key:
                 continue
             if agent is _AGENT_PENDING_SENTINEL or not agent:
@@ -17626,7 +17714,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                           exit_code_path, prompt_path):
                     p.unlink(missing_ok=True)
                 (_hermes_home / ".update_response").unlink(missing_ok=True)
-                self._update_prompt_pending.pop(session_key, None)
+                _up_done = self._peek_session_state(session_key)
+                if _up_done is not None:
+                    _up_done.persistent.update_prompt_pending = False
                 return
 
             # Check for new output
@@ -17647,8 +17737,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # one that's still awaiting a response.  Without this guard the
             # watcher would re-read the same .update_prompt.json every poll
             # cycle and spam the user with duplicate prompt messages.
+            _up_pending_state = (
+                self._peek_session_state(session_key) if session_key else None
+            )
             if (prompt_path.exists() and session_key
-                    and not self._update_prompt_pending.get(session_key)):
+                    and not (
+                        _up_pending_state is not None
+                        and _up_pending_state.persistent.update_prompt_pending
+                    )):
                 try:
                     prompt_data = json.loads(prompt_path.read_text(encoding="utf-8"))
                     prompt_text = prompt_data.get("prompt", "")
@@ -17687,7 +17783,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # next watcher can recover by re-forwarding it from
                         # disk. Duplicate sends in the same process are
                         # still suppressed by _update_prompt_pending.
-                        self._update_prompt_pending[session_key] = True
+                        self._session_state(
+                            session_key
+                        ).persistent.update_prompt_pending = True
                         # .update_response to continue — it doesn't re-check
                         logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
                 except (json.JSONDecodeError, OSError) as e:
@@ -17712,7 +17810,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                       exit_code_path, prompt_path):
                 p.unlink(missing_ok=True)
             (_hermes_home / ".update_response").unlink(missing_ok=True)
-            self._update_prompt_pending.pop(session_key, None)
+            _up_timeout_state = self._peek_session_state(session_key)
+            if _up_timeout_state is not None:
+                _up_timeout_state.persistent.update_prompt_pending = False
 
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
@@ -19351,7 +19451,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         when the store has nothing persisted (e.g. the user ran /new, which
         clears both the in-memory dict and the persisted field).
         """
-        if session_key in self._session_model_overrides:
+        _rehydrate_state = self._peek_session_state(session_key)
+        if (
+            _rehydrate_state is not None
+            and _rehydrate_state.conversation.model_override is not None
+        ):
             return
         store = getattr(self, "session_store", None)
         if store is None:
@@ -19389,7 +19493,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "(provider=%s); using credential-less override",
                     provider, exc_info=True,
                 )
-        self._session_model_overrides[session_key] = override
+        self._session_state(session_key).conversation.model_override = override
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",
@@ -19406,7 +19510,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = self._session_model_overrides.get(session_key)
+        _apply_state = self._peek_session_state(session_key)
+        override = _apply_state.conversation.model_override if _apply_state else None
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -19426,7 +19531,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _snapshot_session_model_override(self, session_key: str) -> dict:
         """Capture a gateway session override before a one-turn switch."""
-        override = self._session_model_overrides.get(session_key)
+        _snap_state = self._peek_session_state(session_key)
+        override = _snap_state.conversation.model_override if _snap_state else None
         return {
             "had_override": override is not None,
             "override": dict(override) if override is not None else None,
@@ -19437,16 +19543,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not session_key:
             return
         if snapshot.get("had_override"):
-            self._session_model_overrides[session_key] = dict(
+            self._session_state(session_key).conversation.model_override = dict(
                 snapshot.get("override") or {}
             )
         else:
-            self._session_model_overrides.pop(session_key, None)
+            _rst_state = self._peek_session_state(session_key)
+            if _rst_state is not None:
+                _rst_state.conversation.model_override = None
         self._evict_cached_agent(session_key)
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = self._session_model_overrides.get(session_key)
+        _ims_state = self._peek_session_state(session_key)
+        override = _ims_state.conversation.model_override if _ims_state else None
         return override is not None and override.get("model") == agent_model
 
     def _release_running_agent_state(
@@ -19484,16 +19593,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key, run_generation
         ):
             return False
-        lease = getattr(self, "_active_session_leases", {}).pop(session_key, None)
-        if lease is not None:
-            try:
-                lease.release()
-            except Exception:
-                logger.debug("Failed to release active session slot", exc_info=True)
-        self._running_agents.pop(session_key, None)
-        self._running_agents_ts.pop(session_key, None)
-        if hasattr(self, "_busy_ack_ts"):
-            self._busy_ack_ts.pop(session_key, None)
+        state = self._peek_session_state(session_key)
+        if state is not None:
+            lease = state.turn.lease
+            if lease is not None:
+                try:
+                    lease.release()
+                except Exception:
+                    logger.debug(
+                        "Failed to release active session slot", exc_info=True
+                    )
+            # One structured reset instead of the old drifting pop-list
+            # (agent / started_ts / lease / busy_ack_ts).  Turn-lease tokens
+            # are deliberately NOT cleared here — _release_turn_lease owns
+            # them (#64934).
+            state.turn.clear()
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
         # between lifecycle transitions.  Preserves gateway_state (see
@@ -19514,13 +19628,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return False
-        tokens = getattr(self, "_turn_lease_tokens", None)
         registry = getattr(self, "_turn_leases", None)
-        if tokens is None or registry is None:
+        state = self._peek_session_state(session_key)
+        if state is None or registry is None:
             return False
-        token = tokens.pop((session_key, run_generation), None)
-        if token is None:
+        turn = state.turn
+        if turn.lease_token is None or turn.lease_generation != run_generation:
             return False
+        token = turn.lease_token
+        turn.lease_token = None
+        turn.lease_generation = None
         try:
             return registry.release(token)
         except Exception:
@@ -19543,15 +19660,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key or not new_session_id:
             return False
-        tokens = getattr(self, "_turn_lease_tokens", None)
         registry = getattr(self, "_turn_leases", None)
-        if tokens is None or registry is None:
+        state = self._peek_session_state(session_key)
+        if state is None or registry is None:
             return False
-        token = tokens.get((session_key, run_generation))
-        if token is None:
+        turn = state.turn
+        if turn.lease_token is None or turn.lease_generation != run_generation:
             return False
         try:
-            return registry.rebind(token, new_session_id)
+            return registry.rebind(turn.lease_token, new_session_id)
         except Exception:
             logger.debug("Failed to rebind turn lease", exc_info=True)
             return False
@@ -19590,6 +19707,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
+        # Structural clear: every conversation-scoped field resets in one
+        # call — no per-attribute pop-list to drift.
+        state = self._peek_session_state(session_key)
+        if state is not None:
+            state.conversation.clear()
+        # Legacy plain-dict stores still registered in
+        # _CONVERSATION_SCOPED_STATE (not yet folded into SessionState),
+        # e.g. _pending_model_notes.  SessionState-backed names resolve to
+        # MutableMapping views (not dict), so the isinstance(dict) guard
+        # skips them — already handled above.
         for attr in _CONVERSATION_SCOPED_STATE:
             store = getattr(self, attr, None)
             if isinstance(store, dict):
@@ -19610,13 +19737,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if isinstance(pending_skills_reload_notes, dict):
             pending_skills_reload_notes.pop(session_key, None)
 
-        pending_approvals = getattr(self, "_pending_approvals", None)
-        if isinstance(pending_approvals, dict):
-            pending_approvals.pop(session_key, None)
-
-        update_prompt_pending = getattr(self, "_update_prompt_pending", None)
-        if isinstance(update_prompt_pending, dict):
-            update_prompt_pending.pop(session_key, None)
+        _sec_state = self._peek_session_state(session_key)
+        if _sec_state is not None:
+            _sec_state.persistent.approvals = None
+            _sec_state.persistent.update_prompt_pending = False
 
         try:
             from tools import slash_confirm as _slash_confirm_mod
@@ -19656,13 +19780,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return 0
-        generations = self.__dict__.get("_session_run_generation")
-        if generations is None:
-            generations = {}
-            self._session_run_generation = generations
-        next_generation = int(generations.get(session_key, 0)) + 1
-        generations[session_key] = next_generation
-        return next_generation
+        persistent = self._session_state(session_key).persistent
+        # Monotonic by design (#28686): incremented here, NEVER reset.
+        persistent.run_generation = int(persistent.run_generation) + 1
+        return persistent.run_generation
 
     def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
         """Invalidate any in-flight run token for ``session_key``."""
@@ -19680,8 +19801,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return True when ``generation`` is still current for ``session_key``."""
         if not session_key:
             return True
-        generations = self.__dict__.get("_session_run_generation") or {}
-        return int(generations.get(session_key, 0)) == int(generation)
+        state = self._peek_session_state(session_key)
+        current = state.persistent.run_generation if state is not None else 0
+        return int(current) == int(generation)
 
     def _bind_adapter_run_generation(
         self,
@@ -19711,7 +19833,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
             return
-        running_agent = self._running_agents.get(session_key)
+        _iac_state = self._peek_session_state(session_key)
+        running_agent = _iac_state.turn.agent if _iac_state else None
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
@@ -19737,7 +19860,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
             adapter.get_pending_message(session_key)  # consume and discard
-        self._pending_messages.pop(session_key, None)
+        if _iac_state is not None:
+            _iac_state.persistent.pending_command_text = None
         if release_running_state:
             self._release_running_agent_state(session_key)
             # Evict the cached agent: ``_interrupt_requested`` is only
@@ -19830,17 +19954,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Stage per-turn must-deliver notes for the next agent run (one-shot)."""
         if not session_key or not notes:
             return
-        if not hasattr(self, "_pending_turn_sidecar_notes"):
-            self._pending_turn_sidecar_notes = {}
-        self._pending_turn_sidecar_notes[session_key] = list(notes)
+        self._session_state(session_key).conversation.sidecar_notes = list(notes)
 
     def _consume_pending_turn_sidecar_notes(self, session_key: str) -> List[str]:
         if not session_key:
             return []
-        notes = getattr(self, "_pending_turn_sidecar_notes", None)
-        if not isinstance(notes, dict):
+        state = self._peek_session_state(session_key)
+        if state is None:
             return []
-        staged = notes.pop(session_key, None)
+        staged = state.conversation.sidecar_notes
+        state.conversation.sidecar_notes = []
         return list(staged) if isinstance(staged, list) else []
 
     def _voice_channel_sidecar_note(self, event, source: SessionSource, session_key: str) -> Optional[str]:
@@ -19862,11 +19985,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("voice-channel context read failed", exc_info=True)
             return None
-        if not hasattr(self, "_session_vc_last"):
-            self._session_vc_last = {}
-        vc_prev = self._session_vc_last.get(session_key) if session_key else None
+        vc_prev = None
         if session_key:
-            self._session_vc_last[session_key] = vc_now
+            _vc_state = self._session_state(session_key)
+            vc_prev = _vc_state.conversation.vc_last
+            _vc_state.conversation.vc_last = vc_now
         if vc_now == (vc_prev if vc_prev is not None else ""):
             return None
         if not vc_now:
@@ -19883,15 +20006,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         re-render ``build_session_context_prompt`` and re-pin (a legitimate
         cache bust: rename, topic edit, /sethome, redact_pii flip, ...).
         """
-        if not hasattr(self, "_session_ephemeral_pin"):
-            self._session_ephemeral_pin = {}
         _eph_key = self._ephemeral_change_key(context, redact_pii)
-        _eph_pin = self._session_ephemeral_pin.get(session_key) if session_key else None
+        _eph_pin = None
+        if session_key:
+            _pin_state = self._peek_session_state(session_key)
+            _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if _eph_pin is not None and _eph_pin[0] == _eph_key:
             return _eph_pin[1]
         text = build_session_context_prompt(context, redact_pii=redact_pii)
         if session_key:
-            self._session_ephemeral_pin[session_key] = (_eph_key, text)
+            self._session_state(session_key).conversation.ephemeral_pin = (
+                _eph_key,
+                text,
+            )
         return text
 
     @staticmethod
@@ -20000,12 +20127,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Prompt-stability state rides the agent-cache lifecycle: a fresh
         # agent must re-render its session-context bytes (the pin) and re-see
         # the current voice-channel state once.
-        _pin_store = getattr(self, "_session_ephemeral_pin", None)
-        if isinstance(_pin_store, dict):
-            _pin_store.pop(session_key, None)
-        _vc_store = getattr(self, "_session_vc_last", None)
-        if isinstance(_vc_store, dict):
-            _vc_store.pop(session_key, None)
+        _evict_state = self._peek_session_state(session_key)
+        if _evict_state is not None:
+            _evict_state.conversation.ephemeral_pin = None
+            _evict_state.conversation.vc_last = None
 
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None
@@ -20025,7 +20150,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sandbox and child subagents are in use by the running request.
         running_ids = {
             id(a)
-            for a in getattr(self, "_running_agents", {}).values()
+            for _, a in self._running_agent_items()
             if a is not None and a is not _AGENT_PENDING_SENTINEL
         }
         if id(agent) in running_ids:
@@ -20193,7 +20318,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # MagicMock overrides in tests).
         running_ids = {
             id(a)
-            for a in getattr(self, "_running_agents", {}).values()
+            for _, a in self._running_agent_items()
             if a is not None and a is not _AGENT_PENDING_SENTINEL
         }
 
@@ -20266,7 +20391,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         to_evict: List[tuple] = []
         running_ids = {
             id(a)
-            for a in getattr(self, "_running_agents", {}).values()
+            for _, a in self._running_agent_items()
             if a is not None and a is not _AGENT_PENDING_SENTINEL
         }
         with _lock:
@@ -23363,7 +23488,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_generation,
                 )
                 return
-            self._running_agents[session_key] = agent_holder[0]
+            self._session_state(session_key).turn.agent = agent_holder[0]
             if self._draining:
                 self._update_runtime_status("draining")
         

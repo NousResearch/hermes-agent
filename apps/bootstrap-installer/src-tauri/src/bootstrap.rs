@@ -403,6 +403,10 @@ fn spawn_detached_desktop(cmd: &mut std::process::Command) -> std::io::Result<st
     cmd.spawn()
 }
 
+const DESKTOP_HANDOFF_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(10);
+const DESKTOP_HANDOFF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Spawn the already-built desktop app, detached. Returns Err if no built app
 /// exists or the spawn fails, so the caller can fall back to showing the
 /// installer UI.
@@ -411,7 +415,15 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
         std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
     })?;
     let mut cmd = desktop_launch_command_std(&exe, install_root);
-    spawn_detached_desktop(&mut cmd).map(|_child| ())
+    let mut child = spawn_detached_desktop(&mut cmd)?;
+    let start = std::time::Instant::now();
+    while start.elapsed() < DESKTOP_HANDOFF_TIMEOUT {
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        std::thread::sleep(DESKTOP_HANDOFF_POLL_INTERVAL);
+    }
+    Ok(())
 }
 
 // The installer exits right after launch, so the Desktop must not keep the

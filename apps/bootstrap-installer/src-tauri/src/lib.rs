@@ -113,9 +113,6 @@ pub fn run() {
         if bootstrap::hermes_is_installed(&install_root) {
             match bootstrap::spawn_installed_desktop(&install_root) {
                 Ok(()) => {
-                    // Brief grace so the spawned app is registered before the
-                    // launcher process exits (mirrors launch_hermes_desktop).
-                    std::thread::sleep(std::time::Duration::from_millis(200));
                     tracing::info!(
                         "hermes already installed — relaunched desktop; exiting installer"
                     );

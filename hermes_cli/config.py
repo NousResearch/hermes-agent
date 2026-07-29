@@ -1781,6 +1781,25 @@ def _coerce_config_version(value: Any) -> int:
     return max(version, 0)
 
 
+def _raw_config_has_explicit_version() -> bool:
+    """True when config.yaml exists, parses, and carries a ``_config_version`` key.
+
+    Distinguishes an ANCIENT config (explicit old version → refused by the
+    v12 support floor) from a fresh minimal/hand-written/cloned config with
+    no version key at all (→ migrated + stamped normally). Missing or
+    unparseable files return False so they never trip the floor gate.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = fast_safe_load(f) or {}
+    except Exception:
+        return False
+    return isinstance(raw, dict) and "_config_version" in raw
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check the raw on-disk config schema version.
@@ -2142,20 +2161,33 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     current_ver, latest_ver = check_config_version()
 
     # ── Auto-migration support floor (policy: v12, July 2026) ──
-    # A config below the floor is NOT auto-migrated and NOT rewritten: we
-    # surface a clear, actionable message and leave the file byte-for-byte
-    # untouched. This matches the fail-safe posture for unparseable configs
-    # (warn on stderr, continue — load_config() deep-merges defaults at read
-    # time), so the CLI never crashes on an ancient config. The floor gate
-    # lives here in the wrapper (not in run_migrations) so the registry
-    # driver stays a pure mechanism that tests can exercise directly.
+    # A config with an EXPLICIT on-disk ``_config_version`` below the floor is
+    # NOT auto-migrated and NOT rewritten: we surface a clear, actionable
+    # message and leave the file byte-for-byte untouched. This matches the
+    # fail-safe posture for unparseable configs (warn on stderr, continue —
+    # load_config() deep-merges defaults at read time), so the CLI never
+    # crashes on an ancient config. The floor gate lives here in the wrapper
+    # (not in run_migrations) so the registry driver stays a pure mechanism
+    # that tests can exercise directly.
+    #
+    # A config with NO ``_config_version`` key at all is NOT floor-refused:
+    # that shape is a fresh minimal config (profile clones write bare keys;
+    # users hand-write two-line configs), not an ancient install. Those get
+    # the normal ladder (the retired <12 steps were no-ops for configs
+    # lacking the legacy keys they migrated) and a fresh version stamp —
+    # the historical behavior.
     from hermes_cli.config_migrations import (
         SUPPORT_FLOOR_VERSION,
         run_migrations,
         support_floor_message,
     )
 
-    floor_refused = current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver
+    _explicit_version = _raw_config_has_explicit_version()
+    floor_refused = (
+        _explicit_version
+        and current_ver < SUPPORT_FLOOR_VERSION
+        and current_ver < latest_ver
+    )
     if floor_refused:
         msg = support_floor_message()
         results["warnings"].append(msg)

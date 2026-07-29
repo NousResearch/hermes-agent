@@ -295,18 +295,25 @@ def dev_gate_open() -> bool:
 # ---------------------------------------------------------------------------
 # Sync-plane endpoint resolution
 #
-# The sync routes are mounted under /v1/sync/. The base URL is
-# configurable (config.yaml sync.base_url or HERMES_SYNC_BASE_URL bridge env);
-# it is NOT the inference base_url. When unset, sync is inert -- there is no
-# server to talk to yet (the server is being built in parallel).
+# The sync routes are mounted under /v1/sync/. The base URL defaults to the
+# production plane, so a normal user configures nothing; config.yaml
+# sync.base_url (or the HERMES_SYNC_BASE_URL bridge env) overrides it to point
+# a dev/staging build at another plane. It is NOT the inference base_url.
 # ---------------------------------------------------------------------------
 
-def resolve_sync_base_url() -> Optional[str]:
-    """Resolve the sync-plane base URL, or None when unconfigured.
+#: Production Skill Sync plane. Overridable per the resolution order below.
+DEFAULT_SYNC_BASE_URL = "https://gateway-gateway.nousresearch.com"
 
-    Order: HERMES_SYNC_BASE_URL env bridge -> config.yaml ``sync.base_url``.
-    Returns a base without a trailing slash (e.g. ``https://host``); the
-    ``/v1/sync/`` prefix is appended by the client.
+def resolve_sync_base_url() -> Optional[str]:
+    """Resolve the sync-plane base URL.
+
+    Order: HERMES_SYNC_BASE_URL env bridge -> config.yaml ``sync.base_url`` ->
+    the production plane. Returns a base without a trailing slash (e.g.
+    ``https://host``); the ``/v1/sync/`` prefix is appended by the client.
+
+    The production default means a normal user never configures a URL — the
+    env var and config key exist to point a dev/staging build at another
+    plane. Returns None only if the default is somehow blanked out.
     """
     env = os.getenv("HERMES_SYNC_BASE_URL")
     if env and env.strip():
@@ -324,7 +331,7 @@ def resolve_sync_base_url() -> Optional[str]:
             return base.strip().rstrip("/")
     except Exception as e:
         logger.debug("skills_sync_client: config sync.base_url read failed: %s", e)
-    return None
+    return DEFAULT_SYNC_BASE_URL or None
 
 
 # ---------------------------------------------------------------------------

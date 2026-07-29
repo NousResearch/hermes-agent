@@ -694,6 +694,33 @@ class TestEnvConfig:
         monkeypatch.setenv("HERMES_SYNC_BASE_URL", "https://plane.example/")
         assert ssc.resolve_sync_base_url() == "https://plane.example"
 
+    def test_base_url_defaults_to_production(self, monkeypatch):
+        # With nothing configured a user must still reach the real plane —
+        # otherwise every sync command fails with "no base URL configured".
+        monkeypatch.delenv("HERMES_SYNC_BASE_URL", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {}, raising=False)
+        assert ssc.resolve_sync_base_url() == ssc.DEFAULT_SYNC_BASE_URL
+
+    def test_default_is_a_bare_https_origin(self):
+        # The client appends /v1/sync/, so the default must be a scheme+host
+        # origin with no trailing slash and no path.
+        from urllib.parse import urlparse
+
+        parsed = urlparse(ssc.DEFAULT_SYNC_BASE_URL)
+        assert parsed.scheme == "https"
+        assert parsed.netloc
+        assert parsed.path == ""
+        assert not ssc.DEFAULT_SYNC_BASE_URL.endswith("/")
+
+    def test_config_overrides_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SYNC_BASE_URL", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"sync": {"base_url": "https://cfg.example/"}},
+            raising=False,
+        )
+        assert ssc.resolve_sync_base_url() == "https://cfg.example"
+
     def test_feature_enabled_env(self, monkeypatch):
         # Default off.
         monkeypatch.delenv("HERMES_SYNC_ENABLED", raising=False)

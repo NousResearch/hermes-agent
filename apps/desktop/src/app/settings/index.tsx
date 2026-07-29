@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { codiconIcon } from '@/components/ui/codicon'
@@ -85,22 +85,29 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // Jump to a section + its sub-view in one navigate. Two sequential setters
   // would each read the same stale `search` and the second would clobber the
   // first's `tab` — so the sub-view never opened on narrow screens.
-  const openSubView = (tab: SettingsViewId, param: string, value: string, fallback: string) => {
-    const params = new URLSearchParams(search)
-    params.set('tab', tab)
+  const openSubView = useCallback(
+    (tab: SettingsViewId, param: string, value: string, fallback: string) => {
+      const params = new URLSearchParams(search)
+      params.set('tab', tab)
 
-    if (value === fallback) {
-      params.delete(param)
-    } else {
-      params.set(param, value)
-    }
+      if (value === fallback) {
+        params.delete(param)
+      } else {
+        params.set(param, value)
+      }
 
-    const qs = params.toString()
-    navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true })
-  }
+      const qs = params.toString()
+      navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true })
+    },
+    [hash, navigate, pathname, search]
+  )
 
-  const openProviderView = (view: ProviderView) => openSubView('providers', 'pview', view, 'accounts')
-  const openKeysView = (view: KeysView) => openSubView('keys', 'kview', view, 'tools')
+  const openProviderView = useCallback(
+    (view: ProviderView) => openSubView('providers', 'pview', view, 'accounts'),
+    [openSubView]
+  )
+
+  const openKeysView = useCallback((view: KeysView) => openSubView('keys', 'kview', view, 'tools'), [openSubView])
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -251,7 +258,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('about')
       }
     ]
-  , [activeView, keysView, providerView, t])
+  , [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView])
 
   const navFooter = (
     <>

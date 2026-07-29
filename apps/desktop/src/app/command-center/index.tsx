@@ -12,7 +12,6 @@ import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { compactNumber } from '@/lib/format'
-import { useStoreSelector } from '@/lib/use-session-slice'
 import {
   Activity,
   AlertCircle,
@@ -26,6 +25,7 @@ import {
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { fmtDateTime } from '@/lib/time'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -318,7 +318,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         label: cc.sections[value],
         onSelect: () => setSection(value)
       })),
-    [cc, section]
+    [cc, section, setSection]
   )
 
   return (

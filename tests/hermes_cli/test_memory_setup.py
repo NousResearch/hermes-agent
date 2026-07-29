@@ -293,13 +293,13 @@ def test_install_dependencies_force_reinstalls_versioned_specs(tmp_path, monkeyp
 
     installed = []
 
-    def fake_pip_install(args, timeout=120):
-        installed.append(args)
-        return SimpleNamespace(returncode=0, stderr="")
+    def fake_install_specs(specs, timeout=120):
+        installed.append(list(specs))
+        return SimpleNamespace(ok=True, blocked=False, reason="", stderr="")
 
-    monkeypatch.setattr("hermes_cli.tools_config._pip_install", fake_pip_install)
+    monkeypatch.setattr("tools.lazy_deps.install_specs", fake_install_specs)
 
     memory_setup._install_dependencies("mem0", force=True)
 
-    assert installed, "force=True must reach the pip install step"
-    assert any("mem0ai>=2.0.10,<3" in args for args in installed)
+    assert installed, "force=True must reach the install step"
+    assert any("mem0ai>=2.0.10,<3" in specs for specs in installed)

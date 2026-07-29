@@ -12006,9 +12006,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # the user. The stop phrase and barge-in still work during the
             # hold (they run on their own paths above).
             stop_continuous_restart = False
+            _tts_done = getattr(self, "_voice_tts_done", None)
             _activity_hold = bool(
                 getattr(self, "_agent_running", False)
-                or not self._voice_tts_done.is_set()
+                or (_tts_done is not None and not _tts_done.is_set())
             )
             if not submitted:
                 if _activity_hold:

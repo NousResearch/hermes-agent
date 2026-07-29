@@ -2851,14 +2851,92 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     image — the Anthropic pricing model — instead of counting raw base64
     character length. Without this, a single ~1MB screenshot would be
     estimated at ~250K tokens and trigger premature context compression.
+
+    Per-message results are memoized (see ``_estimate_message_tokens_cached``)
+    keyed on a deep *identity fingerprint* of the message, so re-walking a
+    long history every iteration only pays for messages whose object graph
+    actually changed. The memo is exact: equal fingerprints imply identical
+    leaf objects and structure, hence an identical estimate.
     """
     _IMAGE_TOKEN_COST = 1500
-    text_tokens = 0
-    image_tokens = 0
+    total = 0
     for msg in messages:
-        text_tokens += _estimate_message_tokens_without_images(msg)
-        image_tokens += _count_image_tokens(msg, _IMAGE_TOKEN_COST)
-    return text_tokens + image_tokens
+        total += _estimate_message_tokens_cached(msg, _IMAGE_TOKEN_COST)
+    return total
+
+
+# --- Per-message token-estimate memo -------------------------------------
+#
+# ``estimate_messages_tokens_rough`` is called on the full history every
+# loop iteration (conversation_loop preflight), repeatedly during compaction
+# telemetry, and inside an O(n^2) shrink loop in moa_loop. The per-message
+# helpers are pure functions of the message's value, so a memo keyed on a
+# fingerprint that uniquely determines the value is exactly equivalent.
+#
+# Fingerprint design (soundness argument):
+#   * strings are fingerprinted by ``id()`` AND pinned (a strong reference is
+#     stored in the cache entry). While the entry lives, that id cannot be
+#     reused by another object, so id-equality implies object-equality —
+#     strings are immutable, so value-equality too (no #50372-style aliasing).
+#   * ints/floats/bools/None are fingerprinted by value.
+#   * dicts/lists recurse structurally, preserving key order — ``str(shadow)``
+#     depends on insertion order, so order is part of the key.
+#   * any other type aborts the memo and falls through to a direct compute.
+# Equal fingerprints therefore imply deep-equal messages built from identical
+# immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical estimate.
+#
+# Because the api_messages build shallow-copies history dicts each iteration,
+# the copies share the same content strings — so unchanged history messages
+# hit the memo even though the outer dicts are fresh objects every turn.
+_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int]] = {}
+_MSG_TOKENS_CACHE_MAX = 4096
+
+
+def _msg_fingerprint(value: Any, pins: list) -> Any:
+    if value is None or value is True or value is False:
+        return value
+    t = type(value)
+    if t is str:
+        pins.append(value)
+        return ("s", id(value))
+    if t is int or t is float:
+        return ("n", t.__name__, value)
+    if t is dict:
+        return ("d", tuple(
+            (_msg_fingerprint(k, pins), _msg_fingerprint(v, pins))
+            for k, v in value.items()
+        ))
+    if t is list:
+        return ("l", tuple(_msg_fingerprint(v, pins) for v in value))
+    if t is tuple:
+        return ("t", tuple(_msg_fingerprint(v, pins) for v in value))
+    raise ValueError("unfingerprintable message value")
+
+
+def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
+    try:
+        pins: list = []
+        key = _msg_fingerprint(msg, pins)
+        hash(key)
+    except Exception:
+        return (
+            _estimate_message_tokens_without_images(msg)
+            + _count_image_tokens(msg, image_cost)
+        )
+    cached = _MSG_TOKENS_CACHE.get(key)
+    if cached is not None:
+        return cached[1]
+    tokens = (
+        _estimate_message_tokens_without_images(msg)
+        + _count_image_tokens(msg, image_cost)
+    )
+    _MSG_TOKENS_CACHE[key] = (pins, tokens)
+    while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
+        try:
+            _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
+        except (StopIteration, KeyError, RuntimeError):
+            break
+    return tokens
 
 
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:

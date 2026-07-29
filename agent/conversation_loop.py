@@ -1383,10 +1383,23 @@ def run_conversation(
         # However, providers like Moonshot AI require a separate 'reasoning_content' field
         # on assistant messages with tool_calls. We handle both cases here.
         request_logger = getattr(agent, "logger", None) or logging.getLogger(__name__)
+        # Per-agent validation cursor: skips re-json.loads-ing tool_call
+        # arguments on history messages already validated in a previous
+        # iteration. Identity-keyed (strong refs) — compression/undo/repair
+        # rewriting the list breaks the prefix match and forces a re-scan
+        # from the divergence point. See sanitize_tool_call_arguments.
+        _sanitize_cursor = getattr(agent, "_sanitize_args_cursor", None)
+        if _sanitize_cursor is None:
+            _sanitize_cursor = {}
+            try:
+                agent._sanitize_args_cursor = _sanitize_cursor
+            except Exception:
+                pass
         repaired_tool_calls = agent._sanitize_tool_call_arguments(
             messages,
             logger=request_logger,
             session_id=agent.session_id,
+            cursor=_sanitize_cursor,
         )
         if repaired_tool_calls > 0:
             request_logger.info(

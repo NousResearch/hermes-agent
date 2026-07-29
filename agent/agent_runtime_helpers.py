@@ -249,11 +249,41 @@ def sanitize_tool_call_arguments(
     *,
     logger=None,
     session_id: str = None,
+    cursor: Optional[dict] = None,
 ) -> int:
-    """Repair corrupted assistant tool-call argument JSON in-place."""
+    """Repair corrupted assistant tool-call argument JSON in-place.
+
+    ``cursor`` (optional) is a caller-owned dict used to skip re-validating
+    messages already validated on a previous call.  It stores, under
+    ``"prefix"``, the exact message *objects* (strong references) validated
+    last time, in order.  On the next call, the longest contiguous prefix of
+    ``messages`` whose objects are ``is``-identical to the stored prefix is
+    skipped; scanning starts at the first divergence (conservative: any
+    reordering, truncation, compression rewrite, or mid-list insertion breaks
+    identity at that index and everything from there is re-scanned).
+
+    Safety argument for skipping: a message in the matched prefix was fully
+    scanned before — every tool_call argument was either already valid JSON
+    or was rewritten to ``"{}"`` (valid).  The only code paths that mutate
+    ``function["arguments"]`` on live history dicts between calls are the
+    surrogate / non-ASCII sanitizers, which substitute characters *inside*
+    JSON string values and cannot invalidate JSON syntax.  Compression,
+    repair, undo, and steer paths replace or reorder message dicts, which
+    breaks the identity match and forces a re-scan.  Holding strong
+    references (the objects themselves, not ``id()``s) makes address reuse
+    aliasing (#50372-style) impossible.
+    """
     log = logger or logging.getLogger(__name__)
     if not isinstance(messages, list):
         return 0
+
+    start_index = 0
+    if cursor is not None:
+        prev_prefix = cursor.get("prefix")
+        if isinstance(prev_prefix, list):
+            limit = min(len(prev_prefix), len(messages))
+            while start_index < limit and messages[start_index] is prev_prefix[start_index]:
+                start_index += 1
 
     repaired = 0
     marker = _ra().AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
@@ -275,7 +305,7 @@ def sanitize_tool_call_arguments(
             existing_text = str(existing)
         tool_msg["content"] = f"{marker}\n{existing_text}"
 
-    message_index = 0
+    message_index = start_index
     while message_index < len(messages):
         msg = messages[message_index]
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -355,6 +385,12 @@ def sanitize_tool_call_arguments(
                 repaired += 1
 
         message_index += 1
+
+    if cursor is not None:
+        # Strong references to the exact objects validated this call, in
+        # order. Any future divergence (compression, undo, repair, steer)
+        # breaks identity at the divergent index and re-scans from there.
+        cursor["prefix"] = messages[:]
 
     return repaired
 

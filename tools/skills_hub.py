@@ -291,15 +291,25 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     return target
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
+def _ssrf_safe_http_get(
+    url: str,
+    *,
+    timeout: int = 20,
+    headers: Optional[Dict[str, str]] = None,
+) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     from tools.url_safety import create_ssrf_safe_client
 
     with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
-        return client.get(url)
+        return client.get(url, headers=headers)
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
+def _guarded_http_get(
+    url: str,
+    *,
+    timeout: int = 20,
+    headers: Optional[Dict[str, str]] = None,
+) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation."""
     from tools.url_safety import SSRFConnectionBlocked
 
@@ -320,7 +330,7 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout)
+            resp = _ssrf_safe_http_get(current_url, timeout=timeout, headers=headers)
         except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
@@ -1648,6 +1658,16 @@ class SkillsShSource(SkillSource):
     def trust_level_for(self, identifier: str) -> str:
         return self.github.trust_level_for(self._normalize_identifier(identifier))
 
+    @staticmethod
+    def _is_skills_sh_url(url: str) -> bool:
+        """Return True when *url* targets the skills.sh site (www optional)."""
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return host in {"skills.sh", "www.skills.sh"} and parsed.scheme in {"http", "https"}
+
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         if not query.strip():
             # Empty query = bulk catalog dump (what build_skills_index.py
@@ -1661,15 +1681,14 @@ class SkillsShSource(SkillSource):
             return [SkillMeta(**item) for item in cached][:limit]
 
         try:
-            resp = httpx.get(
-                self.SEARCH_URL,
-                params={"q": query, "limit": limit},
-                timeout=20,
-            )
-            if resp.status_code != 200:
+            from urllib.parse import urlencode
+
+            search_url = f"{self.SEARCH_URL}?{urlencode({'q': query, 'limit': limit})}"
+            resp = _guarded_http_get(search_url, timeout=20)
+            if resp is None or resp.status_code != 200:
                 return []
             data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError):
             return []
 
         items = data.get("skills", []) if isinstance(data, dict) else []
@@ -1738,18 +1757,19 @@ class SkillsShSource(SkillSource):
         # Step 1: fetch the sitemap index → list of skill-sitemap URLs.
         skill_sitemap_urls: List[str] = []
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 self.SITEMAP_INDEX_URL,
                 timeout=20,
-                follow_redirects=True,
                 headers=sitemap_headers,
             )
-            if resp.status_code != 200:
+            if resp is None or resp.status_code != 200:
                 return self._featured_skills(limit)
             for match in self._SITEMAP_LOC_RE.finditer(resp.text):
                 loc = match.group(1).strip()
                 # Sitemap index entries that point at the per-skill maps.
-                if "sitemap-skills" in loc:
+                # Only follow locs that stay on skills.sh — a compromised or
+                # redirected index must not pull arbitrary hosts (SSRF).
+                if "sitemap-skills" in loc and self._is_skills_sh_url(loc):
                     skill_sitemap_urls.append(loc)
         except httpx.HTTPError:
             return self._featured_skills(limit)
@@ -1762,13 +1782,12 @@ class SkillsShSource(SkillSource):
         results: List[SkillMeta] = []
         for sitemap_url in skill_sitemap_urls:
             try:
-                resp = httpx.get(
+                resp = _guarded_http_get(
                     sitemap_url,
                     timeout=30,
-                    follow_redirects=True,
                     headers=sitemap_headers,
                 )
-                if resp.status_code != 200:
+                if resp is None or resp.status_code != 200:
                     continue
             except httpx.HTTPError:
                 continue
@@ -1812,8 +1831,8 @@ class SkillsShSource(SkillSource):
             return [SkillMeta(**item) for item in cached][:limit]
 
         try:
-            resp = httpx.get(self.BASE_URL, timeout=20)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(self.BASE_URL, timeout=20)
+            if resp is None or resp.status_code != 200:
                 return []
         except httpx.HTTPError:
             return []
@@ -1888,8 +1907,11 @@ class SkillsShSource(SkillSource):
             return cached
 
         try:
-            resp = httpx.get(f"{self.BASE_URL}/{identifier}", timeout=20)
-            if resp.status_code != 200:
+            # Identifier is already normalized; still refuse path traversal / host escape.
+            if ".." in identifier or identifier.startswith("/") or "://" in identifier:
+                return None
+            resp = _guarded_http_get(f"{self.BASE_URL}/{identifier}", timeout=20)
+            if resp is None or resp.status_code != 200:
                 return None
         except httpx.HTTPError:
             return None

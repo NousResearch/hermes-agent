@@ -286,7 +286,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_search_maps_skills_sh_results_to_prefixed_identifiers(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -315,7 +315,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_empty_search_uses_featured_homepage_links(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -371,7 +371,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "inspect")
     def test_inspect_delegates_to_github_source_and_relabels_meta(self, mock_inspect, mock_get, _mock_read_cache, _mock_write_cache):
         mock_inspect.return_value = SkillMeta(
@@ -446,7 +446,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "_list_skills_in_repo")
     @patch.object(GitHubSource, "inspect")
     def test_inspect_uses_detail_page_to_resolve_alias_skill(self, mock_inspect, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
@@ -479,7 +479,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "_list_skills_in_repo")
     @patch.object(GitHubSource, "fetch")
     def test_fetch_uses_detail_page_to_resolve_alias_skill(self, mock_fetch, mock_list_skills, mock_get, _mock_read_cache, _mock_write_cache):
@@ -552,10 +552,11 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.httpx.get")
     @patch.object(GitHubSource, "fetch")
     def test_fetch_falls_back_to_tree_search_for_deeply_nested_skills(
-        self, mock_fetch, mock_get, _mock_read_cache, _mock_write_cache,
+        self, mock_fetch, mock_httpx_get, mock_safe_get, _mock_read_cache, _mock_write_cache,
     ):
         """Skills in deeply nested dirs (e.g. cli-tool/components/skills/dev/my-skill/)
         are found via the GitHub Trees API when candidate paths and shallow scan fail."""
@@ -565,7 +566,7 @@ class TestSkillsShSource:
             {"path": "cli-tool/components/skills/development/other-skill/SKILL.md", "type": "blob"},
         ]
 
-        def _httpx_get_side_effect(url, **kwargs):
+        def _http_side_effect(url, **kwargs):
             resp = MagicMock()
             if "/api/search" in url:
                 resp.status_code = 404
@@ -588,12 +589,14 @@ class TestSkillsShSource:
                 resp.status_code = 200
                 resp.json = lambda: {"tree": tree_entries}
                 return resp
-            # skills.sh detail page
+            # skills.sh detail page (SSRF-safe path)
             resp.status_code = 200
             resp.text = "<h1>my-skill</h1>"
             return resp
 
-        mock_get.side_effect = _httpx_get_side_effect
+        # Detail page uses _ssrf_safe_http_get; GitHub tree/contents still use httpx.get.
+        mock_safe_get.side_effect = _http_side_effect
+        mock_httpx_get.side_effect = _http_side_effect
 
         resolved_bundle = SkillBundle(
             name="my-skill",
@@ -644,7 +647,7 @@ class TestSkillsShSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_empty_query_walks_sitemap_not_homepage(
         self, mock_get, _mock_read_cache, _mock_write_cache,
     ):
@@ -889,7 +892,7 @@ class TestWellKnownSkillSource:
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_rejects_unsafe_file_paths_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
         def fake_get(url, *args, **kwargs):
             if url.endswith("/index.json"):
@@ -1133,7 +1136,7 @@ class TestUrlSource:
         )
 
         assert self._source().fetch("https://example.com/SKILL.md") is None
-        mock_get.assert_called_once_with("https://example.com/SKILL.md", timeout=20)
+        mock_get.assert_called_once_with("https://example.com/SKILL.md", timeout=20, headers=None)
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_skips_non_matching_identifier(self, mock_get):

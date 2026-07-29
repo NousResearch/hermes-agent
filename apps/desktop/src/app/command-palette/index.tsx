@@ -243,12 +243,8 @@ const PaletteRow = memo(function PaletteRow({
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="truncate">{item.label}</span>
       {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
-      {item.to && (
-        <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />
-      )}
-      {item.active && (
-        <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />
-      )}
+      {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
+      {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />}
     </CommandItem>
   )
 })

@@ -141,8 +141,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }
 
-  const navGroups: OverlayNavGroup[] = useMemo(() => [
-    ...SECTIONS.map(s => {
+  const navGroups: OverlayNavGroup[] = useMemo(
+    () => [
+      ...SECTIONS.map(s => {
         const view = `config:${s.id}` as SettingsViewId
 
         return {
@@ -257,8 +258,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         label: t.settings.nav.about,
         onSelect: () => setActiveView('about')
       }
-    ]
-  , [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView])
+    ],
+    [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView]
+  )
 
   const navFooter = (
     <>

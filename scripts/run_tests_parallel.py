@@ -744,6 +744,73 @@ def _make_stdio_glyph_safe() -> None:
                 pass
 
 
+_PYTEST_VALUE_FLAGS_FALLBACK = {
+    "-k", "-m", "-p", "-o", "-c", "-r", "-W",
+    "--assert", "--basetemp", "--capture",
+    "--code-highlight", "--color", "--confcutdir", "--config-file",
+    "--deselect", "--doctest-glob", "--doctest-report",
+    "--durations", "--durations-min", "--ignore", "--ignore-glob",
+    "--import-mode", "--junit-prefix", "--junit-xml", "--junitprefix",
+    "--junitxml", "--last-failed-no-failures", "--lfnf",
+    "--log-auto-indent", "--log-cli-date-format", "--log-cli-format",
+    "--log-cli-level", "--log-date-format", "--log-disable", "--log-file",
+    "--log-file-date-format", "--log-file-format", "--log-file-level",
+    "--log-file-mode", "--log-format", "--log-level", "--maxfail",
+    "--override-ini", "--pastebin", "--pdbcls", "--pythonwarnings",
+    "--rootdir", "--show-capture", "--tb", "--verbosity",
+}
+_PYTEST_OPTIONAL_VALUE_FLAGS_FALLBACK = {"--cache-show", "--debug"}
+
+
+def _pytest_value_flags(argv: list[str] | None = None) -> tuple[set[str], set[str]]:
+    """Return value-taking pytest flags, including installed plugin options.
+
+    The maintained fallback covers pytest's built-ins and keeps the runner
+    usable if pytest's private parser API changes. Loading installed entrypoint
+    plugins mirrors pytest's normal startup and closes the same routing bug for
+    options such as pytest-asyncio's ``--asyncio-mode auto``. Explicit ``-p``
+    plugins are loaded even when entrypoint autoload is disabled.
+    """
+    required = set(_PYTEST_VALUE_FLAGS_FALLBACK)
+    optional = set(_PYTEST_OPTIONAL_VALUE_FLAGS_FALLBACK)
+    config = None
+    try:
+        from _pytest.config import get_config
+
+        config = get_config()
+        if not os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
+            config.pluginmanager.load_setuptools_entrypoints("pytest11")
+        scan = list(argv or [])
+        i = 0
+        while i < len(scan):
+            token = scan[i]
+            plugin = None
+            if token == "-p" and i + 1 < len(scan):
+                plugin = scan[i + 1]
+                i += 1
+            elif token.startswith("-p") and len(token) > 2:
+                plugin = token[2:]
+            if plugin and not plugin.startswith("no:"):
+                config.pluginmanager.import_plugin(plugin)
+            i += 1
+        for group in config._parser._groups:
+            for option in group.options:
+                attrs = option._attrs
+                action = attrs.get("action", "store")
+                if action not in {"store", "append", "extend"} or attrs.get("nargs") == 0:
+                    continue
+                target = optional if attrs.get("nargs") == "?" else required
+                target.update(option._short_opts)
+                target.update(option._long_opts)
+    except Exception:
+        pass
+    finally:
+        if config is not None:
+            config._ensure_unconfigure()
+    required -= optional
+    return required, optional
+
+
 def main() -> int:
     _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
@@ -855,12 +922,15 @@ def main() -> int:
     # clobber discovery. We peel the following token along with such flags so
     # it never reaches our positional ``paths``. ``=``-joined forms
     # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
+    argv = sys.argv[1:]
     OUR_FLAGS = {
         "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
     }
-    # pytest short flags that consume the NEXT token as their value.
-    PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
+    # pytest flags that consume the NEXT token as their value. Long options
+    # also accept ``--option=value``, but the space-separated spelling is
+    # common in shell scripts and must not leak its value into path discovery.
+    PYTEST_VALUE_FLAGS, PYTEST_OPTIONAL_VALUE_FLAGS = _pytest_value_flags(argv)
 
     def _is_our_flag(tok: str) -> bool:
         # Match exact (``-j``, ``--paths``), ``=``-joined (``--paths=x``),
@@ -875,7 +945,6 @@ def main() -> int:
             return True
         return False
 
-    argv = sys.argv[1:]
     if "--" in argv:
         sep = argv.index("--")
         before, explicit_passthrough = argv[:sep], argv[sep + 1 :]
@@ -890,7 +959,12 @@ def main() -> int:
         if tok.startswith("-") and not _is_our_flag(tok):
             bare_passthrough.append(tok)
             # Pull the value token for space-separated value flags.
-            if tok in PYTEST_VALUE_FLAGS and i + 1 < len(before):
+            consumes_next = tok in PYTEST_VALUE_FLAGS or (
+                tok in PYTEST_OPTIONAL_VALUE_FLAGS
+                and i + 1 < len(before)
+                and not before[i + 1].startswith("-")
+            )
+            if consumes_next and i + 1 < len(before):
                 bare_passthrough.append(before[i + 1])
                 i += 2
                 continue

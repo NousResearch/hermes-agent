@@ -1502,3 +1502,47 @@ class TestTypedVoiceStop:
         cli = self._cli(_voice_mode=True)
         assert cli._typed_voice_stop(("text", ["img.png"])) is False
         assert cli._disable_calls == []
+
+
+# ============================================================================
+# Fallback (whole-file) TTS path arms the spoken barge-in monitor
+# ============================================================================
+
+class TestFallbackSpeakArmsBargeMonitor:
+    """_voice_speak_response_async must arm _voice_barge_in_monitor in
+    continuous voice mode. Previously ONLY the streaming pipeline armed the
+    monitor (chat() gate), so when streaming TTS couldn't start the whole-file
+    fallback speech was uninterruptible by voice — Teknium's "speaking over
+    the agent does nothing" report on the non-streaming path."""
+
+    def _cli(self, **overrides):
+        cli = _make_voice_cli(**overrides)
+        cli._monitor_calls = []
+        cli._voice_barge_in_monitor = (
+            lambda stop_event: cli._monitor_calls.append(stop_event)
+        )
+        cli._voice_speak_response = lambda text: None
+        return cli
+
+    def _drain_threads(self):
+        import time
+        time.sleep(0.15)
+
+    def test_monitor_armed_in_continuous_voice_mode(self):
+        cli = self._cli(_voice_mode=True, _voice_tts=True, _voice_continuous=True)
+        cli._voice_speak_response_async("a reply")
+        self._drain_threads()
+        assert len(cli._monitor_calls) == 1
+        assert isinstance(cli._monitor_calls[0], threading.Event)
+
+    def test_no_monitor_outside_continuous_mode(self):
+        cli = self._cli(_voice_mode=True, _voice_tts=True, _voice_continuous=False)
+        cli._voice_speak_response_async("a reply")
+        self._drain_threads()
+        assert cli._monitor_calls == []
+
+    def test_no_monitor_when_tts_disabled(self):
+        cli = self._cli(_voice_mode=True, _voice_tts=False, _voice_continuous=True)
+        cli._voice_speak_response_async("a reply")
+        self._drain_threads()
+        assert cli._monitor_calls == []

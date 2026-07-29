@@ -12045,6 +12045,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             args=(text,),
             daemon=True,
         ).start()
+        # Spoken barge-in must work on the whole-file fallback path too —
+        # previously only the streaming pipeline armed the monitor, so when
+        # streaming TTS couldn't start (missing sounddevice, failed probe)
+        # talking over the reply did nothing. The monitor's _cut_playback
+        # uses stop_playback(), which kills the file player, so the same
+        # machinery covers this path; the stop event it receives is only
+        # used to signal the (nonexistent) streaming pipeline.
+        if self._voice_continuous:
+            threading.Thread(
+                target=self._voice_barge_in_monitor,
+                args=(threading.Event(),),
+                daemon=True,
+            ).start()
 
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""

@@ -14706,6 +14706,103 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     server._tts_stream_stop()
 
 
+def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_path):
+    """The fallback whole-reply speak path (streaming pipeline couldn't
+    start) and the voice.tts RPC must be barge-able too: speaking over the
+    reply cuts playback and the captured interruption is emitted as
+    voice.transcript — previously these paths called speak_text bare and
+    were uninterruptible by voice."""
+    import tools.tts_streaming as ts
+
+    ts._interrupted_at = None
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"voice": {"barge_in": True, "barge_in_grace_seconds": 0}},
+    )
+    events: list = []
+    monkeypatch.setattr(
+        server, "_voice_emit", lambda event, payload=None: events.append((event, payload))
+    )
+
+    wav = tmp_path / "barge.wav"
+    wav.write_bytes(b"RIFF")
+
+    speak_calls = {}
+    speak_started = threading.Event()
+    release_speak = threading.Event()
+
+    def fake_speak_text(text, stop_event=None):
+        speak_calls["text"] = text
+        speak_calls["stop_event"] = stop_event
+        speak_started.set()
+        release_speak.wait(5)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(speak_text=fake_speak_text),
+    )
+
+    def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        assert capture is True
+        speak_started.wait(5)
+        on_trigger()  # user talks over the reply → cut now
+        return str(wav)
+
+    _fake_tts_modules(
+        monkeypatch,
+        listen=fake_listen,
+        transcribe=lambda path, model=None: {"success": True, "transcript": "hang on"},
+    )
+
+    server._speak_text_with_barge("a long spoken reply")
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and ("voice.transcript", {"text": "hang on"}) not in events:
+        time.sleep(0.01)
+    release_speak.set()
+
+    assert speak_calls["text"] == "a long spoken reply"
+    # The pipeline stop event is shared with speak_text so a streaming
+    # dispatch inside it is cut too.
+    assert speak_calls["stop_event"] is not None
+    assert speak_calls["stop_event"].is_set()
+    assert ("voice.interrupted", None) in events
+    assert ("voice.transcript", {"text": "hang on"}) in events
+    assert ts.take_speech_interrupted() is True
+
+
+def test_speak_text_with_barge_no_monitor_when_voice_mode_off(monkeypatch):
+    """Auto-speak with voice mode off (no mic loop) must not open the mic."""
+    monkeypatch.setenv("HERMES_VOICE", "0")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"barge_in": True}})
+
+    listened = threading.Event()
+
+    def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
+        listened.set()
+        return None
+
+    done_speaking = threading.Event()
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            speak_text=lambda text, stop_event=None: done_speaking.set()
+        ),
+    )
+    _fake_tts_modules(monkeypatch, listen=fake_listen)
+
+    server._speak_text_with_barge("quiet reply")
+    assert done_speaking.wait(5)
+    time.sleep(0.1)
+    assert not listened.is_set()
+
+
 def test_clarify_callback_uses_configured_timeout(monkeypatch):
     """The TUI/desktop clarify bridge honors the canonical clarify timeout
     (via _clarify_timeout_seconds) instead of the hardcoded _block default."""

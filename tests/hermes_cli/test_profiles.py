@@ -13,6 +13,7 @@ import sys
 import tarfile
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -430,6 +431,17 @@ class TestNoSkillsOptOut:
                 no_alias=True,
                 no_skills=True,
                 clone_all=True,
+            )
+
+    def test_no_skills_conflicts_with_clone_from(self, profile_env):
+        create_profile("source", no_alias=True)
+
+        with pytest.raises(ValueError, match="--clone-from"):
+            create_profile(
+                "orchestrator",
+                no_alias=True,
+                no_skills=True,
+                clone_from="source",
             )
 
     def test_seed_profile_skills_respects_marker(self, profile_env):
@@ -1839,6 +1851,54 @@ class TestEdgeCases:
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert cloned_config["model"] == "cloned"
         assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
+
+    def test_clone_from_without_clone_flag_implies_config_clone(self, profile_env):
+        """clone_from alone is the same config/skills clone documented by the CLI."""
+        source_dir = create_profile("source", no_alias=True)
+        (source_dir / "config.yaml").write_text("model: cloned")
+        (source_dir / ".env").write_text("SECRET=yes")
+        (source_dir / "SOUL.md").write_text("Source personality")
+        skill_dir = source_dir / "skills" / "custom" / "src-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: src-skill\n---\n")
+
+        target_dir = create_profile("target", clone_from="source", no_alias=True)
+
+        assert (target_dir / "config.yaml").read_text() == "model: cloned"
+        assert (target_dir / ".env").read_text() == "SECRET=yes"
+        assert (target_dir / "SOUL.md").read_text() == "Source personality"
+        assert (
+            target_dir / "skills" / "custom" / "src-skill" / "SKILL.md"
+        ).exists()
+
+    def test_cmd_profile_clone_from_next_steps_treats_as_clone(
+        self, profile_env, capsys
+    ):
+        """CLI guidance should not tell clone_from users they have no API keys."""
+        from hermes_cli import main as main_mod
+
+        source_dir = create_profile("source", no_alias=True)
+        (source_dir / ".env").write_text("SECRET=yes")
+        (source_dir / "SOUL.md").write_text("Source personality")
+
+        main_mod.cmd_profile(
+            SimpleNamespace(
+                profile_action="create",
+                profile_name="target",
+                clone=False,
+                clone_all=False,
+                clone_from="source",
+                no_alias=True,
+                no_skills=False,
+                description=None,
+            )
+        )
+
+        output = capsys.readouterr().out
+        assert "Cloned config, .env, SOUL.md, and skills from source." in output
+        assert "/.env for different API keys" in output
+        assert "/SOUL.md for different personality" in output
+        assert "This profile has no API keys yet" not in output
 
     def test_delete_clears_active_profile(self, profile_env):
         """Deleting the active profile resets active to default."""

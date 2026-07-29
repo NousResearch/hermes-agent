@@ -1003,20 +1003,23 @@ def create_profile(
     name:
         Profile identifier (lowercase, alphanumeric, hyphens, underscores).
     clone_from:
-        Source profile to clone from. If ``None`` and clone_config/clone_all
-        is True, defaults to the currently active profile.
+        Source profile to clone from. Supplying this without ``clone_all``
+        copies the same config/skills/SOUL payload as ``clone_config``. If
+        ``None`` and clone_config/clone_all is True, defaults to the currently
+        active profile.
     clone_all:
         If True, do a full copytree of the source (all state).
     clone_config:
-        If True, copy config files (config.yaml, .env, SOUL.md), installed
-        skills, and selected profile identity files from the source profile.
+        If True, or if ``clone_from`` is set, copy config files (config.yaml,
+        .env, SOUL.md), installed skills, and selected profile identity files
+        from the source profile.
     no_alias:
         If True, skip wrapper script creation.
     no_skills:
         If True, create an empty profile with no bundled skills, and write
         a marker file so ``hermes update`` skips re-seeding this profile's
-        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
-        explicitly copy skills from the source).
+        skills. Mutually exclusive with ``clone_from``/``clone_config``/
+        ``clone_all`` (those explicitly copy skills from the source).
 
     Returns
     -------

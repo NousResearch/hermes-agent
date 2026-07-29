@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import utf16_len
 
 
 def _ensure_discord_mock():
@@ -655,6 +656,31 @@ async def test_auto_create_thread_truncates_long_names(adapter):
 
 
 @pytest.mark.asyncio
+async def test_auto_create_thread_truncates_emoji_names_by_utf16_units(adapter):
+    """Discord validates thread `name` in UTF-16 code units (100 max), not
+    Python code points. 90 emoji is only 90 code points but 180 UTF-16
+    units — a code-point slice to 80 would leave 160 units, well over
+    budget, and Discord would reject the create_thread call (#59824-class
+    bug, sibling of the rename_thread()/forum-thread-name UTF-16 fixes).
+    """
+    long_text = "\U0001f600" * 90
+    thread = SimpleNamespace(id=999, name="truncated")
+    message = SimpleNamespace(
+        content=long_text,
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    name = message.create_thread.await_args[1]["name"]
+    assert utf16_len(name) <= 80
+    assert name.endswith("...")
+
+
+@pytest.mark.asyncio
 async def test_auto_create_thread_falls_back_to_seed_message(adapter):
     thread = SimpleNamespace(id=555, name="Hello")
     seed_message = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
@@ -727,6 +753,78 @@ async def test_rename_thread_skips_when_human_renamed(adapter):
 
     assert result is False
     thread.edit.assert_not_awaited()
+
+
+# ------------------------------------------------------------------
+# Handoff thread: create_handoff_thread
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_truncates_emoji_names_by_utf16_units(adapter):
+    """create_handoff_thread's name budget shares the same Discord UTF-16
+    limit as rename_thread()/_derive_auto_thread_name — a code-point slice
+    to 80 can leave up to 160 UTF-16 units for an emoji-heavy handoff name,
+    over Discord's budget and rejected by create_thread.
+    """
+    thread = SimpleNamespace(id=4242)
+    parent = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+    adapter._client.get_channel = lambda _id: parent
+
+    long_name = "\U0001f600" * 90
+
+    result = await adapter.create_handoff_thread("123", long_name)
+
+    assert result == "4242"
+    call_kwargs = parent.create_thread.await_args[1]
+    assert utf16_len(call_kwargs["name"]) <= 80
+
+
+@pytest.mark.asyncio
+async def test_create_thread_rejects_emoji_name_over_utf16_limit(adapter):
+    """Native /thread command: an explicit user-supplied name is validated
+    against Discord's UTF-16 unit limit (not silently truncated, unlike the
+    auto-generated thread-name helpers — the user typed this name on
+    purpose). The check runs before any channel resolution, so create_thread
+    must never be reached for an over-limit name."""
+    long_name = "\U0001f600" * 90  # 90 code points, 180 UTF-16 units
+
+    result = await adapter._create_thread(interaction=None, name=long_name)
+
+    assert "error" in result
+    assert "100" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_thread_accepts_name_within_utf16_limit(adapter):
+    """An ASCII name well within the limit passes the new validation and
+    proceeds to (unrelated) channel resolution — proven by getting a
+    DIFFERENT error than the UTF-16 one, since a bare `interaction=None`
+    in this minimal setup can't resolve a real channel."""
+    result = await adapter._create_thread(interaction=None, name="Short Thread Name")
+
+    assert result == {"error": "Could not resolve the current Discord channel."}
+
+
+def test_derive_forum_thread_name_truncates_emoji_by_utf16_units():
+    """Forum-post thread names share the same Discord UTF-16 (not
+    code-point) limit as the other thread-creation sites — a naive
+    ``[:100]`` code-point slice on a 90-emoji message stays under 100 code
+    points while still being 180 UTF-16 units, over budget."""
+    from plugins.platforms.discord.adapter import _derive_forum_thread_name
+
+    long_text = "\U0001f600" * 90
+    name = _derive_forum_thread_name(long_text)
+
+    assert utf16_len(name) <= 100
+
+
+def test_derive_forum_thread_name_ascii_unaffected():
+    from plugins.platforms.discord.adapter import _derive_forum_thread_name
+
+    assert _derive_forum_thread_name("Hello world") == "Hello world"
+    assert _derive_forum_thread_name("# Heading\nbody") == "Heading"
+    assert _derive_forum_thread_name("   ") == "New Post"
 
 
 # ------------------------------------------------------------------

@@ -6469,6 +6469,21 @@ class DiscordAdapter(BasePlatformAdapter):
         name = (name or "").strip()
         if not name:
             return {"error": "Thread name is required."}
+        # Discord validates `name` in UTF-16 code units (100 max), not Python
+        # code points — an emoji-heavy name can pass a naive length check
+        # while still exceeding the limit, so create_thread() below would be
+        # rejected with error 50035. This is an explicit user-supplied name
+        # (the /thread command), so surface a validation error rather than
+        # silently truncating it the way the auto-generated thread-name
+        # helpers do.
+        name_utf16_len = utf16_len(name)
+        if name_utf16_len > 100:
+            return {
+                "error": (
+                    f"Thread name is too long ({name_utf16_len} UTF-16 units; "
+                    "Discord's limit is 100). Please shorten it."
+                )
+            }
 
         if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
             allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
@@ -6542,10 +6557,14 @@ class DiscordAdapter(BasePlatformAdapter):
         content = re.sub(r"<@[!&]?\d+>", "", content)
         content = re.sub(r"<#\d+>", "", content)
         content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
-        return thread_name
+        if not content:
+            return "Hermes"
+        # Discord thread names are budgeted in UTF-16 code units (emoji count
+        # double) — truncate with the UTF-16 helpers, not code-point slices,
+        # to match rename_thread()/the semantic-title sanitizer.
+        if utf16_len(content) > 80:
+            return _prefix_within_utf16_limit(content, 77).rstrip() + "..."
+        return content
 
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
@@ -6705,7 +6724,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
-        thread_name = (name or "handoff").strip()[:80] or "handoff"
+        # Discord thread names are budgeted in UTF-16 code units (emoji count
+        # double) — truncate with the UTF-16 helpers, not code-point slices,
+        # to match rename_thread()/the semantic-title sanitizer.
+        cleaned_name = (name or "handoff").strip()
+        thread_name = _prefix_within_utf16_limit(cleaned_name, 80) or "handoff"
         reason = "Hermes session handoff"
 
         # First try: create a thread directly on the channel.
@@ -9168,13 +9191,17 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
 
 
 def _derive_forum_thread_name(message: str) -> str:
-    """Derive a thread name from the first line of the message, capped at 100 chars."""
+    """Derive a thread name from the first line of the message, capped at
+    100 UTF-16 units (Discord validates thread `name` in UTF-16 code units,
+    not Python code points — an emoji-heavy first line can pass a code-point
+    slice while still exceeding the limit, so create_thread() is rejected
+    with error 50035 and the forum post is silently never created)."""
     first_line = message.strip().split("\n", 1)[0].strip()
     # Strip common markdown heading prefixes
     first_line = first_line.lstrip("#").strip()
     if not first_line:
         first_line = "New Post"
-    return first_line[:100]
+    return _prefix_within_utf16_limit(first_line, 100)
 
 
 def _standalone_sanitize_error(text) -> str:

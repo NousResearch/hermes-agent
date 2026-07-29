@@ -8,11 +8,15 @@ of 4000+ models across 109+ providers.  Provides:
   (reasoning, tools, vision, PDF, audio), modalities, knowledge cutoff,
   open-weights flag, family grouping, deprecation status
 
-Data resolution order (like TypeScript OpenCode):
-  1. Bundled snapshot (ships with the package — offline-first)
-  2. Disk cache (~/.hermes/models_dev_cache.json)
-  3. Network fetch (https://models.dev/api.json)
-  4. Background refresh every 60 minutes
+Data resolution order:
+  1. In-memory cache (fresh, or stale served immediately while a single
+     background daemon thread refreshes)
+  2. Disk cache (~/.hermes/models_dev_cache.json — any age; stale data is
+     served rather than blocking callers on the network)
+  3. Network fetch (https://models.dev/api.json) — only when no cache
+     exists at all; failed refreshes back off for 5 minutes process-wide
+Latency-sensitive callers (gateway route-identity checks) pass
+``allow_network=False`` and never touch the network.
 
 Other modules should import the dataclasses and query functions from here
 rather than parsing the raw JSON themselves.
@@ -244,21 +248,29 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
 
 
 def _fetch_models_dev_from_network() -> Dict[str, Any]:
-    """Fetch the live models.dev registry without touching local caches."""
+    """Fetch the live models.dev registry without touching local caches.
+
+    Raises on network errors and on an empty/invalid registry payload.
+    """
     response = requests.get(MODELS_DEV_URL, timeout=15)
     response.raise_for_status()
     data = response.json()
-    if isinstance(data, dict) and data:
-        return data
-    return {}
+    if not isinstance(data, dict) or not data:
+        raise ValueError("models.dev returned an empty or invalid registry")
+    return data
 
 
 def _mark_stale_cache_grace() -> None:
-    """Give stale cache data a short in-memory grace before retrying refresh."""
+    """Give stale cache data a short in-memory grace before retrying refresh.
+
+    Only ever moves the timestamp forward: if a background refresh completed
+    between the caller's staleness check and this call, the fresh timestamp
+    is preserved instead of being rewound to a 5-minute grace.
+    """
     global _models_dev_cache_time
-    _models_dev_cache_time = (
-        time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_RETRY_DELAY
-    )
+    grace_time = time.time() - _MODELS_DEV_CACHE_TTL + _MODELS_DEV_RETRY_DELAY
+    if grace_time > _models_dev_cache_time:
+        _models_dev_cache_time = grace_time
 
 
 def _background_refresh_models_dev() -> None:
@@ -267,8 +279,6 @@ def _background_refresh_models_dev() -> None:
     global _models_dev_retry_after, _models_dev_refresh_in_flight
     try:
         data = _fetch_models_dev_from_network()
-        if not data:
-            raise ValueError("models.dev returned an empty or invalid registry")
         _save_disk_cache(data)
         _models_dev_cache = data
         _models_dev_cache_time = time.time()
@@ -307,7 +317,14 @@ def _start_background_refresh_models_dev() -> None:
         name="models-dev-refresh",
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except Exception as e:
+        # Thread/fd exhaustion: clear the flag so refresh isn't disabled
+        # for the rest of the process lifetime. Callers still get stale data.
+        with _models_dev_refresh_lock:
+            _models_dev_refresh_in_flight = False
+        logger.debug("Failed to start models.dev refresh thread: %s", e)
 
 
 def fetch_models_dev(
@@ -419,9 +436,6 @@ def fetch_models_dev(
 
         try:
             data = _fetch_models_dev_from_network()
-            if not data:
-                raise ValueError("models.dev returned an empty or invalid registry")
-
             _save_disk_cache(data)
             _models_dev_cache = data
             _models_dev_cache_time = time.time()
@@ -823,11 +837,7 @@ def get_provider_info(
     # Resolve Hermes ID → models.dev ID
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
-    data = (
-        fetch_models_dev()
-        if allow_network
-        else fetch_models_dev(allow_network=False)
-    )
+    data = fetch_models_dev(allow_network=allow_network)
     raw = data.get(mdev_id)
     if not isinstance(raw, dict):
         return None

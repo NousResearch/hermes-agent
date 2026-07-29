@@ -458,6 +458,12 @@ class DingTalkAdapter(BasePlatformAdapter):
                         loaded = [part.strip() for part in raw.split(",") if part.strip()]
                 patterns = loaded
 
+        if patterns is None:
+            # Parity with the historical inline implementation: return before
+            # evaluating ``self.name`` (avoids touching adapter attributes on
+            # the no-patterns path).
+            return []
+
         return compile_mention_patterns(
             patterns,
             log_prefix=self.name,

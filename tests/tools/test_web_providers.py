@@ -177,7 +177,7 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
         assert web_tools._get_extract_backend() == "parallel"
 
-    def test_search_backend_ignored_when_not_available(self, monkeypatch):
+    def test_search_backend_kept_when_known_but_not_available(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
@@ -186,7 +186,18 @@ class TestPerCapabilityBackendSelection:
         })
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
-        # Should fall back to firecrawl since exa isn't configured
+        # Keep the explicit backend so the dispatcher surfaces
+        # "EXA_API_KEY is not set" instead of silently switching engines.
+        assert web_tools._get_search_backend() == "exa"
+
+    def test_unknown_search_backend_still_falls_back(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "search_backend": "not-a-provider",
+        })
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
         assert web_tools._get_search_backend() == "firecrawl"
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
@@ -255,6 +266,42 @@ class TestWebSearchUsesSearchBackend:
 
         assert len(called_with) > 0
         assert called_with[0][0] == "search"
+
+    def test_explicit_exa_without_key_does_not_invoke_firecrawl(
+        self,
+        monkeypatch,
+        web_registry_populated,
+    ):
+        """The dispatcher must return Exa's setup error, not silently search elsewhere."""
+        from agent.web_search_registry import get_provider
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "search_backend": "exa",
+        })
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
+        monkeypatch.setattr(web_tools, "_exa_client", None, raising=False)
+
+        firecrawl = get_provider("firecrawl")
+        assert firecrawl is not None
+
+        def fail_if_called(*args, **kwargs):
+            pytest.fail("Firecrawl must not run when Exa is explicitly configured")
+
+        monkeypatch.setattr(firecrawl, "search", fail_if_called)
+
+        result = json.loads(web_tools.web_search_tool("hello", limit=1))
+
+        assert result == {
+            "success": False,
+            "error": (
+                "EXA_API_KEY environment variable not set. "
+                "Get your API key at https://exa.ai"
+            ),
+        }
 
 
 class TestUnconfiguredErrorEnvelopeParity:
@@ -621,4 +668,3 @@ class TestDisabledPluginDiagnostic:
             assert "No web search provider configured" not in err
         finally:
             restore()
-

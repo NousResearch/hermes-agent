@@ -21586,7 +21586,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "session_key": session_key,
             "message": event.text or "",
         }
-        _pre_route_results = await self.hooks.emit_collect("message:pre_route", _pre_route_ctx)
+        try:
+            _pre_route_results = await self.hooks.emit_collect("message:pre_route", _pre_route_ctx)
+        except Exception:
+            logger.warning("message:pre_route hook emit failed", exc_info=True)
+            _pre_route_results = []
         for _pr in _pre_route_results:
             if not isinstance(_pr, dict):
                 continue
@@ -21598,7 +21602,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     if _switched:
                         session_entry = _switched
-            break
+                break
 
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation

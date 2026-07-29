@@ -20,6 +20,8 @@ import logging
 import os
 import re
 import sys
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 HOOK_DIR = Path(__file__).parent
 META_FILE = HOOK_DIR / "meta.yaml"
+_META_LOCK = threading.Lock()
 
 # How many recent exchanges to pass as continuation context
 HISTORY_WINDOW = 3
@@ -94,39 +97,63 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 def _load_meta() -> Dict[str, Any]:
-    """Load persistent hook state from meta.yaml (role→session_id map + history)."""
+    """Load persistent hook state from meta.yaml (role→session_id map + history).
+
+    Discards files that are partially written (i.e. unparseable) and returns {}.
+    """
     if not META_FILE.exists():
         return {}
     try:
-        data = yaml.safe_load(META_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        text = META_FILE.read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+        if not isinstance(data, dict):
+            # Treat empty or non-dict files (e.g. truncated writes) as clean slate
+            logger.warning("[multi-role-router] meta.yaml contained non-dict content; resetting.")
+            return {}
+        return data
     except Exception as exc:
-        logger.warning("[multi-role-router] Could not read meta.yaml: %s", exc)
+        logger.warning("[multi-role-router] Could not read meta.yaml (discarding): %s", exc)
         return {}
 
 
 def _save_meta(data: Dict[str, Any]) -> None:
-    """Persist hook state to meta.yaml."""
+    """Persist hook state to meta.yaml using an atomic write (temp + os.replace)."""
     try:
-        META_FILE.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True),
-            encoding="utf-8",
+        content = yaml.safe_dump(data, default_flow_style=False, allow_unicode=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(HOOK_DIR), prefix=".meta_tmp_", suffix=".yaml"
         )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            os.replace(tmp_path, str(META_FILE))
+        except Exception:
+            # Clean up temp file if the replace failed
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception as exc:
         logger.warning("[multi-role-router] Could not write meta.yaml: %s", exc)
 
 
 def _update_meta_session(role: str, session_id: str, current_role: str, message: str, response: str) -> None:
-    """Update meta.yaml with the new current session and append to history."""
-    meta = _load_meta()
-    meta.setdefault("sessions", {})[role] = session_id
-    meta["current_role"] = role
-    # Rolling history — list of {role, user, assistant} dicts
-    history: List[Dict[str, str]] = meta.get("history", [])
-    history.append({"role": current_role, "user": message[:300], "assistant": response[:300]})
-    # Trim to window
-    meta["history"] = history[-(HISTORY_WINDOW * 2):]
-    _save_meta(meta)
+    """Update meta.yaml with the new current session and append to history.
+
+    Uses a threading lock + atomic write so concurrent hook invocations cannot
+    interleave their load/mutate/save cycles or leave a partial file on disk.
+    """
+    with _META_LOCK:
+        meta = _load_meta()
+        meta.setdefault("sessions", {})[role] = session_id
+        meta["current_role"] = role
+        # Rolling history — list of {role, user, assistant} dicts
+        history: List[Dict[str, str]] = meta.get("history", [])
+        history.append({"role": current_role, "user": message[:300], "assistant": response[:300]})
+        # Trim to window
+        meta["history"] = history[-(HISTORY_WINDOW * 2):]
+        _save_meta(meta)
 
 
 # ---------------------------------------------------------------------------
@@ -153,21 +180,33 @@ def _load_hermes_config() -> Dict[str, Any]:
 
 
 def _get_roles(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Return role definitions from config, falling back to DEFAULT_ROLES."""
+    """Return role definitions from config.
+
+    Non-empty user-defined roles REPLACE the defaults entirely so users can
+    define a clean, custom role set without inheriting built-in roles they
+    don't want.  Individual role entries still fall back to matching default
+    fields so partial definitions work as expected.  When the config is
+    missing or invalid, DEFAULT_ROLES is returned unchanged.
+    """
     user_roles = config.get("roles", {})
     if not isinstance(user_roles, dict) or not user_roles:
         return DEFAULT_ROLES
-    # Merge: user values override defaults; unknown keys are kept
-    merged = dict(DEFAULT_ROLES)
+    merged = {}
     for name, defn in user_roles.items():
         if isinstance(defn, dict):
-            merged[name] = defn
-    return merged
+            merged[name] = {**DEFAULT_ROLES.get(name, {}), **defn}
+    return merged or DEFAULT_ROLES
 
 
 def _get_auxiliary_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract auxiliary.triage_specifier or fall back to auxiliary.compression."""
+    """Extract auxiliary.triage_specifier or fall back to auxiliary.compression.
+
+    Guards against null/non-dict values at every level so a malformed
+    config.yaml cannot cause an AttributeError.
+    """
     aux = config.get("auxiliary", {})
+    if not isinstance(aux, dict):
+        aux = {}
     triage = aux.get("triage_specifier", {})
     if isinstance(triage, dict) and triage:
         return triage
@@ -239,9 +278,12 @@ def _call_auxiliary_llm(prompt: str, aux_cfg: Dict[str, Any], config: Dict[str, 
         return None
 
     # Direct HTTP fallback (used when the hook runs outside the gateway process)
+    model_section = config.get("model", {})
+    if not isinstance(model_section, dict):
+        model_section = {}
     base_url = (
         aux_cfg.get("base_url", "")
-        or config.get("model", {}).get("base_url", "")
+        or model_section.get("base_url", "")
     ).rstrip("/")
     api_key = (
         aux_cfg.get("api_key", "")
@@ -297,9 +339,12 @@ def _classify_message(
     if candidate in roles:
         return candidate
 
-    # Fuzzy: accept any role name that appears anywhere in the response
-    for role_name in roles:
-        if role_name in raw.lower():
+    # Fuzzy: match role names with word boundaries, longest first to avoid
+    # shorter names matching as substrings of longer ones (e.g. "ml" inside
+    # "ml-worker").
+    lowered = raw.lower()
+    for role_name in sorted(roles, key=len, reverse=True):
+        if re.search(rf"(?<!\w){re.escape(role_name.lower())}(?!\w)", lowered):
             return role_name
 
     logger.debug("[multi-role-router] Unrecognised role '%s', keeping current '%s'", raw, current_role)
@@ -344,7 +389,9 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
     config = _load_hermes_config()
 
     # Respect the /role auto off flag
-    router_config: Dict[str, Any] = config.get("multi_role_router", {})
+    router_config = config.get("multi_role_router")
+    if not isinstance(router_config, dict):
+        router_config = {}
     if not router_config.get("auto", True):
         return None
 

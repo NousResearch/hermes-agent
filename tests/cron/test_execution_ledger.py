@@ -41,10 +41,11 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
 
 def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path):
     import cron.executions as executions
+    import cron.jobs as jobs
 
     current_home = {"path": tmp_path / "default"}
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
-    monkeypatch.setattr(executions, "get_hermes_home", lambda: current_home["path"])
+    monkeypatch.setattr(jobs, "get_hermes_home", lambda: current_home["path"])
 
     default_row = executions.create_execution("default-job", source="builtin")
     current_home["path"] = tmp_path / "worker"
@@ -55,6 +56,28 @@ def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path
     assert executions.list_executions() == [default_row]
     assert (tmp_path / "default" / "cron" / "executions.db").is_file()
     assert (tmp_path / "worker" / "cron" / "executions.db").is_file()
+
+
+def test_execution_ledger_isolated_across_sequential_profile_contexts(tmp_path):
+    """One imported module must follow each active cron store in turn."""
+    import cron.executions as executions
+    from cron.jobs import use_cron_store
+
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+
+    with use_cron_store(profile_a):
+        executions.create_execution("job-a", source="builtin")
+    with use_cron_store(profile_b):
+        executions.create_execution("job-b", source="builtin")
+
+    with use_cron_store(profile_a):
+        assert [row["job_id"] for row in executions.list_executions()] == ["job-a"]
+    with use_cron_store(profile_b):
+        assert [row["job_id"] for row in executions.list_executions()] == ["job-b"]
+
+    assert (profile_a / "cron" / "executions.db").is_file()
+    assert (profile_b / "cron" / "executions.db").is_file()
 
 
 def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):

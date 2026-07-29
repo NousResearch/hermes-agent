@@ -338,16 +338,57 @@ def test_default_framework_is_onnx_elsewhere(monkeypatch, plat, machine):
     assert ww.default_inference_framework() == "onnx"
 
 
-def test_explicit_framework_overrides_platform_default(monkeypatch):
-    # An operator who pins a backend keeps it, even on macOS ARM64.
+def test_explicit_framework_kept_off_broken_platform(monkeypatch):
+    # An operator who pins a backend keeps it everywhere ONNX actually works.
     calls = _install_fake_openwakeword(monkeypatch)
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr(ww.sys, "platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
     ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
     )
     (downloaded,) = calls["download"]
     assert downloaded == [ww._bundled_wakeword_path("onnx")]
+
+
+def test_explicit_onnx_coerced_to_tflite_on_macos_arm64(monkeypatch):
+    # The one exception: explicit onnx on macOS ARM64 is provably dead (ONNX's
+    # embedding model never fires, upstream #336). Existing users who pinned it
+    # before the tflite fix must not keep a wake word that arms but never fires.
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    resolved = ww.resolve_inference_framework(
+        {"openwakeword": {"inference_framework": "onnx"}}
+    )
+    assert resolved == "tflite"
+
+
+def test_explicit_onnx_kept_on_macos_intel(monkeypatch):
+    # Intel Macs run ONNX fine — only ARM64 is broken, so don't coerce there.
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    resolved = ww.resolve_inference_framework(
+        {"openwakeword": {"inference_framework": "onnx"}}
+    )
+    assert resolved == "onnx"
+
+
+def test_explicit_tflite_kept_on_macos_arm64(monkeypatch):
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    resolved = ww.resolve_inference_framework(
+        {"openwakeword": {"inference_framework": "tflite"}}
+    )
+    assert resolved == "tflite"
+
+
+def test_empty_framework_falls_back_to_platform_default(monkeypatch):
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    assert ww.resolve_inference_framework({}) == "tflite"
+    assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
+    monkeypatch.setattr(ww.sys, "platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    assert ww.resolve_inference_framework({}) == "onnx"
 
 
 # ── ambient-speech rejection: consecutive-frame confirmation ──────────────────

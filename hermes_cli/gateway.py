@@ -3368,7 +3368,7 @@ def systemd_restart(system: bool = False):
     # mutation persists for the get_running_pid / drain-timeout reads below —
     # no separate pre-sync needed.
     refresh_systemd_unit_if_needed(system=system)
-    from gateway.status import get_running_pid
+    from gateway.status import get_running_pid, write_planned_service_restart_marker
 
     pid = get_running_pid() or _systemd_main_pid(system=system)
     if pid is not None:
@@ -3409,6 +3409,7 @@ def systemd_restart(system: bool = False):
             check=False,
             timeout=30,
         )
+        write_planned_service_restart_marker(pid)
         try:
             _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
         except subprocess.CalledProcessError as exc:
@@ -4435,7 +4436,7 @@ def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
-    from gateway.status import get_running_pid
+    from gateway.status import get_running_pid, write_planned_service_restart_marker
 
     try:
         pid = get_running_pid()
@@ -4455,6 +4456,7 @@ def launchd_restart():
                 f"(up to {drain_timeout:.0f}s)..."
             )
             try:
+                write_planned_service_restart_marker(pid)
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):
                 pid = None

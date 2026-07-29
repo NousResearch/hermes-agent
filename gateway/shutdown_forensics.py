@@ -181,6 +181,15 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
                     )
                 except OSError:
                     pass
+            planned_service_restart_path = (
+                Path(hermes_home_str) / ".gateway-planned-service-restart.json"
+            )
+            if planned_service_restart_path.exists():
+                try:
+                    raw = planned_service_restart_path.read_text(encoding="utf-8")
+                    ctx["planned_service_restart_marker"] = raw[:300]
+                except OSError:
+                    pass
             planned_stop_path = Path(hermes_home_str) / ".gateway-planned-stop.json"
             if planned_stop_path.exists():
                 try:

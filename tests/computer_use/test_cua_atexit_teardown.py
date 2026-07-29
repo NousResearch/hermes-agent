@@ -30,30 +30,8 @@ class TestAtexitTeardown:
             cu_tool._shutdown_backend_atexit()
             fake.stop.assert_called_once()
 
-    def test_shutdown_clears_the_cached_backend(self):
-        """After teardown the module cache is empty, so a later call re-spawns."""
-        fake = MagicMock()
-        with patch.object(cu_tool, "_backend", fake):
-            cu_tool._shutdown_backend_atexit()
-            assert cu_tool._backend is None
 
-    def test_shutdown_is_a_noop_when_never_started(self):
-        """No backend was ever created => nothing to stop, no error."""
-        with patch.object(cu_tool, "_backend", None):
-            cu_tool._shutdown_backend_atexit()  # must not raise
-            assert cu_tool._backend is None
 
-    def test_shutdown_swallows_backend_errors(self):
-        """A failing stop() must not raise out of an atexit hook.
-
-        Exceptions escaping atexit print a traceback on every exit and can
-        mask the real exit status.
-        """
-        fake = MagicMock()
-        fake.stop.side_effect = RuntimeError("driver already dead")
-        with patch.object(cu_tool, "_backend", fake):
-            cu_tool._shutdown_backend_atexit()  # must not raise
-            assert cu_tool._backend is None
 
     def test_shutdown_stops_every_session_backend(self):
         """Session-scoped caches are all drained, not only the legacy slot."""

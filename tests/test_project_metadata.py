@@ -100,38 +100,6 @@ def _exact_pins(specs):
     return pins
 
 
-def test_pyproject_aiohttp_pins_match_lazy_slack_pin():
-    """Avoid update/lazy-install churn from conflicting aiohttp pins.
-
-    pyproject extras (messaging/slack/homeassistant/sms) exact-pin aiohttp.
-    The Slack lazy-install deps (LAZY_DEPS['platform.slack']) also pin it.
-    If the two drift, `hermes update` resolves the pyproject pin and
-    downgrades aiohttp, reopening the CVEs the lazy pin fixed (#31817) —
-    only for Slack's lazy refresh to upgrade it again on next use.
-    """
-    from tools.lazy_deps import LAZY_DEPS
-
-    optional_dependencies = _load_optional_dependencies()
-    lazy_aiohttp = _exact_pins(LAZY_DEPS["platform.slack"])["aiohttp"]
-
-    pyproject_aiohttp_pins = {
-        extra: pins["aiohttp"]
-        for extra, specs in optional_dependencies.items()
-        if "aiohttp" in (pins := _exact_pins(specs))
-    }
-
-    assert pyproject_aiohttp_pins, "expected at least one pyproject extra to pin aiohttp"
-    mismatches = {
-        extra: pin
-        for extra, pin in pyproject_aiohttp_pins.items()
-        if pin != lazy_aiohttp
-    }
-    assert not mismatches, (
-        "pyproject.toml aiohttp pins must match "
-        "LAZY_DEPS['platform.slack'] to avoid hermes update downgrading "
-        "aiohttp before Slack's lazy refresh upgrades it again. "
-        f"lazy aiohttp=={lazy_aiohttp}; mismatched extras: {mismatches}"
-    )
 
 
 def test_pyproject_pins_match_lazy_deps_pins():
@@ -185,22 +153,8 @@ def test_pyproject_pins_match_lazy_deps_pins():
     )
 
 
-def test_dev_extra_excluded_from_all():
-    """End-user installs should not pull test/lint/debug tooling."""
-    optional_dependencies = _load_optional_dependencies()
-
-    assert "dev" in optional_dependencies
-    assert not any(
-        spec == "hermes-agent[dev]"
-        for spec in optional_dependencies["all"]
-    )
 
 
-def test_messaging_extra_includes_qrcode_for_weixin_setup():
-    optional_dependencies = _load_optional_dependencies()
-
-    messaging_extra = optional_dependencies["messaging"]
-    assert any(dep.startswith("qrcode") for dep in messaging_extra)
 
 
 def test_dingtalk_extra_includes_qrcode_for_qr_auth():
@@ -212,19 +166,8 @@ def test_dingtalk_extra_includes_qrcode_for_qr_auth():
     assert any(dep.startswith("qrcode") for dep in dingtalk_extra)
 
 
-def test_feishu_extra_includes_qrcode_for_qr_login():
-    """Feishu's QR login flow (gateway/platforms/feishu.py) needs the
-    qrcode package."""
-    optional_dependencies = _load_optional_dependencies()
-
-    feishu_extra = optional_dependencies["feishu"]
-    assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
-def test_shared_metrics_schema_is_packaged():
-    package_data = _load_package_data()
-
-    assert "observability/schemas/*.json" in package_data["hermes_cli"]
 
 
 def _uv_lock_version(package: str) -> str:

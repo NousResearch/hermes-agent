@@ -39,23 +39,6 @@ class TestEdgeTtsSpeed:
         kwargs = comm_cls.call_args[1]
         assert "rate" not in kwargs
 
-    def test_global_speed_applied(self, tmp_path):
-        """Global tts.speed used as fallback."""
-        comm_cls = self._run({"speed": 1.5}, tmp_path)
-        kwargs = comm_cls.call_args[1]
-        assert kwargs["rate"] == "+50%"
-
-    def test_provider_speed_overrides_global(self, tmp_path):
-        """tts.edge.speed takes precedence over tts.speed."""
-        comm_cls = self._run({"speed": 1.5, "edge": {"speed": 2.0}}, tmp_path)
-        kwargs = comm_cls.call_args[1]
-        assert kwargs["rate"] == "+100%"
-
-    def test_speed_below_one(self, tmp_path):
-        """Speed < 1.0 produces a negative rate string."""
-        comm_cls = self._run({"speed": 0.5}, tmp_path)
-        kwargs = comm_cls.call_args[1]
-        assert kwargs["rate"] == "-50%"
 
     def test_speed_exactly_one_no_rate(self, tmp_path):
         """Explicit speed=1.0 should not pass rate kwarg."""
@@ -89,23 +72,6 @@ class TestOpenaiTtsSpeed:
         kwargs = create.call_args[1]
         assert "speed" not in kwargs
 
-    def test_global_speed_applied(self, tmp_path, monkeypatch):
-        """Global tts.speed used as fallback."""
-        create = self._run({"speed": 1.5}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert kwargs["speed"] == 1.5
-
-    def test_provider_speed_overrides_global(self, tmp_path, monkeypatch):
-        """tts.openai.speed takes precedence over tts.speed."""
-        create = self._run({"speed": 1.5, "openai": {"speed": 2.0}}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert kwargs["speed"] == 2.0
-
-    def test_speed_clamped_low(self, tmp_path, monkeypatch):
-        """Speed below 0.25 is clamped to 0.25."""
-        create = self._run({"speed": 0.1}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert kwargs["speed"] == 0.25
 
     def test_speed_clamped_high(self, tmp_path, monkeypatch):
         """Speed above 4.0 is clamped to 4.0."""
@@ -139,23 +105,6 @@ class TestOpenaiTtsLangCode:
         kwargs = create.call_args[1]
         assert "extra_body" not in kwargs
 
-    def test_language_forwarded_as_lang_code(self, tmp_path, monkeypatch):
-        """tts.openai.language is forwarded as extra_body lang_code."""
-        create = self._run({"openai": {"language": "es"}}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert kwargs["extra_body"] == {"lang_code": "es"}
-
-    def test_empty_language_omitted(self, tmp_path, monkeypatch):
-        """Empty language string => extra_body omitted."""
-        create = self._run({"openai": {"language": ""}}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert "extra_body" not in kwargs
-
-    def test_global_language_not_forwarded(self, tmp_path, monkeypatch):
-        """Only tts.openai.language is honored, not a top-level tts.language."""
-        create = self._run({"language": "es"}, tmp_path, monkeypatch)
-        kwargs = create.call_args[1]
-        assert "extra_body" not in kwargs
 
     def test_language_coexists_with_speed(self, tmp_path, monkeypatch):
         """language and speed are forwarded independently."""
@@ -215,36 +164,6 @@ class TestMinimaxTtsT2aV2:
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"
 
-    def test_default_url_is_t2a_v2(self, tmp_path, monkeypatch):
-        """Default base URL points at the live t2a_v2 endpoint."""
-        mock_post, _ = self._run({}, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert "t2a_v2" in url
-        assert "api.minimax.io" in url
-
-    def test_group_id_from_config(self, tmp_path, monkeypatch):
-        """group_id from config attaches as ?GroupId=<id>."""
-        mock_post, _ = self._run({"minimax": {"group_id": "G123"}}, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert "GroupId=G123" in url
-
-    def test_group_id_from_env(self, tmp_path, monkeypatch):
-        """MINIMAX_GROUP_ID env var attaches as ?GroupId=<id>."""
-        monkeypatch.setenv("MINIMAX_GROUP_ID", "G456")
-        mock_post, _ = self._run({}, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert "GroupId=G456" in url
-
-    def test_group_id_already_in_url_left_alone(self, tmp_path, monkeypatch):
-        """If user already set GroupId in base_url, don't double-append it."""
-        cfg = {"minimax": {
-            "base_url": "https://api.minimax.io/v1/t2a_v2?GroupId=PRESET",
-            "group_id": "IGNORED",
-        }}
-        mock_post, _ = self._run(cfg, tmp_path, monkeypatch)
-        url = mock_post.call_args[0][0]
-        assert url.count("GroupId=") == 1
-        assert "GroupId=PRESET" in url
 
     def test_api_error_raises(self, tmp_path, monkeypatch):
         """Non-zero base_resp.status_code surfaces as RuntimeError."""

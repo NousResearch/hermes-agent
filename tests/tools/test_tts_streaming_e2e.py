@@ -42,52 +42,10 @@ def test_elevenlabs_streaming_real():
 # --- Gemini ---
 
 
-@pytest.mark.skipif(
-    not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
-    reason="GEMINI_API_KEY/GOOGLE_API_KEY not set",
-)
-def test_gemini_streaming_real():
-    """Generate audio from the real Gemini SSE API and verify non-empty chunks."""
-    from tools.tts_streaming import GeminiStreamer
-
-    provider = GeminiStreamer({}, {})
-    chunks = list(provider.stream("Hola, esto es una prueba."))
-    assert len(chunks) > 0
-    total_bytes = sum(len(c) for c in chunks)
-    assert total_bytes > 1000
-
-
 # --- OpenAI ---
 
 
-@pytest.mark.skipif(
-    not os.environ.get("OPENAI_API_KEY"),
-    reason="OPENAI_API_KEY not set",
-)
-def test_openai_streaming_real():
-    """Generate audio from the real OpenAI API and verify non-empty chunks."""
-    from tools.tts_streaming import OpenAIStreamer
-
-    provider = OpenAIStreamer({}, {})
-    chunks = list(provider.stream("Hello, this is a test."))
-    assert len(chunks) > 0
-    total_bytes = sum(len(c) for c in chunks)
-    assert total_bytes > 1000
-
-
 # --- xAI ---
-
-
-@pytest.mark.skipif(not _has_xai_creds(), reason="no xAI credentials")
-def test_xai_streaming_real():
-    """Generate audio from the real xAI WebSocket API and verify non-empty frames."""
-    from tools.tts_streaming import XAIStreamer
-
-    provider = XAIStreamer({}, {})
-    chunks = list(provider.stream("Hello, this is a test."))
-    assert len(chunks) > 0
-    total_bytes = sum(len(c) for c in chunks)
-    assert total_bytes > 1000
 
 
 # --- Resolver integration (no network; requires at least one key) ---

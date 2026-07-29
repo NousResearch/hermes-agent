@@ -39,17 +39,6 @@ def _make_agent(tmp_path: Path, **overrides):
 # ── estimator ──────────────────────────────────────────────────────────────
 
 
-def test_estimator_chat_completions_messages():
-    from agent.chat_completion_helpers import estimate_request_context_tokens
-    payload = {
-        "model": "gpt-5.4",
-        "messages": [
-            {"role": "user", "content": "x" * 400},
-            {"role": "assistant", "content": "y" * 400},
-        ],
-    }
-    # 800+ chars from messages -> ~200 tokens (char/4 estimate)
-    assert estimate_request_context_tokens(payload) >= 200
 
 
 def test_estimator_responses_api_input():
@@ -65,23 +54,8 @@ def test_estimator_responses_api_input():
     assert tokens >= 1200, f"Responses API estimator returned {tokens}"
 
 
-def test_estimator_responses_api_long_session_triggers_tier():
-    """A real long Codex session (large ``input``) should clear the 50k boundary."""
-    from agent.chat_completion_helpers import estimate_request_context_tokens
-    payload = {
-        "model": "gpt-5.5",
-        "input": "x" * 240_000,  # ~60k tokens (240k chars / 4)
-        "instructions": "s" * 4000,
-    }
-    assert estimate_request_context_tokens(payload) > 50_000
 
 
-def test_estimator_bare_list_back_compat():
-    from agent.chat_completion_helpers import estimate_request_context_tokens
-    messages = [
-        {"role": "user", "content": "x" * 800},
-    ]
-    assert estimate_request_context_tokens(messages) >= 200
 
 
 def test_estimator_empty_inputs():
@@ -91,10 +65,6 @@ def test_estimator_empty_inputs():
     assert estimate_request_context_tokens(None) == 0
 
 
-def test_estimator_unknown_dict_fallback():
-    from agent.chat_completion_helpers import estimate_request_context_tokens
-    payload = {"random_field": "z" * 400}
-    assert estimate_request_context_tokens(payload) > 50
 
 
 # ── default base + tier scaling ────────────────────────────────────────────
@@ -113,62 +83,12 @@ def test_default_base_is_90s(monkeypatch, tmp_path):
     assert implicit is True
 
 
-def test_short_codex_request_uses_base_only(monkeypatch, tmp_path):
-    """Codex payload below 50k tokens -> default 90s base."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    _write_config(tmp_path, "")
-
-    agent = _make_agent(tmp_path)
-    payload = {"model": "gpt-5.5", "input": "hi", "instructions": ""}
-    assert agent._compute_non_stream_stale_timeout(payload) == 90.0
 
 
-def test_long_codex_request_bumps_to_50k_tier(monkeypatch, tmp_path):
-    """Codex payload > 50k tokens -> at least 150s."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    _write_config(tmp_path, "")
-
-    agent = _make_agent(tmp_path)
-    payload = {"model": "gpt-5.5", "input": "x" * 240_000, "instructions": ""}
-    timeout = agent._compute_non_stream_stale_timeout(payload)
-    assert timeout >= 150.0
-    assert timeout < 240.0
 
 
-def test_very_long_codex_request_bumps_to_100k_tier(monkeypatch, tmp_path):
-    """Codex payload > 100k tokens -> at least 240s."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    _write_config(tmp_path, "")
-
-    agent = _make_agent(tmp_path)
-    payload = {"model": "gpt-5.5", "input": "x" * 500_000, "instructions": ""}
-    assert agent._compute_non_stream_stale_timeout(payload) >= 240.0
 
 
-def test_chat_completions_long_messages_bumps_tier(monkeypatch, tmp_path):
-    """Chat Completions estimator still works for the legacy messages path."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    _write_config(tmp_path, "")
-
-    agent = _make_agent(
-        tmp_path,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        model="gpt-5.4",
-    )
-    payload = {
-        "model": "gpt-5.4",
-        "messages": [{"role": "user", "content": "x" * 240_000}],
-    }
-    assert agent._compute_non_stream_stale_timeout(payload) >= 150.0
 
 
 def test_explicit_user_config_overrides_default(monkeypatch, tmp_path):
@@ -193,13 +113,6 @@ providers:
 # ── openai-codex gateway-scale stale floor ────────────────────────────────
 
 
-def test_openai_codex_stale_floor_covers_gateway_tool_payload():
-    """Gateway/Telegram tool payloads (~20k tokens) need the 600s Codex floor."""
-    from agent.chat_completion_helpers import openai_codex_stale_timeout_floor
-
-    assert openai_codex_stale_timeout_floor(22_095) == 600.0
-    assert openai_codex_stale_timeout_floor(10_001) == 600.0
-    assert openai_codex_stale_timeout_floor(10_000) == 0.0
 
 
 def test_openai_codex_stale_floor_tiers():

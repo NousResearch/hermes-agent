@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -88,6 +89,63 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+_IS_WINDOWS = os.name == "nt"
+
+# Windows sharing violations from transient readers usually clear within a few
+# milliseconds; retry briefly before giving up on the atomic rename.
+_SHARING_RETRY_ATTEMPTS = 5
+_SHARING_RETRY_DELAY_S = 0.02
+_ERROR_SHARING_VIOLATION = 32
+
+
+def _is_windows_sharing_error(
+    exc: OSError,
+    tmp_path: str | None = None,
+    target_path: str | None = None,
+) -> bool:
+    """Return True for the Windows sharing-violation class of rename failures.
+
+    CPython opens files without ``FILE_SHARE_DELETE``, so any concurrent
+    reader of the rename target turns ``os.replace`` into
+    ``ERROR_SHARING_VIOLATION`` → ``PermissionError`` (EACCES).  These are
+    usually transient (the reader closes within milliseconds), so they are
+    worth retrying before falling back to a copy.
+    """
+    if not _IS_WINDOWS:
+        return False
+    winerror = getattr(exc, "winerror", None)
+    if winerror == _ERROR_SHARING_VIOLATION:
+        return True
+    # CPython/MoveFileEx may surface a delete-sharing conflict as
+    # ERROR_ACCESS_DENIED (5), including on current Windows 11. Only treat
+    # that ambiguous code as transient when both ordinary file accesses are
+    # permitted; ACL/read-only denial must still propagate.
+    return (
+        winerror == 5
+        and tmp_path is not None
+        and target_path is not None
+        and os.path.isfile(tmp_path)
+        and os.path.isfile(target_path)
+        and os.access(tmp_path, os.W_OK)
+        and os.access(target_path, os.W_OK)
+    )
+
+
+def _replace_error_allows_fallback(
+    exc: OSError,
+    tmp_path: str | None = None,
+    target_path: str | None = None,
+) -> bool:
+    """Return True when a failed ``os.replace`` may use the copy fallback.
+
+    ``EXDEV`` (cross-device) and ``EBUSY`` (bind-mount / busy file) on all
+    platforms, plus the Windows sharing-violation class.
+    """
+    return exc.errno in (errno.EXDEV, errno.EBUSY) or _is_windows_sharing_error(
+        exc, tmp_path, target_path
+    )
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -101,9 +159,15 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``;
-    those cases fall back to copy/fsync/unlink for cross-device, bind-mount,
-    and busy-file deployments.
+    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``
+    (any platform), or Windows ``ERROR_SHARING_VIOLATION`` — where a
+    concurrent reader of the target (CPython opens without
+    ``FILE_SHARE_DELETE``) turns the rename into ``ERROR_SHARING_VIOLATION``.
+    Those cases retry the rename briefly (sharing violations are usually
+    transient), then fall back to copy/fsync/unlink so the write is not
+    silently dropped.  The copy fallback is not atomic — a concurrent reader
+    may observe a partially-written file — which is why the rename is
+    retried first.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
@@ -114,8 +178,22 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     try:
         os.replace(tmp_str, real_path)
     except OSError as exc:
-        if exc.errno not in (errno.EXDEV, errno.EBUSY):
+        if not _replace_error_allows_fallback(exc, tmp_str, real_path):
             raise
+        if _is_windows_sharing_error(exc, tmp_str, real_path):
+            # EXDEV/EBUSY never clear on retry; sharing violations usually do.
+            for _ in range(_SHARING_RETRY_ATTEMPTS):
+                time.sleep(_SHARING_RETRY_DELAY_S)
+                try:
+                    os.replace(tmp_str, real_path)
+                    return real_path
+                except OSError as retry_exc:
+                    if not _replace_error_allows_fallback(
+                        retry_exc, tmp_str, real_path
+                    ):
+                        raise
+                    if retry_exc.errno in (errno.EXDEV, errno.EBUSY):
+                        break
         logger.debug(
             "atomic_replace: %s -> %s failed with %s; falling back to copy",
             tmp_str,

@@ -219,7 +219,15 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     is_shallow = shallow == "true"
 
     try:
-        fetch_args = ["git", "fetch", "origin"]
+        # Scope the fetch to the one branch the behind-count compares against.
+        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
+        # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
+        # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
+        # for the same reason. Modern git updates the ``origin/main`` tracking
+        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
+        # unaffected; the shallow path compares against FETCH_HEAD, which a
+        # scoped fetch also updates.
+        fetch_args = ["git", "fetch", "origin", "main"]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")

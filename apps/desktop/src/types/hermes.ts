@@ -1073,6 +1073,8 @@ export interface LinuxWaylandSummary {
     capture_path?: string | null
     input_path?: string | null
     activation_path?: string | null
+    foreground_pointer_input?: boolean
+    foreground_keyboard_input?: boolean
     consent_expected?: boolean
     restore_token_present?: boolean
     degraded_reasons?: string[]

@@ -49,6 +49,16 @@ def test_detects_stale_wayland_socket(monkeypatch):
     assert "runtime socket" in " ".join(session.reasons)
 
 
+def test_stale_wayland_with_display_keeps_x11_route_visible(monkeypatch):
+    from tools.computer_use.linux_wayland import detect_linux_session
+
+    monkeypatch.setattr("pathlib.Path.exists", lambda _: False)
+    session = detect_linux_session(_wayland_env(DISPLAY=":0"))
+    assert session.kind == "wayland-stale-xwayland"
+    assert session.display == ":0"
+    assert "runtime socket" in " ".join(session.reasons)
+
+
 def test_parses_dbus_path_before_semicolon_options():
     from tools.computer_use.linux_wayland import _dbus_socket_path
 
@@ -99,6 +109,34 @@ def test_auto_mode_requires_native_feature_but_explicit_override_is_preserved(mo
     assert native_wayland_enabled("/driver", {}, _wayland_env(), features=native)
     assert native_wayland_enabled("/driver", {"computer_use": {"linux": {"wayland": {"enabled": "enabled"}}}}, _wayland_env(), features=no_features)
     assert not native_wayland_enabled("/driver", {"computer_use": {"linux": {"wayland": {"enabled": "disabled"}}}}, _wayland_env(), features=native)
+
+
+def test_stale_wayland_socket_refuses_auto_and_explicit_enabled(monkeypatch):
+    from tools.computer_use.linux_wayland import CuaDriverFeatures, native_wayland_enabled
+
+    monkeypatch.setattr("pathlib.Path.exists", lambda _: False)
+    native = CuaDriverFeatures(wayland_native=True, manifest_supported=True)
+    stale_xwayland = _wayland_env(DISPLAY=":0")
+    assert not native_wayland_enabled("/driver", {}, stale_xwayland, features=native)
+    assert not native_wayland_enabled(
+        "/driver",
+        {"computer_use": {"linux": {"wayland": {"enabled": "enabled"}}}},
+        stale_xwayland,
+        features=native,
+    )
+
+
+def test_explicit_disabled_refuses_valid_wayland_socket(monkeypatch):
+    from tools.computer_use.linux_wayland import CuaDriverFeatures, native_wayland_enabled
+
+    _socket_ready(monkeypatch)
+    native = CuaDriverFeatures(wayland_native=True, manifest_supported=True)
+    assert not native_wayland_enabled(
+        "/driver",
+        {"computer_use": {"linux": {"wayland": {"enabled": "disabled"}}}},
+        _wayland_env(DISPLAY=":0"),
+        features=native,
+    )
 
 
 def test_explicit_disable_wins_over_inherited_export(monkeypatch):
@@ -199,6 +237,49 @@ def test_gnome_explains_missing_portal_input(monkeypatch, tmp_path):
     os_release.write_text("ID=fedora\n")
     report = linux_wayland.diagnose_linux_desktop("/driver", {}, _wayland_env(), os_release_path=os_release)
     assert any("without portal_input" in reason for reason in report["capabilities"]["degraded_reasons"])
+
+
+def test_portal_input_is_a_candidate_until_driver_verifies_delivery(monkeypatch, tmp_path):
+    from tools.computer_use import linux_wayland
+
+    _socket_ready(monkeypatch)
+    features = linux_wayland.CuaDriverFeatures(
+        wayland_native=True,
+        portal_input=True,
+        manifest_supported=True,
+    )
+    monkeypatch.setattr(linux_wayland, "probe_driver_features", lambda *_: features)
+    monkeypatch.setattr(linux_wayland, "_bus_name_owned", lambda *_: True)
+    monkeypatch.setattr(linux_wayland, "_service_active", lambda *_: True)
+    os_release = tmp_path / "os-release"
+    os_release.write_text("ID=fedora\n")
+
+    caps = linux_wayland.diagnose_linux_desktop(
+        "/driver", {}, _wayland_env(), os_release_path=os_release
+    )["capabilities"]
+    assert caps["input_path"] == "portal_remote_desktop_input_candidate"
+    assert caps["consent_expected"] is True
+    assert caps["foreground_pointer_input"] is False
+    assert caps["foreground_keyboard_input"] is False
+
+
+def test_stale_xwayland_diagnosis_uses_x11_without_enabling_native_wayland(monkeypatch, tmp_path):
+    from tools.computer_use import linux_wayland
+
+    monkeypatch.setattr("pathlib.Path.exists", lambda _: False)
+    monkeypatch.setattr(linux_wayland, "probe_driver_features", lambda *_: linux_wayland.CuaDriverFeatures(wayland_native=True, manifest_supported=True))
+    monkeypatch.setattr(linux_wayland, "_bus_name_owned", lambda *_: False)
+    monkeypatch.setattr(linux_wayland, "_service_active", lambda *_: False)
+    os_release = tmp_path / "os-release"
+    os_release.write_text("ID=ubuntu\n")
+
+    report = linux_wayland.diagnose_linux_desktop(
+        "/driver", {}, _wayland_env(DISPLAY=":0"), os_release_path=os_release
+    )
+    assert report["native_wayland_enabled"] is False
+    assert report["session"]["kind"] == "wayland-stale-xwayland"
+    assert report["capabilities"]["input_path"] == "x11"
+    assert any("WAYLAND_DISPLAY is set" in reason for reason in report["capabilities"]["degraded_reasons"])
 
 
 def test_arch_install_hint_is_copyable_only_when_arch_packages_apply():

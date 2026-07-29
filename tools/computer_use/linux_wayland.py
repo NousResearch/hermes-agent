@@ -163,7 +163,13 @@ def detect_linux_session(env: Optional[Mapping[str, str]] = None) -> LinuxSessio
     if wayland:
         if not wl_ok:
             reasons.append("WAYLAND_DISPLAY is set but its runtime socket is missing or inaccessible")
-        kind = "wayland-xwayland" if display else ("wayland" if wl_ok else "wayland-stale")
+        if wl_ok:
+            kind = "wayland-xwayland" if display else "wayland"
+        else:
+            # DISPLAY can remain usable through XWayland after a stale Wayland
+            # environment leaks into a child process. Keep that route visible,
+            # but never mistake it for a live native Wayland session.
+            kind = "wayland-stale-xwayland" if display else "wayland-stale"
     elif declared == "wayland":
         kind = "wayland-stale"
         reasons.append("XDG_SESSION_TYPE=wayland but WAYLAND_DISPLAY is absent")
@@ -285,6 +291,9 @@ def native_wayland_enabled(
 ) -> bool:
     session = detect_linux_session(env)
     mode = configured_wayland_mode(config)
+    # The opt-in cannot create a compositor socket. Even an explicit enabled
+    # setting is only an override for driver feature policy, never for physical
+    # session validity.
     if mode == "disabled" or session.kind not in {"wayland", "wayland-xwayland"}:
         return False
     if mode == "enabled":
@@ -299,7 +308,7 @@ def native_wayland_child_env(
     out = dict(os.environ if env is None else env)
     if sys.platform == "linux" and native_wayland_enabled(driver_cmd, config, out):
         out[WAYLAND_ENABLE_ENV] = "1"
-    elif configured_wayland_mode(config) != "enabled":
+    else:
         out[WAYLAND_ENABLE_ENV] = "0"
     return out
 
@@ -362,11 +371,15 @@ def diagnose_linux_desktop(
         accessibility_tree=atspi_owner,
         restore_token_present=_restore_token_path(e).is_file(),
     )
-    if session.kind == "x11":
+    if session.kind in {"x11", "wayland-stale-xwayland"}:
         caps.window_enumeration = caps.app_scoped_capture = caps.window_scoped_capture = caps.desktop_capture = True
         caps.background_element_actions = caps.background_pixel_actions = True
         caps.foreground_pointer_input = caps.foreground_keyboard_input = caps.target_activation = caps.focus_restore = True
         caps.capture_path, caps.input_path, caps.activation_path = "x11", "x11", "x11_ewmh"
+        if session.kind == "wayland-stale-xwayland":
+            caps.degraded_reasons.append(
+                "WAYLAND_DISPLAY is stale; native Wayland is refused and the usable DISPLAY/X11 route is retained."
+            )
     elif session.kind in {"wayland", "wayland-xwayland"}:
         caps.window_enumeration = True
         if not native_enabled:
@@ -387,8 +400,11 @@ def diagnose_linux_desktop(
         else:
             caps.capture_path = "unavailable"
         if features.portal_input and portal_owner:
-            caps.foreground_pointer_input = caps.foreground_keyboard_input = True
-            caps.input_path = "portal_remote_desktop_input"
+            # Feature compilation and portal ownership only make this a
+            # candidate. cua-driver's live health report is authoritative for
+            # consent, RemoteDesktop/EIS setup, target activation, and safe
+            # delivery; Hermes must not promote it to ready on inference.
+            caps.input_path = "portal_remote_desktop_input_candidate"
             caps.consent_expected = True
         elif wlroots and features.wayland_native:
             caps.input_path = "wlroots_virtual_pointer_candidate"
@@ -401,7 +417,10 @@ def diagnose_linux_desktop(
         caps.activation_path = "driver_target_activation_candidate" if features.wayland_native else "unavailable"
     else:
         caps.hard_failures.append("No graphical Linux session is reachable from this process.")
-    caps.hard_failures.extend(session.reasons)
+    if session.kind == "wayland-stale-xwayland":
+        caps.degraded_reasons.extend(session.reasons)
+    else:
+        caps.hard_failures.extend(session.reasons)
     return {
         "distribution": distribution.as_dict(),
         "session": asdict(session),

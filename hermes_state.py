@@ -6863,6 +6863,15 @@ class SessionDB:
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
         return s
 
+    def get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
+        """Public wrapper for :meth:`_get_session_rich_row`.
+
+        Exposes the single-session enriched row (same columns as
+        ``list_sessions_rich``: preview + last_active) for callers outside
+        this module, e.g. the web server's session-search hydration.
+        """
+        return self._get_session_rich_row(session_id, compact_rows=compact_rows)
+
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Titled sessions whose first user turn was a ``/skill`` invocation.
 

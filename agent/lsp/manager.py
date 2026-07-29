@@ -204,6 +204,7 @@ class LSPService:
         enabled = bool(lsp_cfg.get("enabled", True))
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
+        idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
         install_strategy = lsp_cfg.get("install_strategy", "auto")
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
@@ -235,6 +236,7 @@ class LSPService:
             env_overrides=env_overrides,
             init_overrides=init_overrides,
             disabled_servers=disabled,
+            idle_timeout=idle_timeout,
         )
 
     # ------------------------------------------------------------------
@@ -397,6 +399,23 @@ class LSPService:
             eventlog.log_clean(server_id, file_path)
         return diags
 
+    def reap_idle_clients(self) -> int:
+        """Synchronously reap LSP clients that exceeded ``idle_timeout``.
+
+        This is primarily a long-lived gateway safety valve: the process-wide
+        service may touch many unrelated git workspaces over days of tool use,
+        and language servers keep pipes and helper children open until their
+        client is shut down.  Reaping is best-effort and never raises to the
+        caller.
+        """
+        if not self._enabled:
+            return 0
+        try:
+            return int(self._loop.run(self._reap_idle_clients_async(), timeout=10.0) or 0)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("LSP idle reap failed: %s", e)
+            return 0
+
     def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
         """Mark the (server_id, workspace_root) pair as broken so subsequent
         edits skip it instantly instead of re-paying timeout cost.
@@ -534,6 +553,7 @@ class LSPService:
             return None  # exclude marker hit, server gated off
 
         key = (srv.server_id, per_server_root)
+        await self._reap_idle_clients_async()
         if key in self._broken:
             return None
         with self._state_lock:
@@ -597,6 +617,37 @@ class LSPService:
             with self._state_lock:
                 self._spawning.pop(key, None)
 
+    async def _reap_idle_clients_async(self, now: Optional[float] = None) -> int:
+        """Shutdown and forget clients idle longer than ``idle_timeout``.
+
+        The service is lazy rather than running a periodic sweeper thread: the
+        next real LSP request is a natural, low-overhead checkpoint to prune
+        old workspace clients before they accumulate in long-lived gateway
+        processes.
+        """
+        if not self._enabled:
+            return 0
+        now = time.time() if now is None else now
+        cutoff = now - max(0.0, float(self._idle_timeout))
+        idle: List[Tuple[Tuple[str, str], LSPClient]] = []
+        with self._state_lock:
+            for key, client in list(self._clients.items()):
+                last_used = self._last_used.get(key, now)
+                if not client.is_running or last_used <= cutoff:
+                    removed = self._clients.pop(key, None)
+                    self._last_used.pop(key, None)
+                    if removed is not None:
+                        idle.append((key, removed))
+        if not idle:
+            return 0
+        await asyncio.gather(
+            *(client.shutdown() for _key, client in idle),
+            return_exceptions=True,
+        )
+        for key, _client in idle:
+            logger.debug("Reaped idle LSP client %s for %s", key[0], key[1])
+        return len(idle)
+
     async def _shutdown_async(self) -> None:
         with self._state_lock:
             clients = list(self._clients.values())
@@ -630,6 +681,7 @@ class LSPService:
             "wait_mode": self._wait_mode,
             "wait_timeout": self._wait_timeout,
             "install_strategy": self._install_strategy,
+            "idle_timeout": self._idle_timeout,
             "clients": clients,
             "broken": broken,
             "disabled_servers": sorted(self._disabled_servers),

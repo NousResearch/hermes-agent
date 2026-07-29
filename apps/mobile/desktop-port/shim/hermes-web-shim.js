@@ -767,6 +767,12 @@
       '.hermes-shim-btn--primary:disabled{opacity:0.6;cursor:default;}' +
       '.hermes-shim-btn--ghost{background:transparent;color:inherit;opacity:0.7;}' +
       '.hermes-shim-btn--ghost:hover{opacity:1;}' +
+      '#' + RECOVERY_BUTTON_ID + '{position:fixed;left:max(1rem,env(safe-area-inset-left));' +
+      'bottom:max(1rem,env(safe-area-inset-bottom));z-index:1500;padding:0.55rem 0.8rem;' +
+      'border:1px solid rgba(0,83,253,0.28);border-radius:0.65rem;background:rgba(248,250,255,0.94);' +
+      'box-shadow:0 5px 18px rgba(13,47,134,0.16);color:#0053FD;font:600 0.8rem -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}' +
+      '@media (prefers-color-scheme:dark){#' + RECOVERY_BUTTON_ID + '{background:rgba(13,47,134,0.94);' +
+      'border-color:rgba(255,230,203,0.3);color:#FFE6CB;}}' +
       '@media (max-width:22rem){.hermes-shim-modes{grid-template-columns:1fr;}}'
     document.head.appendChild(style)
   }
@@ -795,6 +801,20 @@
     if (btn) {
       btn.style.display = ''
     }
+  }
+
+  function ensureRecoveryButton() {
+    if (!readStoredSsh() || document.getElementById(RECOVERY_BUTTON_ID)) {
+      return
+    }
+    ensureConnectStyles()
+    const button = document.createElement('button')
+    button.id = RECOVERY_BUTTON_ID
+    button.type = 'button'
+    button.textContent = 'SSH'
+    button.setAttribute('aria-label', 'SSH-Verbindung bearbeiten')
+    button.addEventListener('click', () => openConnectOverlay({ dismissible: true }))
+    document.body.appendChild(button)
   }
 
   function closeConnectOverlay() {
@@ -954,10 +974,13 @@
             username: sshUserInput.value.trim(),
             hostKey: sshHostKeyInput.value.trim()
           }
-          if (!sshConfig.username || !sshConfig.hostKey || !sshKeyInput.value.trim()) {
+          const storedSshBeforeConnect = readStoredSsh()
+          if (!sshConfig.username || !sshConfig.hostKey || (!sshKeyInput.value.trim() && !storedSshBeforeConnect)) {
             throw new Error('SSH configuration is incomplete')
           }
-          await plugin.storePrivateKey({ account: sshConfig.account, privateKey: sshKeyInput.value.trim() })
+          if (sshKeyInput.value.trim()) {
+            await plugin.storePrivateKey({ account: sshConfig.account, privateKey: sshKeyInput.value.trim() })
+          }
           const savedSsh = readStoredSsh()
           const sameConfig =
             savedSsh &&
@@ -975,6 +998,7 @@
             tunnel = await plugin.start(sshConfig)
           }
           writeStoredSsh(sshConfig)
+          ensureRecoveryButton()
         }
         return window.hermesDesktop.testConnectionConfig({
           mode: 'remote',
@@ -1100,6 +1124,7 @@
   // arms itself. Neither path makes a network call — that only happens from the
   // "Connect" submit handler above, on explicit user action.
   whenBodyReady(() => {
+    ensureRecoveryButton()
     if (isFirstRunNoConfig()) {
       openConnectOverlay({ dismissible: false })
     } else {

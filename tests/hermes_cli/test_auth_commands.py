@@ -930,6 +930,115 @@ def test_auth_reset_all_profiles_does_not_materialize_global_fallback(tmp_path, 
     assert profile_payload.get("credential_pool", {}) == {}
 
 
+def test_auth_reset_current_profile_only_preserves_fallback_root_store(
+    tmp_path, monkeypatch
+):
+    """A named profile reset must not mutate inherited root credentials when scoped."""
+    from hermes_cli.auth_commands import auth_reset_command
+
+    root = tmp_path / "hermes-root"
+    named = root / "profiles" / "anthony-agent"
+    monkeypatch.setenv("HERMES_HOME", str(named))
+    _write_auth_store_at(
+        root,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [_exhausted_openai_codex_entry("root")]
+            },
+        },
+    )
+    _write_auth_store_at(
+        named,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [_exhausted_openai_codex_entry("named")]
+            },
+        },
+    )
+
+    auth_reset_command(
+        type(
+            "Args",
+            (),
+            {
+                "provider": "openai-codex",
+                "current_profile_only": True,
+                "all_profiles": False,
+            },
+        )()
+    )
+
+    named_entry = _read_auth_store_at(named)["credential_pool"]["openai-codex"][0]
+    root_entry = _read_auth_store_at(root)["credential_pool"]["openai-codex"][0]
+    assert named_entry["last_status"] is None
+    assert root_entry["last_status"] == "exhausted"
+
+
+def test_auth_reset_all_profiles_from_named_profile_reaches_every_profile(
+    tmp_path, monkeypatch
+):
+    """An explicit all-profile reset from a named profile reaches root and siblings."""
+    from hermes_cli.auth_commands import auth_reset_command
+
+    root = tmp_path / "hermes-root"
+    anthony = root / "profiles" / "anthony-agent"
+    irmella = root / "profiles" / "irmella-agent"
+    monkeypatch.setenv("HERMES_HOME", str(anthony))
+    for home, entry_id in (
+        (root, "root"),
+        (anthony, "anthony"),
+        (irmella, "irmella"),
+    ):
+        _write_auth_store_at(
+            home,
+            {
+                "version": 1,
+                "credential_pool": {
+                    "openai-codex": [_exhausted_openai_codex_entry(entry_id)]
+                },
+            },
+        )
+
+    auth_reset_command(
+        type(
+            "Args",
+            (),
+            {
+                "provider": "openai-codex",
+                "current_profile_only": False,
+                "all_profiles": True,
+            },
+        )()
+    )
+
+    for home in (root, anthony, irmella):
+        entry = _read_auth_store_at(home)["credential_pool"]["openai-codex"][0]
+        assert entry["last_status"] is None
+
+
+def test_auth_reset_parser_rejects_conflicting_profile_scopes():
+    import argparse
+
+    from hermes_cli.subcommands.auth import build_auth_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_auth_parser(subparsers, cmd_auth=lambda _args: None)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "auth",
+                "reset",
+                "openai-codex",
+                "--all-profiles",
+                "--current-profile-only",
+            ]
+        )
+
+
 def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

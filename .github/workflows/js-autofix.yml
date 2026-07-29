@@ -122,6 +122,7 @@ jobs:
     if: needs.generate-patch.outputs.has-fixes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: trusted-automation
     permissions:
       contents: write # needed to push to bot/js-autofix
       pull-requests: write # needed for PR creation + auto-merge
@@ -132,7 +133,7 @@ jobs:
         id: app-token
         uses: ./.github/actions/get-app-token
         with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
+          client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Download patch

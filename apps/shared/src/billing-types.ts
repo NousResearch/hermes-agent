@@ -6,6 +6,29 @@
  * gateway event union out of this runtime-free module.
  */
 
+// ── Billing wall (inference credit exhaustion) ───────────────────────
+
+/**
+ * Structured billing-wall descriptor emitted by the gateway on the
+ * `message.complete` event (`payload.billing`) when an inference call fails
+ * because the account is out of credits / payment is required — mirrors the
+ * Python `agent/billing_links.py::BillingBlock`.
+ *
+ * Detection is backend-only (`agent/error_classifier.py` →
+ * `FailoverReason.billing`), so every surface renders from this one signal and
+ * never re-classifies free-form error text. `is_nous` routes recovery: Nous is
+ * the managed route with in-app billing (desktop Settings → Billing, TUI
+ * `/topup`), while third-party providers deep-link to `billing_url`.
+ */
+export interface BillingBlock {
+  provider: string
+  provider_label: string
+  model: string
+  billing_url: string | null
+  is_nous: boolean
+  message: string
+}
+
 // ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
 /** One serialized usage bar (mirrors server `_serialize_usage_bar`). */
@@ -99,6 +122,47 @@ export interface BillingCardInfo {
   resolved_via?: null | string
 }
 
+/**
+ * The org's payment method on file.
+ *
+ * This is the authoritative field. `card` is a lossy older view of the same
+ * thing: it is populated only when the method is a card, and is null for
+ * every other kind — so `!card` does NOT mean "no payment method on file".
+ * A surface that gates on `card` alone will tell a Link customer they have
+ * nothing on file.
+ *
+ * Older gateways omit this field entirely, so absence means "this gateway
+ * didn't say", not "nothing on file".
+ *
+ * A kind this client predates arrives as `unknown` rather than as its real
+ * name, which keeps `kind` narrowable — every arm is a literal, so
+ * `if (pm.kind === 'card')` gives you the card fields. (The `string & {}`
+ * trick used by BillingRefusalCode does not work here: on an object union it
+ * makes the discriminant non-literal and defeats narrowing for every arm.)
+ */
+export type BillingPaymentMethod =
+  | {
+      kind: 'card'
+      brand: string
+      last4: string
+      /** Wallet that wrapped the card (e.g. "apple_pay", "google_pay"), if any. */
+      wallet: string | null
+      /** Card-resolution rung ("subPin" | "customerDefault" | "autoRefill") or null. */
+      resolved_via: null | string
+    }
+  | {
+      kind: 'link'
+      /** Link displays as the account email; can be absent on the Stripe side. */
+      email: null | string
+      resolved_via: null | string
+    }
+  | {
+      kind: 'unknown'
+      /** What the server actually called it, for logs and neutral copy. */
+      raw_kind: string
+      resolved_via: null | string
+    }
+
 export interface BillingMonthlyCap {
   is_default_ceiling: boolean
   limit_display: string
@@ -108,6 +172,9 @@ export interface BillingMonthlyCap {
 }
 
 export interface BillingAutoReload {
+  // The gateway's _parse_auto_reload_card returns None for a missing/unknown-kind
+  // card, and _serialize_billing_state emits `card: null` — so the wire really can
+  // carry null. Consumers must keep a null branch (treat it like the canonical card).
   card:
     | { kind: 'canonical' }
     | {
@@ -117,6 +184,7 @@ export interface BillingAutoReload {
         last4: string | null
       }
     | { kind: 'none' }
+    | null
   enabled: boolean
   reload_to_display: string
   reload_to_usd: string | null
@@ -132,6 +200,9 @@ export interface BillingStateResponse {
   can_change_plan?: boolean
   can_charge: boolean
   card: BillingCardInfo | null
+  // Typed payment-method union (newer gateways only); `card` remains the
+  // compatibility field and stays populated for kind "card".
+  payment_method?: BillingPaymentMethod | null
   charge_presets: string[]
   charge_presets_display: string[]
   cli_billing_enabled: boolean

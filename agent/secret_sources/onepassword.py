@@ -42,7 +42,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -73,10 +72,10 @@ _OP_RUN_TIMEOUT = 30
 # looks for.
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 
-# Strip whole ANSI CSI sequences (colour, cursor moves, line erases) from any
-# `op` diagnostic we surface — not just the lone ESC byte — so a control
-# sequence can't reposition the cursor or hide text after a redaction marker.
-_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+# ANSI stripping for `op` diagnostics we surface uses the shared
+# tools.ansi_strip.strip_ansi (full ECMA-48: CSI, OSC, DCS/SOS/PM/APC,
+# C1) so a control sequence can't reposition the cursor or hide text
+# after a redaction marker.
 
 # Env vars the `op` child actually needs.  We build a minimal allowlisted env
 # rather than copying all of os.environ (which, post-dotenv, holds every
@@ -98,6 +97,9 @@ _OP_ENV_ALLOWLIST = (
     "OP_ACCOUNT",
     "OP_CONNECT_HOST",
     "OP_CONNECT_TOKEN",
+    # Lets a user skip op's desktop-app integration probe (which can hang with
+    # no timeout on a wedged desktop container) and go straight to token auth.
+    "OP_LOAD_DESKTOP_APP_SETTINGS",
 )
 
 
@@ -172,16 +174,19 @@ def _validate_references(
 def _auth_fingerprint(token_env: str) -> str:
     """SHA-256 prefix over the auth material `op` would use.
 
-    Folds in the service-account token, ``OP_ACCOUNT``, and *all*
-    ``OP_SESSION_*`` vars (the names `op` actually exports for interactive
-    sessions — ``OP_SESSION_<account_shorthand>``).  Signing out and into a
-    different identity therefore changes the cache key, so a value cached under
-    a previous identity is never served under a new one.  Never logged or
+    Folds in the service-account token, ``OP_ACCOUNT``, the 1Password Connect
+    ``OP_CONNECT_HOST``/``OP_CONNECT_TOKEN``, and *all* ``OP_SESSION_*`` vars
+    (the names `op` actually exports for interactive sessions —
+    ``OP_SESSION_<account_shorthand>``).  Signing out and into a different
+    identity therefore changes the cache key, so a value cached under a
+    previous identity is never served under a new one.  Never logged or
     displayed; the raw token never leaves this hash.
     """
     parts: List[str] = [
         f"token={os.environ.get(token_env, '')}",
         f"account={os.environ.get('OP_ACCOUNT', '')}",
+        f"connect_host={os.environ.get('OP_CONNECT_HOST', '')}",
+        f"connect_token={os.environ.get('OP_CONNECT_TOKEN', '')}",
     ]
     for key in sorted(os.environ):
         if key.startswith("OP_SESSION_"):
@@ -225,7 +230,10 @@ def find_op(binary_path: str = "") -> Optional[Path]:
 
 def _scrub(text: str) -> str:
     """Remove ANSI control sequences and trim, for safe message surfacing."""
-    return _ANSI_CSI_RE.sub("", text).replace("\x1b", "").strip()
+    from tools.ansi_strip import strip_ansi
+
+    # strip_ansi removes well-formed sequences; drop any stray lone ESC too.
+    return strip_ansi(text).replace("\x1b", "").strip()
 
 
 def _op_child_env(token_value: str) -> Dict[str, str]:

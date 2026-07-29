@@ -33,3 +33,32 @@ export const composerPanelCard = cn(
   'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
   composerSurfaceGlass
 )
+
+/**
+ * Shared grid for the chrome-free floating strips that bracket the composer —
+ * the micro-action pills above the surface and the `composer.underside` slot
+ * below it.
+ *
+ * Both strips are in-flow children of the SAME box (the composer root's
+ * content box), which is the whole point: they previously lived in different
+ * parents — the pills inside the status stack's absolute overlay lane, the
+ * chip in the root — so "no padding" resolved to two different left edges and
+ * they never lined up. Same parent, no inset, one constant: the left edges are
+ * identical by construction, not by matching numbers in two places.
+ *
+ * `relative z-1` at the call sites is load-bearing, not styling. The pop-out
+ * drag region is an `absolute` sibling, and positioned elements paint above
+ * static in-flow ones whatever the DOM order — so without a stacking context
+ * these strips sit UNDER it and their contents never receive hover or clicks
+ * (the region does, and hatches).
+ *
+ * The strip is full-width so a contribution can push itself to the right
+ * (`ml-auto`), but it is `pointer-events-none` with its CHILDREN re-enabled:
+ * the chips are interactive, while the empty space between and beside them
+ * falls through to the drag region and stays grab area. That combination is
+ * why the composer is still draggable by the band its badges live in.
+ */
+export const composerFloatingStrip = cn(
+  'relative z-1 flex w-full flex-wrap items-center gap-1.5',
+  'pointer-events-none [&>*]:pointer-events-auto'
+)

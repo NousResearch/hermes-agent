@@ -15,6 +15,7 @@ import type {
 } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
+import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -87,6 +88,9 @@ export interface SelectionApi {
 
 export interface CompletionItem {
   display: string
+  /** Completion class from the gateway; `skill` is the only kind offered for
+   *  an inline `/skill` reference typed mid-message. */
+  kind?: string
   meta?: string
   text: string
 }
@@ -283,8 +287,10 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
-  dialog: DialogState | null
-  gridTest: GridTestState | null
+  /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
+  ambient: ActiveWidget[]
+  /** Modal widget app — owns input, blocks the composer. */
+  widget: ActiveWidget | null
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
@@ -297,39 +303,10 @@ export interface OverlayState {
   sudo: null | SudoReq
 }
 
-export interface DialogState {
-  body: string
-  hint?: string
-  title?: string
-  zone?: 'bottom' | 'bottom-left' | 'bottom-right' | 'center' | 'left' | 'right' | 'top' | 'top-left' | 'top-right'
-}
-
 export interface PagerState {
   lines: string[]
   offset: number
   title?: string
-}
-
-/** Number of live panels in the /grid-test streams demo (focus wraps mod this). */
-export const GRID_STREAM_COUNT = 6
-
-export interface GridTestState {
-  activeCol: number
-  activeRow: number
-  /** Areas mode: fixed-height 2D grid with rowSpan/colSpan demo cells. */
-  areas: boolean
-  cols: number
-  gap: null | number
-  nested: boolean
-  paddingX: null | number
-  rows: number
-  /** Streams mode: live-updating panels tiled by GridAreas. */
-  streams: boolean
-  /** Streams mode: which panel h/l focus is on (0-based, wraps). */
-  streamFocus: number
-  /** Streams mode: which panel owns the promoted 2x2 slot. */
-  streamMain: number
-  zoomed: boolean
 }
 
 export interface TranscriptRow {
@@ -347,6 +324,9 @@ export interface UiState {
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
+  // Focus view (/focus) — display-only reduced-output mode. Drives the
+  // persistent `◉ focus` status-bar badge; never affects request payloads.
+  focusView: boolean
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
@@ -546,7 +526,7 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string) => void
+    send: (text: string, showUserMessage?: boolean, displayText?: string) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]

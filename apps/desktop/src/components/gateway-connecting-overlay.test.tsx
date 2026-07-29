@@ -10,7 +10,7 @@ import { BootFailureOverlay } from './boot-failure-overlay'
 import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 
 // Repro for the "remote gateway → stuck on CONNECTING, no way to settings"
-// report. The connecting overlay (z-1200, full-screen, pointer-events on) used
+// report. The connecting overlay (full-screen, pointer-events on) used
 // to be shown whenever `gatewayState !== 'open' && !boot.error`. The ONLY escape
 // hatch — BootFailureOverlay, which has "Use local gateway" / "Sign in" /
 // "Retry" — only renders when `boot.error` is set.

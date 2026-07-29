@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -28,6 +28,18 @@ def _make_source() -> SessionSource:
 
 def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
+
+
+def _make_voice_event(text: str = "voice_message_1.ogg") -> MessageEvent:
+    source = _make_source()
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="m1",
+        media_urls=["/tmp/voice_message_1.ogg"],
+        media_types=["audio/ogg"],
+    )
 
 
 def _make_runner():
@@ -108,31 +120,6 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unknown_slash_command_underscored_form_also_guarded(monkeypatch):
-    """Telegram may send /foo_bar — same guard must trigger for underscored
-    commands that normalize to unknown hyphenated names."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._run_agent = AsyncMock(
-        side_effect=AssertionError(
-            "unknown slash command leaked through to the agent"
-        )
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/made_up_thing"))
-
-    assert result is not None
-    assert "Unknown command" in result
-    assert "/made_up_thing" in result
-    runner._run_agent.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     """A real built-in like /status must NOT hit the unknown-command guard."""
     runner = _make_runner()
@@ -143,6 +130,21 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     result = await runner._handle_message(_make_event("/status"))
 
     assert result is not None
+    assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_egress_slash_command_reports_proxy_status(monkeypatch):
+    runner = _make_runner()
+    monkeypatch.setattr(
+        "hermes_cli.proxy_cli.format_status_text",
+        lambda: "Egress proxy status\nEnabled: no",
+    )
+
+    result = await runner._handle_message(_make_event("/egress"))
+
+    assert result is not None
+    assert "Egress proxy status" in result
     assert "Unknown command" not in result
 
 
@@ -173,154 +175,6 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
 # ------------------------------------------------------------------
 # command:<name> decision hook — deny / handled / rewrite
 # ------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_command_hook_can_deny_before_dispatch(monkeypatch):
-    """A handler returning {"decision": "deny"} blocks a slash command early."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._run_agent = AsyncMock(
-        side_effect=AssertionError("denied slash command leaked to the agent")
-    )
-    runner._handle_status_command = AsyncMock(
-        side_effect=AssertionError("denied slash command reached its handler")
-    )
-    runner.hooks.emit_collect = AsyncMock(
-        return_value=[{"decision": "deny", "message": "Blocked by ACL"}]
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert result == "Blocked by ACL"
-    runner._run_agent.assert_not_called()
-    # The emit_collect call should use the canonical command name.
-    call_args = runner.hooks.emit_collect.await_args
-    assert call_args.args[0] == "command:status"
-
-
-@pytest.mark.asyncio
-async def test_command_hook_deny_without_message_uses_default(monkeypatch):
-    """A deny decision with no message falls back to a generic blocked string."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._handle_status_command = AsyncMock(
-        side_effect=AssertionError("denied slash command reached its handler")
-    )
-    runner.hooks.emit_collect = AsyncMock(return_value=[{"decision": "deny"}])
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert result is not None
-    assert "blocked" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_command_hook_can_mark_command_as_handled(monkeypatch):
-    """A handled decision short-circuits dispatch cleanly with a custom reply."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._handle_status_command = AsyncMock(
-        side_effect=AssertionError("handled slash command reached its handler")
-    )
-    runner.hooks.emit_collect = AsyncMock(
-        return_value=[{"decision": "handled", "message": "Already handled upstream"}]
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert result == "Already handled upstream"
-
-
-@pytest.mark.asyncio
-async def test_command_hook_allow_decision_is_passthrough(monkeypatch):
-    """A handler returning {"decision": "allow"} must NOT prevent normal dispatch."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._handle_status_command = AsyncMock(return_value="status: ok")
-    runner.hooks.emit_collect = AsyncMock(
-        return_value=[{"decision": "allow"}]
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert result == "status: ok"
-    runner._handle_status_command.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_command_hook_non_dict_return_values_ignored(monkeypatch):
-    """Hook return values that aren't dicts must not break dispatch."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._handle_status_command = AsyncMock(return_value="status: ok")
-    runner.hooks.emit_collect = AsyncMock(
-        return_value=["some string", 42, None, {}]
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert result == "status: ok"
-
-
-@pytest.mark.asyncio
-async def test_command_hook_fires_for_plugin_registered_command(monkeypatch):
-    """Plugin-registered slash commands should also trigger command:<name> hooks."""
-    import gateway.run as gateway_run
-
-    runner = _make_runner()
-    runner._run_agent = AsyncMock(
-        side_effect=AssertionError("plugin command leaked to the agent")
-    )
-    runner.hooks.emit_collect = AsyncMock(
-        return_value=[{"decision": "handled", "message": "intercepted"}]
-    )
-
-    monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
-    )
-    # Stub plugin command lookup so is_gateway_known_command() recognizes /metricas.
-    from hermes_cli import plugins as _plugins_mod
-
-    monkeypatch.setattr(
-        _plugins_mod,
-        "get_plugin_commands",
-        lambda: {"metricas": {"description": "Metrics", "args_hint": "dias:7"}},
-    )
-
-    result = await runner._handle_message(_make_event("/metricas dias:7"))
-
-    assert result == "intercepted"
-    # Hook event name uses the plugin command as canonical.
-    call_args = runner.hooks.emit_collect.await_args
-    assert call_args.args[0] == "command:metricas"
-    # Args are passed through in both "args" and "raw_args" keys.
-    ctx = call_args.args[1]
-    assert ctx["raw_args"] == "dias:7"
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,32 @@ export function isSessionNotFoundError(error: unknown): boolean {
   return /session not found/i.test(message)
 }
 
+/**
+ * Is the session a prompt is about to run against currently mid-turn?
+ *
+ * The foreground `busyRef` is NOT the answer. It mirrors whatever chat is on
+ * screen, while submit and slash both resolve their target through
+ * `resolveTargetSessionId` — routinely a different session (a tile, a route
+ * rebind, a session created by this very call). Reading the foreground flag
+ * therefore gates one session's send on another session's turn: a stale
+ * foreground `true` (a warm resume of a still-running chat leaves one behind)
+ * blocks an IDLE target and reports "session busy" about a session doing
+ * nothing, and the converse lets a background send fire mid-turn.
+ *
+ * The published per-session state is authoritative. Fall back to the
+ * foreground flag only when the target has no state yet — a just-minted
+ * session whose first publish hasn't landed.
+ */
+export function isTargetSessionBusy(
+  sessionStates: Record<string, { busy: boolean }>,
+  sessionId: null | string,
+  foregroundBusy: boolean
+): boolean {
+  const state = sessionId ? sessionStates[sessionId] : undefined
+
+  return state ? state.busy : foregroundBusy
+}
+
 // Gateway JSON-RPC calls reject with "request timed out: <method>" when the
 // backend event loop is starved (e.g. a poller spin or a heavy async-injected
 // turn). For prompt.submit this is indistinguishable from a dead runtime
@@ -129,8 +155,10 @@ export async function readImageForRemoteAttach(
 
 // Read a non-image file as a data URL for upload via file.attach. Returns null
 // when the desktop bridge can't read the file (e.g. it was moved/deleted).
+// Prefer the attach-specific IPC (256 MiB) so remote uploads are not stuck on
+// the preview/Settings default; fall back for older Electron shells.
 export async function readFileDataUrlForAttach(filePath: string): Promise<string | null> {
-  const reader = window.hermesDesktop?.readFileDataUrl
+  const reader = window.hermesDesktop?.readFileDataUrlForAttach ?? window.hermesDesktop?.readFileDataUrl
 
   if (!reader) {
     return null
@@ -141,13 +169,12 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   return dataUrl || null
 }
 
-// The readFileDataUrl IPC base64-loads the whole file into memory and is
-// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.ts, which
-// rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
-// remote mode every attachment's bytes go through that read, so a big file
-// surfaces that internal message verbatim in the failure toast. Translate it
-// into a friendly "too large to upload to the remote gateway" line, parsing the
-// limit out of the message so it tracks the real cap. Non-cap errors pass
+// The attach/preview IPC base64-loads the whole file into memory and rejects
+// with a raw "file is too large (N bytes; limit M bytes)" string when over
+// cap. In remote mode every attachment's bytes go through that read, so a big
+// file surfaces that internal message verbatim in the failure toast. Translate
+// it into a friendly "too large to upload to the remote gateway" line, parsing
+// the limit out of the message so it tracks the real cap. Non-cap errors pass
 // through unchanged.
 export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   const message = err instanceof Error ? err.message : String(err)
@@ -192,6 +219,140 @@ export function slashStatusText(command: string, output: string): string {
   return [`slash:${command}`, output.trim()].filter(Boolean).join('\n')
 }
 
+/**
+ * Format the JSON reply from a gateway RPC surfaced as `kind: 'rpc'` in
+ * desktop-slash-commands.ts. Kept here (instead of slash.ts) so it has no
+ * React / store dependencies and can be unit-tested in isolation.
+ *
+ * The renderer follows the field conventions shared by the gateway handlers
+ * we route to today:
+ * - `session.compress`: { summary: { headline, token_line, note, noop } }
+ *   (only used if /compress ever moves to `rpc`; it's an `action` today
+ *   because it needs transcript replacement)
+ * - `session.status`:   { output: "<multi-line plain text>" }
+ * - `session.save`:     { file: "<absolute path>" }
+ * - `session.usage`:    { calls, input, output, total, credits_lines? }
+ * - `session.steer`:    { status: 'queued' | 'rejected', text }
+ * - `process.stop`:     { killed: boolean }
+ * - `agents.list`:      { processes: [{ session_id, command, status, uptime }] }
+ *
+ * Any RPC whose response doesn't match these shapes falls through to a
+ * JSON.stringify dump so we never silently swallow data.
+ */
+export function renderRpcResult(response: unknown, name: string): string {
+  if (!response || typeof response !== 'object') {
+    return ''
+  }
+
+  const r = response as Record<string, unknown>
+
+  const summary = r.summary as { headline?: string; token_line?: string; note?: string; noop?: boolean } | undefined
+
+  if (summary && typeof summary === 'object' && typeof summary.headline === 'string' && summary.headline) {
+    const lines: string[] = [`${summary.noop ? '' : '✓ '}${summary.headline}`]
+
+    if (summary.token_line) {
+      lines.push(`  ${summary.token_line}`)
+    }
+
+    if (summary.note) {
+      lines.push(`  ${summary.note}`)
+    }
+
+    return lines.join('\n')
+  }
+
+  // session.steer — { status: 'queued' | 'rejected', text }
+  if (r.status === 'queued' || r.status === 'rejected') {
+    const text = typeof r.text === 'string' ? r.text : ''
+
+    if (r.status === 'queued') {
+      return text ? `Steered · "${text}" queued for next tool call` : 'Steered next tool call'
+    }
+
+    return 'Steer rejected — agent declined input'
+  }
+
+  // process.stop — { killed: number }
+  if ('killed' in r && typeof r.killed === 'number') {
+    return r.killed > 0
+      ? `Stopped ${r.killed} background process${r.killed === 1 ? '' : 'es'}.`
+      : 'No background processes to stop.'
+  }
+
+  // session.save — { file }
+  if (typeof r.file === 'string' && r.file) {
+    return `Saved transcript to ${r.file}`
+  }
+
+  // session.status — { output }
+  if (typeof r.output === 'string' && r.output) {
+    return r.output
+  }
+
+  // session.usage — { calls, input, output, total, credits_lines? }
+  if ('total' in r || 'input' in r || 'output' in r || 'calls' in r) {
+    const calls = Number(r.calls ?? 0)
+    const input = Number(r.input ?? 0)
+    const output = Number(r.output ?? 0)
+    const total = Number(r.total ?? 0)
+
+    const lines: string[] = [
+      `Usage: ${calls.toLocaleString()} calls · ${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`
+    ]
+
+    if (Array.isArray(r.credits_lines)) {
+      for (const credit of r.credits_lines) {
+        if (typeof credit === 'string' && credit.trim()) {
+          lines.push(credit.trim())
+        }
+      }
+    }
+
+    return lines.join('\n')
+  }
+
+  // agents.list — { processes: [{ session_id, command, status, uptime }] }
+  if (Array.isArray(r.processes)) {
+    if (r.processes.length === 0) {
+      return 'No background tasks running.'
+    }
+
+    return r.processes
+      .map(p => {
+        if (!p || typeof p !== 'object') {
+          return ''
+        }
+
+        const proc = p as Record<string, unknown>
+        const status = typeof proc.status === 'string' ? proc.status : 'unknown'
+        const command = typeof proc.command === 'string' ? proc.command : ''
+        const sessionId = typeof proc.session_id === 'string' ? proc.session_id : ''
+        const uptime = proc.uptime
+
+        const meta: string[] = []
+
+        if (typeof uptime === 'number' && uptime >= 0) {
+          meta.push(`${uptime}s`)
+        }
+
+        if (sessionId) {
+          meta.push(sessionId)
+        }
+
+        const tail = meta.length ? ` (${meta.join(' · ')})` : ''
+
+        return `• [${status}] ${command}${tail}`
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  // Generic fallback — keeps us honest if the gateway adds new fields we
+  // haven't shaped yet.
+  return `/${name}: ${JSON.stringify(r)}`
+}
+
 export function appendText(message: AppendMessage): string {
   return message.content
     .map(part => ('text' in part ? part.text : ''))
@@ -225,6 +386,19 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
+  /** The composer scope key that was actually loaded when this text was
+   *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared
+   *  against the resolved submit target in sessionContextDrift — a mismatch
+   *  means the composer and the session-side refs disagreed about which
+   *  session this send belongs to (#59305). Omit for non-composer submits
+   *  (queue drain, steer, external submit requests): the check is a no-op
+   *  without it. */
+  composerScope?: string | null
+  /** What the transcript shows for this send, when it differs from the text
+   *  the agent receives. A `/skill` invocation expands into the whole skill
+   *  body — model-facing scaffolding the UI must never render — so the slash
+   *  dispatcher passes the invocation (`/work fix the leak`) here. */
+  displayText?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

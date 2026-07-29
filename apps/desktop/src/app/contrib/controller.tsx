@@ -3,11 +3,12 @@ import { computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
+import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { IdleMount } from '@/components/idle-mount'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
-import { allPaneIds, group, split } from '@/components/pane-shell/tree/model'
+import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
@@ -26,6 +27,8 @@ import {
   revealTreePane,
   setPaneCollapsed,
   setTreePaneHidden,
+  setTreeSideCollapsed,
+  treeSideOfPane,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -35,9 +38,10 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { LayoutDashboard } from '@/lib/icons'
+import { LayoutDashboard, PanelBottom } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -50,10 +54,11 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
-import { $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/preview'
+import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
-import { $sessionColorById, sessionColorFor } from '@/store/session-color'
+import { watchSessionPins } from '@/store/session-pin-sync'
+import { $statusbarVisible, toggleStatusbarVisible } from '@/store/statusbar-prefs'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -297,6 +302,20 @@ registry.registerMany([
       run: resetLayoutTree
     } satisfies PaletteContribution
   },
+  // Hiding the bar removes the surface that would otherwise offer it back, so
+  // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
+  {
+    id: 'view.toggleStatusbar',
+    area: PALETTE_AREA,
+    data: {
+      id: 'view.toggleStatusbar',
+      label: 'Toggle status bar',
+      action: 'view.toggleStatusbar',
+      icon: PanelBottom,
+      keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
+      run: toggleStatusbarVisible
+    } satisfies PaletteContribution
+  },
   // The keybind panel's non-titlebar door (the keyboard icon is gone).
   {
     id: 'keybinds.panel',
@@ -397,6 +416,19 @@ watchContributedPanes()
 watchSessionTiles()
 watchRouteTiles()
 
+// Composer pop-out state is keyed by layout zone, so drop entries for zones the
+// user has since closed or merged away — otherwise a long-lived install keeps a
+// row for every split it has ever had.
+$layoutTree.subscribe(tree => {
+  if (tree) {
+    pruneComposerPopoutZones(groupLeafIds(tree))
+  }
+})
+
+// Mirror sidebar pins into the backend keep-flag so the auto-archive sweep
+// never hides a pinned chat (and pre-existing pins migrate transparently).
+watchSessionPins()
+
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
 // register() replaces same-id in place; the render fn is the shared constant
@@ -410,9 +442,10 @@ const syncWorkspaceTitle = () => {
     area: 'panes',
     title: stored ? storedSessionTitle(stored) : 'New session',
     data: {
-      // The tab's lead dot — same shared map the sidebar row reads, so the
-      // main tab and its sidebar row always show the same color.
-      accent: sessionColorFor(stored),
+      // The tab's status dot — the SAME primitive the sidebar row and session
+      // tiles render, so the main tab never disagrees with its sidebar row. No
+      // dot on a fresh draft (no session yet).
+      tabLead: selected ? () => <SessionStatusDot session={stored} storedSessionId={selected} /> : undefined,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       placement: 'main',
@@ -427,7 +460,6 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
-$sessionColorById.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the
@@ -528,7 +560,13 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 // rode the rail's row and vanished with it), its zone stands on its own.
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
-bindPaneVisibility('files', $hasWorkspace)
+// The tree pane's own presence tracks ⌘J directly, not just the column's
+// collapse — otherwise revealing a preview (which opens that shared column)
+// would drag the tree along with it. See revealPreview.
+bindPaneVisibility(
+  'files',
+  computed([$hasWorkspace, $fileBrowserOpen], (workspace, open) => workspace && open)
+)
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',
@@ -547,10 +585,8 @@ bindPaneCollapse(
 // Preview EXISTS only while something is previewed (old-shell semantics:
 // closing the last preview tab closes the pane; a new target opens + fronts
 // it). Same visibility binding as every other self-managed surface, driven
-// by the live targets instead of a toggle.
-const $previewVisible = computed([$previewTarget, $filePreviewTarget], (target, fileTarget) =>
-  Boolean(target || fileTarget)
-)
+// by the open tabs instead of a toggle.
+const $previewVisible = computed($previewTabs, tabs => tabs.length > 0)
 
 bindPaneVisibility('preview', $previewVisible, closeRightRail)
 
@@ -593,11 +629,25 @@ registerPaneCloser('files', () =>
 // the side, unhide, front — a NEW target while already visible still fronts.
 const revealPreview = () => {
   dockPaneBeside('preview', 'files')
+
+  // The preview shares a collapsible column with the file tree, and
+  // revealTreePane un-collapses a column through its bound store — here ⌘J /
+  // $fileBrowserOpen, which IS the tree's toggle. Going through it would open
+  // the tree every time a preview opened. Un-collapse the column directly and
+  // leave the toggle alone, so a preview can appear on its own.
+  const side = treeSideOfPane('preview')
+
+  if (side) {
+    setTreeSideCollapsed(side, false)
+  }
+
   revealTreePane('preview')
 }
 
-$previewTarget.listen(target => target && revealPreview())
-$filePreviewTarget.listen(target => target && revealPreview())
+// Keyed on open REQUESTS, not on the tab list: re-opening a tab that already
+// exists must still un-hide and front the pane, and closing one of two tabs
+// must not.
+$previewOpenRequest.listen(() => revealPreview())
 
 // ---------------------------------------------------------------------------
 
@@ -623,6 +673,7 @@ function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
 
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
+  const statusbarVisible = useStore($statusbarVisible)
 
   return (
     <SidebarProvider
@@ -647,7 +698,7 @@ export function ContribController() {
                   tree-published --workspace-left/right vars (pure CSS, no rect
                   threading), clamped to clear the REAL TitlebarControls
                   clusters (fixed, z-70); center is truly window-centered. */}
-          <div className="relative flex h-[34px] shrink-0 items-center border-b border-(--ui-stroke-tertiary) text-xs">
+          <div className="relative flex h-[34px] shrink-0 items-center bg-(--ui-sidebar-surface-background) text-xs">
             {/* Drag strips, AppShell-style: cut to AVOID the fixed control
                 clusters instead of overlapping them — Electron's no-drag
                 carve-out of fixed/transformed elements is unreliable, so a
@@ -689,8 +740,10 @@ export function ContribController() {
           <SessionTileCloseConfirm />
 
           {/* The REAL statusbar (model pill, command center, agents, …) with
-              statusBar.left/right contributions merged in. */}
-          <WiredPane part="statusbar" />
+              statusBar.left/right contributions merged in. Unmounted — not
+              just hidden — while toggled off, so its 15s status poll and the
+              per-turn readouts stop with it. */}
+          {statusbarVisible && <WiredPane part="statusbar" />}
         </div>
       </ContribWiring>
     </SidebarProvider>

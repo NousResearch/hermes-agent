@@ -1,113 +1,45 @@
+// Importing the apps barrel registers the reference apps before launch.
+import '../../../sdk/apps/index.js'
+
 import { terminalBackgroundHex } from '@hermes/ink'
 
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
+import { launchWidget } from '../../../sdk/host.js'
+import { listWidgetApps } from '../../../sdk/registry.js'
+import { loadUserWidgets } from '../../../sdk/userWidgets.js'
 import { detectLightMode } from '../../../theme.js'
-import type { DialogState } from '../../interfaces.js'
-import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-const GRID_TEST_USAGE = 'usage: /grid-test [cols]x[rows]  ·  /grid-test [cols] [rows]  ·  /grid-test streams'
-const GRID_TEST_MAX_SIZE = 12
+/** The registry IS the catalog: every registered widget app becomes a slash
+ *  command carrying the app's own help/usage — nothing hardcoded per app.
+ *  The app owns parsing (init), keybindings (reduce), placement (render). */
+export const widgetAppCommands: SlashCommand[] = listWidgetApps().map(app => ({
+  help: app.help,
+  name: app.id,
+  run: (arg, ctx) => {
+    const err = launchWidget(app.id, arg)
 
-const DIALOG_TEST_ZONES = new Set<DialogState['zone']>([
-  'bottom',
-  'bottom-left',
-  'bottom-right',
-  'center',
-  'left',
-  'right',
-  'top',
-  'top-left',
-  'top-right'
-])
-
-const DIALOG_TEST_USAGE = `usage: /dialog-test [zone]   zones: ${[...DIALOG_TEST_ZONES].join(', ')}`
-
-const clampGridSize = (value: number, fallback: number) => {
-  if (!Number.isFinite(value)) {
-    return fallback
+    if (err) {
+      ctx.transcript.sys(err)
+    }
   }
-
-  return Math.max(1, Math.min(GRID_TEST_MAX_SIZE, Math.trunc(value)))
-}
-
-const parseGridTestSize = (arg: string) => {
-  const trimmed = arg.trim()
-
-  if (!trimmed) {
-    return { cols: 4, rows: 3 }
-  }
-
-  const grid = trimmed.match(/^(\d+)\s*x\s*(\d+)$/i)
-
-  if (grid) {
-    return { cols: clampGridSize(Number(grid[1]), 4), rows: clampGridSize(Number(grid[2]), 3) }
-  }
-
-  const [cols, rows, ...rest] = trimmed.split(/\s+/)
-
-  if (rest.length || !cols || !rows || Number.isNaN(Number(cols)) || Number.isNaN(Number(rows))) {
-    return null
-  }
-
-  return { cols: clampGridSize(Number(cols), 4), rows: clampGridSize(Number(rows), 3) }
-}
+}))
 
 export const debugCommands: SlashCommand[] = [
-  {
-    help: 'open an interactive widget-grid demo overlay',
-    name: 'grid-test',
-    run: (arg, ctx) => {
-      const streams = arg.trim().toLowerCase() === 'streams'
-      const size = streams ? { cols: 4, rows: 3 } : parseGridTestSize(arg)
-
-      if (!size) {
-        return ctx.transcript.sys(GRID_TEST_USAGE)
-      }
-
-      patchOverlayState({
-        gridTest: {
-          activeCol: 0,
-          activeRow: 0,
-          areas: false,
-          cols: size.cols,
-          gap: null,
-          nested: false,
-          paddingX: null,
-          rows: size.rows,
-          streamFocus: 0,
-          streamMain: 0,
-          streams,
-          zoomed: false
-        }
-      })
-    }
-  },
+  ...widgetAppCommands,
 
   {
-    help: 'open a sample dialog overlay with a faked backdrop',
-    name: 'dialog-test',
-    run: (arg, ctx) => {
-      const trimmed = arg.trim().toLowerCase()
-      const zone = (trimmed || 'center') as DialogState['zone']
+    help: 'rescan $HERMES_HOME/tui-widgets and (re)register user widget apps',
+    name: 'widgets-reload',
+    run: (_arg, ctx) => {
+      void loadUserWidgets().then(({ errors, loaded }) => {
+        const parts = [
+          loaded.length ? `loaded: ${loaded.join(', ')}` : 'no user widgets found',
+          ...errors.map(e => `${e.file}: ${e.message}`)
+        ]
 
-      if (!DIALOG_TEST_ZONES.has(zone)) {
-        return ctx.transcript.sys(DIALOG_TEST_USAGE)
-      }
-
-      patchOverlayState({
-        dialog: {
-          body: [
-            'This is a viewport-level overlay with a backdrop.',
-            '',
-            `Zone: ${zone}`,
-            'Try: /dialog-test top-right · bottom · left · ...'
-          ].join('\n'),
-          hint: 'Esc/q/Enter close · Ctrl+C close',
-          title: 'Dialog primitive',
-          zone
-        }
+        ctx.transcript.sys(`widgets — ${parts.join(' · ')}`)
       })
     }
   },

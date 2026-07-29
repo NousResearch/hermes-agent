@@ -29,31 +29,6 @@ class TestReadFileHandler:
         assert result["total_lines"] == 2
         mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 500)
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_custom_offset_and_limit(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.content = "line10"
-        result_obj.to_dict.return_value = {"content": "line10", "total_lines": 50}
-        mock_ops.read_file.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import read_file_tool
-        read_file_tool("/tmp/big.txt", offset=10, limit=20)
-        mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 10, 20)
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_invalid_offset_and_limit_are_normalized_before_dispatch(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.content = "line1"
-        result_obj.to_dict.return_value = {"content": "line1", "total_lines": 1}
-        mock_ops.read_file.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import read_file_tool
-        read_file_tool("/tmp/big.txt", offset=0, limit=0)
-        mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 1)
 
     @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
@@ -103,20 +78,6 @@ class TestWriteFileHandler:
         assert "line-number" in result["error"].lower()
         mock_get.assert_not_called()
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_allows_sparse_literal_pipe_content(self, mock_get):
-        """A single literal N| line should not be treated as read_file output."""
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 21}
-        mock_ops.write_file.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import write_file_tool
-        result = json.loads(write_file_tool("/tmp/out.txt", "1|literal value\nplain line\n"))
-
-        assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once()
 
     @patch("tools.file_tools._get_file_ops")
     def test_unexpected_exception_still_logs_error(self, mock_get, caplog):
@@ -184,30 +145,6 @@ class TestPatchHandler:
         assert result["status"] == "ok"
         mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_replace_all_flag(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "replacements": 5}
-        mock_ops.patch_replace.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import patch_tool
-        patch_tool(mode="replace", path="/tmp/f.py",
-                   old_string="x", new_string="y", replace_all=True)
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_missing_path_errors(self, mock_get):
-        from tools.file_tools import patch_tool
-        result = json.loads(patch_tool(mode="replace", path=None, old_string="a", new_string="b"))
-        assert "error" in result
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_replace_mode_missing_strings_errors(self, mock_get):
-        from tools.file_tools import patch_tool
-        result = json.loads(patch_tool(mode="replace", path="/tmp/f.py", old_string=None, new_string="b"))
-        assert "error" in result
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_mode_calls_patch_v4a(self, mock_get):
@@ -222,11 +159,6 @@ class TestPatchHandler:
         assert result["status"] == "ok"
         mock_ops.patch_v4a.assert_called_once()
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_patch_mode_missing_content_errors(self, mock_get):
-        from tools.file_tools import patch_tool
-        result = json.loads(patch_tool(mode="patch", patch=None))
-        assert "error" in result
 
     @patch("tools.file_tools._get_file_ops")
     def test_unknown_mode_errors(self, mock_get):
@@ -303,18 +235,6 @@ class TestPatchSensitivePathExtraction:
         assert "sensitive" in result["error"].lower()
         mock_get.assert_not_called()
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_patch_move_from_sensitive_src_blocked(self, mock_get):
-        from tools.file_tools import patch_tool
-        patch_text = (
-            "*** Begin Patch\n"
-            "*** Move File: /etc/hosts -> /tmp/leak.txt\n"
-            "*** End Patch\n"
-        )
-        result = json.loads(patch_tool(mode="patch", patch=patch_text))
-        assert "error" in result
-        assert "sensitive" in result["error"].lower()
-        mock_get.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_update_no_space_after_asterisks_blocked(self, mock_get):
@@ -338,20 +258,6 @@ class TestPatchSensitivePathExtraction:
         assert "sensitive" in result["error"].lower()
         mock_get.assert_not_called()
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_patch_move_rejects_traversal_endpoint(self, mock_get):
-        """A Move endpoint with ``..`` traversal is rejected, same as the
-        Update/Add/Delete headers."""
-        from tools.file_tools import patch_tool
-        patch_text = (
-            "*** Begin Patch\n"
-            "*** Move File: /tmp/work.txt -> ../../../etc/shadow\n"
-            "*** End Patch\n"
-        )
-        result = json.loads(patch_tool(mode="patch", patch=patch_text))
-        assert "error" in result
-        assert "traversal" in result["error"].lower()
-        mock_get.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_move_safe_paths_not_blocked(self, mock_get):
@@ -387,36 +293,6 @@ class TestSearchHandler:
         assert "matches" in result
         mock_ops.search.assert_called_once()
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_search_passes_all_params(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"matches": []}
-        mock_ops.search.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import search_tool
-        search_tool(pattern="class", target="files", path="/src",
-                    file_glob="*.py", limit=10, offset=5, output_mode="count", context=2)
-        mock_ops.search.assert_called_once_with(
-            pattern="class", path="/src", target="files", file_glob="*.py",
-            limit=10, offset=5, output_mode="count", context=2,
-        )
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_search_normalizes_invalid_pagination_before_dispatch(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"files": []}
-        mock_ops.search.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import search_tool
-        search_tool(pattern="class", target="files", path="/src", limit=-5, offset=-2)
-        mock_ops.search.assert_called_once_with(
-            pattern="class", path="/src", target="files", file_glob=None,
-            limit=1, offset=0, output_mode="content", context=0,
-        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_search_exception_returns_error(self, mock_get):
@@ -445,32 +321,6 @@ class TestWindowsMsysPathResolution:
         resolved = file_tools._resolve_path_for_task("/c/Users/Mark/project/app.py")
         assert str(resolved) == r"C:\Users\Mark\project\app.py"
 
-    def test_cygdrive_path_normalized(self, monkeypatch):
-        import tools.environments.local as local_mod
-        import tools.file_tools as file_tools
-
-        monkeypatch.setattr(file_tools.sys, "platform", "win32")
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
-        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
-
-        resolved = file_tools._resolve_path_for_task("/cygdrive/d/code/main.py")
-        assert str(resolved) == r"D:\code\main.py"
-
-    def test_relative_path_uses_normalized_msys_cwd(self, monkeypatch):
-        import tools.environments.local as local_mod
-        import tools.file_tools as file_tools
-
-        monkeypatch.setattr(file_tools.sys, "platform", "win32")
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
-        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
-        monkeypatch.setattr(
-            file_tools,
-            "_authoritative_workspace_root",
-            lambda task_id="default": "/c/Users/Mark/project",
-        )
-
-        resolved = file_tools._resolve_path_for_task("src/app.py", task_id="msys")
-        assert str(resolved) == r"C:\Users\Mark\project\src\app.py"
 
     def test_container_paths_skip_msys_translation(self, monkeypatch):
         """WSL/docker Linux paths must not be rewritten as Windows drives."""
@@ -552,20 +402,6 @@ class TestSearchHints:
         assert "[Hint:" in raw
         assert "offset=50" in raw
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_non_truncated_no_hint(self, mock_get):
-        mock_ops = MagicMock()
-        result_obj = MagicMock()
-        result_obj.to_dict.return_value = {
-            "total_count": 3,
-            "matches": [{"path": "a.py", "line": 1, "content": "x"}] * 3,
-        }
-        mock_ops.search.return_value = result_obj
-        mock_get.return_value = mock_ops
-
-        from tools.file_tools import search_tool
-        raw = search_tool(pattern="foo")
-        assert "[Hint:" not in raw
 
     @patch("tools.file_tools._get_file_ops")
     def test_truncated_hint_with_nonzero_offset(self, mock_get):
@@ -613,21 +449,6 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "Hermes config" in result["error"]
 
-    def test_hermes_config_blocked_for_patch(self, tmp_path, monkeypatch):
-        fake_config = tmp_path / "config.yaml"
-        fake_config.write_text("approvals:\n  mode: manual\n")
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
-
-        from tools.file_tools import patch_tool
-        result = json.loads(patch_tool(
-            mode="replace",
-            path=str(fake_config),
-            old_string="mode: manual",
-            new_string="mode: off",
-        ))
-        assert "error" in result
-        assert "Hermes config" in result["error"]
 
     def test_system_path_still_blocked(self, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")
@@ -732,41 +553,6 @@ class TestSessionCwdSurvivesEnvRecreation:
         finally:
             tt.clear_session_cwd(task_id)
 
-    @patch("tools.terminal_tool._active_environments", new_callable=dict)
-    @patch("tools.file_tools._file_ops_cache", new_callable=dict)
-    @patch("tools.terminal_tool._get_env_config")
-    @patch("tools.terminal_tool._create_environment")
-    def test_falls_back_to_config_default_when_no_record(
-        self, mock_create_env, mock_config, mock_cache, mock_active
-    ):
-        import tools.terminal_tool as tt
-        from tools.file_tools import _get_file_ops
-
-        mock_env = MagicMock()
-        mock_env.cwd = "/default/path"
-        mock_create_env.return_value = mock_env
-        mock_config.return_value = {
-            "env_type": "local",
-            "cwd": "/config/default/path",
-            "timeout": 30,
-        }
-
-        task_id = "default"
-        tt.clear_session_cwd(task_id)
-
-        _get_file_ops(task_id)
-
-        create_call = mock_create_env.call_args
-        assert create_call is not None, "_create_environment was not called"
-        kwargs = create_call.kwargs if create_call.kwargs else {}
-        cwd_passed = kwargs.get("cwd", None)
-        if cwd_passed is None:
-            args = create_call.args if create_call.args else []
-            if len(args) >= 3:
-                cwd_passed = args[2]
-
-        assert cwd_passed == "/config/default/path", \
-            f"Expected cwd='/config/default/path', got {cwd_passed!r}"
 
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)

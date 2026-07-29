@@ -56,6 +56,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED,
     ERROR_METHOD_NOT_FOUND,
@@ -294,6 +296,12 @@ class LSPClient:
         cmd = self._command
         if sys.platform == "win32":
             cmd = self._win_wrap_cmd(cmd)
+        # Suppress the cmd.exe console window that would otherwise flash
+        # every time we launch a ``.cmd``-wrapped language server
+        # (e.g. pyright-langserver.CMD) from a console-less host such as
+        # a VS Code/Zed extension running the ACP adapter.
+        # windows_hide_flags() is CREATE_NO_WINDOW on Windows, 0 on POSIX.
+        creationflags = windows_hide_flags()
 
         try:
             # start_new_session=True detaches the LSP server into its own
@@ -312,6 +320,7 @@ class LSPClient:
                 env=env,
                 cwd=self._cwd,
                 start_new_session=True,
+                creationflags=creationflags,
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(

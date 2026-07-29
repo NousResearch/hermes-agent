@@ -158,10 +158,13 @@ If omitted, subagents use the same model as the parent.
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
 Certain tools are blocked for subagents even when the parent has them:
-- `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
-- `code_execution` — children should reason step-by-step
+- `send_message` — no cross-platform side effects
+- `cronjob` — no scheduling more work in the parent's name
+
+Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
 ## Max Iterations
 
@@ -191,9 +194,53 @@ delegation:
 
 A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
 
+When a configured cap fires, the child's result carries structured timeout
+metadata alongside the error message so parents and hooks can distinguish a
+stopwatch kill from other failures without parsing text: `timeout_seconds`
+(the configured cap), `timed_out_after_seconds` (actual wall clock), and
+`timeout_phase` (`before_first_llm_call` when the child never reached its
+first request, `after_llm_calls` otherwise). All three are `null` on
+non-timeout errors.
+
 :::tip Diagnostic dump on zero-call timeout
-With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, and any early error messages. Much easier to root-cause than the previous silent-timeout behavior.
+With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
 :::
+
+## Stall Detection for Background Subagents
+
+Background delegations (`delegate_task(background=true)`) are watched by a
+**progress-based stall monitor** — on by default, zero config. Unlike a
+wall-clock timeout, it never touches a child that is making progress, no
+matter how long it runs.
+
+The monitor samples each detached child's progress signals — API-call count,
+current tool, and last-activity timestamp (which ticks on **every streamed
+token**, tool transition, and API-call boundary, so a child mid-stream on a
+long response always counts as alive):
+
+1. **Progressing children are never touched.** Any advancing signal resets
+   the clock.
+2. A child whose progress is completely frozen past the stale threshold
+   (450s idle, 1200s while inside a tool — legitimately slow terminal
+   commands and web fetches get the higher ceiling) is **interrupted** and
+   given a 120s grace window. A child that unwinds in time delivers its
+   partial results through the normal completion path.
+3. A child that never returns is force-finalized with a terminal `stalled`
+   completion event, so the owning session hears an outcome instead of
+   going silent, and the async slot frees for new work.
+
+The `stalled` event carries structured metadata mirroring the sync-path
+timeout fields: `stalled_after_quiet_seconds`, `stall_threshold_seconds`,
+`stall_phase` (`idle` / `in_tool`), and `stall_grace_seconds`.
+
+This closed a long-standing failure mode where a wedged background child
+left its session looking dead until a process restart. The underlying wedge
+(children hanging at their first API call after multi-day gateway uptime)
+was also fixed at the root: delegated children now run their OpenAI-wire
+API requests inline on their own conversation thread instead of a nested
+worker thread — the layer where the wedge lived. The stall monitor remains
+as the safety net for anything else.
+
 
 ## Monitoring Running Subagents (`/agents`)
 
@@ -205,6 +252,22 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 - Post-hoc review: step through each subagent's turn-by-turn history even after they've returned to the parent
 
 The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
+
+On the classic CLI and every gateway platform (Telegram, Discord, Slack, ...),
+`/agents` also lists **background delegations with live per-child activity**,
+sampled directly from each running child:
+
+```
+Background delegations: 1 running
+- deleg_ab12cd34 · running · research the delegation stall monitor
+  - child 1: 4 api calls · in web_search · active 12s ago
+  - child 2: 7 api calls · between turns · active 3s ago
+```
+
+A delegation the stall monitor has flagged shows as
+`stalling · no progress 450s — interrupting`, and long-quiet-but-healthy
+children show their quiet time so you can tell "slow" from "stuck" at a
+glance.
 
 ## Live Transcripts
 
@@ -264,7 +327,7 @@ For **durable execution** that must survive session closure or process restart, 
 - Each subagent gets its **own terminal session** (separate from the parent)
 - Subagents inherit the parent's enabled toolsets; the model cannot select or widen them per call
 - **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
-- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `execute_code`. Orchestrator subagents retain `delegate_task` but still cannot use the other three.
+- Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`. Orchestrator subagents retain `delegate_task` but keep the other blocks. Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work instead of burning reasoning iterations.
 - **Cancellation follows ownership** — `/stop` or closing/resetting the owning session cancels its background children; synchronous descendants under orchestrators follow their parent's interrupt state
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)

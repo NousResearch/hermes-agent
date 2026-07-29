@@ -1,6 +1,9 @@
-// Screenshot /tmp/tui-visual.html with the repo's Electron (offscreen).
+// Screenshot the render.tsx output with the workspace's Electron (offscreen).
 import { app, BrowserWindow } from 'electron'
 import { writeFileSync } from 'fs'
+import { join } from 'path'
+
+import { visualOutDir } from './paths.mjs'
 
 app.disableHardwareAcceleration()
 
@@ -12,12 +15,15 @@ app.whenReady().then(async () => {
     width: 1500
   })
 
-  await win.loadFile('/tmp/tui-visual.html')
+  const outDir = visualOutDir()
+
+  await win.loadFile(join(outDir, 'tui-visual.html'))
   await new Promise(r => setTimeout(r, 700))
 
   const image = await win.webContents.capturePage()
+  const outFile = join(outDir, 'tui-visual.png')
 
-  writeFileSync('/tmp/tui-visual.png', image.toPNG())
-  console.log('wrote /tmp/tui-visual.png')
+  writeFileSync(outFile, image.toPNG())
+  console.log(`wrote ${outFile}`)
   app.quit()
 })

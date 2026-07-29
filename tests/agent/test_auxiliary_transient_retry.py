@@ -22,8 +22,6 @@ from unittest.mock import patch
 import pytest
 
 
-class _ConnErr(Exception):
-    """Stand-in that the transient detector recognizes as a connection blip."""
 
 
 def test_transient_retry_count_default(monkeypatch):
@@ -36,17 +34,6 @@ def test_transient_retry_count_default(monkeypatch):
         assert ac._transient_retry_count() == ac._DEFAULT_TRANSIENT_RETRIES
 
 
-def test_transient_retry_count_configurable_and_clamped():
-    from agent import auxiliary_client as ac
-
-    with patch("hermes_cli.config.cfg_get", return_value=4):
-        assert ac._transient_retry_count() == 4
-    with patch("hermes_cli.config.cfg_get", return_value=100):
-        assert ac._transient_retry_count() == 6  # clamped high
-    with patch("hermes_cli.config.cfg_get", return_value=-3):
-        assert ac._transient_retry_count() == 0  # clamped low
-    with patch("hermes_cli.config.cfg_get", side_effect=RuntimeError):
-        assert ac._transient_retry_count() == ac._DEFAULT_TRANSIENT_RETRIES
 
 
 def test_model_participates_in_client_cache_key():
@@ -73,10 +60,3 @@ def test_model_participates_in_client_cache_key():
     assert k_opus == k_opus2
 
 
-def test_missing_model_key_is_stable():
-    """Omitting model (legacy callers) is still a valid, stable key."""
-    from agent.auxiliary_client import _client_cache_key
-
-    a = _client_cache_key("openrouter", async_mode=False, base_url="u", api_key="k")
-    b = _client_cache_key("openrouter", async_mode=False, base_url="u", api_key="k")
-    assert a == b

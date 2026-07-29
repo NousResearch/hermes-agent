@@ -79,6 +79,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,6 +116,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),
 
+    # ─── Monitoring ─────────────────────────────────────────────────────────
+    # OTLP gateway monitoring export. Lazily installed on first use of
+    # monitoring.gateway_health_export / monitoring.export.otlp. Tracks the
+    # `otlp` extra in pyproject.toml — bump both together.
+    "export.otlp": (
+        "opentelemetry-sdk==1.39.1",
+        "opentelemetry-exporter-otlp-proto-http==1.39.1",
+    ),
+
     # ─── TTS providers ─────────────────────────────────────────────────────
     # Pinned to exact versions to match pyproject.toml's no-ranges policy
     # (see comment at top of [project.dependencies]). When bumping, update
@@ -131,6 +142,43 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    # SILK voice-note decoding (WeChat/QQ .silk voice messages). pilk is a
+    # small silk-v3 codec binding; installed on first .silk transcription.
+    "stt.silk": ("pilk==0.2.4",),
+
+    # ─── Wake word ("Hey Hermes") engines ──────────────────────────────────
+    # Keep in sync with the `wake` extra in pyproject.toml. openWakeWord is the
+    # free, local default (ONNX runtime); Porcupine is the premium engine.
+    # openWakeWord's ONNX embedding model returns near-zero scores on macOS
+    # ARM64 (dscripka/openWakeWord#336), so the wake word runs on the tflite
+    # backend there. Upstream declares tflite-runtime for Linux only;
+    # ai-edge-litert is the macOS equivalent, bridged in tools/wake_word.py.
+    # It lives in its own feature because lazy-dep specs cannot carry PEP 508
+    # environment markers (_spec_is_safe rejects ";"), so the platform gate is
+    # applied by the caller instead.
+    "wake.openwakeword.tflite": (
+        "ai-edge-litert==2.1.6",
+    ),
+    "wake.openwakeword": (
+        "openwakeword==0.6.0",
+        "onnxruntime==1.27.0",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    # Open-vocabulary keyword spotting: any typed phrase, zero training.
+    # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
+    # tokenization) even though sherpa-onnx doesn't declare it.
+    "wake.sherpa": (
+        "sherpa-onnx==1.13.4",
+        "sentencepiece==0.2.2",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    "wake.porcupine": (
+        "pvporcupine==4.0.3",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
@@ -220,8 +268,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "starlette==1.3.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "python-multipart==0.0.32",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
@@ -236,10 +284,23 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==1.26.0",
-        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
-    "tool.trace_upload": ("huggingface-hub==1.2.3",),
+    #
+    # huggingface-hub is a SHARED dependency: transformers (pulled by
+    # sentence-transformers for local Hindsight embeddings) requires
+    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively.
+    # Because active_features() marks a feature active from mere package
+    # presence, the `hermes update` lazy-refresh pass re-asserts THIS pin on
+    # every install where hub is present — so an exact pin below 1.5.0
+    # force-downgrades the shared package and breaks Hindsight startup
+    # (#60783). Policy: keep the exact pin (no ranges — security posture),
+    # but it MUST stay inside transformers' accepted window and MUST match
+    # uv.lock so the whole tree converges on ONE hub version
+    # (tests/test_project_metadata.py enforces both). When bumping: update
+    # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.
+    "tool.trace_upload": ("huggingface-hub==1.24.0",),
 }
 
 
@@ -666,8 +727,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             try:
                 r = subprocess.run(
                     [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
-                    capture_output=True, text=True, timeout=timeout, env=uv_env,
+                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags(),
                 )
                 if r.returncode == 0:
                     if target is not None:
@@ -682,8 +744,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         try:
             probe = subprocess.run(
                 pip_cmd + ["--version"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if probe.returncode != 0:
                 raise FileNotFoundError("pip not in venv")
@@ -691,8 +754,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             try:
                 subprocess.run(
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    capture_output=True, text=True, timeout=120, check=True,
+                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags(),
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 return _InstallResult(False, "",
@@ -701,8 +765,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         try:
             r = subprocess.run(
                 pip_cmd + ["install", *target_args, *constraint_args, *specs],
-                capture_output=True, text=True, timeout=timeout,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if r.returncode == 0 and target is not None:
                 _activate_target_on_syspath(target)
@@ -855,11 +920,114 @@ def feature_install_command(feature: str) -> Optional[str]:
     return "uv pip install " + " ".join(repr(s) for s in specs)
 
 
+@dataclass
+class InstallSpecsResult:
+    """Outcome of :func:`install_specs` for one batch of pip specs.
+
+    ``ok``       — install succeeded (or nothing was missing).
+    ``blocked``  — installs are gated off (config kill switch, sealed venv
+                   without a durable target) or a spec failed validation;
+                   nothing was executed. ``reason`` explains why.
+    ``command``  — human-readable description of what ran (for UIs/logs).
+    """
+    ok: bool
+    blocked: bool = False
+    reason: str = ""
+    command: str = ""
+    stdout: str = ""
+    stderr: str = ""
+
+
+def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> InstallSpecsResult:
+    """Install arbitrary (validated) pip specs through the lazy-install pipeline.
+
+    This is the environment-aware install path for callers whose package
+    lists come from data (e.g. memory-provider plugin manifests declaring
+    ``pip_dependencies``) rather than the static :data:`LAZY_DEPS` allowlist.
+    It applies the exact same environment routing as :func:`ensure`:
+
+    * **Venv-scoped by default** — installs into ``sys.executable``'s venv.
+    * **Durable-target on immutable images** — when the deployment seals the
+      agent venv (``HERMES_DISABLE_LAZY_INSTALLS=1``) and sets
+      ``HERMES_LAZY_INSTALL_TARGET``, installs are redirected to the writable
+      data-volume dir (``--target`` + core-venv constraints), then activated
+      on ``sys.path`` so the packages import in this process immediately.
+    * **Gated** — honors ``security.allow_lazy_installs`` and refuses to run
+      when the venv is sealed with no durable target (never attempts a write
+      to a read-only tree; reports *why* instead of surfacing EROFS/EACCES).
+
+    Every spec must pass :func:`_spec_is_safe` (no URLs, paths, or shell
+    metacharacters). Unlike :func:`ensure`, unknown packages are permitted —
+    the caller owns manifest trust; this function owns spec hygiene and
+    environment routing.
+
+    Never raises; inspect the returned :class:`InstallSpecsResult`.
+    """
+    cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
+    if not cleaned:
+        return InstallSpecsResult(ok=True, command="")
+
+    for spec in cleaned:
+        if not _spec_is_safe(spec):
+            return InstallSpecsResult(
+                ok=False, blocked=True,
+                reason=f"refusing to install unsafe spec {spec!r}",
+            )
+
+    if not _allow_lazy_installs():
+        target = _lazy_install_target()
+        if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1" and target is None:
+            reason = (
+                "runtime installs are disabled on this deployment: the agent "
+                "environment is immutable and no writable install target is "
+                "configured (HERMES_LAZY_INSTALL_TARGET)"
+            )
+        else:
+            reason = "runtime installs disabled (security.allow_lazy_installs=false)"
+        return InstallSpecsResult(ok=False, blocked=True, reason=reason)
+
+    target = _lazy_install_target()
+    display = "uv pip install " + (
+        f"--target {target} " if target is not None else ""
+    ) + " ".join(cleaned)
+
+    logger.info("Installing pip specs %s (target=%s)", " ".join(cleaned), target or "venv")
+    try:
+        result = _venv_pip_install(cleaned, timeout=timeout)
+    except Exception as exc:
+        logger.warning("install_specs failed unexpectedly: %s", exc)
+        return InstallSpecsResult(
+            ok=False, command=display, stderr=f"install failed: {exc}"
+        )
+
+    # Freshly-installed dists must be visible to importers and metadata
+    # checks in this same process (dashboard rechecks availability inline).
+    try:
+        import importlib
+        importlib.invalidate_caches()
+        import importlib.metadata as _md
+        if hasattr(_md, "_cache_clear"):
+            _md._cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    return InstallSpecsResult(
+        ok=result.success,
+        command=display,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+
+
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
+    A feature counts as "active" if its anchor package (the first declared
+    spec) is currently installed in the venv (presence check, ignoring
+    version). We intentionally do NOT treat shared helper packages as proof
+    that a backend was enabled: for example ``platform.matrix`` depends on
+    generic packages like ``asyncpg``/``aiosqlite`` that can be installed for
+    unrelated reasons, while the actual Matrix adapter anchor is ``mautrix``.
     Features the user has never enabled stay quiet.
 
     Used by ``hermes update`` to figure out which lazy backends need a
@@ -867,7 +1035,7 @@ def active_features() -> list[str]:
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if specs and _is_present(specs[0]):
             active.append(feature)
     return active
 

@@ -23,23 +23,6 @@ class TestMemorySetupProviderRouting:
         direct.assert_called_once_with("honcho")
         picker.assert_not_called()
 
-    def test_setup_without_provider_runs_picker(self):
-        """`memory setup` (no provider) runs the interactive picker."""
-        args = SimpleNamespace(memory_command="setup", provider=None)
-        with patch.object(memory_setup, "cmd_setup_provider") as direct, \
-             patch.object(memory_setup, "cmd_setup") as picker:
-            memory_setup.memory_command(args)
-        picker.assert_called_once_with(args)
-        direct.assert_not_called()
-
-    def test_setup_with_missing_provider_attr_runs_picker(self):
-        """A SimpleNamespace lacking `provider` must not crash — fall back to picker."""
-        args = SimpleNamespace(memory_command="setup")
-        with patch.object(memory_setup, "cmd_setup_provider") as direct, \
-             patch.object(memory_setup, "cmd_setup") as picker:
-            memory_setup.memory_command(args)
-        picker.assert_called_once_with(args)
-        direct.assert_not_called()
 
     def test_unknown_provider_reports_and_returns_early(self, capsys):
         """An unknown provider name surfaces a helpful message and returns

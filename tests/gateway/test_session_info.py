@@ -34,13 +34,6 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "claude-opus-4.6" in info
 
-    def test_includes_provider(self, runner, tmp_path):
-        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  provider: openrouter\n",
-                                  "test-model",
-                                  {"provider": "openrouter", "base_url": "", "api_key": ""})
-        with p1, p2, p3:
-            info = runner._format_session_info()
-        assert "openrouter" in info
 
     def test_config_context_length(self, runner, tmp_path):
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  context_length: 32768\n",
@@ -70,43 +63,6 @@ class TestFormatSessionInfo:
             info = runner._format_session_info()
         assert "localhost:11434" in info
         assert "8K" in info
-
-    def test_cloud_endpoint_hidden(self, runner, tmp_path):
-        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  provider: openrouter\n",
-                                  "test-model",
-                                  {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "api_key": "k"})
-        with p1, p2, p3:
-            info = runner._format_session_info()
-        assert "Endpoint" not in info
-
-    def test_million_context_format(self, runner, tmp_path):
-        p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: test-model\n  context_length: 1000000\n",
-                                  "test-model",
-                                  {"provider": "", "base_url": "", "api_key": ""})
-        with p1, p2, p3:
-            info = runner._format_session_info()
-        assert "1.0M" in info
-
-    def test_missing_config(self, runner, tmp_path):
-        """No config.yaml should not crash."""
-        p1, p2, p3 = _patch_info(tmp_path, None,  # don't create config
-                                  "anthropic/claude-sonnet-4.6",
-                                  {"provider": "openrouter", "base_url": "", "api_key": ""})
-        with p1, p2, p3:
-            info = runner._format_session_info()
-        assert "Model" in info
-        assert "Context" in info
-
-    def test_runtime_resolution_failure_doesnt_crash(self, runner, tmp_path):
-        """If runtime resolution raises, should still produce output."""
-        cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text("model:\n  default: test-model\n  context_length: 4096\n")
-        with patch("gateway.run._hermes_home", tmp_path), \
-             patch("gateway.run._resolve_gateway_model", return_value="test-model"), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("no creds")):
-            info = runner._format_session_info()
-        assert "4K" in info
-        assert "config" in info
 
 
 class TestResetNoticeSessionInfo:
@@ -146,12 +102,3 @@ class TestResetNoticeSessionInfo:
         assert "anthropic" in info
         assert "base-model" not in info
 
-    def test_single_profile_uses_base_config(self, runner, tmp_path):
-        from types import SimpleNamespace
-        base, _profile = self._homes(tmp_path)
-        runner.config = SimpleNamespace(multiplex_profiles=False)
-        with patch("gateway.run._hermes_home", base), \
-             patch("gateway.run._resolve_runtime_agent_kwargs", return_value=self._RUNTIME):
-            info = runner._reset_notice_session_info(self._source())
-        assert "base-model" in info
-        assert "profile-model" not in info

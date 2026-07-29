@@ -72,6 +72,22 @@ describe('composerFocusBlockedBySurface', () => {
     expect(composerFocusBlockedBySurface()).toBe(true)
   })
 
+  it('blocks while an overlay covers the chat (composer sits behind it)', () => {
+    const overlay = document.createElement('div')
+    overlay.setAttribute('data-overlay-surface', '')
+    document.body.append(overlay)
+
+    expect(composerFocusBlockedBySurface()).toBe(true)
+  })
+
+  it('ignores a clarify card — it yields only its own keys, per-key', () => {
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-choices', '2')
+    document.body.append(card)
+
+    expect(composerFocusBlockedBySurface()).toBe(false)
+  })
+
   it('blocks when focus is inside a terminal', () => {
     const term = document.createElement('div')
     term.setAttribute('data-terminal', '')
@@ -145,5 +161,43 @@ describe('composerFocusKeysAllowed', () => {
     document.body.append(dialog)
 
     expect(composerFocusKeysAllowed(keydown({ key: 'a', code: 'KeyA', target: document.body }), 'type')).toBe(false)
+  })
+
+  it('yields only the keys a live clarify card actually binds', () => {
+    const card = document.createElement('div')
+    // Two choices → rows A/B plus the "Other" row C; 1/2/3 are the digit twins.
+    card.setAttribute('data-clarify-choices', '2')
+    document.body.append(card)
+
+    const allowed = (key: string, combo: string) =>
+      composerFocusKeysAllowed(keydown({ key, target: document.body }), combo)
+
+    // The card's own shortcuts win over type-to-focus.
+    expect(allowed('a', 'type')).toBe(false)
+    expect(allowed('B', 'type')).toBe(false)
+    expect(allowed('c', 'type')).toBe(false)
+    expect(allowed('1', 'type')).toBe(false)
+    expect(allowed('3', 'type')).toBe(false)
+    expect(allowed('Enter', 'enter')).toBe(false)
+
+    // Everything past the last row is not the card's — typing a real message
+    // instead of picking an option must still reach the composer.
+    expect(allowed('d', 'type')).toBe(true)
+    expect(allowed('z', 'type')).toBe(true)
+    expect(allowed('4', 'type')).toBe(true)
+    expect(allowed('?', 'type')).toBe(true)
+    expect(allowed(' ', 'type')).toBe(true)
+  })
+
+  it('leaves every key alone for a clarify card in a background tab', () => {
+    const tab = document.createElement('div')
+    tab.setAttribute('data-pane-hidden', '')
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-choices', '2')
+    tab.append(card)
+    document.body.append(tab)
+
+    expect(composerFocusKeysAllowed(keydown({ key: 'a', target: document.body }), 'type')).toBe(true)
+    expect(composerFocusKeysAllowed(keydown({ key: 'Enter', target: document.body }), 'enter')).toBe(true)
   })
 })

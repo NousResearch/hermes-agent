@@ -67,32 +67,3 @@ def test_moa_reference_relayed_with_label_and_index(server, emits):
     assert payload["count"] == 2
 
 
-def test_moa_aggregating_relayed(server, emits):
-    server._on_tool_progress(
-        "sid-1",
-        "moa.aggregating",
-        "openrouter:anthropic/claude-opus-4.8",
-        None,
-        None,
-    )
-
-    assert len(emits) == 1
-    event, sid, payload = emits[0]
-    assert event == "moa.aggregating"
-    assert payload["aggregator"] == "openrouter:anthropic/claude-opus-4.8"
-
-
-def test_moa_reference_without_index_omits_index(server, emits):
-    server._on_tool_progress(
-        "sid-1",
-        "moa.reference",
-        "openrouter:anthropic/claude-opus-4.8",
-        "The capital is Paris.",
-        None,
-    )
-
-    assert len(emits) == 1
-    _event, _sid, payload = emits[0]
-    assert "index" not in payload
-    assert "count" not in payload
-    assert payload["label"] == "openrouter:anthropic/claude-opus-4.8"

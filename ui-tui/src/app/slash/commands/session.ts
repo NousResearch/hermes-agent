@@ -380,6 +380,14 @@ export const sessionCommands: SlashCommand[] = [
             const tts = r.tts ? ' (TTS enabled)' : ''
             ctx.transcript.sys(`Voice mode enabled${tts}`)
             ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
+
+            // Spoken-stop hint — backend-sourced from voice.stop_phrases so a
+            // custom phrase renders correctly; absent/empty means the feature
+            // is disabled (stop_phrases: []) and no hint is shown.
+            if (r.stop_hint) {
+              ctx.transcript.sys(`  ${r.stop_hint}`)
+            }
+
             ctx.transcript.sys('  /voice tts  to toggle speech output')
             ctx.transcript.sys('  /voice off  to disable voice mode')
           } else {

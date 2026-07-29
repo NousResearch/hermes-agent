@@ -50,17 +50,77 @@ export function Shimmer({
   )
 }
 
-/** Self-ticking phase for shimmer compositions. */
-export function useShimmerPhase(tickMs = 90): number {
-  const [phase, setPhase] = useState(0)
+// ── Shared shimmer clock ─────────────────────────────────────────────
+//
+// ONE interval drives every mounted shimmer composition (review on #20379,
+// finding 5: the session panel could mount independent 90 ms intervals for
+// lazy skills AND lazy tools — ~22 state updates/sec on an otherwise-idle
+// TUI). Subscribers share the tick; the interval exists only while
+// subscribers do, and all updates land in one timer callback so React
+// batches them into a single render pass.
+
+const TICK_MS = 90
+
+/** Animation budget per mount. A lazy watch session can stay lazy
+ *  indefinitely — after the budget the skeleton freezes in place (still
+ *  reads as "loading") instead of repainting forever. */
+export const SHIMMER_ANIMATE_MS = 30_000
+
+const clockListeners = new Set<(phase: number) => void>()
+let clockId: NodeJS.Timeout | null = null
+let clockPhase = 0
+
+/** Subscribe to the shared clock (exported for tests). Returns unsubscribe;
+ *  the interval stops with the last subscriber. */
+export function subscribeShimmerClock(fn: (phase: number) => void): () => void {
+  clockListeners.add(fn)
+
+  if (!clockId) {
+    clockId = setInterval(() => {
+      clockPhase += 1
+
+      for (const listener of clockListeners) {
+        listener(clockPhase)
+      }
+    }, TICK_MS)
+
+    clockId.unref?.()
+  }
+
+  return () => {
+    clockListeners.delete(fn)
+
+    if (!clockListeners.size && clockId) {
+      clearInterval(clockId)
+      clockId = null
+    }
+  }
+}
+
+/** Phase from the shared clock, bounded: stops advancing (and stops costing
+ *  renders) after `animateMs`. */
+export function useShimmerPhase(animateMs = SHIMMER_ANIMATE_MS): number {
+  const [phase, setPhase] = useState(clockPhase)
 
   useEffect(() => {
-    const id = setInterval(() => setPhase(p => p + 1), tickMs)
+    const startedAt = Date.now()
 
-    id.unref?.()
+    let unsubscribe: (() => void) | null = subscribeShimmerClock(next => {
+      if (Date.now() - startedAt >= animateMs) {
+        unsubscribe?.()
+        unsubscribe = null
 
-    return () => clearInterval(id)
-  }, [tickMs])
+        return
+      }
+
+      setPhase(next)
+    })
+
+    return () => {
+      unsubscribe?.()
+      unsubscribe = null
+    }
+  }, [animateMs])
 
   return phase
 }

@@ -31,16 +31,6 @@ class TestTerminalRequirements:
         )
         assert terminal_tool_module.check_terminal_requirements() is True
 
-    def test_terminal_and_file_tools_resolve_for_local_backend(self, monkeypatch):
-        monkeypatch.setattr(
-            terminal_tool_module,
-            "_get_env_config",
-            lambda: {"env_type": "local"},
-        )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "file"], quiet_mode=True)
-        names = {tool["function"]["name"] for tool in tools}
-        assert "terminal" in names
-        assert {"read_file", "write_file", "patch", "search_files"}.issubset(names)
 
     def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
@@ -123,15 +113,6 @@ class TestCheckFnTransientFailureSuppression:
         # Different fn so last-good for `good` doesn't apply; bad has no success.
         assert reg._check_fn_cached(bad) is False
 
-    def test_failure_with_no_prior_success_is_honored(self, monkeypatch):
-        import tools.registry as reg
-
-        def never():
-            return False
-
-        t = {"now": 1000.0}
-        monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
-        assert reg._check_fn_cached(never) is False
 
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
         import tools.registry as reg

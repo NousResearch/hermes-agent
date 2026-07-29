@@ -39,6 +39,9 @@ outputs:
   ci_review:
     description: Require CI-sensitive file review label.
     value: ${{ steps.classify.outputs.ci_review }}
+  ci_review_files:
+    description: JSON list of CI-sensitive files changed by the pull request.
+    value: ${{ steps.classify.outputs.ci_review_files }}
 
 runs:
   using: composite

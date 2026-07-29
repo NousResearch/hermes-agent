@@ -128,3 +128,29 @@ class TestWorktreeIncludeSecurity:
             assert (linked_dir / "lib" / "marker.txt").read_text() == "venv marker"
         finally:
             _force_remove_worktree(info)
+
+
+class TestWorktreeIncludeEncoding:
+    """The include list and .gitignore are UTF-8 files; reading them with the
+    locale default breaks Windows (cp1251/GBK mojibake or UnicodeDecodeError,
+    swallowed at DEBUG so no include is copied), and a Notepad BOM glues to
+    the first line on every platform."""
+
+
+    def test_non_ascii_worktreeinclude_entry_copied(self, git_repo):
+        import cli as cli_mod
+
+        secret = git_repo / "секреты.env"
+        secret.write_text("SECRET=***\n", encoding="utf-8")
+        (git_repo / ".worktreeinclude").write_bytes(
+            "# ключи агента\nсекреты.env\n".encode("utf-8")
+        )
+
+        info = None
+        try:
+            info = cli_mod._setup_worktree(str(git_repo))
+            assert info is not None
+            assert (Path(info["path"]) / "секреты.env").exists()
+        finally:
+            _force_remove_worktree(info)
+

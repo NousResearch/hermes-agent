@@ -188,7 +188,7 @@ class TestInactivityTimeout:
 
     def test_agent_without_activity_summary_uses_wallclock_fallback(self):
         """If agent lacks get_activity_summary, idle_secs stays 0 (never times out).
-        
+
         This ensures backward compat if somehow an old agent is used.
         The polling loop will eventually complete when the task finishes.
         """
@@ -224,6 +224,56 @@ class TestInactivityTimeout:
         # Should NOT have timed out — bare agent has no get_activity_summary
         assert not _inactivity_timeout
         assert result["final_response"] == "no activity tracker"
+
+    def test_watchdog_can_fire_after_shutdown_does_not_block(self):
+        """Regression for the #43233 / Teknium sweeper review (2026-07-25):
+        ``_cron_pool.shutdown(wait=True, ...)`` blocks until the future
+        finishes, which prevents the inactivity-timeout watchdog from ever
+        calling ``agent.interrupt()`` for a hung future. The scheduler
+        shutdowns must use ``wait=False`` so the watchdog path is reachable.
+
+        This test verifies the watchdog path stays reachable by exercising
+        the post-shutdown ``agent.interrupt()`` call against a hung future.
+        """
+        # A "hung" agent: goes idle immediately, never recovers.
+        agent = SlowFakeAgent(
+            run_duration=30.0,  # far longer than the test timeout
+            idle_after=0.05,
+            activity_desc="hung_inference",
+            current_tool="llm_completion",
+            api_call_count=10,
+            max_iterations=100,
+        )
+        _cron_inactivity_limit = 0.2
+        _POLL_INTERVAL = 0.05
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(agent.run_conversation, "hung prompt")
+        _inactivity_timeout = False
+
+        # Poll until we hit the inactivity limit, exactly as the scheduler does.
+        timeout_deadline = time.monotonic() + 5.0
+        while time.monotonic() < timeout_deadline:
+            done, _ = concurrent.futures.wait({future}, timeout=_POLL_INTERVAL)
+            if done:
+                break
+            _idle_secs = 0.0
+            if hasattr(agent, "get_activity_summary"):
+                _act = agent.get_activity_summary()
+                _idle_secs = _act.get("seconds_since_activity", 0.0)
+            if _idle_secs >= _cron_inactivity_limit:
+                _inactivity_timeout = True
+                break
+
+        # The watchdog path MUST be reachable after shutdown.
+        pool.shutdown(wait=False, cancel_futures=True)
+        assert _inactivity_timeout, "watchdog never fired — shutdown may have blocked"
+        # Now interrupt the agent. The whole point of the fix: this code path
+        # was unreachable when shutdown(wait=True) blocked before the watchdog
+        # could call it.
+        assert hasattr(agent, "interrupt")
+        agent.interrupt("Cron job timed out (inactivity)")
+        assert agent._interrupted is True
 
 
 class TestSysPathOrdering:

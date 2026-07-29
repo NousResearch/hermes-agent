@@ -22,11 +22,12 @@ class TestGenerateTitle:
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
 
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             assert _title_language() == "French"
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
             assert _title_language() == ""
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")), \
+         patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
     def test_default_timeout_delegates_to_auxiliary_config(self):

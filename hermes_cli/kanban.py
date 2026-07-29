@@ -602,6 +602,41 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_review = sub.add_parser(
+        "review",
+        help="Submit a running task for review or return review changes",
+    )
+    p_review.add_argument("task_id")
+    p_review.add_argument(
+        "action",
+        choices=("submit", "request-changes"),
+        help=(
+            "'submit' routes the card to an independent reviewer; "
+            "'request-changes' returns it to the recorded implementation owner"
+        ),
+    )
+    p_review.add_argument(
+        "--reviewer",
+        default=None,
+        help="Independent reviewer profile (required for submit)",
+    )
+    p_review.add_argument(
+        "--pr-url",
+        default=None,
+        help="Canonical GitHub pull request URL (required for submit)",
+    )
+    p_review.add_argument(
+        "--head",
+        dest="reviewed_head",
+        required=True,
+        help="Exact 40-character Git commit SHA submitted or reviewed",
+    )
+    p_review.add_argument(
+        "--summary",
+        default=None,
+        help="Implementation handoff or concrete requested changes",
+    )
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -1063,6 +1098,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "attachments": _cmd_attachments,
             "attach-rm": _cmd_attach_rm,
             "complete": _cmd_complete,
+            "review":   _cmd_review,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
@@ -2226,6 +2262,62 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    action = str(args.action).replace("-", "_")
+    reviewer = (getattr(args, "reviewer", None) or "").strip()
+    pr_url = (getattr(args, "pr_url", None) or "").strip()
+    summary = (getattr(args, "summary", None) or "").strip()
+    if action == "submit" and (not reviewer or not pr_url):
+        print(
+            "kanban: review submit requires --reviewer and --pr-url",
+            file=sys.stderr,
+        )
+        return 2
+    if action == "request_changes" and not summary:
+        print(
+            "kanban: review request-changes requires --summary",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        with kb.connect_closing() as conn:
+            if action == "submit":
+                ok = kb.submit_task_for_review(
+                    conn,
+                    args.task_id,
+                    reviewer=reviewer,
+                    pr_url=pr_url,
+                    reviewed_head=args.reviewed_head,
+                    summary=summary or None,
+                    expected_run_id=_worker_run_id_for(args.task_id),
+                )
+            else:
+                ok = kb.request_review_changes(
+                    conn,
+                    args.task_id,
+                    reviewed_head=args.reviewed_head,
+                    summary=summary,
+                    expected_run_id=_worker_run_id_for(args.task_id),
+                )
+            task = kb.get_task(conn, args.task_id) if ok else None
+    except ValueError as exc:
+        print(f"kanban: review: {exc}", file=sys.stderr)
+        return 2
+    if not ok:
+        print(
+            f"cannot apply review action {args.action!r} to {args.task_id} "
+            "(wrong task state or stale run)",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"{args.task_id} → {task.status} "
+        f"(assignee: {task.assignee or '-'})"
+    )
+    return 0
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:

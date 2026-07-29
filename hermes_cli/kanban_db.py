@@ -3811,7 +3811,7 @@ def _append_event(
     payload: Optional[dict] = None,
     *,
     run_id: Optional[int] = None,
-) -> None:
+) -> int:
     """Record an event row.  Called from within an already-open txn.
 
     ``run_id`` is optional: pass the current run id so UIs can group
@@ -3821,11 +3821,12 @@ def _append_event(
     """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+    return int(cur.lastrowid or 0)
 
 
 def _end_run(
@@ -4082,6 +4083,7 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    review_revision_event_id: Optional[int] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -4117,6 +4119,26 @@ def claim_task(
                 {"reason": "parents_not_done"},
             )
             return None
+        review_revision = None
+        if review_revision_event_id is not None:
+            review_revision = _review_revision_authorization(
+                conn,
+                task_id,
+                required_event_id=review_revision_event_id,
+            )
+            if review_revision is None:
+                _append_event(
+                    conn,
+                    task_id,
+                    "claim_rejected",
+                    {
+                        "reason": "review_revision_authorization_revoked",
+                        "review_revision_event_id": int(
+                            review_revision_event_id
+                        ),
+                    },
+                )
+                return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -4187,6 +4209,21 @@ def claim_task(
             {"lock": lock, "expires": expires, "run_id": run_id},
             run_id=run_id,
         )
+        if review_revision is not None:
+            _append_event(
+                conn,
+                task_id,
+                "review_revision_claimed",
+                {
+                    "review_changes_event_id": review_revision["event_id"],
+                    "review_requested_event_id": (
+                        review_revision["review_requested_event_id"]
+                    ),
+                    "pr_url": review_revision["pr_url"],
+                    "reviewed_head": review_revision["reviewed_head"],
+                },
+                run_id=run_id,
+            )
         claimed = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_claimed",
@@ -4271,6 +4308,257 @@ def claim_review_task(
             run_id=run_id,
         )
         return get_task(conn, task_id)
+
+
+def _canonical_review_pr_url(value: str) -> str:
+    raw = (value or "").strip()
+    match = _RESPAWN_GUARD_PR_URL_RE.fullmatch(raw)
+    if match is None:
+        raise ValueError("review pr_url must be a canonical GitHub pull request URL")
+    return match.group(0)
+
+
+def _canonical_review_head(value: str) -> str:
+    head = (value or "").strip().lower()
+    if _REVIEW_HEAD_RE.fullmatch(head) is None:
+        raise ValueError("reviewed_head must be a full 40-character Git commit SHA")
+    return head
+
+
+def _review_request_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    event_id: Optional[int] = None,
+) -> tuple[int, dict[str, Any]]:
+    sql = (
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested'"
+    )
+    params: list[Any] = [task_id]
+    if event_id is not None:
+        sql += " AND id = ?"
+        params.append(int(event_id))
+    sql += " ORDER BY id DESC LIMIT 1"
+    row = conn.execute(sql, params).fetchone()
+    if row is None:
+        raise ValueError("review lifecycle has no review_requested event")
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError("review_requested event payload is malformed") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("review_requested event payload is malformed")
+    required = {
+        "version",
+        "implementation_assignee",
+        "reviewer",
+        "pr_url",
+        "reviewed_head",
+    }
+    if not required.issubset(payload):
+        raise ValueError("review_requested event payload is incomplete")
+    if payload.get("version") != _REVIEW_HANDOFF_VERSION:
+        raise ValueError("review_requested event version is unsupported")
+    payload["pr_url"] = _canonical_review_pr_url(str(payload["pr_url"]))
+    payload["reviewed_head"] = _canonical_review_head(str(payload["reviewed_head"]))
+    for field_name in ("implementation_assignee", "reviewer"):
+        value = str(payload[field_name]).strip()
+        if not value:
+            raise ValueError(f"review_requested {field_name} is empty")
+        payload[field_name] = value
+    if payload["implementation_assignee"] == payload["reviewer"]:
+        raise ValueError("reviewer must be independent of the implementation assignee")
+    return int(row["id"]), payload
+
+
+def submit_task_for_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reviewer: str,
+    pr_url: str,
+    reviewed_head: str,
+    summary: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Finish an implementation run and route the same card through review.
+
+    The task's current assignee is persisted as the implementation owner in
+    the ordered ``review_requested`` event, then the task is assigned to the
+    independent reviewer and moved to the existing ``review`` column. This is
+    the canonical entry into :func:`claim_review_task`; it does not use the
+    generic blocked/unblock lifecycle.
+    """
+    reviewer = (_canonical_assignee(reviewer) or "").strip()
+    if not reviewer:
+        raise ValueError("reviewer is required")
+    canonical_pr_url = _canonical_review_pr_url(pr_url)
+    canonical_head = _canonical_review_head(reviewed_head)
+    handoff_summary = (summary or "").strip() or None
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] != "running":
+            return False
+        implementation_assignee = (row["assignee"] or "").strip()
+        if not implementation_assignee:
+            raise ValueError("review handoff requires an implementation assignee")
+        if reviewer == implementation_assignee:
+            raise ValueError("reviewer must be independent of the implementation assignee")
+        if (
+            expected_run_id is not None
+            and row["current_run_id"] != int(expected_run_id)
+        ):
+            return False
+
+        params: list[Any] = [reviewer, task_id]
+        run_predicate = ""
+        if expected_run_id is not None:
+            run_predicate = " AND current_run_id = ?"
+            params.append(int(expected_run_id))
+        cur = conn.execute(
+            "UPDATE tasks "
+            "SET status = 'review', assignee = ?, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, block_kind = NULL "
+            "WHERE id = ? AND status = 'running'" + run_predicate,
+            params,
+        )
+        if cur.rowcount != 1:
+            return False
+
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="review_requested",
+            status="review",
+            summary=handoff_summary,
+            metadata={
+                "pr_url": canonical_pr_url,
+                "reviewed_head": canonical_head,
+                "reviewer": reviewer,
+            },
+        )
+        now = int(time.time())
+        comment = (
+            f"Review requested for {canonical_pr_url} at {canonical_head}"
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, implementation_assignee, comment, now),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "commented",
+            {"author": implementation_assignee, "len": len(comment)},
+            run_id=run_id,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "review_requested",
+            {
+                "version": _REVIEW_HANDOFF_VERSION,
+                "implementation_assignee": implementation_assignee,
+                "reviewer": reviewer,
+                "pr_url": canonical_pr_url,
+                "reviewed_head": canonical_head,
+                "summary": handoff_summary,
+            },
+            run_id=run_id,
+        )
+    return True
+
+
+def request_review_changes(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reviewed_head: str,
+    summary: str,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Finish a review run and return the same card to its implementation owner.
+
+    The ordered review event is the durable authority. The reviewer cannot
+    redirect the task to an arbitrary profile or a different PR/head, and the
+    resulting one-shot revision authorization is consumed atomically by the
+    next :func:`claim_task`.
+    """
+    canonical_head = _canonical_review_head(reviewed_head)
+    reason = (summary or "").strip()
+    if not reason:
+        raise ValueError("review changes summary is required")
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] != "running":
+            return False
+        request_event_id, request = _review_request_event(conn, task_id)
+        if row["assignee"] != request["reviewer"]:
+            raise ValueError("current assignee is not the requested reviewer")
+        if canonical_head != request["reviewed_head"]:
+            raise ValueError("reviewed_head does not match the review request")
+        if (
+            expected_run_id is not None
+            and row["current_run_id"] != int(expected_run_id)
+        ):
+            return False
+
+        params: list[Any] = [request["implementation_assignee"], task_id]
+        run_predicate = ""
+        if expected_run_id is not None:
+            run_predicate = " AND current_run_id = ?"
+            params.append(int(expected_run_id))
+        cur = conn.execute(
+            "UPDATE tasks "
+            "SET status = 'ready', assignee = ?, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, "
+            "last_failure_error = NULL "
+            "WHERE id = ? AND status = 'running'" + run_predicate,
+            params,
+        )
+        if cur.rowcount != 1:
+            return False
+
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="review_changes_requested",
+            status="ready",
+            summary=reason,
+            metadata={
+                "review_requested_event_id": request_event_id,
+                "pr_url": request["pr_url"],
+                "reviewed_head": canonical_head,
+                "implementation_assignee": request["implementation_assignee"],
+                "reviewer": request["reviewer"],
+            },
+        )
+        _append_event(
+            conn,
+            task_id,
+            "review_changes_requested",
+            {
+                "version": _REVIEW_HANDOFF_VERSION,
+                "review_requested_event_id": request_event_id,
+                "implementation_assignee": request["implementation_assignee"],
+                "reviewer": request["reviewer"],
+                "pr_url": request["pr_url"],
+                "reviewed_head": canonical_head,
+                "summary": reason,
+            },
+            run_id=run_id,
+        )
+    return True
 
 
 def heartbeat_claim(
@@ -6643,6 +6931,23 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_REVIEW_HANDOFF_VERSION = 1
+_REVIEW_HEAD_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+_REVIEW_REVOCATION_EVENT_KINDS = frozenset(
+    {
+        "archived",
+        "blocked",
+        "claimed",
+        "completed",
+        "promoted",
+        "reclaimed",
+        "review_changes_requested",
+        "review_requested",
+        "status",
+        "unblocked",
+    }
+)
+
 
 @dataclass
 class DispatchResult:
@@ -7867,6 +8172,125 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _recent_active_pr_urls(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    now: Optional[int] = None,
+) -> set[str]:
+    cutoff = int(time.time() if now is None else now) - _RESPAWN_GUARD_PR_WINDOW
+    urls: set[str] = set()
+    rows = conn.execute(
+        "SELECT body FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? ORDER BY id DESC",
+        (task_id, cutoff),
+    ).fetchall()
+    for row in rows:
+        body = row["body"] or ""
+        for match in _RESPAWN_GUARD_PR_URL_RE.finditer(body):
+            urls.add(match.group(0))
+    return urls
+
+
+def _review_revision_authorization(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    required_event_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Return the current one-shot review revision receipt, or ``None``.
+
+    This only trusts ordered kernel events emitted by
+    :func:`request_review_changes`. Free-form comments remain evidence that a
+    PR exists, never authority to bypass the duplicate-PR guard.
+    """
+    row = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_changes_requested' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    event_id = int(row["id"])
+    if required_event_id is not None and event_id != int(required_event_id):
+        return None
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    required = {
+        "version",
+        "review_requested_event_id",
+        "implementation_assignee",
+        "reviewer",
+        "pr_url",
+        "reviewed_head",
+    }
+    if not required.issubset(payload):
+        return None
+    if payload.get("version") != _REVIEW_HANDOFF_VERSION:
+        return None
+    try:
+        request_event_id = int(payload["review_requested_event_id"])
+        pr_url = _canonical_review_pr_url(str(payload["pr_url"]))
+        reviewed_head = _canonical_review_head(str(payload["reviewed_head"]))
+        stored_request_event_id, request = _review_request_event(
+            conn,
+            task_id,
+            event_id=request_event_id,
+        )
+    except (TypeError, ValueError):
+        return None
+    implementation_assignee = str(payload["implementation_assignee"]).strip()
+    reviewer = str(payload["reviewer"]).strip()
+    if (
+        not implementation_assignee
+        or not reviewer
+        or implementation_assignee == reviewer
+        or stored_request_event_id != request_event_id
+        or request["implementation_assignee"] != implementation_assignee
+        or request["reviewer"] != reviewer
+        or request["pr_url"] != pr_url
+        or request["reviewed_head"] != reviewed_head
+    ):
+        return None
+
+    task = conn.execute(
+        "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if (
+        task is None
+        or task["status"] != "ready"
+        or task["assignee"] != implementation_assignee
+        or task["current_run_id"] is not None
+    ):
+        return None
+
+    newer = conn.execute(
+        "SELECT kind FROM task_events "
+        "WHERE task_id = ? AND id > ? ORDER BY id ASC",
+        (task_id, event_id),
+    ).fetchall()
+    if any(row["kind"] in _REVIEW_REVOCATION_EVENT_KINDS for row in newer):
+        return None
+
+    active_pr_urls = _recent_active_pr_urls(conn, task_id)
+    if active_pr_urls != {pr_url}:
+        return None
+    return {
+        "event_id": event_id,
+        "review_requested_event_id": request_event_id,
+        "implementation_assignee": implementation_assignee,
+        "reviewer": reviewer,
+        "pr_url": pr_url,
+        "reviewed_head": reviewed_head,
+    }
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -7991,13 +8415,9 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    active_pr_urls = _recent_active_pr_urls(conn, task_id, now=now)
+    if active_pr_urls and _review_revision_authorization(conn, task_id) is None:
+        return "active_pr"
 
     return None
 
@@ -8375,6 +8795,12 @@ def _dispatch_once_locked(
                         {"reason": guard_reason},
                     )
             continue
+        review_revision = _review_revision_authorization(conn, row["id"])
+        review_revision_event_id = (
+            int(review_revision["event_id"])
+            if review_revision is not None
+            else None
+        )
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             # Increment per-profile counter even in dry_run so the cap
@@ -8386,7 +8812,12 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed = claim_task(
+            conn,
+            row["id"],
+            ttl_seconds=ttl_seconds,
+            review_revision_event_id=review_revision_event_id,
+        )
         if claimed is None:
             continue
         try:
@@ -8450,9 +8881,9 @@ def _dispatch_once_locked(
 
     # ---- review column dispatch ----
     # Review tasks are tasks that a worker moved to 'review' after
-    # creating a PR.  The dispatcher spawns a review agent (loading
-    # sdlc-review skill) that verifies the PR and either merges (→ done)
-    # or rejects (→ back to running for the worker to fix).
+    # creating a PR.  The dispatcher spawns a review agent (loading the
+    # bundled github-code-review skill) that verifies the PR and either
+    # merges (→ done) or requests changes (→ ready for the implementer).
     #
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
@@ -8500,12 +8931,11 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load the sdlc-review skill for review agents — it carries
-        # the review logic (AC verification, merge, etc.). The mandatory
-        # kanban lifecycle is already injected into every worker's system
-        # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
-        # review agent needs.
-        claimed.skills = ["sdlc-review"]
+        # Force-load the bundled GitHub review skill for review agents. The
+        # mandatory kanban lifecycle is already injected into every worker's
+        # system prompt via KANBAN_GUIDANCE, so this is the only extra skill
+        # the review agent needs.
+        claimed.skills = ["github-code-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect

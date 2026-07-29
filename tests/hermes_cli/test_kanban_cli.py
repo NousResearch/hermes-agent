@@ -159,6 +159,33 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_review_lifecycle(kanban_home):
+    out = kc.run_slash("create 'reviewed work' --assignee implementer")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    head = "a" * 40
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/42"
+
+    submitted = kc.run_slash(
+        f"review {tid} submit --reviewer reviewer "
+        f"--pr-url {pr_url} --head {head} --summary 'ready'"
+    )
+    assert "→ review" in submitted
+    assert "assignee: reviewer" in submitted
+
+    with kb.connect() as conn:
+        review = kb.claim_review_task(conn, tid)
+        assert review is not None
+
+    returned = kc.run_slash(
+        f"review {tid} request-changes --head {head} "
+        "--summary 'cover retry edge'"
+    )
+    assert "→ ready" in returned
+    assert "assignee: implementer" in returned
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

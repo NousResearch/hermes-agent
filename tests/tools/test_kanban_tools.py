@@ -56,7 +56,8 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_review",
+        "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
@@ -86,6 +87,7 @@ def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_pat
     assert "kanban_show" in names
     assert "kanban_complete" in names
     assert "kanban_block" in names
+    assert "kanban_review" in names
     assert "kanban_list" not in names
 
 
@@ -137,7 +139,8 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_review",
+        "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
@@ -855,6 +858,57 @@ def test_block_non_goal_mode_task_unaffected_by_new_gate(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_block({"reason": "need clarification"})
     assert json.loads(out).get("ok") is True
+
+
+def test_review_tool_routes_submit_and_request_changes(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/42"
+    head = "a" * 40
+    submitted = json.loads(
+        kt._handle_review(
+            {
+                "action": "submit",
+                "reviewer": "reviewer",
+                "pr_url": pr_url,
+                "reviewed_head": head,
+                "summary": "implementation ready",
+            }
+        )
+    )
+    assert submitted["status"] == "review"
+    assert submitted["assignee"] == "reviewer"
+
+    with kb.connect() as conn:
+        review = kb.claim_review_task(conn, worker_env)
+        assert review is not None
+
+    returned = json.loads(
+        kt._handle_review(
+            {
+                "action": "request_changes",
+                "reviewed_head": head,
+                "summary": "cover the retry edge case",
+            }
+        )
+    )
+    assert returned["status"] == "ready"
+    assert returned["assignee"] == "test-worker"
+
+
+def test_review_tool_rejects_incomplete_submit(worker_env):
+    from tools import kanban_tools as kt
+
+    out = json.loads(
+        kt._handle_review(
+            {
+                "action": "submit",
+                "reviewed_head": "a" * 40,
+            }
+        )
+    )
+    assert "submit requires reviewer and pr_url" in out["error"]
 
 
 def test_heartbeat_happy_path(worker_env):

@@ -796,6 +796,80 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(f"kanban_block: {e}")
 
 
+def _handle_review(args: dict, **kw) -> str:
+    """Enter review or return an independently reviewed task for revision."""
+    delegated_err = _reject_delegated_child_mutation("kanban_review")
+    if delegated_err:
+        return delegated_err
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    action = (args.get("action") or "").strip()
+    if action not in {"submit", "request_changes"}:
+        return tool_error("action must be 'submit' or 'request_changes'")
+    reviewed_head = (args.get("reviewed_head") or "").strip()
+    if not reviewed_head:
+        return tool_error("reviewed_head is required")
+    summary = (args.get("summary") or "").strip()
+    board = args.get("board")
+
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            if action == "submit":
+                reviewer = (args.get("reviewer") or "").strip()
+                pr_url = (args.get("pr_url") or "").strip()
+                if not reviewer or not pr_url:
+                    return tool_error(
+                        "submit requires reviewer and pr_url"
+                    )
+                ok = kb.submit_task_for_review(
+                    conn,
+                    tid,
+                    reviewer=reviewer,
+                    pr_url=pr_url,
+                    reviewed_head=reviewed_head,
+                    summary=summary or None,
+                    expected_run_id=_worker_run_id(tid),
+                )
+            else:
+                if not summary:
+                    return tool_error(
+                        "request_changes requires a non-empty summary"
+                    )
+                ok = kb.request_review_changes(
+                    conn,
+                    tid,
+                    reviewed_head=reviewed_head,
+                    summary=summary,
+                    expected_run_id=_worker_run_id(tid),
+                )
+            if not ok:
+                return tool_error(
+                    f"could not apply review action {action!r} to {tid} "
+                    "(wrong task state or stale run)"
+                )
+            task = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                action=action,
+                status=task.status if task else None,
+                assignee=task.assignee if task else None,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
+
+
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal that the worker is still alive during a long operation.
 
@@ -1671,6 +1745,68 @@ KANBAN_BLOCK_SCHEMA = {
     },
 }
 
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Advance the current card through the canonical review lifecycle. "
+        "Use action='submit' after opening a PR: this closes the "
+        "implementation run, records the exact PR/head and implementation "
+        "owner, assigns an independent reviewer, and moves the card to "
+        "'review'. A dispatched reviewer uses action='request_changes' to "
+        "return that same card to the recorded implementation owner for one "
+        "audited revision run. Approval/merge closes the card with "
+        "kanban_complete. Do not use kanban_block/unblock for review handoffs."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "action": {
+                "type": "string",
+                "enum": ["submit", "request_changes"],
+                "description": (
+                    "'submit' routes implementation to an independent "
+                    "reviewer. 'request_changes' returns an active review to "
+                    "the implementation owner."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": (
+                    "Independent Hermes profile that should review the PR. "
+                    "Required only for action='submit'."
+                ),
+            },
+            "pr_url": {
+                "type": "string",
+                "description": (
+                    "Canonical GitHub pull request URL. Required only for "
+                    "action='submit'."
+                ),
+            },
+            "reviewed_head": {
+                "type": "string",
+                "description": (
+                    "Exact 40-character Git commit SHA submitted or reviewed."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Implementation handoff for 'submit', or concrete review "
+                    "findings for 'request_changes'. Required for "
+                    "'request_changes'."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["action", "reviewed_head"],
+    },
+}
+
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
@@ -2081,6 +2217,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_mode,
+    emoji="🔎",
 )
 
 registry.register(

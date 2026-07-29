@@ -3917,6 +3917,202 @@ def test_claim_review_task_fails_when_already_claimed(kanban_home):
     assert second is None
 
 
+_REVIEW_PR_URL = "https://github.com/NousResearch/hermes-agent/pull/42"
+_REVIEW_HEAD = "a" * 40
+
+
+def _review_changes_ready_task(conn: sqlite3.Connection) -> str:
+    task_id = kb.create_task(
+        conn,
+        title="implementation with review",
+        assignee="implementer",
+        workspace_kind="scratch",
+    )
+    implementation = kb.claim_task(conn, task_id, claimer="host:implementer")
+    assert implementation is not None
+    assert kb.submit_task_for_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        pr_url=_REVIEW_PR_URL,
+        reviewed_head=_REVIEW_HEAD,
+        summary="implementation ready for independent review",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id, claimer="host:reviewer")
+    assert review is not None
+    assert kb.request_review_changes(
+        conn,
+        task_id,
+        reviewed_head=_REVIEW_HEAD,
+        summary="please cover the retry edge case",
+        expected_run_id=review.current_run_id,
+    )
+    return task_id
+
+
+def test_submit_task_for_review_enters_existing_review_lifecycle(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="review me",
+            assignee="implementer",
+            workspace_kind="worktree",
+        )
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert kb.submit_task_for_review(
+            conn,
+            task_id,
+            reviewer="reviewer",
+            pr_url=_REVIEW_PR_URL,
+            reviewed_head=_REVIEW_HEAD,
+            summary="ready",
+            expected_run_id=claimed.current_run_id,
+        )
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+        events = kb.list_events(conn, task_id)
+        comments = kb.list_comments(conn, task_id)
+
+    assert task is not None
+    assert task.status == "review"
+    assert task.assignee == "reviewer"
+    assert task.current_run_id is None
+    assert run is not None
+    assert run.outcome == "review_requested"
+    request = next(event for event in events if event.kind == "review_requested")
+    assert request.payload["implementation_assignee"] == "implementer"
+    assert request.payload["reviewer"] == "reviewer"
+    assert request.payload["pr_url"] == _REVIEW_PR_URL
+    assert comments[-1].body.endswith(f"{_REVIEW_PR_URL} at {_REVIEW_HEAD}")
+
+
+def test_review_changes_restore_implementation_assignee(kanban_home):
+    with kb.connect() as conn:
+        task_id = _review_changes_ready_task(conn)
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+
+    assert task is not None
+    assert task.status == "ready"
+    assert task.assignee == "implementer"
+    assert task.current_run_id is None
+    assert run is not None
+    assert run.profile == "reviewer"
+    assert run.outcome == "review_changes_requested"
+
+
+def test_review_changes_authorize_exactly_one_revision_claim(kanban_home):
+    with kb.connect() as conn:
+        task_id = _review_changes_ready_task(conn)
+        assert kb.check_respawn_guard(conn, task_id) is None
+        authorization = kb._review_revision_authorization(conn, task_id)
+        assert authorization is not None
+        claimed = kb.claim_task(
+            conn,
+            task_id,
+            claimer="host:revision",
+            review_revision_event_id=authorization["event_id"],
+        )
+        assert claimed is not None
+        assert claimed.assignee == "implementer"
+
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', current_run_id = NULL, "
+            "claim_lock = NULL, claim_expires = NULL WHERE id = ?",
+            (task_id,),
+        )
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_dispatch_claims_authorized_review_revision(
+    kanban_home, all_assignees_spawnable,
+):
+    spawned_tasks = []
+
+    def capture_spawn(task, workspace, board=None):
+        spawned_tasks.append(task)
+        return 42
+
+    with kb.connect() as conn:
+        task_id = _review_changes_ready_task(conn)
+        result = kb.dispatch_once(conn, spawn_fn=capture_spawn)
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+
+    assert [item[0] for item in result.spawned] == [task_id]
+    assert len(spawned_tasks) == 1
+    assert spawned_tasks[0].assignee == "implementer"
+    assert task is not None
+    assert task.status == "running"
+    assert any(event.kind == "review_revision_claimed" for event in events)
+
+
+def test_review_revision_claim_fails_closed_after_newer_lifecycle_event(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task_id = _review_changes_ready_task(conn)
+        authorization = kb._review_revision_authorization(conn, task_id)
+        assert authorization is not None
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                task_id,
+                "status",
+                {"reason": "operator changed routing"},
+            )
+        claimed = kb.claim_task(
+            conn,
+            task_id,
+            review_revision_event_id=authorization["event_id"],
+        )
+
+    assert claimed is None
+
+
+def test_review_revision_does_not_bypass_a_second_active_pr(kanban_home):
+    with kb.connect() as conn:
+        task_id = _review_changes_ready_task(conn)
+        kb.add_comment(
+            conn,
+            task_id,
+            "operator",
+            "Unrelated https://github.com/NousResearch/hermes-agent/pull/43",
+        )
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_review_changes_reject_mismatched_head(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="review me",
+            assignee="implementer",
+        )
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.submit_task_for_review(
+            conn,
+            task_id,
+            reviewer="reviewer",
+            pr_url=_REVIEW_PR_URL,
+            reviewed_head=_REVIEW_HEAD,
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id)
+        assert review is not None
+        with pytest.raises(ValueError, match="does not match"):
+            kb.request_review_changes(
+                conn,
+                task_id,
+                reviewed_head="b" * 40,
+                summary="changes requested",
+                expected_run_id=review.current_run_id,
+            )
+
+
 def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
     """dispatch_once dry-run sees review tasks and reports them as spawned."""
     with kb.connect() as conn:
@@ -3933,7 +4129,7 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
 def test_dispatch_review_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
+    """Review tasks get the bundled GitHub review skill before spawning."""
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -3946,7 +4142,15 @@ def test_dispatch_review_spawns_with_correct_skills(
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
+    assert spawned_tasks[0].skills == ["github-code-review"]
+    skill_path = (
+        Path(__file__).parents[2]
+        / "skills"
+        / "github"
+        / "github-code-review"
+        / "SKILL.md"
+    )
+    assert skill_path.is_file()
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):

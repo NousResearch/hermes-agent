@@ -245,9 +245,7 @@ export function mergeSessionPage(
     const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
     const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
 
-    return last_active === session.last_active && title === session.title
-      ? session
-      : { ...session, last_active, title }
+    return last_active === session.last_active && title === session.title ? session : { ...session, last_active, title }
   })
 
   if (keep.size === 0) {
@@ -288,6 +286,7 @@ export function touchSessionActivity(
 
   setSessions(prev => {
     let changed = false
+
     const next = prev.map(session => {
       if (!sessionMatchesStoredId(session, id)) {
         return session

@@ -88,8 +88,7 @@ function rememberedRouteKey(profile?: null | string): string {
   return !key || key === 'default' ? LAST_ROUTE_KEY : `${LAST_ROUTE_KEY}.${key}`
 }
 
-export const getRememberedRoute = (profile?: null | string): null | string =>
-  storedString(rememberedRouteKey(profile))
+export const getRememberedRoute = (profile?: null | string): null | string => storedString(rememberedRouteKey(profile))
 export const setRememberedRoute = (path: null | string, profile?: null | string) =>
   persistString(rememberedRouteKey(profile), path)
 

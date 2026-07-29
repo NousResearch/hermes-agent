@@ -391,6 +391,103 @@ def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
             ws._oauth_sessions.pop(sid, None)
 
 
+def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch):
+    """DELETE mid-poll must stop the worker before it exchanges/saves tokens.
+
+    Regression for IA-01: cancelling only popped the session dict; the
+    background worker kept polling/exchanging/saving regardless, and once
+    the session was gone `_oauth_session_profile()` fell back to the
+    caller's current profile scope instead of the one the login started
+    in. The fix marks the dict `cancelled` before popping, and the worker
+    checks that flag before every remaining step.
+    """
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            if url.endswith("/deviceauth/usercode"):
+                return _Resp(200, {
+                    "device_auth_id": "device-auth-id",
+                    "interval": 3,
+                    "user_code": "CODEX-1234",
+                })
+            raise AssertionError(
+                f"worker must stop before calling {url} once cancelled"
+            )
+
+    saved = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(httpx, "Client", _Client)
+    monkeypatch.setattr(auth_mod, "_save_codex_tokens", lambda tokens: saved.append(tokens))
+
+    sid, _ = ws._new_oauth_session("openai-codex", "device_code", profile="coder")
+
+    def fake_sleep(_interval):
+        # Simulate a concurrent DELETE /api/providers/oauth/sessions/{sid}
+        # firing while the worker is asleep between polls.
+        ws._oauth_sessions[sid]["cancelled"] = True
+
+    monkeypatch.setattr(ws.time, "sleep", fake_sleep)
+
+    try:
+        ws._codex_full_login_worker(sid)
+
+        assert saved == []
+        assert ws._oauth_sessions[sid]["status"] == "pending"
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_cancel_oauth_session_marks_dict_cancelled_before_popping():
+    """The DELETE endpoint must flag the session dict before removing it.
+
+    A background worker holds its own reference to the same dict object;
+    it can only observe cancellation if the flag is set on that shared
+    object prior to (or instead of) removal from the global session map.
+    """
+    from hermes_cli import web_server as ws
+
+    session_id = "cancel-flag-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "openai-codex",
+        "flow": "device_code",
+        "profile": "coder",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+    }
+    worker_ref = ws._oauth_sessions[session_id]
+
+    resp = client.delete(
+        f"/api/providers/oauth/sessions/{session_id}",
+        headers=HEADERS,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "session_id": session_id}
+    assert session_id not in ws._oauth_sessions
+    assert worker_ref["cancelled"] is True
+
+
 def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws

@@ -8713,6 +8713,18 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        # Telegram clients split messages above 4096 chars into multiple
+        # updates.  A long command paste (e.g. ``/queue <huge prompt>``)
+        # arrives as a COMMAND chunk near the limit followed by plain TEXT
+        # continuation chunk(s).  Dispatching the command immediately would
+        # orphan the continuation, which then lands as a separate message and
+        # interrupts the running agent.  Route near-limit command chunks
+        # through the same text-batching pipeline so continuations merge in
+        # before dispatch; short commands (/stop, /approve, ...) keep the
+        # immediate path and are never delayed.
+        if len(event.text or "") >= self._SPLIT_THRESHOLD:
+            self._enqueue_text_event(event)
+            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

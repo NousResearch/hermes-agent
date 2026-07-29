@@ -1,12 +1,15 @@
 from collections import deque
 import os
 from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
 
 import cli as cli_mod
 from cli import HermesCLI
 
 
-class _NullConsole:
+class _HistoryConsole:
     def clear(self):
         pass
 
@@ -26,23 +29,43 @@ class _NullOutput:
         pass
 
 
+@pytest.fixture(autouse=True)
+def restore_output_history(monkeypatch):
+    original = {
+        "_OUTPUT_HISTORY_ENABLED": cli_mod._OUTPUT_HISTORY_ENABLED,
+        "_OUTPUT_HISTORY_REPLAYING": cli_mod._OUTPUT_HISTORY_REPLAYING,
+        "_OUTPUT_HISTORY_SUPPRESSED": cli_mod._OUTPUT_HISTORY_SUPPRESSED,
+        "_OUTPUT_HISTORY_MAX_LINES": cli_mod._OUTPUT_HISTORY_MAX_LINES,
+        "_OUTPUT_HISTORY": cli_mod._OUTPUT_HISTORY,
+    }
+    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_ENABLED", True)
+    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_REPLAYING", False)
+    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_SUPPRESSED", False)
+    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_MAX_LINES", 200)
+    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY", deque(maxlen=200))
+    monkeypatch.setattr(cli_mod, "_pt_print", lambda *args, **kwargs: None)
+    yield
+    for name, value in original.items():
+        setattr(cli_mod, name, value)
+
+
 def _history_text() -> str:
-    rendered = []
+    rendered: list[str] = []
     for entry in cli_mod._OUTPUT_HISTORY:
         if callable(entry):
             value = entry()
             if isinstance(value, str):
-                rendered.append(value)
+                rendered.extend(value.splitlines())
             else:
-                rendered.extend(str(line) for line in value)
+                rendered.extend(str(line) for line in cast(Any, value))
         else:
             rendered.append(str(entry))
     return "\n".join(rendered)
 
 
-def _make_cli(*, app=False):
-    cli_obj = HermesCLI.__new__(HermesCLI)
-    cli_obj.console = _NullConsole()
+def _make_cli(*, app_active: bool = False) -> HermesCLI:
+    cli_obj = cast(Any, HermesCLI.__new__(HermesCLI))
+    cli_obj.console = _HistoryConsole()
     cli_obj.compact = True
     cli_obj.agent = None
     cli_obj.enabled_toolsets = []
@@ -50,7 +73,7 @@ def _make_cli(*, app=False):
     cli_obj.model = "test-model"
     cli_obj.provider = "test-provider"
     cli_obj.base_url = ""
-    cli_obj._app = SimpleNamespace(output=_NullOutput()) if app else None
+    cli_obj._app = SimpleNamespace(output=_NullOutput()) if app_active else None
     cli_obj._pending_resume_sessions = None
     cli_obj._confirm_destructive_slash = lambda *args, **kwargs: True
     cli_obj.new_session = lambda *args, **kwargs: None
@@ -59,23 +82,17 @@ def _make_cli(*, app=False):
     return cli_obj
 
 
-def _reset_output_history(monkeypatch):
-    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_ENABLED", True)
-    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_REPLAYING", False)
-    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_SUPPRESSED", False)
-    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY_MAX_LINES", 200)
-    monkeypatch.setattr(cli_mod, "_OUTPUT_HISTORY", deque(maxlen=200))
-    monkeypatch.setattr(cli_mod, "_pt_print", lambda *args, **kwargs: None)
-
-
-def test_show_banner_compact_does_not_record_banner_but_keeps_later_output(monkeypatch):
-    _reset_output_history(monkeypatch)
+def test_show_banner_compact_skips_output_history_but_later_output_records(monkeypatch):
     marker = "COMPACT_SHOW_BANNER_HISTORY_MARKER"
     ordinary = "ordinary output after compact show banner"
-    cli_obj = _make_cli(app=True)
+    cli_obj = _make_cli()
 
     monkeypatch.setattr(cli_mod, "_build_compact_banner", lambda: marker)
-    monkeypatch.setattr(cli_mod.shutil, "get_terminal_size", lambda *args, **kwargs: os.terminal_size((120, 24)))
+    monkeypatch.setattr(
+        cli_mod.shutil,
+        "get_terminal_size",
+        lambda *args, **kwargs: os.terminal_size((120, 24)),
+    )
 
     cli_obj.show_banner()
 
@@ -88,15 +105,18 @@ def test_show_banner_compact_does_not_record_banner_but_keeps_later_output(monke
     assert ordinary in history
 
 
-def test_clear_tui_compact_does_not_record_banner_after_clearing_history(monkeypatch):
-    _reset_output_history(monkeypatch)
+def test_clear_tui_compact_clears_history_and_skips_banner_but_later_output_records(monkeypatch):
     marker = "COMPACT_CLEAR_TUI_HISTORY_MARKER"
     ordinary = "ordinary output after compact tui clear"
-    cli_obj = _make_cli(app=True)
+    cli_obj = _make_cli(app_active=True)
     cli_mod._record_output_history("old history entry")
 
     monkeypatch.setattr(cli_mod, "_build_compact_banner", lambda: marker)
-    monkeypatch.setattr(cli_mod.shutil, "get_terminal_size", lambda *args, **kwargs: os.terminal_size((120, 24)))
+    monkeypatch.setattr(
+        cli_mod.shutil,
+        "get_terminal_size",
+        lambda *args, **kwargs: os.terminal_size((120, 24)),
+    )
     monkeypatch.setattr(cli_mod, "get_random_tip", lambda: "test tip", raising=False)
 
     cli_obj.process_command("/clear")

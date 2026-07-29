@@ -18,14 +18,21 @@ stale upstream merge-base.
 
 ## The review range
 
+The correction surface is pinned by **two tags** so it is stable and does
+not drift as chore/doc commits land above it:
+
+- **`clarify-rich-options-baseline`** → `5aba0bfda` (fixed point)
+- **`clarify-rich-options-tip`** → `8723b93d5` (last correction commit)
+
 ```bash
-# Spec-scoped range — what reviewers and /code-review should diff:
-git diff clarify-rich-options-baseline...HEAD      # 15 files, 9 commits
-git log  clarify-rich-options-baseline..HEAD        # the commit list
+# Spec-scoped correction range — what reviewers and /code-review diff:
+git diff clarify-rich-options-baseline...clarify-rich-options-tip   # 15 files, 9 commits
+git log  clarify-rich-options-baseline..clarify-rich-options-tip     # the commit list
 ```
 
 **9 commits, 15 files**, every one of them a requested correction or an
-approved remediation ticket.
+approved remediation ticket. `...HEAD` additionally contains only this
+chore note (commit `788de87df`), which touches no reviewed code.
 
 ## Why not the merge-base three-dot / two-dot
 
@@ -37,7 +44,7 @@ PR review ranges are wrong here:
 | --------------------------------------- | ----: | -------------------------------------------------------------- |
 | `origin/main..HEAD` (two-dot)           | 3970  | staleness explosion — every delta between stale base and HEAD  |
 | `origin/main...HEAD` (merge-base 3-dot) | 21    | the whole baseline feature folded in as "new scope"            |
-| `clarify-rich-options-baseline...HEAD`  | 15    | **only** the issue-#2 corrections + remediations (correct)     |
+| `clarify-rich-options-baseline...tip`   | 15    | **only** the issue-#2 corrections + remediations (correct)     |
 
 The 6 files the spec-scoped range **excludes** (folded in by the merge-base
 three-dot) are exactly the categories #12 says must not appear as new scope:
@@ -66,7 +73,7 @@ integration verification into distinct conventional-commit commits:
 
 ## Focus audit
 
-The 15 files in `clarify-rich-options-baseline...HEAD`:
+The 15 files in `clarify-rich-options-baseline...clarify-rich-options-tip`:
 
 - **Primitive:** `tools/clarify_gateway.py`, `tools/clarify_tool.py`
 - **Discord surface:** `plugins/platforms/discord/adapter.py`,
@@ -116,13 +123,13 @@ tests/tools/test_discord_clarify_owner_e2e.py    (5✓)
 tests/gateway/test_clarify_active_session_bypass.py (1✓)
 ```
 
-The final three-dot diff (`clarify-rich-options-baseline...HEAD`) and commit
-list are non-empty, focused, and ready for a fresh two-axis review.
+The final three-dot diff (`clarify-rich-options-baseline...clarify-rich-options-tip`)
+and commit list are non-empty, focused, and ready for a fresh two-axis review.
 
 ## Follow-ups from the two-axis review
 
 The fresh `/code-review` (Standards + Spec) over
-`clarify-rich-options-baseline...HEAD` found **no documented-standard
+`clarify-rich-options-baseline...clarify-rich-options-tip` found **no documented-standard
 violations** and **all six tickets (#2/#7/#8/#9/#10/#11) correctly
 implemented**. It surfaced only minor Standards-axis judgement calls in
 #10's modal-upload code. They are recorded here as **optional pre-merge

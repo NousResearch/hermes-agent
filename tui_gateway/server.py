@@ -11995,6 +11995,7 @@ def _run_prompt_submit(
         goal_followup = None  # set by the post-turn goal hook below
         result = None  # turn outcome; read after the finally for leftover /steer
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
+        thinking_started = False  # ambient thinking sound armed for this turn
         one_turn_restore = session.pop("one_turn_model_restore", None)
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
@@ -12142,6 +12143,36 @@ def _run_prompt_submit(
             # that cut IS this turn's barge-in, so it must latch before we
             # consume the latch below.
             tts_queue = _tts_stream_begin()
+
+            # Ambient "thinking" sound (voice mode only): calm bubble blips
+            # while the agent works with no audio flowing, so long
+            # thinking/tool stretches don't read as a dead session. Per-blip
+            # gate skips while real TTS audio flows or the mic is capturing;
+            # stopped in the finally the instant the turn ends.
+            # voice.thinking_sound config-gates it; macOS TCC handled inside.
+            thinking_started = False
+            if _voice_mode_enabled():
+                try:
+                    from tools.voice_mode import (
+                        is_audio_output_active,
+                        start_thinking_sound,
+                    )
+
+                    def _thinking_should_play() -> bool:
+                        if is_audio_output_active():
+                            return False
+                        try:
+                            from hermes_cli.voice import is_continuous_active
+
+                            return not is_continuous_active()
+                        except Exception:
+                            return True
+
+                    thinking_started = start_thinking_sound(
+                        should_play=_thinking_should_play
+                    )
+                except Exception:
+                    thinking_started = False
 
             # Barged mid-speech? Tell the model (API-message note, same
             # enrichment channel as attached images) so it can react
@@ -12551,6 +12582,15 @@ def _run_prompt_submit(
                 )
                 _emit("error", sid, {"message": str(e)})
         finally:
+            if thinking_started:
+                # Kill the ambient thinking sound the moment the turn ends —
+                # error and success paths both land here.
+                try:
+                    from tools.voice_mode import stop_thinking_sound
+
+                    stop_thinking_sound()
+                except Exception:
+                    pass
             if tts_queue is not None:
                 tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking
             if one_turn_restore:

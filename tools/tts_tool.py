@@ -3445,10 +3445,24 @@ def stream_tts_to_speaker(
                 audio_iter = streamer.stream(cleaned)
                 if output_stream is not None:
                     import numpy as _np
-                    for chunk in audio_iter:
-                        if stop_event.is_set():
-                            break
-                        output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
+
+                    # Flag real speaker output for the duration of this
+                    # sentence so ambient cues (thinking sound) stay quiet.
+                    # Fail-open: stubbed/partial voice_mode modules (tests)
+                    # must never break sentence playback.
+                    try:
+                        from tools.voice_mode import mark_audio_output_active
+                    except Exception:
+                        def mark_audio_output_active(_active):
+                            return None
+                    mark_audio_output_active(True)
+                    try:
+                        for chunk in audio_iter:
+                            if stop_event.is_set():
+                                break
+                            output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
+                    finally:
+                        mark_audio_output_active(False)
                 else:
                     # No audio device: buffer chunks to a temp WAV and play it.
                     _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)

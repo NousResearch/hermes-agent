@@ -529,6 +529,155 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
 
 
 # ============================================================================
+# Thinking sound — calm ambient "blub blub" while the agent works
+# ============================================================================
+# During a voice conversation the agent can think / run tools for minutes with
+# zero audio, which reads as "it died". A quiet, repeating pair of soft water-
+# bubble blips fills that gap. Fully synthesized with numpy (no binary asset),
+# volume-scaled by voice.beep_volume, gated by voice.thinking_sound (default
+# on), and macOS-TCC-safe: sounddevice OUTPUT is gated there
+# (_sounddevice_output_allowed), and spawning afplay every second would churn
+# subprocesses, so on macOS the thinking sound is skipped silently.
+
+# The host's *should_play* callback decides when blips are allowed; the
+# module-level output ref-count below tracks when real audio (TTS sentences,
+# file playback) is actually flowing so hosts have an accurate signal.
+
+_audio_output_active_count = 0
+_audio_output_lock = threading.Lock()
+
+
+def mark_audio_output_active(active: bool) -> None:
+    """Reference-count real audio output (TTS/file playback).
+
+    Playback paths bracket their work with ``mark_audio_output_active(True)``
+    / ``(False)`` so ``is_audio_output_active()`` reflects whether speech
+    audio is leaving the speakers RIGHT NOW — unlike the per-turn TTS-done
+    events, which stay 'busy' for a whole turn even while the pipeline is
+    silently waiting for text.
+    """
+    global _audio_output_active_count
+    with _audio_output_lock:
+        _audio_output_active_count = max(
+            0, _audio_output_active_count + (1 if active else -1)
+        )
+
+
+def is_audio_output_active() -> bool:
+    """True while TTS/file audio is actually playing on the speakers."""
+    with _audio_output_lock:
+        return _audio_output_active_count > 0
+
+
+_thinking_lock = threading.Lock()
+_thinking_stop: Optional[threading.Event] = None
+
+
+def thinking_sound_enabled() -> bool:
+    """Config gate: ``voice.thinking_sound`` (default True)."""
+    try:
+        from hermes_cli.config import load_config
+        from utils import is_truthy_value
+
+        voice_cfg = load_config().get("voice", {})
+        if isinstance(voice_cfg, dict):
+            return is_truthy_value(
+                voice_cfg.get("thinking_sound", True), default=True
+            )
+    except Exception:
+        pass
+    return True
+
+
+def _synth_thinking_blip(np, frequency: float) -> "Any":
+    """One soft 'blub': short sine with a gentle downward pitch glide and a
+    smooth attack/decay envelope (no clicks), low-volume."""
+    duration = 0.16
+    n = int(SAMPLE_RATE * duration)
+    t = np.linspace(0, duration, n, endpoint=False)
+    # Downward glide (water-drop feel): freq → 0.72*freq over the blip.
+    glide = np.linspace(1.0, 0.72, n)
+    phase = 2 * np.pi * np.cumsum(frequency * glide) / SAMPLE_RATE
+    tone = np.sin(phase)
+    # Soften harmonics (cheap low-pass feel): add a quieter octave-down sine.
+    tone = 0.8 * tone + 0.2 * np.sin(phase / 2.0)
+    # Envelope: quick-but-smooth attack, long exponential-ish decay.
+    attack = int(0.02 * SAMPLE_RATE)
+    env = np.ones(n)
+    env[:attack] = np.linspace(0.0, 1.0, attack)
+    env *= np.exp(-t * 14.0)
+    volume = _get_beep_volume() * 0.5  # deliberately quieter than the beeps
+    return (tone * env * volume * 32767).astype(np.int16)
+
+
+def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
+    """Daemon loop: play alternating-pitch blips every ~0.8-1.2s until *stop*.
+
+    Skips a blip (without stopping) whenever *should_play* returns False —
+    e.g. TTS audio started flowing or the mic re-armed. macOS: sounddevice
+    output is TCC-gated, and per-second afplay subprocess churn is worse
+    than silence, so the loop exits immediately there.
+    """
+    if not _sounddevice_output_allowed():
+        return
+    try:
+        sd, np = _import_audio()
+    except (ImportError, OSError):
+        return
+
+    import random
+
+    pitches = (392.0, 329.6)  # G4 / E4 — calm, low, alternating
+    blips = [_synth_thinking_blip(np, p) for p in pitches]
+    i = 0
+    while not stop.is_set():
+        try:
+            if should_play is None or should_play():
+                blip = blips[i % len(blips)]
+                sd.play(blip, samplerate=SAMPLE_RATE)
+                stop.wait(len(blip) / SAMPLE_RATE + 0.02)
+                sd.stop()
+                i += 1
+        except Exception as e:
+            logger.debug("Thinking sound blip failed: %s", e)
+            return
+        stop.wait(0.8 + random.random() * 0.4)
+
+
+def start_thinking_sound(should_play=None) -> bool:
+    """Start the ambient thinking sound (idempotent).
+
+    *should_play* is polled before each blip; return False to skip while
+    speech audio flows or the mic is capturing. Returns True when the loop
+    was started (or already running), False when disabled/unavailable.
+    """
+    global _thinking_stop
+    if not thinking_sound_enabled():
+        return False
+    with _thinking_lock:
+        if _thinking_stop is not None and not _thinking_stop.is_set():
+            return True  # already running
+        stop = threading.Event()
+        _thinking_stop = stop
+    threading.Thread(
+        target=_thinking_sound_loop,
+        args=(stop, should_play),
+        daemon=True,
+        name="voice-thinking-sound",
+    ).start()
+    return True
+
+
+def stop_thinking_sound() -> None:
+    """Stop the ambient thinking sound instantly (idempotent)."""
+    global _thinking_stop
+    with _thinking_lock:
+        stop, _thinking_stop = _thinking_stop, None
+    if stop is not None:
+        stop.set()
+
+
+# ============================================================================
 # Termux Audio Recorder
 # ============================================================================
 class TermuxAudioRecorder:
@@ -1413,6 +1562,16 @@ def play_audio_file(file_path: str) -> bool:
     Returns:
         ``True`` if playback succeeded, ``False`` otherwise.
     """
+    # Ref-count real speaker output for the whole call so the thinking-sound
+    # loop (and any other ambient cue) knows audio is flowing right now.
+    mark_audio_output_active(True)
+    try:
+        return _play_audio_file_impl(file_path)
+    finally:
+        mark_audio_output_active(False)
+
+
+def _play_audio_file_impl(file_path: str) -> bool:
     global _active_playback
 
     if not os.path.isfile(file_path):

@@ -3504,8 +3504,8 @@ class TestBulkDeleteSessions:
         bulk-delete CLI / web flows don't leak files."""
         db.create_session(session_id="s1", source="cli")
         db.create_session(session_id="s2", source="cli")
-        (tmp_path / "s1.jsonl").write_text("")
-        (tmp_path / "s2.json").write_text("{}")
+        (tmp_path / "s1.jsonl").write_text("", encoding="utf-8")
+        (tmp_path / "s2.json").write_text("{}", encoding="utf-8")
 
         deleted = db.delete_sessions(["s1", "s2"], sessions_dir=tmp_path)
         assert deleted == 2
@@ -3619,9 +3619,9 @@ class TestDeleteEmptySessions:
         db.end_session("empty_with_dump", end_reason="done")
 
         dump = tmp_path / "request_dump_empty_with_dump_0.json"
-        dump.write_text("{}")
+        dump.write_text("{}", encoding="utf-8")
         transcript = tmp_path / "empty_with_dump.jsonl"
-        transcript.write_text("")
+        transcript.write_text("", encoding="utf-8")
 
         deleted = db.delete_empty_sessions(sessions_dir=tmp_path)
         assert deleted == 1
@@ -5783,10 +5783,10 @@ class TestAutoMaintenance:
         db.create_session(session_id="new", source="cli")  # active
 
         # Transcript files mimicking real gateway/CLI layout
-        (sessions_dir / "old1.json").write_text("{}")
-        (sessions_dir / "old1.jsonl").write_text("{}\n")
-        (sessions_dir / "old2.jsonl").write_text("{}\n")
-        (sessions_dir / "request_dump_old1_001.json").write_text("{}")
+        (sessions_dir / "old1.json").write_text("{}", encoding="utf-8")
+        (sessions_dir / "old1.jsonl").write_text("{}\n", encoding="utf-8")
+        (sessions_dir / "old2.jsonl").write_text("{}\n", encoding="utf-8")
+        (sessions_dir / "request_dump_old1_001.json").write_text("{}", encoding="utf-8")
         (sessions_dir / "new.jsonl").write_text("{}\n")  # active, must survive
 
         result = db.maybe_auto_prune_and_vacuum(
@@ -5820,7 +5820,7 @@ class TestAutoMaintenance:
         )
         db.end_session("long-lived", end_reason="agent_close")
         transcript = sessions_dir / "long-lived.jsonl"
-        transcript.write_text('{"role":"user","content":"recent"}\n')
+        transcript.write_text('{"role":"user","content":"recent"}\n', encoding="utf-8")
 
         result = db.maybe_auto_prune_and_vacuum(
             retention_days=90,
@@ -5840,7 +5840,7 @@ class TestAutoMaintenance:
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
         self._make_old_ended(db, "old", days_old=100)
-        (sessions_dir / "old.jsonl").write_text("{}\n")
+        (sessions_dir / "old.jsonl").write_text("{}\n", encoding="utf-8")
 
         result = db.maybe_auto_prune_and_vacuum(retention_days=90)
         assert result["pruned"] == 1
@@ -5853,8 +5853,8 @@ class TestAutoMaintenance:
         sessions_dir.mkdir()
         self._make_old_ended(db, "old", days_old=100)
         db.create_session(session_id="active", source="cli")  # not ended
-        (sessions_dir / "old.jsonl").write_text("{}\n")
-        (sessions_dir / "active.jsonl").write_text("{}\n")
+        (sessions_dir / "old.jsonl").write_text("{}\n", encoding="utf-8")
+        (sessions_dir / "active.jsonl").write_text("{}\n", encoding="utf-8")
 
         count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
         assert count == 1
@@ -6434,6 +6434,130 @@ class TestFTSExternalContentMigration:
                 "INSERT INTO messages_fts_trigram(messages_fts_trigram, rank) "
                 "VALUES('integrity-check', 1)"
             )
+        finally:
+            db.close()
+
+    def test_multimodal_trigram_indexes_text_without_image_payload(self, tmp_path):
+        """The projection omits the sentinel and unsearchable image bytes."""
+        db = SessionDB(db_path=tmp_path / "fresh.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message(
+                "s1",
+                role="user",
+                content=[
+                    {"type": "text", "text": "searchable multimodal text"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,unsearchablebase64payload"
+                        },
+                    },
+                ],
+            )
+
+            projected = db._conn.execute(
+                "SELECT content FROM messages_fts_trigram_src"
+            ).fetchone()[0]
+            stored = db._conn.execute("SELECT content FROM messages").fetchone()[0]
+            assert stored.startswith("\x00json:")
+            assert projected == "searchable multimodal text"
+            assert "\x00" not in projected
+            assert "unsearchablebase64payload" not in projected
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'searchable'"
+            ).fetchone()[0] == 1
+            assert db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'unsearchablebase64payload'"
+            ).fetchone()[0] == 0
+            db._conn.execute(
+                "INSERT INTO messages_fts_trigram(messages_fts_trigram, rank) "
+                "VALUES('integrity-check', 1)"
+            )
+            assert db._conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        finally:
+            db.close()
+
+    def test_optimize_rebuilds_v1_trigram_with_multimodal_projection(self, tmp_path):
+        """An older external-content trigram index is rebuilt on demand."""
+        db = SessionDB(db_path=tmp_path / "v1.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message(
+                "s1",
+                role="user",
+                content=[
+                    {"type": "text", "text": "legacy searchable text"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,legacybase64payload"
+                        },
+                    },
+                ],
+            )
+
+            def _restore_v1_trigram(conn):
+                for trigger in (
+                    "messages_fts_trigram_insert",
+                    "messages_fts_trigram_delete",
+                    "messages_fts_trigram_update",
+                ):
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                conn.execute("DROP VIEW messages_fts_trigram_src")
+                conn.executescript("""
+                    CREATE VIEW messages_fts_trigram_src AS
+                        SELECT id, role, content, tool_name, tool_calls
+                        FROM messages WHERE role <> 'tool';
+                    CREATE TRIGGER messages_fts_trigram_insert AFTER INSERT ON messages
+                    WHEN new.role <> 'tool' BEGIN
+                        INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+                        VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+                    END;
+                    CREATE TRIGGER messages_fts_trigram_delete AFTER DELETE ON messages
+                    WHEN old.role <> 'tool' BEGIN
+                        INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+                        VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+                    END;
+                    CREATE TRIGGER messages_fts_trigram_update AFTER UPDATE ON messages
+                    WHEN old.role <> 'tool' BEGIN
+                        INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_name, tool_calls)
+                        VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
+                        INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls)
+                        VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+                    END;
+                """)
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES "
+                    "('fts_storage_version', '1') "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                )
+                conn.execute(
+                    "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')"
+                )
+
+            db._execute_write(_restore_v1_trigram)
+            assert db.fts_optimize_available() is True
+
+            result = db.optimize_fts_storage(vacuum=False)
+
+            assert result["ok"] is True
+            assert db.get_meta("fts_storage_version") == str(
+                hermes_state.FTS_STORAGE_VERSION
+            )
+            projected = db._conn.execute(
+                "SELECT content FROM messages_fts_trigram_src"
+            ).fetchone()[0]
+            assert projected == "legacy searchable text"
+            assert "\x00" not in projected
+            assert "legacybase64payload" not in projected
+            db._conn.execute(
+                "INSERT INTO messages_fts_trigram(messages_fts_trigram, rank) "
+                "VALUES('integrity-check', 1)"
+            )
+            assert db._conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         finally:
             db.close()
 
@@ -7906,8 +8030,6 @@ class TestDisplayMetadataPersistence:
         switched = [m for m in reloaded if m.get("display_kind") == "model_switch"]
         assert len(switched) == 1
         assert switched[0]["display_metadata"] == meta
-
-
 class TestDisplayMetadataReadPaths:
     """Every message read path must hand back the decoded dict.
 
@@ -8013,9 +8135,6 @@ class TestDisplayMetadataReadPaths:
             }],
         )
         assert db.get_messages_as_conversation("s1")[0]["display_metadata"] == self.META
-
-
-
 class TestGatewayRoutingPkHeal:
     """Legacy gateway_routing tables (session_key-only PK) get rebuilt on open.
 

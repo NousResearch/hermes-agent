@@ -157,7 +157,7 @@ Interpreter choice is by file extension:
 
 | Extension | Interpreter |
 |-----------|-------------|
-| `.sh`, `.bash` | `/bin/bash` |
+| `.sh`, `.bash` | `bash` from `PATH` (fallback `/bin/bash`) |
 | anything else | `sys.executable` (current Python) |
 
 We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.

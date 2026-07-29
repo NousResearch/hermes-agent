@@ -667,13 +667,17 @@ Sessions with **active background processes** are never auto-reset, regardless o
 |------|------|-------------|
 | SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
 | Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
-| Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
+| Gateway routing index | `gateway_routing` table in `~/.hermes/state.db` | Maps session keys to active session IDs (origin metadata, expiry flags) |
+| Legacy routing mirror | `~/.hermes/sessions/sessions.json` | Backward-compat mirror of the routing index, written when `gateway.write_sessions_json: true` (the default) |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
 
 :::warning `sessions.json` is not the session list
-`~/.hermes/sessions/sessions.json` is the **gateway routing index** — it maps
-messaging session keys (`agent:main:<platform>:...`) to active session IDs.
+The gateway routing index lives in the `gateway_routing` table inside
+`state.db`; `~/.hermes/sessions/sessions.json` is a **legacy mirror** of it,
+kept for backward compatibility (disable with
+`gateway.write_sessions_json: false`). It maps messaging session keys
+(`agent:main:<platform>:...`) to active session IDs.
 It only ever contains gateway/messaging entries, so if you run a messaging
 platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
 

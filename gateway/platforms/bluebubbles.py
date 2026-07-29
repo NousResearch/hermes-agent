@@ -232,6 +232,33 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         res.raise_for_status()
         return res.json()
 
+    async def _helper_is_connected(self) -> bool:
+        """Whether the BB Private API helper is attached, refreshing the
+        cached snapshot if it was False.
+
+        ``_helper_connected`` is sampled once in connect(), but the helper
+        dylib injects into Messages.app a few hundred ms after the server
+        becomes reachable, so a connect() that wins that race caches False
+        forever — silencing typing, read receipts, and private-api reply
+        threading for the whole gateway lifetime (#34371). When the cached
+        value is False we re-poll /server/info once; the instant the helper
+        attaches the snapshot flips True and the early return below stops
+        further polls. A failed poll degrades to the last-known state
+        rather than raising — callers treat False as "skip".
+        """
+        if self._helper_connected:
+            return True
+        if not self._private_api_enabled or not self.client:
+            return False
+        try:
+            info = await self._api_get("/api/v1/server/info")
+            self._helper_connected = bool(
+                (info or {}).get("data", {}).get("helper_connected")
+            )
+        except Exception:
+            pass
+        return self._helper_connected
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -544,7 +571,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
                 "message": chunk,
             }
-            if reply_to and self._private_api_enabled and self._helper_connected:
+            if reply_to and await self._helper_is_connected():
                 payload["method"] = "private-api"
                 payload["selectedMessageGuid"] = reply_to
                 payload["partIndex"] = 0
@@ -695,7 +722,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
+        if not await self._helper_is_connected():
             return
         try:
             guid = await self._resolve_chat_guid(chat_id)
@@ -708,7 +735,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             pass
 
     async def stop_typing(self, chat_id: str) -> None:
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
+        if not await self._helper_is_connected():
             return
         try:
             guid = await self._resolve_chat_guid(chat_id)
@@ -725,7 +752,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def mark_read(self, chat_id: str) -> bool:
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
+        # Shares the #34371 cold-boot race — re-poll the stale snapshot so
+        # read receipts aren't silenced for the gateway's lifetime.
+        if not await self._helper_is_connected():
             return False
         try:
             guid = await self._resolve_chat_guid(chat_id)

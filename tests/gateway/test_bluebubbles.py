@@ -934,3 +934,207 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesTypingIndicator:
+    """Cold-boot race (#34371): ``_helper_connected`` is sampled once at
+    connect() time, but the BB Private API helper injects into Messages.app
+    a few hundred ms after the server becomes reachable. A connect() that
+    wins that race caches False and never refreshes, silencing typing, read
+    receipts, and private-api reply threading for the whole gateway
+    lifetime. The adapter lazily re-polls /server/info while the snapshot is
+    False, so the moment the helper attaches the gate reopens — and stops
+    polling once it's True."""
+
+    @staticmethod
+    def _capturing_client(posts, deletes):
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+        class _MockClient:
+            async def post(self, url, **kwargs):
+                posts.append(url)
+                return _Resp()
+
+            async def delete(self, url, **kwargs):
+                deletes.append(url)
+                return _Resp()
+
+        return _MockClient()
+
+    @staticmethod
+    def _stub_server_info(adapter, *, helper_connected, poll_log=None):
+        async def _api_get(path):
+            if poll_log is not None:
+                poll_log.append(path)
+            return {"data": {"helper_connected": helper_connected}}
+
+        adapter._api_get = _api_get
+
+    # --- the shared refreshing gate -------------------------------------
+
+    def test_gate_short_circuits_when_already_connected(self, monkeypatch):
+        """Already-attached helper: True without a wasted /server/info poll."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        adapter.client = object()
+        poll_log = []
+        self._stub_server_info(adapter, helper_connected=True, poll_log=poll_log)
+
+        assert asyncio.run(adapter._helper_is_connected()) is True
+        assert poll_log == []
+
+    def test_gate_refreshes_stale_false_snapshot(self, monkeypatch):
+        """Snapshot False but helper has since attached: re-poll flips it
+        True and persists so later calls short-circuit."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        adapter.client = object()
+        poll_log = []
+        self._stub_server_info(adapter, helper_connected=True, poll_log=poll_log)
+
+        assert asyncio.run(adapter._helper_is_connected()) is True
+        assert adapter._helper_connected is True
+        assert poll_log == ["/api/v1/server/info"]
+
+    def test_gate_stays_false_when_helper_absent(self, monkeypatch):
+        """Helper genuinely not attached: re-poll confirms False."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        adapter.client = object()
+        self._stub_server_info(adapter, helper_connected=False)
+
+        assert asyncio.run(adapter._helper_is_connected()) is False
+
+    def test_gate_skips_poll_when_private_api_disabled(self, monkeypatch):
+        """Private API off → no helper possible, don't even poll."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = False
+        adapter._helper_connected = False
+        adapter.client = object()
+        poll_log = []
+        self._stub_server_info(adapter, helper_connected=True, poll_log=poll_log)
+
+        assert asyncio.run(adapter._helper_is_connected()) is False
+        assert poll_log == []
+
+    def test_gate_swallows_poll_errors(self, monkeypatch):
+        """A failing /server/info re-poll must not raise — degrade to the
+        last-known (False) state."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        adapter.client = object()
+
+        async def _boom(path):
+            raise ConnectionError("server blip")
+
+        adapter._api_get = _boom
+
+        assert asyncio.run(adapter._helper_is_connected()) is False
+
+    # --- consumers reopen once the helper attaches ----------------------
+
+    def test_send_typing_posts_after_helper_attaches(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False  # stale snapshot from early connect()
+        self._stub_server_info(adapter, helper_connected=True)
+        posts, deletes = [], []
+        adapter.client = self._capturing_client(posts, deletes)
+
+        asyncio.run(adapter.send_typing("iMessage;-;user@example.com"))
+
+        assert posts and "/typing" in posts[0]
+
+    def test_send_typing_noops_when_helper_truly_absent(self, monkeypatch):
+        """Don't fire typing at a helper that really isn't attached — the
+        re-poll confirms False, so we stay a no-op (no wasted POST)."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        self._stub_server_info(adapter, helper_connected=False)
+        posts, deletes = [], []
+        adapter.client = self._capturing_client(posts, deletes)
+
+        asyncio.run(adapter.send_typing("iMessage;-;user@example.com"))
+
+        assert not posts
+
+    def test_stop_typing_deletes_after_helper_attaches(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        self._stub_server_info(adapter, helper_connected=True)
+        posts, deletes = [], []
+        adapter.client = self._capturing_client(posts, deletes)
+
+        asyncio.run(adapter.stop_typing("iMessage;-;user@example.com"))
+
+        assert deletes and "/typing" in deletes[0]
+
+    def test_mark_read_posts_after_helper_attaches(self, monkeypatch):
+        """Read receipts share the same cold-boot race — the fix must
+        cover mark_read, not just typing (#34371)."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        self._stub_server_info(adapter, helper_connected=True)
+        posts, deletes = [], []
+        adapter.client = self._capturing_client(posts, deletes)
+
+        ok = asyncio.run(adapter.mark_read("iMessage;-;user@example.com"))
+
+        assert ok is True
+        assert posts and "/read" in posts[0]
+
+    def test_reply_threading_recovers_after_helper_attaches(self, monkeypatch):
+        """The private-api reply gate also rode the stale snapshot; once
+        the helper attaches, replies regain their threading metadata."""
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        adapter.client = object()
+        self._stub_server_info(adapter, helper_connected=True)
+
+        captured = {}
+
+        async def _capture_post(path, payload):
+            captured.update(payload)
+            return {"data": {"guid": "sent-1"}}
+
+        adapter._api_post = _capture_post
+
+        result = asyncio.run(
+            adapter.send(
+                "iMessage;-;user@example.com", "hi", reply_to="orig-guid"
+            )
+        )
+
+        assert result.success is True
+        assert captured.get("method") == "private-api"
+        assert captured.get("selectedMessageGuid") == "orig-guid"

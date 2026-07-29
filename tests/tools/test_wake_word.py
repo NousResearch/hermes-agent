@@ -25,6 +25,11 @@ import tools.wake_word as ww
 def test_config_defaults_and_clamping():
     assert ww._provider({}) == "openwakeword"
     assert ww._provider({"provider": "Porcupine"}) == "porcupine"
+    assert ww._input_device({}) is None
+    assert ww._input_device({"input_device": 7}) == 7
+    assert ww._input_device({"input_device": " Microphone Array "}) == "Microphone Array"
+    assert ww._input_device({"input_device": ""}) is None
+    assert ww._input_device({"input_device": False}) is None
     assert ww._sensitivity({"sensitivity": 5}) == 1.0
     assert ww._sensitivity({"sensitivity": -1}) == 0.0
     # Invalid input falls back to the configured default, not a hardcoded 0.5.
@@ -842,8 +847,61 @@ class _LoudStream(_FakeStream):
         return _Frame([500] * n), False
 
 
+def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch):
+    opened = []
+
+    def _stream(**kwargs):
+        opened.append(kwargs)
+        return _LoudStream(**kwargs)
+
+    fake_sd = types.SimpleNamespace(
+        InputStream=_stream,
+        query_devices=lambda selector, kind: {
+            "name": "Microphone Array",
+            "hostapi": 2,
+            "max_input_channels": 2,
+            "default_samplerate": 48000.0,
+        },
+        query_hostapis=lambda index: {"name": "Windows WASAPI"},
+    )
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+
+    det = ww.WakeWordDetector(
+        _FakeEngine(fire=False),
+        lambda: None,
+        input_device="Microphone Array",
+    )
+    det.start()
+    try:
+        assert opened[0]["device"] == "Microphone Array"
+        assert det.input_device_details == {
+            "selector": "Microphone Array",
+            "name": "Microphone Array",
+            "hostapi_index": 2,
+            "hostapi": "Windows WASAPI",
+            "max_input_channels": 2,
+            "default_samplerate": 48000.0,
+        }
+    finally:
+        det.stop()
+
+
+def test_windows_silent_hint_names_selected_device(monkeypatch):
+    monkeypatch.setattr(ww.sys, "platform", "win32")
+    hint = ww.silent_audio_hint(
+        {
+            "selector": 3,
+            "name": "Microphone Array",
+            "hostapi": "Windows WASAPI",
+        }
+    )
+    assert "Microphone Array (Windows WASAPI)" in hint
+    assert "wake_word.input_device" in hint
+    assert "macOS" not in hint
+
+
 def test_detector_flags_silent_stream_and_recovers(monkeypatch):
-    """A stream of zeros sets audio_silent (macOS no-permission mode); audio clears it."""
+    """A stream of zeros sets audio_silent; audible input clears it."""
     monkeypatch.setattr(ww, "_SILENCE_ALERT_SECONDS", 0.001)  # trip on the first frame
     stream_cls = {"cls": _SilentStream}
     fake_sd = types.SimpleNamespace(InputStream=lambda **kw: stream_cls["cls"](**kw))

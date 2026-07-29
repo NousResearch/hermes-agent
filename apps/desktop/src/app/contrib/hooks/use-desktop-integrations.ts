@@ -71,15 +71,17 @@ export function useDesktopIntegrations({
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
   // you don't want to boot into a modal.
   useEffect(() => {
+    const routeProfile = rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
+
     if (routedSessionId) {
-      setRememberedSessionId(
-        routedSessionId,
-        rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
-      )
+      setRememberedSessionId(routedSessionId, routeProfile)
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
-      setRememberedRoute(locationPathname)
+      // Keyed by the same owner as the id above: a session route embeds a
+      // session id, so remembering it globally would restore another profile's
+      // conversation on cold start.
+      setRememberedRoute(locationPathname, routeProfile)
     }
   }, [locationPathname, routedSessionId])
 
@@ -97,7 +99,8 @@ export function useDesktopIntegrations({
     }
 
     restoredRef.current = true
-    const route = getRememberedRoute()
+    const activeProfile = $activeGatewayProfile.get()
+    const route = getRememberedRoute(activeProfile)
 
     if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
       navigate(route, { replace: true })
@@ -105,7 +108,7 @@ export function useDesktopIntegrations({
       return
     }
 
-    const last = getRememberedSessionId($activeGatewayProfile.get())
+    const last = getRememberedSessionId(activeProfile)
 
     if (last) {
       navigate(sessionRoute(last), { replace: true })

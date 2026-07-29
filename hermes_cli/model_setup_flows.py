@@ -1981,7 +1981,6 @@ def _model_flow_kimi(config, current_model=""):
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
     # Step 1: Check / prompt for API key
@@ -2066,7 +2065,6 @@ def _model_flow_stepfun(config, current_model=""):
 
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
     existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
@@ -2174,7 +2172,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     from hermes_cli.config import (
         load_config,
         save_config,
-        get_env_value,
         save_env_value,
     )
     from hermes_cli.models import _PROVIDER_MODELS

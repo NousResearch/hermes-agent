@@ -12,6 +12,7 @@ from tools.approval import (
     detect_dangerous_command,
     disable_session_yolo,
     enable_session_yolo,
+    is_approval_bypass_active_for_session,
     is_session_yolo_enabled,
     reset_current_session_key,
     set_current_session_key,
@@ -182,6 +183,16 @@ class TestYoloMode:
 
         disable_session_yolo("session-a")
         assert is_session_yolo_enabled("session-a") is False
+
+    def test_bypass_query_uses_the_requested_session(self, monkeypatch):
+        """Backend mode selection must not leak YOLO across sessions."""
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+
+        enable_session_yolo("session-a")
+
+        assert is_approval_bypass_active_for_session("session-a") is True
+        assert is_approval_bypass_active_for_session("session-b") is False
 
     def test_session_scoped_yolo_bypasses_combined_guard_only_for_current_session(self, monkeypatch):
         """Combined guard should honor session-scoped YOLO without affecting others."""

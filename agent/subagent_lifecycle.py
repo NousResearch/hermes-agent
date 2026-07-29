@@ -18,7 +18,7 @@ import secrets
 import threading
 import time
 from contextlib import contextmanager
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
+from concurrent.futures import Future, TimeoutError
 from typing import Any, Callable, Mapping, Optional
 
 

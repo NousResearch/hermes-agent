@@ -57,10 +57,9 @@ _START_TIMEOUT_SECONDS = 5.0
 _DEFAULT_CONFIRMATION_FRAMES = 3
 
 # Dead-mic detection: an int16 stream whose peak stays at/below this for this
-# many consecutive seconds is flagged as silent. macOS grants the *app* mic
-# permission per-process — a backend spawned without the entitlement gets a
-# "working" CoreAudio stream that delivers zeros forever, so the listener
-# looks armed but can never hear the phrase.
+# many consecutive seconds is flagged as silent. Desktop push-to-talk and the
+# backend listener use different capture paths, so one can work while the
+# backend-selected stream is all zeros.
 _SILENCE_PEAK = 10
 _SILENCE_ALERT_SECONDS = 10
 
@@ -76,6 +75,7 @@ class WakeWordInUse(RuntimeError):
 _DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "surface": "auto",
+    "input_device": None,
     "provider": "openwakeword",
     "phrase": "hey hermes",
     "sensitivity": 0.6,
@@ -203,6 +203,17 @@ def _provider(cfg: Dict[str, Any]) -> str:
     return str(_get(cfg, "provider")).strip().lower() or "openwakeword"
 
 
+def _input_device(cfg: Dict[str, Any]) -> int | str | None:
+    """Configured PortAudio input selector, preserving indices and names."""
+    raw = _get(cfg, "input_device")
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    value = str(raw).strip()
+    return value or None
+
+
 def _sensitivity(cfg: Dict[str, Any]) -> float:
     raw = _get(cfg, "sensitivity")
     try:
@@ -311,6 +322,71 @@ def _audio_available() -> bool:
         return True
     except (ImportError, OSError):
         return False
+
+
+def _describe_input_device(sd, selector: int | str | None) -> Dict[str, Any]:
+    """Resolve a PortAudio selector into JSON-safe diagnostics.
+
+    Device discovery is diagnostic only. ``InputStream`` remains the authority
+    on whether the selected device can actually open at the requested format.
+    """
+    details: Dict[str, Any] = {"selector": selector}
+    try:
+        info = sd.query_devices(selector, "input")
+    except Exception as e:
+        details["error"] = str(e)
+        return details
+
+    if isinstance(info, dict):
+        name = info.get("name")
+        if name:
+            details["name"] = str(name)
+        channels = info.get("max_input_channels")
+        if isinstance(channels, (int, float)):
+            details["max_input_channels"] = int(channels)
+        rate = info.get("default_samplerate")
+        if isinstance(rate, (int, float)):
+            details["default_samplerate"] = float(rate)
+        hostapi_index = info.get("hostapi")
+        if isinstance(hostapi_index, (int, float)):
+            details["hostapi_index"] = int(hostapi_index)
+            try:
+                hostapi = sd.query_hostapis(int(hostapi_index))
+                hostapi_name = hostapi.get("name") if isinstance(hostapi, dict) else None
+                if hostapi_name:
+                    details["hostapi"] = str(hostapi_name)
+            except Exception:
+                pass
+
+    return details
+
+
+def _device_label(details: Dict[str, Any]) -> str:
+    name = str(details.get("name") or "").strip()
+    selector = details.get("selector")
+    label = name or ("system default" if selector is None else str(selector))
+    hostapi = str(details.get("hostapi") or "").strip()
+    return f"{label} ({hostapi})" if hostapi else label
+
+
+def silent_audio_hint(details: Dict[str, Any]) -> str:
+    """Platform-specific remediation for an armed stream delivering silence."""
+    if sys.platform == "darwin":
+        return (
+            "Microphone delivers only silence. Grant the Hermes backend "
+            "microphone access in System Settings > Privacy & Security > "
+            "Microphone, then toggle the wake word."
+        )
+    if sys.platform == "win32":
+        return (
+            f"Microphone delivers only silence from {_device_label(details)}. "
+            "Set wake_word.input_device to a different PortAudio input device, "
+            "then toggle the wake word."
+        )
+    return (
+        f"Microphone delivers only silence from {_device_label(details)}. "
+        "Check the selected input device, then toggle the wake word."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -798,20 +874,22 @@ class WakeWordDetector:
 
     def __init__(self, engine: _Engine, on_wake: Callable[[], None],
                  cooldown: float = _FIRE_COOLDOWN_SECONDS,
-                 on_failure: Optional[Callable[["WakeWordDetector"], None]] = None):
+                 on_failure: Optional[Callable[["WakeWordDetector"], None]] = None,
+                 input_device: int | str | None = None):
         self.engine = engine
         self.on_wake = on_wake
         self.cooldown = cooldown
         self.on_failure = on_failure
+        self.input_device = input_device
+        self.input_device_details: Dict[str, Any] = {"selector": input_device}
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._callback_inflight = threading.Event()
         self._last_fire = 0.0
         self._lock = threading.Lock()
-        # True when the stream is open but every frame is (near-)silence — the
-        # classic macOS symptom of a backend process without mic permission:
-        # CoreAudio "succeeds" and delivers zeros forever. Surfaced via
-        # wake.status / /wake status so users can tell "armed" from "deaf".
+        # True when the stream is open but every frame is (near-)silence.
+        # Surfaced via wake.status / /wake status so users can tell "armed"
+        # from "deaf".
         self.audio_silent = False
         self._silent_frames = 0
 
@@ -881,8 +959,19 @@ class WakeWordDetector:
             return
 
         frame_length = self.engine.frame_length
+        self.input_device_details = _describe_input_device(sd, self.input_device)
+        logger.info(
+            "wake word: opening microphone device=%s selector=%r hostapi=%s "
+            "default_rate=%s requested_rate=%d",
+            self.input_device_details.get("name") or "system default",
+            self.input_device,
+            self.input_device_details.get("hostapi") or "unknown",
+            self.input_device_details.get("default_samplerate") or "unknown",
+            SAMPLE_RATE,
+        )
         try:
             stream = sd.InputStream(
+                device=self.input_device,
                 samplerate=SAMPLE_RATE,
                 channels=1,
                 dtype="int16",
@@ -907,7 +996,7 @@ class WakeWordDetector:
         ready.set()
         failed = False
         # ~seconds of consecutive near-zero frames before we flag the stream
-        # as silent (macOS no-permission streams deliver zeros forever).
+        # as silent.
         silent_alert_frames = max(1, int(_SILENCE_ALERT_SECONDS * SAMPLE_RATE / max(1, frame_length)))
         try:
             while not self._stop.is_set():
@@ -927,10 +1016,9 @@ class WakeWordDetector:
                     if self._silent_frames == silent_alert_frames:
                         self.audio_silent = True
                         logger.warning(
-                            "wake word: mic delivers only silence (peak<=%d for %ds) — "
-                            "on macOS check System Settings > Privacy & Security > "
-                            "Microphone for the Hermes backend process",
+                            "wake word: mic delivers only silence (peak<=%d for %ds); %s",
                             _SILENCE_PEAK, _SILENCE_ALERT_SECONDS,
+                            silent_audio_hint(self.input_device_details),
                         )
                 elif self._silent_frames:
                     if self.audio_silent:
@@ -1070,7 +1158,12 @@ def start_listening(
         try:
             cfg = config if config is not None else load_wake_word_config()
             engine = _build_engine(cfg)
-            detector = WakeWordDetector(engine, on_wake, on_failure=_detector_failed)
+            detector = WakeWordDetector(
+                engine,
+                on_wake,
+                on_failure=_detector_failed,
+                input_device=_input_device(cfg),
+            )
             _detector = detector
             _detector_owner = owner
             _detector_file_lock = lock_handle
@@ -1139,13 +1232,29 @@ def is_listening() -> bool:
 def audio_is_silent() -> bool:
     """True when the armed stream has delivered only silence (dead mic).
 
-    The macOS no-permission failure mode: the stream opens fine but every
-    frame is zeros, so detection can never fire. Lets status surfaces show
-    "listening but the microphone appears silent" instead of a healthy state.
+    The stream opens fine but every frame is zeros, so detection can never
+    fire. Lets status surfaces show "listening but the microphone appears
+    silent" instead of a healthy state.
     """
     with _detector_lock:
         det = _detector
     return det is not None and det.audio_silent
+
+
+def get_input_device_status(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return configured/active PortAudio input diagnostics for status UIs."""
+    with _detector_lock:
+        det = _detector
+    if det is not None:
+        return dict(det.input_device_details)
+
+    cfg = cfg if cfg is not None else load_wake_word_config()
+    selector = _input_device(cfg)
+    try:
+        sd, _ = _import_audio()
+    except (ImportError, OSError) as e:
+        return {"selector": selector, "error": str(e)}
+    return _describe_input_device(sd, selector)
 
 
 def get_last_match() -> Optional[tuple[str, str]]:

@@ -2358,7 +2358,6 @@ def run_doctor(args):
                 [f"Install azure-identity: {sys.executable} -m pip install azure-identity"],
             )
 
-        base_url = str(model_cfg.get("base_url") or "").strip()
         entra_cfg = model_cfg.get("entra") or {}
         if not isinstance(entra_cfg, dict):
             entra_cfg = {}

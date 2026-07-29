@@ -1708,6 +1708,63 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         server._wake_owner_surface = ""
 
 
+def test_wake_status_reports_configured_input_device_and_windows_silence_hint(monkeypatch):
+    from tools import wake_word
+
+    config = {
+        "enabled": True,
+        "phrase": "hey hermes",
+        "provider": "openwakeword",
+        "surface": "gui",
+        "input_device": "Microphone Array",
+    }
+    device = {
+        "selector": "Microphone Array",
+        "name": "Microphone Array",
+        "hostapi": "Windows WASAPI",
+        "default_samplerate": 48000.0,
+    }
+    transport = types.SimpleNamespace(_closed=False)
+
+    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: config)
+    monkeypatch.setattr(
+        wake_word,
+        "check_wake_word_requirements",
+        lambda cfg: {
+            "available": True,
+            "hint": "",
+            "phrase": "hey hermes",
+            "provider": "openwakeword",
+        },
+    )
+    monkeypatch.setattr(wake_word, "get_input_device_status", lambda cfg: device)
+    monkeypatch.setattr(wake_word, "owns_listener", lambda owner: owner is transport)
+    monkeypatch.setattr(wake_word, "is_listening", lambda: True)
+    monkeypatch.setattr(wake_word, "audio_is_silent", lambda: True)
+    monkeypatch.setattr(
+        wake_word,
+        "silent_audio_hint",
+        lambda details: f"silent input: {details['name']} ({details['hostapi']})",
+    )
+
+    server._wake_owner_transport = transport
+    server._wake_owner_surface = "gui"
+    try:
+        response = server.dispatch(
+            {"id": "wake-status", "method": "wake.status", "params": {}},
+            transport=transport,
+        )
+        assert response["result"]["configured_surface"] == "gui"
+        assert response["result"]["input_device"] == device
+        assert response["result"]["audio_silent"] is True
+        assert response["result"]["hint"] == (
+            "silent input: Microphone Array (Windows WASAPI)"
+        )
+    finally:
+        server._wake_owner_transport = None
+        server._wake_owner_surface = ""
+
+
 def test_voice_record_start_forwards_max_recording_seconds(monkeypatch):
     """voice.max_recording_seconds must reach start_continuous from the TUI.
 
@@ -5313,6 +5370,10 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     import yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    # Point the canonical resolver (load_config → env HERMES_HOME) at the
+    # temp home too, so the smart default is asserted against THIS config
+    # rather than whatever the developer's real ~/.hermes happens to hold.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump({"approvals": {"timeout": 15}})
     )
@@ -5329,6 +5390,11 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
     import yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    # _load_approval_mode delegates to the canonical resolver in
+    # tools.approval, which reads via hermes_cli.config.load_config —
+    # that path resolves HERMES_HOME from the environment, not
+    # server._hermes_home.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump({"approvals": {"mode": "sometimes"}})
     )
@@ -5343,6 +5409,9 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
     import yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    # See fail-safe test above: the canonical resolver reads via
+    # load_config, which resolves HERMES_HOME from the environment.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump({"approvals": {"mode": False}})
     )
@@ -5359,6 +5428,10 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     import yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    # config.set writes via server._hermes_home, but the post-write
+    # session.info emit resolves the effective mode through the canonical
+    # tools.approval resolver (load_config → env HERMES_HOME).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
     server._sessions["sid"] = {"agent": object(), "session_key": "profile-session"}

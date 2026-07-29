@@ -32,7 +32,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
 )
 from .media_cache import ext_for_mime
-from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for
 # the shared dispatch in gateway.platforms.media_cache. Both maps are
@@ -194,34 +194,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         ``raw`` is a list (from config or env JSON), a string (raw env var:
         JSON list, or comma/newline-separated), or None (use Hermes defaults).
         """
-        if raw is None:
-            patterns = list(DEFAULT_MENTION_PATTERNS)
-        elif isinstance(raw, str):
-            text = raw.strip()
-            try:
-                loaded = json.loads(text) if text else []
-            except Exception:
-                loaded = None
-            patterns = loaded if isinstance(loaded, list) else [
-                part.strip()
-                for line in text.splitlines()
-                for part in line.split(",")
-            ]
-        elif isinstance(raw, list):
-            patterns = raw
-        else:
-            patterns = [raw]
-
-        compiled: List["re.Pattern"] = []
-        for pattern in patterns:
-            text = str(pattern).strip()
-            if not text:
-                continue
-            try:
-                compiled.append(re.compile(text, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[bluebubbles] Invalid mention pattern %r: %s", text, exc)
-        return compiled
+        return compile_mention_patterns(
+            raw,
+            log_prefix="bluebubbles",
+            defaults=DEFAULT_MENTION_PATTERNS,
+            logger_=logger,
+        )
 
     def _message_matches_mention_patterns(self, text: str) -> bool:
         if not text or not self._mention_patterns:

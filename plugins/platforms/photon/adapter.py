@@ -63,7 +63,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
 )
-from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 
 from .auth import load_project_credentials
 
@@ -823,34 +823,12 @@ class PhotonAdapter(BasePlatformAdapter):
         Mirrors the BlueBubbles implementation so both iMessage channels
         accept the same configuration shapes.
         """
-        if raw is None:
-            patterns = list(_DEFAULT_MENTION_PATTERNS)
-        elif isinstance(raw, str):
-            text = raw.strip()
-            try:
-                loaded = json.loads(text) if text else []
-            except Exception:
-                loaded = None
-            patterns = loaded if isinstance(loaded, list) else [
-                part.strip()
-                for line in text.splitlines()
-                for part in line.split(",")
-            ]
-        elif isinstance(raw, list):
-            patterns = raw
-        else:
-            patterns = [raw]
-
-        compiled: "list[re.Pattern]" = []
-        for pattern in patterns:
-            text = str(pattern).strip()
-            if not text:
-                continue
-            try:
-                compiled.append(re.compile(text, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[photon] Invalid mention pattern %r: %s", text, exc)
-        return compiled
+        return compile_mention_patterns(
+            raw,
+            log_prefix="photon",
+            defaults=_DEFAULT_MENTION_PATTERNS,
+            logger_=logger,
+        )
 
     def _message_matches_mention_patterns(self, text: str) -> bool:
         if not text or not self._mention_patterns:
@@ -2317,27 +2295,13 @@ class PhotonAdapter(BasePlatformAdapter):
         if chat_id and message_id:
             await self._add_reaction(chat_id, message_id, "\U0001f440")
 
-    async def on_processing_complete(
-        self, event: MessageEvent, outcome: ProcessingOutcome
-    ) -> None:
-        """Swap the 👀 progress tapback for a 👍/👎 result.
-
-        Remove-then-add rather than a bare replace: deterministic whether the
-        platform replaces a sender's previous tapback or stacks them, and it
-        keeps the sidecar's reaction-handle slot coherent.
-        """
-        if not self._reactions_enabled():
-            return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if not chat_id or not message_id:
-            return
-        await self._remove_reaction(chat_id, message_id)
-        if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(chat_id, message_id, "\U0001f44d")
-        elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(chat_id, message_id, "\U0001f44e")
-        # CANCELLED: leave the message unreacted.
+    # Shared reaction-ack flow (base.on_processing_complete): swap the 👀
+    # progress tapback for a 👍/👎 result. Remove-then-add rather than a bare
+    # replace: deterministic whether the platform replaces a sender's previous
+    # tapback or stacks them, and it keeps the sidecar's reaction-handle slot
+    # coherent. CANCELLED: leave the message unreacted.
+    _OK_EMOJI = "\U0001f44d"
+    _FAIL_EMOJI = "\U0001f44e"
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return whatever we know about a Spectrum space id.

@@ -4371,6 +4371,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "OPENREWARD_API_KEY": {
+        "description": "OpenReward API key for BackSearch point-in-time web search/fetch (backsearch, backfetch)",
+        "prompt": "OpenReward API key (or_...)",
+        "url": "https://openreward.ai/",
+        "tools": ["backsearch", "backfetch"],
+        "password": True,
+        "category": "tool",
+    },
     "SEARXNG_URL": {
         "description": "URL of your SearXNG instance for free self-hosted web search",
         "prompt": "SearXNG URL (e.g. http://localhost:8080)",

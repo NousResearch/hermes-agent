@@ -114,6 +114,7 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
+    ("backsearch",       "🕰️  BackSearch (point-in-time web)", "backsearch/backfetch — the web as it was on a date (requires OPENREWARD_API_KEY)"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -150,7 +151,10 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+#
+# BackSearch follows the same pattern: off by default, auto-enables when
+# OPENREWARD_API_KEY is set (see the inject block in _get_platform_tools).
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "backsearch", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 
 def _xai_credentials_present() -> bool:
@@ -179,6 +183,23 @@ def _xai_credentials_present() -> bool:
     except Exception:
         pass
     return bool(str(os.environ.get("XAI_API_KEY") or "").strip())
+
+
+def _backsearch_credentials_present() -> bool:
+    """Cheap, side-effect-free check for a usable OpenReward API key.
+
+    Used to auto-enable the ``backsearch`` toolset when the user has set
+    ``OPENREWARD_API_KEY`` — mirroring the xAI → ``x_search`` auto-enable
+    above. Does NOT hit the network. The tools' runtime ``check_fn`` still
+    gates schema registration if the key later disappears.
+    """
+    try:
+        from plugins.backsearch.tools import check_backsearch_available
+
+        return check_backsearch_available()
+    except Exception:
+        pass
+    return bool(str(os.environ.get("OPENREWARD_API_KEY") or "").strip())
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -578,6 +599,20 @@ TOOL_CATEGORIES = {
                 "tag": "PKCE OAuth — opens the setup wizard",
                 "env_vars": [],
                 "post_setup": "spotify",
+            },
+        ],
+    },
+    "backsearch": {
+        "name": "BackSearch (point-in-time web)",
+        "icon": "🕰️",
+        "providers": [
+            {
+                "name": "BackSearch (General Reasoning)",
+                "badge": "paid",
+                "tag": "Search & fetch the web as it was on a date — uses your OpenReward key",
+                "env_vars": [
+                    {"key": "OPENREWARD_API_KEY", "prompt": "OpenReward API key (or_...)", "url": "https://openreward.ai/"},
+                ],
             },
         ],
     },
@@ -2007,6 +2042,18 @@ def _get_platform_tools(
         if x_search_auto_enabled:
             enabled_toolsets.add("x_search")
 
+        # Same deal for ``backsearch`` (point-in-time web search): its two
+        # tools are plugin-registered and absent from platform composites,
+        # so the subset loop can't pick it up. Auto-enable when the user
+        # has an OpenReward key configured — the check_fn still gates the
+        # schema at runtime if the key later disappears.
+        backsearch_auto_enabled = (
+            _toolset_allowed_for_platform("backsearch", platform)
+            and _backsearch_credentials_present()
+        )
+        if backsearch_auto_enabled:
+            enabled_toolsets.add("backsearch")
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         # Legacy safety: if the platform's own name matches a default-off
         # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
@@ -2029,6 +2076,9 @@ def _get_platform_tools(
         # strip the entry we just added.
         if x_search_auto_enabled and "x_search" in default_off:
             default_off.remove("x_search")
+        # And for backsearch (see the inject block above).
+        if backsearch_auto_enabled and "backsearch" in default_off:
+            default_off.remove("backsearch")
         _exempt_explicit_platform_native(
             default_off, platform, explicitly_configured=explicitly_configured
         )

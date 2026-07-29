@@ -1,0 +1,10 @@
+name: backsearch
+version: 1.0.0
+description: "BackSearch by General Reasoning — search and fetch the web as it was on a particular date. Two tools (backsearch, backfetch) over a frozen news archive: every request carries an as_of date, search returns only documents crawled on or before it, and fetch returns the article text as archived at that time. Great for forecasting backtests, quant finance research loops, RL environments, and reproducible benchmarks. Gates on OPENREWARD_API_KEY."
+author: NousResearch
+kind: backend
+requires_env:
+  - OPENREWARD_API_KEY
+provides_tools:
+  - backsearch
+  - backfetch

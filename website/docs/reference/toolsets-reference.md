@@ -77,6 +77,7 @@ Or in-session:
 | `session_search` | `session_search` | Search past conversation sessions. |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `spotify` | `spotify_albums`, `spotify_devices`, `spotify_library`, `spotify_playback`, `spotify_playlists`, `spotify_queue`, `spotify_search` | Native Spotify control (playback, queue, search, playlists, albums, library). Registered by the bundled `spotify` plugin. |
+| `backsearch` | `backsearch`, `backfetch` | Point-in-time web search and fetch over a frozen archive ([BackSearch](https://www.gr.inc/releases/introducing-backsearch) by General Reasoning) — search/read the web as it was on a given date. Registered by the bundled `backsearch` plugin; requires `OPENREWARD_API_KEY` (auto-enables when set). |
 | `terminal` | `process`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo` | Task list management within a session. |
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |

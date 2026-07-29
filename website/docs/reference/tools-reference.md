@@ -218,6 +218,15 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 |------|-------------|----------------------|
 | `x_search` | Search X (Twitter) posts, profiles, and threads using xAI's built-in `x_search` Responses tool. Read-only public X discovery for current discussion, reactions, or claims on public X (not general web pages). Does not post, reply, like, DM, upload media, delete, or inspect the authenticated X account — those need a separate authenticated X API surface (e.g. the `xurl` skill). Off by default — opt in via `hermes tools` → 🐦 X (Twitter) Search. Schema is only registered when xAI credentials are configured (check_fn-gated). | XAI_API_KEY **or** xAI Grok OAuth (SuperGrok / Premium+) login |
 
+## `backsearch` toolset
+
+Point-in-time web search over a frozen archive — [BackSearch by General Reasoning](https://www.gr.inc/releases/introducing-backsearch). Every request carries an `as_of` date; search returns only documents crawled on or before it, and fetch returns the article text as archived at that time. The same query with the same `as_of` returns the same results forever, which makes it suited to forecasting backtests, quant-finance research loops, RL environments, and reproducible benchmarks. Billed against your prepaid [OpenReward](https://openreward.ai/) balance. Registered by the bundled `backsearch` plugin; auto-enables when `OPENREWARD_API_KEY` is set (or opt in via `hermes tools` → 🕰️ BackSearch).
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `backsearch` | Search the web as it was on a particular date. Takes `query` + `as_of` (YYYY-MM-DD), optional `k` (1-20) and `allowed_domains`/`blocked_domains` (mutually exclusive). The cutoff gates on crawl date, not the article's self-reported publish date, so nothing post-cutoff leaks in. Current preview archive: news domains, December 2025 – July 2026. | `OPENREWARD_API_KEY` |
+| `backfetch` | Fetch a page's text as archived on or before `as_of` — not today's version. Pass an optional `prompt` to get a focused summary of a long article. Returns a soft error when no capture exists on or before the cutoff. | `OPENREWARD_API_KEY` |
+
 ## `tts` toolset
 
 | Tool | Description | Requires environment |

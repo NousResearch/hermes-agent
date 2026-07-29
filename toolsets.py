@@ -328,6 +328,17 @@ TOOLSETS = {
         "includes": []
     },
 
+    "backsearch": {
+        "description": (
+            "Point-in-time web search and fetch over a frozen archive "
+            "(BackSearch by General Reasoning). Search/read the web as it "
+            "was on a given date — forecasting backtests, quant research, "
+            "reproducible benchmarks. Requires OPENREWARD_API_KEY."
+        ),
+        "tools": ["backsearch", "backfetch"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

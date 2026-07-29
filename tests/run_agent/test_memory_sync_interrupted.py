@@ -38,6 +38,17 @@ def _bare_agent():
     return agent
 
 
+def _cron_bare_agent():
+    """Bare agent shaped like an automated cron run (platform="cron")."""
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._memory_manager = MagicMock()
+    agent.session_id = "cron_test-job_20260805T120000Z"
+    agent.platform = "cron"
+    return agent
+
+
 class TestSyncExternalMemoryForTurn:
     # --- Interrupt guard (the #15218 fix) -------------------------------
 
@@ -53,6 +64,37 @@ class TestSyncExternalMemoryForTurn:
         )
         agent._memory_manager.sync_all.assert_not_called()
         agent._memory_manager.queue_prefetch_all.assert_not_called()
+
+
+    # --- Automated cron runs are read-only (#45769) ---------------------
+
+    def test_cron_automated_turn_does_not_sync(self):
+        """A completed turn from an automated cron run (platform="cron")
+        must not be mirrored into external memory providers. The scheduler
+        passes skip_memory=False so cron agents can READ context, but the
+        sync path is a write — same policy as the memory() dispatch guards.
+        """
+        agent = _cron_bare_agent()
+        agent._sync_external_memory_for_turn(
+            original_user_message="Summarize the logs",
+            final_response="Done.",
+            interrupted=False,
+        )
+        agent._memory_manager.sync_all.assert_not_called()
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
+    def test_cron_human_followup_still_syncs(self):
+        """A human resuming a cron session (platform="tui") is a real
+        conversation — the sync path must NOT be suppressed for it."""
+        agent = _cron_bare_agent()
+        agent.platform = "tui"
+        agent._sync_external_memory_for_turn(
+            original_user_message="What did the job find?",
+            final_response="Here is the summary.",
+            interrupted=False,
+        )
+        agent._memory_manager.sync_all.assert_called_once()
+        agent._memory_manager.queue_prefetch_all.assert_called_once()
 
 
     # --- Normal completed turn still syncs ------------------------------

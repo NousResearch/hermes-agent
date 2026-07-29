@@ -3514,7 +3514,10 @@ def run_job(
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_memory=False,  # Cron agents READ memory context (MEMORY.md/USER.md
+                                # injected into the system prompt); writes are
+                                # blocked at the memory() dispatch sites and the
+                                # external-provider sync path for platform="cron".
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

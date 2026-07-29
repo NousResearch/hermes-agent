@@ -4493,11 +4493,20 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "MISTRAL_API_KEY": {
-        "description": "Mistral API key for Voxtral TTS and transcription (STT)",
+        "description": "Mistral API key for direct LLM inference, Voxtral TTS, and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
         "password": True,
-        "category": "tool",
+        "category": "provider",
+        "advanced": True,
+    },
+    "MISTRAL_BASE_URL": {
+        "description": "Mistral base URL override (default: https://api.mistral.ai/v1)",
+        "prompt": "Mistral base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
     },
     "PORCUPINE_ACCESS_KEY": {
         "description": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)",

@@ -88,8 +88,7 @@
         host: String(parsed.host),
         port: Number(parsed.port) || 22,
         username: String(parsed.username),
-        hostKey: String(parsed.hostKey),
-        remotePort: Number(parsed.remotePort) || 9119
+        hostKey: String(parsed.hostKey)
       }
     } catch {
       return null
@@ -110,9 +109,16 @@
     const plugin = nativeSshPlugin()
     if (!plugin) throw new Error('The native iOS SSH tunnel is unavailable.')
     if (!nativeTunnelStart) {
-      nativeTunnelStart = plugin.status().then(status => {
-        if (status && status.running) return null
-        return plugin.start(config)
+      nativeTunnelStart = plugin.status().then(async status => {
+        const tunnel = status && status.running ? status : await plugin.start(config)
+        if (tunnel && tunnel.running && tunnel.url) {
+          const stored = readStoredRaw()
+          writeStored({
+            url: tunnel.url,
+            token: tunnel.token || (stored && stored.token) || ''
+          })
+        }
+        return tunnel
       }).finally(() => {
         nativeTunnelStart = null
       })
@@ -223,6 +229,8 @@
     assertPrimaryProfile(request && request.profile)
     const tunnel = await ensureNativeTunnel()
     const conn = requireConnection()
+    const baseUrl = (tunnel && tunnel.url) || conn.url
+    const sessionToken = (tunnel && tunnel.token) || conn.token
     const path = String((request && request.path) || '')
     const method = (request && request.method) || 'GET'
     const hasBody = request && request.body !== undefined
@@ -231,10 +239,10 @@
     let res
     try {
       const headers = { 'Content-Type': 'application/json' }
-      if (conn.token) {
-        headers['X-Hermes-Session-Token'] = conn.token
+      if (sessionToken) {
+        headers['X-Hermes-Session-Token'] = sessionToken
       }
-      res = await fetch(conn.url + path, {
+      res = await fetch(baseUrl + path, {
         method,
         headers,
         body: hasBody ? JSON.stringify(request.body) : undefined,
@@ -286,15 +294,17 @@
     assertPrimaryProfile(profile)
     const tunnel = await ensureNativeTunnel()
     const conn = requireConnection()
+    const baseUrl = (tunnel && tunnel.url) || conn.url
+    const sessionToken = (tunnel && tunnel.token) || conn.token
     return {
-      baseUrl: (tunnel && tunnel.url) || conn.url,
+      baseUrl,
       isFullscreen: false,
       mode: 'remote',
-      authMode: conn.token ? 'token' : 'none',
+      authMode: sessionToken ? 'token' : 'none',
       nativeOverlayWidth: 0,
       source: 'settings',
-      token: conn.token,
-      wsUrl: buildWsUrl((tunnel && tunnel.url) || conn.url, conn.token),
+      token: sessionToken,
+      wsUrl: buildWsUrl(baseUrl, sessionToken),
       logs: [],
       windowButtonPosition: null,
       // Primary profile: this client is bound to one remote gateway, so the
@@ -485,6 +495,10 @@
     applyConnectionConfig: async payload => {
       const block = coerceRemote(payload)
       writeStored(block)
+      const plugin = nativeSshPlugin()
+      if (plugin) {
+        await plugin.stop()
+      }
       const next = sanitizeConfig(payload && payload.profile)
       // Reconnect == a full renderer reload: the vendor's applyConnectionConfig
       // tears down the backend and reloads the window from the main process
@@ -850,8 +864,7 @@
       '<textarea class="hermes-shim-input" id="hermes-shim-ssh-key" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Stored only in iOS Keychain"></textarea>' +
       '<label class="hermes-shim-label" for="hermes-shim-ssh-host-key">Pinned host public key</label>' +
       '<textarea class="hermes-shim-input" id="hermes-shim-ssh-host-key" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ssh-ed25519 AAAA…"></textarea>' +
-      '<label class="hermes-shim-label" for="hermes-shim-ssh-remote-port">Hermes port on remote host</label>' +
-      '<input class="hermes-shim-input" id="hermes-shim-ssh-remote-port" type="number" inputmode="numeric" value="9119" />' +
+      '<p class="hermes-shim-mode-copy">The remote Hermes backend is started automatically on a dynamic port.</p>' +
       '</div>' +
       '<div class="hermes-shim-status" id="hermes-shim-status" aria-live="polite"></div>' +
       '<div class="hermes-shim-actions">' +
@@ -875,7 +888,7 @@
     const sshUserInput = overlay.querySelector('#hermes-shim-ssh-user')
     const sshKeyInput = overlay.querySelector('#hermes-shim-ssh-key')
     const sshHostKeyInput = overlay.querySelector('#hermes-shim-ssh-host-key')
-    const sshRemotePortInput = overlay.querySelector('#hermes-shim-ssh-remote-port')
+
     const statusEl = overlay.querySelector('#hermes-shim-status')
     const connectBtn = overlay.querySelector('#hermes-shim-connect')
     const cancelBtn = overlay.querySelector('#hermes-shim-cancel')
@@ -900,7 +913,7 @@
       sshPortInput.value = String(storedSsh.port)
       sshUserInput.value = storedSsh.username
       sshHostKeyInput.value = storedSsh.hostKey
-      sshRemotePortInput.value = String(storedSsh.remotePort)
+
     }
 
     if (cancelBtn) {
@@ -939,21 +952,35 @@
             host: sshHost,
             port: Number(sshPortInput.value) || 22,
             username: sshUserInput.value.trim(),
-            hostKey: sshHostKeyInput.value.trim(),
-            remotePort: Number(sshRemotePortInput.value) || 9119
+            hostKey: sshHostKeyInput.value.trim()
           }
           if (!sshConfig.username || !sshConfig.hostKey || !sshKeyInput.value.trim()) {
             throw new Error('SSH configuration is incomplete')
           }
           await plugin.storePrivateKey({ account: sshConfig.account, privateKey: sshKeyInput.value.trim() })
-          tunnel = await plugin.start(sshConfig)
+          const savedSsh = readStoredSsh()
+          const sameConfig =
+            savedSsh &&
+            savedSsh.host === sshConfig.host &&
+            savedSsh.port === sshConfig.port &&
+            savedSsh.username === sshConfig.username &&
+            savedSsh.hostKey === sshConfig.hostKey
+          const status = await plugin.status()
+          if (status && status.running && status.url && sameConfig) {
+            tunnel = status
+          } else {
+            if (status && status.running) {
+              await plugin.stop()
+            }
+            tunnel = await plugin.start(sshConfig)
+          }
           writeStoredSsh(sshConfig)
         }
         return window.hermesDesktop.testConnectionConfig({
           mode: 'remote',
           remoteAuthMode: 'token',
           remoteUrl: (tunnel && tunnel.url) || urlValue,
-          remoteToken: tokenValue
+          remoteToken: (tunnel && tunnel.token) || tokenValue
         })
       })()
         .then(result => {

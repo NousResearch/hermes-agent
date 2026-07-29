@@ -15,6 +15,7 @@ final class SshTunnelPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private let tunnel = SshTunnel()
     private let keychainService = "com.nousresearch.hermes.mobile.ssh"
+    private let sessionKeychainService = "com.nousresearch.hermes.mobile.ssh.session"
 
     @objc func storePrivateKey(_ call: CAPPluginCall) {
         guard let key = call.getString("privateKey"), !key.isEmpty else {
@@ -48,23 +49,29 @@ final class SshTunnelPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         let port = call.getInt("port") ?? 22
-        let remotePort = call.getInt("remotePort") ?? 9119
         let configuration = SshTunnelConfiguration(
             host: host,
             port: port,
             username: username,
             privateKey: privateKey,
             hostKey: hostKey,
-            remotePort: remotePort
+            previousSession: readSession(account: account)
         )
 
         Task {
             do {
                 let localPort = try await tunnel.start(configuration)
-                call.resolve([
+                var result: [String: Any] = [
                     "url": "http://127.0.0.1:\(localPort)",
                     "localPort": localPort
-                ])
+                ]
+                if let token = await tunnel.sessionToken {
+                    result["token"] = token
+                }
+                if let identity = await tunnel.sessionIdentity {
+                    try saveSession(identity, account: account)
+                }
+                call.resolve(result)
             } catch {
                 call.reject(error.localizedDescription, "ssh_tunnel_start_failed", error)
             }
@@ -75,6 +82,7 @@ final class SshTunnelPlugin: CAPPlugin, CAPBridgedPlugin {
         Task {
             do {
                 try await tunnel.stop()
+                deleteSession(account: call.getString("account") ?? "default")
                 call.resolve()
             } catch SshTunnelError.notStarted {
                 call.resolve()
@@ -86,7 +94,16 @@ final class SshTunnelPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func status(_ call: CAPPluginCall) {
         Task {
-            call.resolve(["running": await tunnel.isRunning])
+            let running = await tunnel.isRunning
+            var result: [String: Any] = ["running": running]
+            if let localPort = await tunnel.localPort {
+                result["localPort"] = localPort
+                result["url"] = "http://127.0.0.1:\(localPort)"
+            }
+            if let token = await tunnel.sessionToken {
+                result["token"] = token
+            }
+            call.resolve(result)
         }
     }
 
@@ -127,5 +144,49 @@ final class SshTunnelPlugin: CAPPlugin, CAPBridgedPlugin {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    private func sessionQuery(account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: sessionKeychainService,
+            kSecAttrAccount as String: account
+        ]
+    }
+
+    private func saveSession(_ identity: RemoteSessionIdentity, account: String) throws {
+        let data = try JSONEncoder().encode(identity)
+        let query = sessionQuery(account: account)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var item = query
+            item.merge(attributes) { _, new in new }
+            let addStatus = SecItemAdd(item as CFDictionary, nil)
+            guard addStatus == errSecSuccess else {
+                throw NSError(domain: NSOSStatusErrorDomain, code: Int(addStatus))
+            }
+        } else if updateStatus != errSecSuccess {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(updateStatus))
+        }
+    }
+
+    private func readSession(account: String) -> RemoteSessionIdentity? {
+        var query = sessionQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else {
+            return nil
+        }
+        return try? JSONDecoder().decode(RemoteSessionIdentity.self, from: data)
+    }
+
+    private func deleteSession(account: String) {
+        SecItemDelete(sessionQuery(account: account) as CFDictionary)
     }
 }

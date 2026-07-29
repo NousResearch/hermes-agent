@@ -93,3 +93,76 @@ describe('watchSessionPins', () => {
     expect(patch).not.toHaveBeenCalled()
   })
 })
+
+describe('watchSessionPins remote pull', () => {
+  it('adopts a pin another app made', async () => {
+    $sessions.set([row('remote', { pinned: true })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('remote')
+  })
+
+  it('adopts a remote pin on the durable lineage root, not the live tip', async () => {
+    $sessions.set([row('tip', { _lineage_root_id: 'root', pinned: true })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['root'])
+  })
+
+  it('does not echo an adopted pin back as a redundant write', async () => {
+    $sessions.set([row('adopted', { pinned: true })])
+    await flush()
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('drops a local pin the server reports as unpinned', async () => {
+    $pinnedSessionIds.set(['gone'])
+    $sessions.set([row('gone', { pinned: true })])
+    await flush()
+    patch.mockClear()
+
+    // Another app unpinned it; our next refresh carries the new truth.
+    $sessions.set([row('gone', { pinned: false })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('gone')
+  })
+
+  it('leaves the local set alone when the backend omits the flag', async () => {
+    $pinnedSessionIds.set(['legacy'])
+    // No `pinned` key at all — a runtime predating the column.
+    $sessions.set([row('legacy')])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('legacy')
+  })
+
+  it('ignores a stale page that contradicts a write still in flight', async () => {
+    let settle: (v: { ok: boolean }) => void = () => {}
+
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $sessions.set([row('race')])
+    $pinnedSessionIds.set(['race'])
+    await flush()
+    expect(patch).toHaveBeenCalledWith('race', true, undefined)
+
+    // A list request issued before the PATCH lands still says pinned=false.
+    // Honouring it would silently undo the pin the user just made.
+    $sessions.set([row('race', { pinned: false })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('race')
+
+    // Once the write is acked, later server truth is honoured again.
+    settle({ ok: true })
+    await flush()
+    await flush()
+
+    $sessions.set([row('race', { pinned: false }), row('other')])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('race')
+  })
+})

@@ -4796,6 +4796,7 @@ def get_sessions(
                 # rows, skip the system_prompt blob inside SQLite too (pairs
                 # with the API-level _strip_session_list_rows below).
                 compact_rows=not full,
+                include_pinned=True,
             )
             total = db.session_count(
                 source=source or None,
@@ -4818,6 +4819,7 @@ def get_sessions(
                     s["is_default_profile"] = profile_name == "default"
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
+                s["pinned"] = bool(s.get("pinned"))
             if not full:
                 _strip_session_list_rows(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
@@ -4920,6 +4922,7 @@ def get_profiles_sessions(
                 order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions (see above).
                 compact_rows=not full,
+                include_pinned=True,
             )
             profile_total = db.session_count(
                 source=source_filter,
@@ -4940,6 +4943,7 @@ def get_profiles_sessions(
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
                 s["archived"] = bool(s.get("archived"))
+                s["pinned"] = bool(s.get("pinned"))
                 merged.append(s)
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
@@ -4948,7 +4952,12 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
+    # Pinned rows are back-filled past each profile's LIMIT on purpose; keep
+    # them in the merged window instead of re-dropping them on recency.
     window = merged[offset:offset + limit]
+    if len(merged) > offset + limit:
+        seen = {id(s) for s in window}
+        window.extend(s for s in merged[offset + limit:] if s.get("pinned") and id(s) not in seen)
     if not full:
         _strip_session_list_rows(window)
     return {
@@ -5025,6 +5034,9 @@ def get_profiles_sessions_sidebar(
                 and (now - s.get("last_active", s.get("started_at", 0))) < 300
             )
             s["archived"] = bool(s.get("archived"))
+            # SQLite stores the pin as 0/1; the sidebar needs a real boolean to
+            # render the Pinned section from server state.
+            s["pinned"] = bool(s.get("pinned"))
         return rows
 
     def _slice(db, *, source=None, exclude=None, cap):
@@ -5038,6 +5050,9 @@ def get_profiles_sessions_sidebar(
             archived_only=False,
             order_by_last_active=True,
             compact_rows=True,
+            # A pinned conversation must reach the sidebar even when it has
+            # aged past the window — otherwise its Pinned row renders empty.
+            include_pinned=True,
         )
 
     for name, home in targets:
@@ -5055,8 +5070,10 @@ def get_profiles_sessions_sidebar(
                 # A full window means more rows remain on disk. That is all the
                 # sidebar's "load more" needs, and unlike an exact COUNT(*) per
                 # profile per refresh it costs nothing beyond the rows already
-                # read.
-                recents_truncated[name] = len(profile_rows) >= recents_cap
+                # read. Discount pinned back-fills — they arrive past the LIMIT
+                # and would otherwise fake a full page on a short list.
+                unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
+                recents_truncated[name] = unpinned_count >= recents_cap
                 recents_rows.extend(_tag(profile_rows, name))
             cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
             messaging_rows.extend(
@@ -5069,7 +5086,13 @@ def get_profiles_sessions_sidebar(
 
     def _window(rows: List[Dict[str, Any]], cap: int) -> List[Dict[str, Any]]:
         rows.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)
+        # Pinned rows survive the cap. The per-profile queries deliberately
+        # back-fill them past the LIMIT, so truncating the merged window on
+        # recency alone would throw away exactly what the back-fill fetched.
         win = rows[:cap]
+        if len(rows) > cap:
+            seen = {id(s) for s in win}
+            win.extend(s for s in rows[cap:] if s.get("pinned") and id(s) not in seen)
         _strip_session_list_rows(win)
         return win
 

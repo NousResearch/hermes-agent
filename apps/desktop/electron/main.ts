@@ -75,7 +75,9 @@ import {
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
+  isNativeRefreshAuthRejection,
   localProfileEntry,
+  mintGatewayWsTicket as mintGatewayWsTicketPure,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
@@ -7293,7 +7295,10 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
   } catch (error: any) {
     // A 401 means the RT is dead (session_expired) — drop tokens so the UI
     // prompts a fresh native login. A 503/transient keeps them for a retry.
-    if (error && error.statusCode === 401) {
+    // isNativeRefreshAuthRejection (not a bare error.statusCode === 401
+    // check) because fetchJson never attaches .statusCode — see its doc in
+    // connection-config.ts.
+    if (isNativeRefreshAuthRejection(error)) {
       _clearNativeTokens(baseUrl)
 
       return null
@@ -7556,40 +7561,15 @@ async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any
 // falling back to the OAuth cookie partition otherwise.
 // Throws (with statusCode 401) if the session cookie is missing/expired —
 // callers treat that as "needs re-login".
+//
+// Thin adapter over connection-config.ts's pure mintGatewayWsTicket, wiring
+// in the real (electron-coupled) I/O. Kept as a same-named local function so
+// none of this file's call sites need to change. See that function's doc
+// for why ensureNativeAccessToken is NOT wrapped in .catch(() => null).
+// `headers` are the connection's remote gateway headers (see
+// freshGatewayWsUrl); they ride along on both the bearer and cookie mints.
 async function mintGatewayWsTicket(baseUrl, headers = {}) {
-  // Native flow: mint the ticket with the bearer token, no cookie involved.
-  const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
-
-  if (nativeAt) {
-    const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
-      method: 'POST',
-      timeoutMs: 8_000,
-      bearer: nativeAt,
-      headers
-    })) as any
-
-    const ticket = body?.ticket
-
-    if (!ticket || typeof ticket !== 'string') {
-      throw new Error('Gateway did not return a WS ticket.')
-    }
-
-    return ticket
-  }
-
-  const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
-    method: 'POST',
-    timeoutMs: 8_000,
-    headers
-  })) as any
-
-  const ticket = body?.ticket
-
-  if (!ticket || typeof ticket !== 'string') {
-    throw new Error('Gateway did not return a WS ticket.')
-  }
-
-  return ticket
+  return mintGatewayWsTicketPure(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers)
 }
 
 // Build a fresh WS URL for the *current* connection. Critical for reconnects:

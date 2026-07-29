@@ -106,14 +106,17 @@ def test_permissions_run_sanitizes_env(monkeypatch):
 
 
 def test_doctor_sanitized_env_helper(monkeypatch):
-    """_drive_health_report spawns via Popen; assert the env helper it uses
-    strips secrets (mocking the whole JSON-RPC handshake is not worth it)."""
+    """The doctor MCP spawn site must pass the sanitized env to Popen.
+
+    Behavioral check: intercept subprocess.Popen at the `_open_mcp` spawn
+    seam and assert the env it receives strips secrets and applies the
+    telemetry opt-out (no source-text inspection — that breaks on any
+    refactor with identical runtime behavior)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
     from tools.computer_use import doctor
-    import inspect
 
     env = doctor._sanitized_cua_env()
     assert "ANTHROPIC_API_KEY" not in env
@@ -121,5 +124,20 @@ def test_doctor_sanitized_env_helper(monkeypatch):
     assert env.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"
 
     # The Popen spawn site must actually use the sanitized helper.
-    src = inspect.getsource(doctor._drive_health_report)
-    assert "_sanitized_cua_env()" in src
+    captured = {}
+
+    class _FakeProc:
+        stdin = None
+        stdout = None
+        stderr = None
+
+    def _fake_popen(*args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    monkeypatch.setattr(doctor.subprocess, "Popen", _fake_popen)
+    doctor._open_mcp("cua-driver")
+    spawn_env = captured["env"]
+    assert spawn_env is not None, "_open_mcp must pass an explicit env"
+    assert "ANTHROPIC_API_KEY" not in spawn_env
+    assert spawn_env.get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"

@@ -4,10 +4,11 @@ import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
   composerPlainText,
   deleteSelectionInEditor,
-  insertPlainTextAtCaret,
+  insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
   refChipElement,
   renderComposerContents,
+  replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from './rich-editor'
 
@@ -70,16 +71,40 @@ describe('insertInlineRefsIntoEditor', () => {
     expect(editor.querySelector(':scope > div')).toBeNull()
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts` ')
   })
+
+  it('separates a chip from the word the caret sits after', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(document.createTextNode('review'))
+    document.body.append(editor)
+    caretIn(editor)
+
+    expect(insertInlineRefsIntoEditor(editor, ['@file:`src/a.ts`'])).toBe('review @file:`src/a.ts` ')
+
+    editor.remove()
+  })
+
+  it('does not double the space when one is already there', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(document.createTextNode('review '))
+    document.body.append(editor)
+    caretIn(editor)
+
+    expect(insertInlineRefsIntoEditor(editor, ['@file:`src/a.ts`'])).toBe('review @file:`src/a.ts` ')
+
+    editor.remove()
+  })
 })
 
-describe('insertPlainTextAtCaret', () => {
+describe('insertComposerContentsAtCaret', () => {
   it('inserts multiline text as text nodes + br', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT
     document.body.append(editor)
     caretIn(editor)
 
-    insertPlainTextAtCaret(editor, 'one\ntwo\nthree')
+    insertComposerContentsAtCaret(editor, 'one\ntwo\nthree')
 
     expect(editor.querySelectorAll('br').length).toBe(2)
     expect(composerPlainText(editor)).toBe('one\ntwo\nthree')
@@ -102,9 +127,73 @@ describe('insertPlainTextAtCaret', () => {
     selection.removeAllRanges()
     selection.addRange(range)
 
-    insertPlainTextAtCaret(editor, 'cd')
+    insertComposerContentsAtCaret(editor, 'cd')
 
     expect(composerPlainText(editor)).toBe('abcdef')
+
+    editor.remove()
+  })
+
+  it('lands directives in the text as chips', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, 'read @url:`https://example.dev/a` now')
+
+    expect(editor.querySelectorAll('[data-ref-kind="url"]').length).toBe(1)
+    expect(composerPlainText(editor)).toBe('read @url:`https://example.dev/a` now')
+
+    editor.remove()
+  })
+})
+
+describe('replaceBeforeCaret', () => {
+  it('swaps the token before the caret and leaves the caret after the insert', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = 'see foo'
+    document.body.append(editor)
+
+    const text = editor.firstChild!
+    const selection = window.getSelection()!
+    const range = document.createRange()
+
+    range.setStart(text, 7)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    const fragment = document.createDocumentFragment()
+    fragment.append(refChipElement('file', '`src/foo.ts`'), document.createTextNode(' '))
+
+    expect(replaceBeforeCaret(editor, 3, fragment)).toBe(true)
+    expect(composerPlainText(editor)).toBe('see @file:`src/foo.ts` ')
+    expect(selection.getRangeAt(0).collapsed).toBe(true)
+
+    editor.remove()
+  })
+
+  it('leaves the editor alone when the caret has no room for the token', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = 'hi'
+    document.body.append(editor)
+
+    const selection = window.getSelection()!
+    const range = document.createRange()
+
+    range.setStart(editor.firstChild!, 2)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    const fragment = document.createDocumentFragment()
+    fragment.append(document.createTextNode('x'))
+
+    expect(replaceBeforeCaret(editor, 20, fragment)).toBe(false)
+    expect(composerPlainText(editor)).toBe('hi')
 
     editor.remove()
   })

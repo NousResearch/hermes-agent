@@ -1297,6 +1297,117 @@ class TestSessionIsolation:
 
 
 # ===================================================================
+# Silence-marker suppression
+# ===================================================================
+
+
+class TestWebhookSilenceSuppression:
+    """A webhook route that answers ``[SILENT]`` must deliver nothing.
+
+    Webhook routes are autonomous lanes with nobody waiting on the other end,
+    so a subscription prompt tells the agent to reply ``[SILENT]`` on a tick
+    that produced no story.  Models routinely append a sentence saying WHY they
+    stayed quiet, and the live gateway's exact-whole-response rule then treats
+    that as a real report — which is how a Helper support lane ended up
+    repeatedly messaging its owner to say it had nothing to say.
+    """
+
+    def _adapter_with_mock_target(self):
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+        adapter.gateway_runner = mock_runner
+
+        chat_id = "webhook:helper-events:d-1"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "-100123"},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+        return adapter, mock_target, chat_id
+
+    @pytest.mark.asyncio
+    async def test_bare_marker_is_not_delivered(self):
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(chat_id, "[SILENT]")
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marker_followed_by_prose_is_not_delivered(self):
+        """The regression this suppression exists for.
+
+        The agent explains its own silence on the lines after the marker.  The
+        strict interactive rule reads that as substantive prose and delivers the
+        whole thing, marker included.
+        """
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "[SILENT]\n\nThe new inbound was the same email quoted back a second "
+            "time, on a ticket we already answered. Nothing new to reply to, so I "
+            "closed it; it reopens by itself if they write back.",
+        )
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marker_on_the_last_line_is_not_delivered(self):
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(chat_id, "Nothing to report this tick.\n\n[SILENT]")
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_report_is_still_delivered(self):
+        """Suppression must not swallow an actual story."""
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "Refunded $240 to the buyer and replied; the seller had already agreed.",
+        )
+
+        assert result.success is True
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_report_mentioning_the_marker_mid_sentence_is_delivered(self):
+        """A report that merely quotes a marker is not a silence request."""
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "I considered staying [SILENT] but this one moved money, so: refunded "
+            "$240 and replied to the buyer.",
+        )
+
+        assert result.success is True
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_suppression_precedes_log_delivery(self):
+        """A `log` route also suppresses, so the two lanes behave the same."""
+        adapter = _make_adapter()
+        chat_id = "webhook:helper-events:d-log"
+        adapter._delivery_info[chat_id] = {"deliver": "log", "deliver_extra": {}}
+        adapter._delivery_info_created[chat_id] = time.time()
+
+        result = await adapter.send(chat_id, "[SILENT]\n\nnothing happened")
+
+        assert result.success is True
+
+
+# ===================================================================
 # Delivery info cleanup
 # ===================================================================
 
@@ -1687,3 +1798,131 @@ class TestDualStackBind:
             await adapter.disconnect()
             blocker.close()
             await blocker.wait_closed()
+
+# Regression coverage for #72041: profile-bound webhook authentication
+class TestMultiplexProfileWebhookAuthentication:
+    @staticmethod
+    def _configure_profiles(adapter, tmp_path, monkeypatch):
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", tmp_path),
+                ("worker", tmp_path / "profiles" / "worker"),
+                ("other", tmp_path / "profiles" / "other"),
+            ],
+        )
+
+    @staticmethod
+    def _app(adapter):
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}",
+            adapter._handle_webhook,
+        )
+        return app
+
+    @staticmethod
+    def _headers(body: bytes, secret: str):
+        return {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": _github_signature(body, secret),
+            # Stop after successful authentication without dispatching an
+            # agent run; the route accepts only pull_request events.
+            "X-GitHub-Event": "push",
+        }
+
+    @pytest.mark.asyncio
+    async def test_route_secret_is_bound_to_named_profile(
+        self, tmp_path, monkeypatch
+    ):
+        route_secret = "worker-route-secret-abc123"
+        adapter = _make_adapter(
+            routes={
+                "gh": {
+                    "profile": "worker",
+                    "secret": route_secret,
+                    "events": ["pull_request"],
+                    "prompt": "PR: {action}",
+                }
+            },
+            host="127.0.0.1",
+        )
+        self._configure_profiles(adapter, tmp_path, monkeypatch)
+        body = b'{"action":"opened"}'
+        headers = self._headers(body, route_secret)
+
+        async with TestClient(TestServer(self._app(adapter))) as cli:
+            accepted = await cli.post(
+                "/p/worker/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert accepted.status == 200
+            assert (await accepted.json())["status"] == "ignored"
+
+            wrong_profile = await cli.post(
+                "/p/other/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert wrong_profile.status == 404
+
+            default_profile = await cli.post(
+                "/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert default_profile.status == 404
+
+    @pytest.mark.asyncio
+    async def test_unbound_route_remains_default_profile_only(
+        self, tmp_path, monkeypatch
+    ):
+        route_secret = "default-route-secret-abc123"
+        adapter = _make_adapter(
+            routes={
+                "gh": {
+                    "secret": route_secret,
+                    "events": ["pull_request"],
+                    "prompt": "PR: {action}",
+                }
+            },
+            host="127.0.0.1",
+        )
+        self._configure_profiles(adapter, tmp_path, monkeypatch)
+        body = b'{"action":"opened"}'
+        headers = self._headers(body, route_secret)
+
+        async with TestClient(TestServer(self._app(adapter))) as cli:
+            accepted = await cli.post(
+                "/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert accepted.status == 200
+            assert (await accepted.json())["status"] == "ignored"
+
+            named_profile = await cli.post(
+                "/p/worker/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert named_profile.status == 404
+
+
+
+def test_route_profile_validation_fails_closed():
+    assert WebhookAdapter._route_allows_profile({}, None) is True
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "worker"}, "worker"
+    ) is True
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "worker"}, "other"
+    ) is False
+    for malformed in (None, "", "   ", 123, ["worker"]):
+        assert WebhookAdapter._route_allows_profile(
+            {"profile": malformed}, "worker"
+        ) is False

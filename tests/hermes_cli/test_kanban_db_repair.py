@@ -356,6 +356,7 @@ def test_wal_checkpoint_failure_never_fails_the_tick(tmp_path, monkeypatch):
         conn.close()
 
 
+@pytest.mark.requires_wal
 def test_wal_checkpoint_truncates_wal_file(tmp_path, monkeypatch):
     """End-to-end: the checkpoint actually truncates the -wal sidecar."""
     db_path = tmp_path / "kanban.db"

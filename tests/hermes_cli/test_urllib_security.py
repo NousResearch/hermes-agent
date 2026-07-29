@@ -554,7 +554,7 @@ def test_lmstudio_load_post_drops_bearer_on_redirect(monkeypatch):
         source.shutdown()
         sink.shutdown()
 
-    assert loaded == 4096
+    assert loaded is None
     method, headers = _RecordingHandler.requests[-1]
     assert method == "GET"
     assert "authorization" not in headers

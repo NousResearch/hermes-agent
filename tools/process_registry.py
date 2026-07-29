@@ -600,7 +600,7 @@ class ProcessRegistry:
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                     timeout=10,
                     creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL,
@@ -705,6 +705,15 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
+        # Guard against the `A && B &` subshell-wait trap (issue #68915).
+        # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
+        # the stdout pipe open forever when B is a long-running server.
+        # The rewriter wraps it to ``A && { B & }`` so no subshell fork.
+        # Lazy import avoids circular dependency (terminal_tool imports this).
+        from tools.terminal_tool import _rewrite_compound_background as _rewrite_bg
+
+        safe_command = _rewrite_bg(command)
+
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -725,7 +734,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    [user_shell, "-lic", f"set +m; {safe_command}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -769,7 +778,7 @@ class ProcessRegistry:
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lic", f"set +m; {safe_command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -934,36 +943,96 @@ class ProcessRegistry:
         block until EOF (or a large buffer fills), which makes "live" output land
         in one burst at process exit. ``buffer.read1(4096)`` yields incremental
         chunks as bytes become available, then we decode to text.
+
+        Orphaned-pipe guard (issue #68915): when the user's command backgrounds
+        a long-lived process (``node server.js &``, ``sleep 300 &``), that
+        grandchild inherits the write end of our stdout pipe via ``fork()``.
+        The direct ``bash`` child exits promptly, but the pipe never reaches
+        EOF while the grandchild lives — so a blocking read would park this
+        thread forever, ``session.exited`` would never flip, and
+        ``notify_on_complete`` would never fire (``_reconcile_local_exit``
+        only runs lazily from poll()/wait(), which an autonomous notification
+        can't rely on). On POSIX we therefore ``select()`` with a short poll
+        interval and stop draining shortly after the direct child exits, even
+        if the pipe hasn't EOF'd — mirroring the foreground fix in
+        ``tools/environments/base.py::_wait_for_process`` (#8340). Windows
+        pipes don't support select(); the blocking path is kept there and the
+        lazy reconcile in poll()/wait() remains the safety net.
         """
         first_chunk = True
+
+        def _append_chunk(chunk: str):
+            nonlocal first_chunk
+            if first_chunk:
+                chunk = self._clean_shell_noise(chunk)
+                first_chunk = False
+            with session._lock:
+                session.output_buffer += chunk
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+            self._check_watch_patterns(session, chunk)
+            self._emit_output(session, chunk)
+
         try:
-            stdout = session.process.stdout
-            if stdout is None:
+            proc = session.process
+            if proc is None or proc.stdout is None:
                 return
+            stdout = proc.stdout
 
             raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
-            while True:
-                if raw_read is not None:
-                    raw = raw_read(4096)
-                    if not raw:
-                        break
-                    chunk = raw.decode("utf-8", errors="replace")
-                else:
-                    # Fallback for mocked/alternate streams without a buffered raw
-                    # interface. This may be less "live", but keeps compatibility.
-                    chunk = stdout.read(4096)
-                    if not chunk:
-                        break
 
-                if first_chunk:
-                    chunk = self._clean_shell_noise(chunk)
-                    first_chunk = False
-                with session._lock:
-                    session.output_buffer += chunk
-                    if len(session.output_buffer) > session.max_output_chars:
-                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                self._check_watch_patterns(session, chunk)
-                self._emit_output(session, chunk)
+            # Resolve a real OS fd for the select() path. Mocked streams
+            # (unit tests, adapters) may lack fileno() — fall back to the
+            # historical blocking loop for those.
+            fd = None
+            if raw_read is not None and not _IS_WINDOWS:
+                fileno = getattr(stdout, "fileno", None)
+                try:
+                    candidate = fileno() if callable(fileno) else None
+                except Exception:
+                    candidate = None
+                if isinstance(candidate, int) and candidate >= 0:
+                    fd = candidate
+
+            if fd is not None:
+                import select as _select
+
+                idle_after_exit = 0
+                while True:
+                    try:
+                        ready, _, _ = _select.select([fd], [], [], 0.2)
+                    except (ValueError, OSError):
+                        break  # fd already closed
+                    if ready:
+                        raw = raw_read(4096)
+                        if not raw:
+                            break  # true EOF — all writers closed
+                        _append_chunk(raw.decode("utf-8", errors="replace"))
+                        idle_after_exit = 0
+                    elif proc.poll() is not None:
+                        # Direct child is gone and the pipe was idle for
+                        # ~200ms. Give it a few more cycles to catch any
+                        # buffered tail, then stop — otherwise we would wait
+                        # forever on a pipe held open by an orphaned
+                        # grandchild (issue #68915).
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+            else:
+                while True:
+                    if raw_read is not None:
+                        raw = raw_read(4096)
+                        if not raw:
+                            break
+                        chunk = raw.decode("utf-8", errors="replace")
+                    else:
+                        # Fallback for mocked/alternate streams without a buffered raw
+                        # interface. This may be less "live", but keeps compatibility.
+                        chunk = stdout.read(4096)
+                        if not chunk:
+                            break
+
+                    _append_chunk(chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:

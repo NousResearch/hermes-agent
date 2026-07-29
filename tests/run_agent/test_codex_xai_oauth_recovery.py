@@ -706,7 +706,7 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     refresh_calls = {"n": 0}
 
     class _FakePool:
-        def try_refresh_current(self):
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             return MagicMock(id="should_not_be_called")
 
@@ -756,7 +756,7 @@ def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
     class _FakePool:
         provider = "xai-oauth"
 
-        def try_refresh_current(self):
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             return MagicMock(id="should_not_be_called")
 
@@ -816,7 +816,7 @@ def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
     refresh_calls = {"n": 0}
 
     class _FakePool:
-        def try_refresh_current(self):
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             return MagicMock(id="should_not_be_called")
 
@@ -857,7 +857,7 @@ def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
     refresh_calls = {"n": 0}
 
     class _FakePool:
-        def try_refresh_current(self):
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             # Return a fake refreshed entry — semantically "refresh worked"
             entry = MagicMock()
@@ -1038,7 +1038,7 @@ def test_recover_with_credential_pool_refreshes_on_xai_bad_credentials_403():
     refresh_calls = {"n": 0}
 
     class _FakePool:
-        def try_refresh_current(self):
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             entry = MagicMock()
             entry.id = "entry_refreshed_after_stale"
@@ -1094,7 +1094,7 @@ def test_recover_with_credential_pool_still_blocks_real_entitlement():
     refresh_calls = {"n": 0}
 
     class _FakePool:
-        def try_refresh_current(self):
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             return MagicMock(id="should_not_be_called")
 

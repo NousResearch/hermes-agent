@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import threading
 import time
 import zipfile
 from types import SimpleNamespace
@@ -82,6 +83,39 @@ def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
     )
 
 
+def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    calls = []
+    backing_config = {
+        "memory": {
+            "openviking": {
+                "endpoint": "http://127.0.0.1:19472",
+                "api_key": "test-key",
+            }
+        }
+    }
+
+    def load_config_readonly():
+        calls.append("readonly")
+        return backing_config
+
+    def load_config():
+        raise AssertionError("OpenViking config loader should use readonly config")
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", load_config_readonly)
+    monkeypatch.setattr(config_mod, "load_config", load_config)
+
+    config = openviking_module._load_hermes_openviking_config()
+
+    assert calls == ["readonly"]
+    assert config == {
+        "endpoint": "http://127.0.0.1:19472",
+        "api_key": "test-key",
+    }
+    assert config is not backing_config["memory"]["openviking"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_openviking_env_writer_restricts_file_permissions(tmp_path):
     env_path = tmp_path / ".env"
@@ -89,6 +123,51 @@ def test_openviking_env_writer_restricts_file_permissions(tmp_path):
     openviking_module._write_env_vars(env_path, {"OPENVIKING_API_KEY": "secret"})
 
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+
+def test_openviking_env_writer_strips_embedded_newlines_in_values(tmp_path):
+    # A secret pasted with an embedded CR/LF must not spill onto a new line,
+    # or the round-trip re-parses the tail as a separate KEY=VALUE entry and
+    # injects an arbitrary variable into the persisted credentials file.
+    env_path = tmp_path / ".env"
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "good\nINJECTED_KEY=attacker"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=goodINJECTED_KEY=attacker"]
+    # No injected line means a follow-up read sees no rogue key.
+    parsed = dict(line.split("=", 1) for line in lines if "=" in line)
+    assert set(parsed) == {"OPENVIKING_API_KEY"}
+    assert "INJECTED_KEY" not in parsed
+
+
+def test_openviking_env_writer_strips_splitline_separators_and_nul(tmp_path):
+    env_path = tmp_path / ".env"
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "good\u2028INJECTED_KEY=attacker\x00tail"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=goodINJECTED_KEY=attackertail"]
+
+
+def test_openviking_env_writer_strips_newlines_when_updating_existing_key(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENVIKING_API_KEY=old\n", encoding="utf-8")
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "new\r\nROGUE=1"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=newROGUE=1"]
+    assert all(not line.startswith("ROGUE=") for line in lines)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
@@ -875,6 +954,40 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
     assert any("starting in the background" in message for message in statuses)
 
 
+def test_initialize_emits_starting_status_before_runtime_waiter_can_attach(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1934")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://127.0.0.1:1934"
+
+        def health(self):
+            return False
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda endpoint: (True, "started"),
+    )
+
+    provider = OpenVikingMemoryProvider()
+    statuses = []
+
+    def start_waiter(*, endpoint, status_callback=None, warning_callback=None):
+        assert endpoint == "http://127.0.0.1:1934"
+        assert callable(status_callback)
+        status_callback("Local OpenViking server is reachable; OpenViking memory is active.")
+
+    monkeypatch.setattr(provider, "_start_runtime_openviking_waiter", start_waiter, raising=False)
+
+    provider.initialize("session-1", platform="cli", status_callback=statuses.append)
+
+    assert "starting in the background" in statuses[0]
+    assert "memory is active" in statuses[1]
+
+
 def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeypatch):
     _clear_openviking_env(monkeypatch)
     wait_calls = []
@@ -913,11 +1026,56 @@ def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeyp
     assert provider._client is not None
     assert provider._client.endpoint == "http://127.0.0.1:1934"
     assert provider._client.api_key == "secret"
-    assert wait_calls == [(
-        "http://127.0.0.1:1934",
-        {"timeout_seconds": openviking_module._LOCAL_OPENVIKING_AUTOSTART_TIMEOUT},
-    )]
+    assert len(wait_calls) == 1
+    endpoint, wait_kwargs = wait_calls[0]
+    assert endpoint == "http://127.0.0.1:1934"
+    assert wait_kwargs["timeout_seconds"] == openviking_module._LOCAL_OPENVIKING_AUTOSTART_TIMEOUT
+    assert callable(wait_kwargs["should_stop"])
+    assert wait_kwargs["should_stop"]() is False
+    provider._shutting_down = True
+    assert wait_kwargs["should_stop"]() is True
     assert any("OpenViking memory is active" in message for message in statuses)
+
+
+def test_runtime_waiter_does_not_replace_client_after_endpoint_changes(monkeypatch):
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+
+    def wait_for_health(endpoint, *, timeout_seconds, should_stop=None):
+        assert endpoint == "http://127.0.0.1:1934"
+        wait_entered.set()
+        assert release_wait.wait(2.0)
+        return True
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.endpoint = endpoint
+
+        def health(self):
+            return True
+
+    monkeypatch.setattr(openviking_module, "_wait_for_openviking_health", wait_for_health)
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1934"
+    provider._api_key = ""
+    provider._account = ""
+    provider._user = ""
+    provider._agent = "hermes"
+
+    waiter = threading.Thread(target=provider._finish_runtime_openviking_start)
+    waiter.start()
+    assert wait_entered.wait(2.0)
+
+    replacement_client = FakeVikingClient("https://new.example")
+    provider._endpoint = replacement_client.endpoint
+    provider._client = replacement_client
+    release_wait.set()
+    waiter.join(timeout=2.0)
+
+    assert not waiter.is_alive()
+    assert provider._client is replacement_client
 
 
 def test_runtime_openviking_waiter_warns_when_background_start_times_out(monkeypatch):
@@ -1891,6 +2049,51 @@ def test_viking_client_retries_with_tenant_headers_for_trusted_mode(monkeypatch)
     assert "X-OpenViking-User" not in captured_headers[0]
     assert captured_headers[1]["X-OpenViking-Account"] == "acct"
     assert captured_headers[1]["X-OpenViking-User"] == "usr"
+
+
+def test_viking_client_does_not_retry_root_tenant_error_as_trusted_mode(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="usr",
+        agent="hermes",
+    )
+    captured_headers = []
+
+    def capture_post(url, **kwargs):
+        captured_headers.append(kwargs.get("headers") or {})
+        if len(captured_headers) == 1:
+            return SimpleNamespace(
+                status_code=403,
+                text="",
+                json=lambda: {
+                    "error": {
+                        "code": "PERMISSION_DENIED",
+                        "message": (
+                            "ROOT API keys cannot access tenant-scoped data APIs in api_key mode. "
+                            "Use a user/admin API key for data access, or trusted mode for upstream "
+                            "identity assertion."
+                        ),
+                    },
+                },
+                raise_for_status=lambda: None,
+            )
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"total": 0}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_post)
+
+    with pytest.raises(openviking_module._OpenVikingHTTPError, match="ROOT API keys cannot access"):
+        client.post("/api/v1/search/search", {"query": "status"})
+
+    assert len(captured_headers) == 1
+    assert "X-OpenViking-Account" not in captured_headers[0]
+    assert "X-OpenViking-User" not in captured_headers[0]
 
 
 def test_viking_client_health_sends_auth_headers(monkeypatch):

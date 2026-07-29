@@ -265,7 +265,10 @@ def test_block_and_respond(capture):
     assert result[0] == "my_answer"
 
 
-@pytest.mark.parametrize("event", ["secret.request", "sudo.request"])
+@pytest.mark.parametrize(
+    "event",
+    ["secret.request", "sudo.request", "clarify.request", "terminal.read.request"],
+)
 def test_sensitive_prompt_timeout_emits_expiry(capture, event):
     server, buf = capture
 
@@ -281,9 +284,17 @@ def test_sensitive_prompt_timeout_emits_expiry(capture, event):
 
 @pytest.mark.parametrize(
     ("method", "value_key"),
-    [("secret.respond", "value"), ("sudo.respond", "password")],
+    [
+        ("secret.respond", "value"),
+        ("sudo.respond", "password"),
+        ("clarify.respond", "answer"),
+        ("terminal.read.respond", "text"),
+    ],
 )
-def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key):
+def test_late_prompt_response_is_idempotent(server, method, value_key):
+    """All four blocking bridges tolerate a late reply after their request has
+    expired — the `*.respond` returns a graceful `{"status": "expired"}` instead
+    of the raw 4009 protocol error a client would otherwise surface verbatim."""
     response = server.handle_request(
         {
             "id": "late-response",
@@ -293,18 +304,6 @@ def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key)
     )
 
     assert response["result"] == {"status": "expired"}
-
-
-def test_late_clarify_response_remains_protocol_error(server):
-    response = server.handle_request(
-        {
-            "id": "late-clarify",
-            "method": "clarify.respond",
-            "params": {"request_id": "expired-request", "answer": ""},
-        }
-    )
-
-    assert response["error"]["code"] == 4009
 
 
 def test_clear_pending(server):
@@ -1290,6 +1289,75 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["model_config"] == {"_branched_from": parent_key}
 
 
+def test_session_branch_with_count_truncates_history(server, monkeypatch):
+    """Branch-from-a-specific-message support (issue: Branch in new chat
+    loses the question): the desktop client passes ``count`` to keep only
+    the first N messages of the parent's live history - everything after
+    the clicked message must NOT be copied into the branch.
+    """
+    append_calls = []
+
+    class _DB:
+        def get_session_title(self, _key):
+            return "parent-title"
+
+        def get_next_title_in_lineage(self, base):
+            return f"{base} 2"
+
+        def create_session(self, new_key, **kwargs):
+            return new_key
+
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+            return None
+
+        def set_session_title(self, _key, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
+    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
+            model="test/model", session_id=session_id or key
+        ),
+    )
+    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
+
+    parent_sid = "parent01"
+    parent_key = "20260101_000000_parent"
+    server._sessions[parent_sid] = {
+        "session_key": parent_key,
+        "history": [
+            {"role": "user", "content": "question one"},
+            {"role": "assistant", "content": "answer one"},
+            {"role": "user", "content": "question two"},
+            {"role": "assistant", "content": "answer two"},
+        ],
+        "history_lock": threading.Lock(),
+        "cols": 80,
+    }
+
+    resp = server.handle_request(
+        {
+            "id": "b1",
+            "method": "session.branch",
+            "params": {"session_id": parent_sid, "count": 2},
+        }
+    )
+
+    assert "error" not in resp, resp
+    assert len(append_calls) == 2
+    assert append_calls[0]["content"] == "question one"
+    assert append_calls[1]["content"] == "answer one"
+    assert resp["result"]["message_count"] == 2
+
+
 def test_session_branch_forwards_original_timestamps(server, monkeypatch):
     """TUI /branch must copy the parent's messages WITH their original
     timestamps — append_message otherwise stamps time.time() at INSERT and
@@ -1524,6 +1592,8 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
         "type": "send",
         "message": fake_msg,
         "notice": "⚡ Loading bundle: analysis-pack (2 skills)",
+        # UIs render this invocation; `message` stays model-facing scaffolding.
+        "display": "/analysis-pack",
     }
     assert worker.calls == []
 
@@ -1838,6 +1908,45 @@ def test_command_dispatch_retry_finds_last_user_message(server):
     assert server._sessions[sid]["history_version"] == 1
 
 
+def test_command_dispatch_retry_skips_display_kind_timeline_rows(server):
+    """/retry must resend the last real user turn, not a display_kind marker."""
+    sid = "test-session-retry-timeline"
+    history = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": "second answer"},
+        {
+            "role": "user",
+            "content": "background agent work finished",
+            "display_kind": "async_delegation_complete",
+        },
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r4b",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "second question"
+    # Truncated through the real last user turn (and the trailing marker).
+    assert [m["content"] for m in server._sessions[sid]["history"]] == [
+        "first question",
+        "first answer",
+    ]
+
+
 def test_command_dispatch_retry_empty_history(server):
     """command.dispatch /retry with empty history returns error."""
     sid = "test-session"
@@ -1950,6 +2059,8 @@ def test_command_dispatch_returns_custom_bundle_payload(server):
         "type": "send",
         "message": fake_msg,
         "notice": "⚡ Loading bundle: review-suite (3 skills)",
+        # UIs render this invocation; `message` stays model-facing scaffolding.
+        "display": "/review-suite",
     }
     build_bundle.assert_called_once_with(
         "/review-suite",

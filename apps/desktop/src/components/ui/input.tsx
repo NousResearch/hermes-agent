@@ -59,9 +59,13 @@ function Input({ className, containerClassName, prefix, suffix, size, type, ...p
       )}
       data-slot="input-group"
     >
-      {prefix != null && <span className="pointer-events-none shrink-0 select-none text-muted-foreground">{prefix}</span>}
+      {prefix != null && (
+        <span className="pointer-events-none shrink-0 select-none text-muted-foreground">{prefix}</span>
+      )}
       {field}
-      {suffix != null && <span className="pointer-events-none shrink-0 select-none text-muted-foreground">{suffix}</span>}
+      {suffix != null && (
+        <span className="pointer-events-none shrink-0 select-none text-muted-foreground">{suffix}</span>
+      )}
     </div>
   )
 }

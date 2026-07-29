@@ -15,9 +15,11 @@ import type {
   DesktopBootstrapState
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { ChevronDown, ChevronRight, iconSize } from '@/lib/icons'
+import { AlertCircle, ChevronDown, ChevronRight, Globe, iconSize, Loader2, Monitor } from '@/lib/icons'
 import { capitalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+
+import { FirstRunRemoteForm } from './first-run-remote-form'
 
 /**
  * DesktopInstallOverlay
@@ -155,6 +157,10 @@ function StageRow({ descriptor, result, now }: StageRowProps) {
   )
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err || 'Unknown error')
+}
+
 const EMPTY_STATE: DesktopBootstrapState = {
   active: false,
   manifest: null,
@@ -163,10 +169,32 @@ const EMPTY_STATE: DesktopBootstrapState = {
   log: [],
   startedAt: null,
   completedAt: null,
+  setupChoice: null,
   unsupportedPlatform: null
 }
 
 function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): DesktopBootstrapState {
+  if (ev.type === 'dismissed') {
+    return { ...EMPTY_STATE }
+  }
+
+  if (ev.type === 'setup-choice') {
+    return {
+      ...state,
+      active: false,
+      manifest: null,
+      stages: {},
+      error: null,
+      setupChoice: ev.active
+        ? {
+            platform: ev.platform || state.setupChoice?.platform || 'unknown',
+            activeRoot: ev.activeRoot || state.setupChoice?.activeRoot || ''
+          }
+        : null,
+      unsupportedPlatform: null
+    }
+  }
+
   if (ev.type === 'manifest') {
     const stages: Record<string, DesktopBootstrapStageResult> = {}
 
@@ -180,6 +208,7 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
       manifest: { type: 'manifest', stages: ev.stages, protocolVersion: ev.protocolVersion },
       stages,
       error: null,
+      setupChoice: null,
       startedAt: state.startedAt || Date.now()
     }
   }
@@ -219,13 +248,14 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   }
 
   if (ev.type === 'failed') {
-    return { ...state, active: false, error: ev.error || 'unknown error' }
+    return { ...state, active: false, error: ev.error || 'unknown error', setupChoice: null }
   }
 
   if (ev.type === 'unsupported-platform') {
     return {
       ...state,
       active: false,
+      setupChoice: null,
       unsupportedPlatform: {
         platform: ev.platform,
         activeRoot: ev.activeRoot,
@@ -246,6 +276,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const [logOpen, setLogOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [remoteOpen, setRemoteOpen] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -312,6 +343,24 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     }
   }, [state.error])
 
+  // The choice remains mounted while main hands off to local bootstrap. Once
+  // a manifest/failure takes ownership (or a later repair presents a fresh
+  // choice), this transient button state must not leak across phases — so it
+  // records the root it was produced under and is read back only under that
+  // same root. Deriving it beats clearing it in an effect: the choice paints
+  // as soon as the first snapshot commits, and a click landing before such an
+  // effect flushed would have its error wiped before it ever rendered.
+  const [localStart, setLocalStart] = useState<{
+    root: string | null
+    starting: boolean
+    error: string | null
+  }>({ root: null, starting: false, error: null })
+
+  const activeRoot = state.setupChoice?.activeRoot ?? null
+  const forActiveRoot = localStart.root === activeRoot
+  const localStarting = forActiveRoot && localStart.starting
+  const localStartError = forActiveRoot ? localStart.error : null
+
   // Mount logic: show whenever a bootstrap is in flight, completed-with-error,
   // or actively running with a manifest. Hide entirely after a successful
   // completion so the rest of the UI can take over.
@@ -332,11 +381,92 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       return true
     }
 
+    if (state.setupChoice) {
+      return true
+    }
+
     return false
-  }, [enabled, state.active, state.error, state.unsupportedPlatform])
+  }, [enabled, state.active, state.error, state.setupChoice, state.unsupportedPlatform])
 
   if (!shouldShow) {
     return null
+  }
+
+  if (remoteOpen) {
+    return <FirstRunRemoteForm onBack={() => setRemoteOpen(false)} />
+  }
+
+  if (state.setupChoice) {
+    return (
+      <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 p-4 backdrop-blur-md">
+        <div className="w-full max-w-2xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
+          <div className="flex items-start gap-4">
+            <BrandMark className="size-11 shrink-0" />
+            <div className="min-w-0">
+              <h2 className="text-xl font-semibold tracking-tight">{copy.setupChoiceTitle}</h2>
+              <p className="mt-1.5 text-sm text-muted-foreground">{copy.setupChoiceDesc}</p>
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            <button
+              className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover)"
+              onClick={() => setRemoteOpen(true)}
+              type="button"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Globe className="size-4 text-muted-foreground" />
+                <span>{copy.connectExistingTitle}</span>
+              </div>
+              <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.connectExistingDesc}</p>
+            </button>
+
+            <button
+              className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-wait disabled:opacity-60"
+              disabled={localStarting}
+              onClick={async () => {
+                setLocalStart({ root: activeRoot, starting: true, error: null })
+
+                try {
+                  const desktop = window.hermesDesktop
+
+                  if (!desktop || typeof desktop.continueBootstrapLocal !== 'function') {
+                    throw new Error(copy.localStartUnavailable)
+                  }
+
+                  await desktop.continueBootstrapLocal()
+                } catch (err) {
+                  setLocalStart({ root: activeRoot, starting: false, error: errorMessage(err) })
+                }
+              }}
+              type="button"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                {localStarting ? (
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                ) : (
+                  <Monitor className="size-4 text-muted-foreground" />
+                )}
+                <span>{copy.installLocalTitle}</span>
+              </div>
+              <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.installLocalDesc}</p>
+            </button>
+          </div>
+
+          {localStartError ? (
+            <div className="mt-4 flex items-start gap-2 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              <span>{localStartError}</span>
+            </div>
+          ) : null}
+
+          <div className="mt-6 text-xs text-muted-foreground">
+            {copy.installTo}{' '}
+            <code className="font-mono text-(--ui-text-secondary)">{state.setupChoice.activeRoot}</code>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   // Unsupported-platform branch: macOS/Linux packaged builds hit this when
@@ -348,7 +478,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     const platformLabel = ups.platform === 'darwin' ? 'macOS' : ups.platform === 'linux' ? 'Linux' : ups.platform
 
     return (
-      <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md">
+      <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 backdrop-blur-md">
         <div className="w-full max-w-xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
           <h2 className="text-xl font-semibold tracking-tight">{copy.oneTimeTitle}</h2>
           <p className="mt-2 text-sm text-muted-foreground">{copy.unsupportedDesc(platformLabel)}</p>
@@ -384,9 +514,15 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <span className="text-xs text-muted-foreground">
               {copy.installTo} <code className="font-mono text-(--ui-text-secondary)">{ups.activeRoot}</code>
             </span>
-            <Button onClick={() => window.location.reload()} size="sm" variant="default">
-              {copy.retryAfterRun}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button onClick={() => setRemoteOpen(true)} size="sm" variant="secondary">
+                <Globe className="size-4" />
+                {copy.connectExistingShort}
+              </Button>
+              <Button onClick={() => window.location.reload()} size="sm" variant="default">
+                {copy.retryAfterRun}
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -411,7 +547,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const currentElapsed = typeof currentStartedAt === 'number' ? formatElapsed(now - currentStartedAt) : ''
 
   return (
-    <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md p-4">
+    <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 backdrop-blur-md p-4">
       <div className="flex w-full max-w-2xl max-h-[90vh] flex-col rounded-xl border border-(--stroke-nous) bg-card shadow-nous">
         {/* Header -- always visible, never scrolls */}
         <div className="flex flex-shrink-0 items-start gap-4 p-8 pb-4">

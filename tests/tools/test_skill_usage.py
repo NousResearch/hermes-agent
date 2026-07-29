@@ -786,7 +786,7 @@ def test_end_to_end_telemetry_tracked_but_lifecycle_refused(skills_home):
 
 def test_usage_report_covers_all_provenance(skills_home):
     """usage_report() surfaces every skill with provenance, unlike the
-    curator-scoped agent_created_report()."""
+    curator-scoped curated_report()."""
     from tools.skill_usage import (
         bump_use, usage_report, mark_agent_created,
     )
@@ -813,3 +813,181 @@ def test_usage_report_covers_all_provenance(skills_home):
     for n in rows:
         assert rows[n]["use_count"] == 1
         assert rows[n]["_persisted"] is True
+
+
+# ---------------------------------------------------------------------------
+# Unmanaged enumeration + adoption
+#
+# A skill only becomes curator-managed when ``created_by: agent`` lands on its
+# usage record, and that only happens for background-review creations. Records
+# written before the marker existed carry no key at all, and every foreground
+# `skill_manage(create)` leaves it unset — both are curation-eligible yet
+# invisible to every automatic transition. These tests pin the contract that
+# the blind spot is enumerable and that adoption is an explicit declaration:
+# never inferred from telemetry, never silently reached by the curator.
+# ---------------------------------------------------------------------------
+
+def _seed_usage(skills_dir: Path, records: dict) -> None:
+    (skills_dir / ".usage.json").write_text(
+        json.dumps(records, indent=1), encoding="utf-8"
+    )
+
+
+def test_unmanaged_lists_eligible_skills_without_provenance(skills_home):
+    from tools.skill_usage import list_unmanaged_skill_names
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "legacy")       # record with NO created_by key
+    _write_skill(skills_dir, "foreground")   # created_by present but unset
+    _write_skill(skills_dir, "managed")      # real provenance
+    _seed_usage(skills_dir, {
+        "legacy": {"use_count": 3, "patch_count": 40},
+        "foreground": {"created_by": None, "use_count": 1},
+        "managed": {"created_by": "agent"},
+    })
+
+    names = list_unmanaged_skill_names()
+    assert "legacy" in names
+    assert "foreground" in names
+    assert "managed" not in names
+
+
+def test_unmanaged_excludes_externally_owned_skills(skills_home):
+    from tools.skill_usage import list_unmanaged_skill_names
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "bundled-one")
+    _write_skill(skills_dir, "hub-one")
+    _write_skill(skills_dir, "mine")
+    (skills_dir / ".bundled_manifest").write_text("bundled-one:abc\n", encoding="utf-8")
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"hub-one": {}}}), encoding="utf-8",
+    )
+
+    names = list_unmanaged_skill_names()
+    # Bundled and hub skills have an owner other than the user; adoption is not
+    # the mechanism that governs them.
+    assert "bundled-one" not in names
+    assert "hub-one" not in names
+    assert "mine" in names
+
+
+def test_unmanaged_report_distinguishes_legacy_from_foreground(skills_home):
+    from tools.skill_usage import unmanaged_report
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "legacy")
+    _write_skill(skills_dir, "foreground")
+    _seed_usage(skills_dir, {
+        "legacy": {"use_count": 1},
+        "foreground": {"created_by": None},
+    })
+
+    rows = {r["name"]: r for r in unmanaged_report()}
+    # No created_by key at all => predates the mechanism, authorship unknowable.
+    assert rows["legacy"]["has_provenance_key"] is False
+    # Key present but unset => a foreground create under the current policy.
+    assert rows["foreground"]["has_provenance_key"] is True
+
+
+def test_adopt_marks_skill_curator_managed(skills_home):
+    from tools.skill_usage import adopt_skill, curated_report, list_unmanaged_skill_names
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "legacy")
+    _seed_usage(skills_dir, {"legacy": {"use_count": 2, "patch_count": 9}})
+
+    assert "legacy" in list_unmanaged_skill_names()
+    ok, _msg = adopt_skill("legacy")
+    assert ok is True
+    assert "legacy" in {r["name"] for r in curated_report()}
+    assert "legacy" not in list_unmanaged_skill_names()
+
+
+def test_adopt_preserves_the_inactivity_clock(skills_home):
+    """Adoption must not reset staleness — it hands over an EXISTING history.
+
+    If adopting re-anchored the clock to now, every legacy skill would buy a
+    fresh archive_after_days window, which is the opposite of what the user
+    wants when they hand over a library they already stopped using.
+    """
+    from tools.skill_usage import adopt_skill, get_record, latest_activity_at
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "legacy")
+    _seed_usage(skills_dir, {
+        "legacy": {
+            "use_count": 5,
+            "patch_count": 7,
+            "last_used_at": "2026-04-29T00:00:00+00:00",
+            "created_at": "2026-04-28T00:00:00+00:00",
+        }
+    })
+    before = latest_activity_at(get_record("legacy"))
+
+    ok, _msg = adopt_skill("legacy")
+    assert ok is True
+    rec = get_record("legacy")
+    assert latest_activity_at(rec) == before
+    assert rec["use_count"] == 5
+    assert rec["patch_count"] == 7
+
+
+def test_adopt_is_idempotent(skills_home):
+    from tools.skill_usage import adopt_skill
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "mine")
+    assert adopt_skill("mine")[0] is True
+    ok, msg = adopt_skill("mine")
+    assert ok is True
+    assert "already" in msg
+
+
+@pytest.mark.parametrize("kind", ["bundled", "hub", "protected", "missing"])
+def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, kind):
+    """Adoption writes a provenance claim, so it must refuse anything with an
+    external owner rather than stamping a lie onto the record.
+
+    ``prune_builtins`` is forced ON here — the shipped default — because that
+    is the configuration in which a bundled skill is otherwise curation-
+    eligible. With it off, ``mark_agent_created``'s own eligibility gate would
+    block the write and this test would pass without exercising adopt's guard
+    at all.
+    """
+    from tools import skill_usage
+    from tools.skill_usage import adopt_skill, load_usage
+
+    monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
+
+    skills_dir = skills_home / "skills"
+    if kind == "bundled":
+        name = "bundled-one"
+        _write_skill(skills_dir, name)
+        (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    elif kind == "hub":
+        name = "hub-one"
+        _write_skill(skills_dir, name)
+        hub = skills_dir / ".hub"
+        hub.mkdir()
+        (hub / "lock.json").write_text(
+            json.dumps({"installed": {name: {}}}), encoding="utf-8",
+        )
+    elif kind == "protected":
+        name = sorted(skill_usage.PROTECTED_BUILTIN_SKILLS)[0]
+        _write_skill(skills_dir, name)
+    else:
+        name = "no-such-skill"
+
+    ok, _msg = adopt_skill(name)
+    assert ok is False
+    assert load_usage().get(name, {}).get("created_by") != "agent"
+
+
+def test_adopt_rejects_empty_name(skills_home):
+    from tools.skill_usage import adopt_skill
+
+    assert adopt_skill("")[0] is False
+

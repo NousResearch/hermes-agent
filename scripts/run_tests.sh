@@ -41,13 +41,30 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Probe local venvs first; fall back to the Nix devShell's editable venv
 # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
+#
+# A candidate must have pytest INSTALLED, not merely exist. The release venv
+# at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
+# existence-only probe selected it in checkouts/worktrees without a local
+# .venv — every file then died with "No module named pytest" and the run
+# reported "0 tests passed" (which reads green at a glance even though the
+# exit code is 1). Skip such a venv and keep probing instead.
 VENV=""
+SKIPPED_VENVS=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
-    VENV="$candidate"
-    break
+    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
+      VENV="$candidate"
+      break
+    fi
+    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
   fi
 done
+
+if [ -n "$SKIPPED_VENVS" ]; then
+  for skipped in $SKIPPED_VENVS; do
+    echo "▶ skipping venv without pytest: $skipped" >&2
+  done
+fi
 
 if [ -n "$VENV" ]; then
   PYTHON="$VENV/bin/python"
@@ -59,8 +76,11 @@ elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
   PYTHON="$HERMES_PYTHON"
   echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
 else
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
+  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
   echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+  if [ -n "$SKIPPED_VENVS" ]; then
+    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
+  fi
   exit 1
 fi
 
@@ -99,6 +119,7 @@ exec env -i \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
+  ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

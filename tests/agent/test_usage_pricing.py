@@ -5,6 +5,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -23,6 +24,27 @@ def test_normalize_usage_anthropic_keeps_cache_buckets_separate():
     assert normalized.cache_read_tokens == 2000
     assert normalized.cache_write_tokens == 400
     assert normalized.prompt_tokens == 3400
+
+
+def test_normalize_usage_bedrock_converse_cache_point_round_trips():
+    """End-to-end contract for the Converse cachePoint feature: the usage
+    shape bedrock_adapter.normalize_converse_response() produces (prompt_tokens
+    folded from inputTokens + cacheRead + cacheWrite, cache fields under their
+    Anthropic names) must normalize back to the original cache_read/write
+    split and the original Converse inputTokens value."""
+    usage = SimpleNamespace(
+        prompt_tokens=50 + 900 + 300,
+        completion_tokens=20,
+        cache_read_input_tokens=900,
+        cache_creation_input_tokens=300,
+    )
+
+    normalized = normalize_usage(usage, provider="bedrock", api_mode="bedrock_converse")
+
+    assert normalized.cache_read_tokens == 900
+    assert normalized.cache_write_tokens == 300
+    assert normalized.input_tokens == 50
+    assert normalized.output_tokens == 20
 
 
 def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
@@ -615,3 +637,61 @@ def test_deepseek_v4_flash_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
     assert float(result.amount_usd) == 0.28
+
+
+def test_gemini_catalog_models_estimate_cached_usage():
+    """Every direct-Gemini catalog model with official pricing can estimate a
+    session that includes a cache hit, rather than reporting ``unknown``.
+    """
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    usage = CanonicalUsage(input_tokens=100, output_tokens=100, cache_read_tokens=100)
+    results = [
+        estimate_usage_cost(model, usage, provider="gemini")
+        for model in _PROVIDER_MODELS["gemini"]
+    ]
+
+    assert results
+    assert all(result.status == "estimated" for result in results)
+    assert all(result.amount_usd is not None and result.amount_usd > 0 for result in results)
+
+
+def test_google_and_vertex_routes_share_official_pricing_snapshot():
+    """Direct Gemini, Vertex, and Vertex's OpenAI-compatible hostname must
+    all normalize to the Google official-pricing route.
+    """
+    routes = (
+        resolve_billing_route("model", provider="gemini"),
+        resolve_billing_route("google/model", provider="vertex"),
+        resolve_billing_route(
+            "google/model",
+            provider="custom",
+            base_url="https://aiplatform.googleapis.com/v1/projects/example",
+        ),
+    )
+
+    assert all(route.provider == "google" for route in routes)
+    assert all(route.billing_mode == "official_docs_snapshot" for route in routes)
+
+
+def test_vertex_default_model_estimates_cached_usage(monkeypatch):
+    """The bundled Vertex profile's default auxiliary model must fall back to
+    Google snapshot pricing when the OpenAI-compatible endpoint has no model
+    metadata, including for cache-read accounting.
+    """
+    from providers import get_provider_profile
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+    vertex = get_provider_profile("vertex")
+    result = estimate_usage_cost(
+        vertex.default_aux_model,
+        CanonicalUsage(input_tokens=100, output_tokens=100, cache_read_tokens=100),
+        provider=vertex.name,
+        base_url=vertex.base_url,
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None and result.amount_usd > 0

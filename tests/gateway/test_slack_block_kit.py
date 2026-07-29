@@ -429,3 +429,34 @@ class TestSanitizeBlocks:
 
     def test_never_raises_on_garbage(self):
         assert sanitize_blocks([{"no_type": True}, "not-a-dict", 42]) is None
+
+
+class TestSplitTextFenceBalanced:
+    """_split_text closes/reopens ``` fences at section chunk boundaries."""
+
+    def test_fenced_split_every_chunk_balanced(self):
+        from plugins.platforms.slack.block_kit import _split_text
+
+        text = "```\n" + "\n".join("y" * 20 for _ in range(30)) + "\n```"
+        chunks = _split_text(text, 100)
+        assert len(chunks) >= 2
+        for i, chunk in enumerate(chunks):
+            assert chunk.count("```") % 2 == 0, (
+                f"chunk {i} has unbalanced fences: {chunk[:60]!r}"
+            )
+
+    def test_fenced_split_respects_limit(self):
+        from plugins.platforms.slack.block_kit import _split_text
+
+        text = "```\n" + "\n".join("y" * 20 for _ in range(30)) + "\n```"
+        limit = 100
+        for chunk in _split_text(text, limit):
+            assert len(chunk) <= limit
+
+    def test_prose_split_unchanged(self):
+        from plugins.platforms.slack.block_kit import _split_text
+
+        text = "\n".join(f"line {i}" for i in range(60))
+        chunks = _split_text(text, 80)
+        assert len(chunks) >= 2
+        assert all("```" not in c for c in chunks)

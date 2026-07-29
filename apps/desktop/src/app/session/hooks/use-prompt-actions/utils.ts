@@ -52,6 +52,32 @@ export function isSessionNotFoundError(error: unknown): boolean {
   return /session not found/i.test(message)
 }
 
+/**
+ * Is the session a prompt is about to run against currently mid-turn?
+ *
+ * The foreground `busyRef` is NOT the answer. It mirrors whatever chat is on
+ * screen, while submit and slash both resolve their target through
+ * `resolveTargetSessionId` — routinely a different session (a tile, a route
+ * rebind, a session created by this very call). Reading the foreground flag
+ * therefore gates one session's send on another session's turn: a stale
+ * foreground `true` (a warm resume of a still-running chat leaves one behind)
+ * blocks an IDLE target and reports "session busy" about a session doing
+ * nothing, and the converse lets a background send fire mid-turn.
+ *
+ * The published per-session state is authoritative. Fall back to the
+ * foreground flag only when the target has no state yet — a just-minted
+ * session whose first publish hasn't landed.
+ */
+export function isTargetSessionBusy(
+  sessionStates: Record<string, { busy: boolean }>,
+  sessionId: null | string,
+  foregroundBusy: boolean
+): boolean {
+  const state = sessionId ? sessionStates[sessionId] : undefined
+
+  return state ? state.busy : foregroundBusy
+}
+
 // Gateway JSON-RPC calls reject with "request timed out: <method>" when the
 // backend event loop is starved (e.g. a poller spin or a heavy async-injected
 // turn). For prompt.submit this is indistinguishable from a dead runtime
@@ -129,8 +155,10 @@ export async function readImageForRemoteAttach(
 
 // Read a non-image file as a data URL for upload via file.attach. Returns null
 // when the desktop bridge can't read the file (e.g. it was moved/deleted).
+// Prefer the attach-specific IPC (256 MiB) so remote uploads are not stuck on
+// the preview/Settings default; fall back for older Electron shells.
 export async function readFileDataUrlForAttach(filePath: string): Promise<string | null> {
-  const reader = window.hermesDesktop?.readFileDataUrl
+  const reader = window.hermesDesktop?.readFileDataUrlForAttach ?? window.hermesDesktop?.readFileDataUrl
 
   if (!reader) {
     return null
@@ -141,13 +169,12 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   return dataUrl || null
 }
 
-// The readFileDataUrl IPC base64-loads the whole file into memory and is
-// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.ts, which
-// rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
-// remote mode every attachment's bytes go through that read, so a big file
-// surfaces that internal message verbatim in the failure toast. Translate it
-// into a friendly "too large to upload to the remote gateway" line, parsing the
-// limit out of the message so it tracks the real cap. Non-cap errors pass
+// The attach/preview IPC base64-loads the whole file into memory and rejects
+// with a raw "file is too large (N bytes; limit M bytes)" string when over
+// cap. In remote mode every attachment's bytes go through that read, so a big
+// file surfaces that internal message verbatim in the failure toast. Translate
+// it into a friendly "too large to upload to the remote gateway" line, parsing
+// the limit out of the message so it tracks the real cap. Non-cap errors pass
 // through unchanged.
 export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   const message = err instanceof Error ? err.message : String(err)
@@ -359,6 +386,19 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
+  /** The composer scope key that was actually loaded when this text was
+   *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared
+   *  against the resolved submit target in sessionContextDrift — a mismatch
+   *  means the composer and the session-side refs disagreed about which
+   *  session this send belongs to (#59305). Omit for non-composer submits
+   *  (queue drain, steer, external submit requests): the check is a no-op
+   *  without it. */
+  composerScope?: string | null
+  /** What the transcript shows for this send, when it differs from the text
+   *  the agent receives. A `/skill` invocation expands into the whole skill
+   *  body — model-facing scaffolding the UI must never render — so the slash
+   *  dispatcher passes the invocation (`/work fix the leak`) here. */
+  displayText?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

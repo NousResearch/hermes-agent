@@ -2435,7 +2435,23 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
-            & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
+            # Force the child python.exe to emit UTF-8 on its stdout/stderr.
+            # On non-UTF-8 Windows locales (CP936/GBK zh-CN) Python defaults
+            # its stream encoding to the active codepage and crashes on glyphs
+            # like the checkmark (U+2713) that the codepage can't encode; the
+            # resulting non-UTF-8 bytes break this script's JSON result frame on
+            # stdout and abort the config-templates stage. Scope to this call
+            # only. (Comment kept ASCII per this file's PS 5.1 contract above.)
+            $prevPythonioencoding = $env:PYTHONIOENCODING
+            $prevPythonutf8 = $env:PYTHONUTF8
+            $env:PYTHONIOENCODING = "utf-8"
+            $env:PYTHONUTF8 = "1"
+            try {
+                & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
+            } finally {
+                $env:PYTHONIOENCODING = $prevPythonioencoding
+                $env:PYTHONUTF8 = $prevPythonutf8
+            }
             Write-Success "Skills synced to $HermesHome\skills"
         } catch {
             # Fallback: simple directory copy
@@ -2795,6 +2811,34 @@ function Try-RestoreElectronDist {
     if (Restore-ElectronDist -InstallDir $InstallDir) { return $true }
     if ($env:ELECTRON_MIRROR) { return $false }
     return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
+}
+
+function Install-DesktopVoiceDeps {
+    # Desktop ships with working voice out of the box: eagerly install the
+    # wake-word + local-STT stacks ([wake] + [voice] extras) instead of
+    # leaving them to lazy first-use install. Policy change (Teknium, July
+    # 2026, #70509 testing): the first ear-click used to trigger a
+    # multi-minute onnxruntime pip install that froze the UI and blew RPC
+    # timeouts. Best-effort -- lazy install remains the fallback for anything
+    # this step fails to fetch.
+    if (-not $script:UvCmd) { Resolve-UvCmd }
+    if (-not $script:UvCmd) {
+        Write-Warn "uv unavailable -- voice/wake deps will lazy-install at first use instead"
+        return
+    }
+    $env:VIRTUAL_ENV = "$InstallDir\venv"
+    Write-Info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper -- 1-3min)..."
+    Push-Location $InstallDir
+    try {
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e ".[wake,voice]" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Voice + wake-word dependencies installed"
+        } else {
+            Write-Warn "Voice/wake dependency install failed (exit $LASTEXITCODE) -- they will lazy-install at first use"
+        }
+    } finally {
+        Pop-Location
+    }
 }
 
 function Install-Desktop {
@@ -3561,7 +3605,7 @@ function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
-function Stage-Desktop          { Install-Desktop }
+function Stage-Desktop          { Install-DesktopVoiceDeps; Install-Desktop }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }

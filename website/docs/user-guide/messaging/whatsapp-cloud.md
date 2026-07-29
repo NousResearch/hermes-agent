@@ -225,7 +225,7 @@ All settings live in `~/.hermes/.env`.  Required values are in **bold**.
 | `WHATSAPP_CLOUD_ALLOW_ALL_USERS` | `false` | Set to `true` to bypass the allowlist. |
 | `WHATSAPP_CLOUD_APP_ID` | — | Optional, for future analytics integration. |
 | `WHATSAPP_CLOUD_WABA_ID` | — | Optional, for future analytics integration. |
-| `WHATSAPP_CLOUD_WEBHOOK_HOST` | `0.0.0.0` | Interface the webhook server binds to. |
+| `WHATSAPP_CLOUD_WEBHOOK_HOST` | unset (dual-stack: all interfaces, IPv4+IPv6) | Interface the webhook server binds to. |
 | `WHATSAPP_CLOUD_WEBHOOK_PORT` | `8090` | Port the webhook server binds to.  Must match the port your tunnel forwards. |
 | `WHATSAPP_CLOUD_WEBHOOK_PATH` | `/whatsapp/webhook` | URL path Meta posts to. |
 | `WHATSAPP_CLOUD_API_VERSION` | `v20.0` | Meta Graph API version. Only override if a newer version is recommended in Meta's docs. |

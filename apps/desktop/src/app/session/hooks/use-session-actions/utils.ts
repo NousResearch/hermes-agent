@@ -1,9 +1,9 @@
 import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
-import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { embeddedImageUrls, textWithoutEmbeddedImages, textWithoutImageRefs } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
@@ -46,14 +46,40 @@ function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   return appended ? { ...message, parts } : message
 }
 
-function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): ChatMessage {
-  if (message.parts.some(part => part.type === 'reasoning')) {
+/**
+ * Carry structural parts an authoritative row cannot express.
+ *
+ * A live turn's authoritative projection is TEXT-ONLY: the gateway's `inflight`
+ * snapshot carries `user`/`assistant` strings, and history is not committed
+ * until the turn finishes. The renderer's cached state is therefore the sole
+ * carrier of the running turn's reasoning and tool calls, so switching threads
+ * mid-turn and back re-hydrated an assistant row stripped of both — the turn
+ * looked inert, with no thinking trace and no tool activity.
+ *
+ * Preserved only when the rows are the SAME turn: identical text, or the
+ * authoritative text extending the cached one (another delta landed). Anything
+ * else may be a different turn at the same role ordinal — compression rewrites
+ * history — and must not inherit foreign parts. Tool calls dedupe on
+ * `toolCallId` so a row that already carries them is left alone.
+ */
+function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): ChatMessage {
+  const carried = previous.parts.filter(part => part.type === 'reasoning' || part.type === 'tool-call')
+
+  if (!carried.length) {
     return message
   }
 
-  const reasoningParts = previous.parts.filter(part => part.type === 'reasoning')
+  const hasReasoning = message.parts.some(part => part.type === 'reasoning')
 
-  return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
+  const presentToolCallIds = new Set(
+    message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+  )
+
+  const missing = carried.filter(part =>
+    part.type === 'reasoning' ? !hasReasoning : !presentToolCallIds.has(part.toolCallId)
+  )
+
+  return missing.length ? { ...message, parts: [...missing, ...message.parts] } : message
 }
 
 // Compile-time exhaustiveness guards. If a new field is added to ChatMessage
@@ -209,8 +235,29 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const previousVisibleText = textWithoutEmbeddedImages(previousText)
     let preserved = message
 
-    if (nextText === previousVisibleText || nextText === previousText.trim()) {
-      preserved = preserveReasoningParts(preserved, previous)
+    const sameText = nextText === previousVisibleText || nextText === previousText.trim()
+
+    // Mid-turn, the authoritative text has advanced past the cached copy by one
+    // or more deltas. That is still the same turn, and the cached row holds the
+    // only copy of its reasoning / tool calls, so treat an extension as a match
+    // for structural carry-over. Attachment refs and image re-appending stay on
+    // the strict equality path — they reconcile a SETTLED row, and a growing
+    // row is by definition not settled.
+    const sameTurn =
+      sameText ||
+      (nextText.length > 0 && previousVisibleText.length > 0 && nextText.startsWith(previousVisibleText.trim()))
+
+    if (sameTurn) {
+      preserved = preserveStructuralParts(preserved, previous)
+    }
+
+    if (
+      sameText &&
+      message.role === 'user' &&
+      preserved.attachmentRefs === undefined &&
+      previous.attachmentRefs?.length
+    ) {
+      preserved = { ...preserved, attachmentRefs: [...previous.attachmentRefs] }
     }
 
     const previousImages = embeddedImageUrls(previousText)
@@ -240,7 +287,17 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * history, not in-flight work. The latest authoritative user confirms whether
  * that tail has persisted; any authoritative assistant at the same ordinal
  * supersedes the local stream.
+ *
+ * Gateway bookkeeping markers (the model-switch / personality notices written
+ * by tui_gateway/server.py) are persisted as role=user but are not user turns.
+ * They must not take part in ordinal pairing on either side: a stored marker
+ * between two real user turns shifts every later user ordinal, so the optimistic
+ * row misses its committed copy and is appended a second time at the end of the
+ * transcript — the duplicated user bubble of #67603.
  */
+const isGatewaySystemMarker = (message: ChatMessage): boolean =>
+  message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -253,6 +310,10 @@ export function preserveLocalPendingTurnMessages(
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
   for (const message of nextMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = nextRoleCounts.get(message.role) ?? 0
     nextRoleCounts.set(message.role, ordinal + 1)
     nextByRoleOrdinal.set(`${message.role}:${ordinal}`, message)
@@ -260,13 +321,39 @@ export function preserveLocalPendingTurnMessages(
 
   const nextIds = new Set(nextMessages.map(message => message.id))
   const previousRoleCounts = new Map<ChatMessage['role'], number>()
+
   const newestOptimisticUser = [...previousMessages]
     .reverse()
     .find(message => message.role === 'user' && message.id.startsWith('user-'))
+
+  // A mid-turn redirect inserts its correction as a second optimistic user row
+  // directly before the live reply, so one turn can own a contiguous RUN of
+  // them. Preserving only the newest keeps the correction and drops the prompt
+  // that started the turn. Widen to the run — but only the contiguous one: any
+  // `user-*` row separated by an assistant reply is stale post-compression
+  // history, which is what the newest-only rule exists to discard.
+  const liveOptimisticUsers = new Set<ChatMessage>()
+
+  if (newestOptimisticUser) {
+    for (let index = previousMessages.indexOf(newestOptimisticUser); index >= 0; index -= 1) {
+      const candidate = previousMessages[index]
+
+      if (candidate.role !== 'user' || !candidate.id.startsWith('user-')) {
+        break
+      }
+
+      liveOptimisticUsers.add(candidate)
+    }
+  }
+
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
   const preserved: ChatMessage[] = []
 
   for (const message of previousMessages) {
+    if (isGatewaySystemMarker(message)) {
+      continue
+    }
+
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
 
@@ -279,11 +366,15 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
-    if (isOptimisticUser && message !== newestOptimisticUser) {
+    if (isOptimisticUser && !liveOptimisticUsers.has(message)) {
       continue
     }
 
-    if (isOptimisticUser && latestAuthoritativeUser && chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()) {
+    if (
+      isOptimisticUser &&
+      latestAuthoritativeUser &&
+      textWithoutImageRefs(chatMessageText(latestAuthoritativeUser)) === textWithoutImageRefs(chatMessageText(message))
+    ) {
       continue
     }
 
@@ -294,7 +385,7 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
 
-      if (chatMessageText(authoritative).trim() === chatMessageText(message).trim()) {
+      if (textWithoutImageRefs(chatMessageText(authoritative)) === textWithoutImageRefs(chatMessageText(message))) {
         continue
       }
     }
@@ -321,9 +412,27 @@ export function appendLiveSessionProjection(
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)
+
+  // Mid-turn redirect corrections. They are additional user bubbles belonging
+  // to this same turn, ordered after the prompt that started it.
+  const inflightCorrections = (projection.inflight?.corrections ?? [])
+    .map(correction => correction?.trim() ?? '')
+    .filter(Boolean)
+
+  // A retained failed turn (the gateway keeps error snapshots replayable when
+  // the terminal frame may have been lost to a disconnect) — surface the
+  // failure on the projected row instead of rendering the partial as healthy.
+  const inflightError = projection.inflight?.error?.trim() ?? ''
   const queuedUser = projection.queued?.user?.trim() ?? ''
 
-  if (!inflightUser && !inflightAssistant && !inflightStreaming && !queuedUser) {
+  if (
+    !inflightUser &&
+    !inflightAssistant &&
+    !inflightStreaming &&
+    !inflightError &&
+    !queuedUser &&
+    !inflightCorrections.length
+  ) {
     return messages
   }
 
@@ -334,8 +443,20 @@ export function appendLiveSessionProjection(
   // both makes a backgrounded prompt appear twice when its session is reopened.
   // Only suppress the projection when the latest authoritative user row is the
   // same turn — older identical prompts must not hide a newly accepted repeat.
-  const latestUser = [...messages].reverse().find(message => message.role === 'user')
-  const inflightUserAlreadyPersisted = latestUser && chatMessageText(latestUser).trim() === inflightUser
+  // A mid-turn redirect gives that turn a RUN of user rows (prompt +
+  // corrections), so match the contiguous run ending at the latest user row
+  // rather than the single last one.
+  const latestUserIndex = messages.map(message => message.role).lastIndexOf('user')
+  const latestUserRun: ChatMessage[] = []
+
+  for (let index = latestUserIndex; index >= 0 && messages[index].role === 'user'; index -= 1) {
+    latestUserRun.unshift(messages[index])
+  }
+
+  const persistedInLatestRun = (text: string): boolean =>
+    latestUserRun.some(message => textWithoutImageRefs(chatMessageText(message)) === textWithoutImageRefs(text))
+
+  const inflightUserAlreadyPersisted = Boolean(inflightUser) && persistedInLatestRun(inflightUser)
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
     projected.push({
@@ -345,14 +466,31 @@ export function appendLiveSessionProjection(
     })
   }
 
+  // Corrections typed while the turn ran. Each is its own bubble, placed after
+  // the original prompt and before the reply they redirected — the same order
+  // the live transcript showed. Skip any the transcript already holds so a
+  // resume doesn't double them.
+  for (const [index, correction] of inflightCorrections.entries()) {
+    if (persistedInLatestRun(correction)) {
+      continue
+    }
+
+    projected.push({
+      id: `user-inflight-correction-${index}-${sessionId}`,
+      role: 'user',
+      parts: [textPart(correction)]
+    })
+  }
+
   // Keep a pending assistant boundary even before the first delta when a
   // queued user turn follows it. This preserves the two distinct turns.
-  if (inflightAssistant || inflightStreaming || (inflightUser && queuedUser)) {
+  if (inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)) {
     projected.push({
       id: `assistant-stream-${sessionId}`,
       role: 'assistant',
       parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
-      pending: inflightStreaming
+      pending: inflightStreaming,
+      ...(inflightError ? { error: inflightError } : {})
     })
   }
 
@@ -449,7 +587,13 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
   const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
-  if (cached) {
+  // A row with no owning profile can't route a resume when more than one
+  // profile exists — a resume without a profile lands on whichever gateway is
+  // active (#67603 family, cross-profile open asymmetry). Treat such a hit as
+  // unresolved and fall through to the by-id lookups, which stamp ownership.
+  const multiProfile = $profiles.get().length > 1
+
+  if (cached && (cached.profile?.trim() || !multiProfile)) {
     return cached
   }
 
@@ -458,6 +602,12 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   // past the sidebar's recent window). 404 just means it's not on this profile.
   try {
     const session = await getSession(storedSessionId)
+
+    // Older backends omit `profile` on unscoped GETs; the serving backend is
+    // the active gateway's, so back-fill that rather than caching an unowned
+    // row. A present stamp is preserved: in app-global remote mode a bare hit
+    // can legitimately carry another profile's row (see the branch tests).
+    session.profile ||= normalizeProfileKey($activeGatewayProfile.get())
 
     upsertResolvedSession(session, storedSessionId)
 
@@ -480,6 +630,12 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
     try {
       const session = await getSession(storedSessionId, profile)
 
+      // Same ownership contract: the DESKTOP profile we explicitly probed is
+      // authoritative, whatever the scoped backend stamped (older backends
+      // omit the field; a per-profile remote override strips the alias before
+      // forwarding, so that backend answers as its own "default").
+      session.profile = profile
+
       upsertResolvedSession(session, storedSessionId)
 
       return session
@@ -489,6 +645,28 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   }
 
   return undefined
+}
+
+/**
+ * The profile that owns a stored session, resolved through the same
+ * cache → active-backend → cross-profile ladder as `resolveStoredSession`.
+ *
+ * Recovery `session.resume` calls (stale runtime id, session-not-found, wedged
+ * loop) must re-register the conversation on ITS backend, not on whichever
+ * profile happens to be live. Omitting the profile lets the gateway fall back to
+ * the launch-profile DB (tui_gateway/server.py), which is how a session bleeds
+ * from one profile into another (#67603, second symptom). A cache-only lookup
+ * misses any session outside the paginated sidebar window, so route through the
+ * resolver, which probes uncached ids across profiles.
+ */
+export async function resolveSessionProfile(storedSessionId: null | string): Promise<string | undefined> {
+  if (!storedSessionId) {
+    return undefined
+  }
+
+  const profile = (await resolveStoredSession(storedSessionId))?.profile?.trim()
+
+  return profile || undefined
 }
 
 type SessionRuntimeStatePatch = Partial<
@@ -511,9 +689,7 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
     reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
   }
 
-  if (info.credential_warning) {
-    requestDesktopOnboarding(info.credential_warning)
-  }
+  requestDesktopOnboardingForCredentialWarning(info.credential_warning)
 
   reportInstallMethodWarning(info.install_warning)
 

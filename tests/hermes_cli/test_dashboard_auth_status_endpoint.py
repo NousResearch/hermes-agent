@@ -67,6 +67,22 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
     assert body["auth_providers"] == ["stub"]
 
 
+def test_health_reports_liveness_without_loading_gateway_config(gated_client, monkeypatch):
+    def _boom():
+        raise AssertionError("health must not load gateway config")
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", _boom)
+
+    r = gated_client.get("/api/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {
+        "ok": True,
+        "version": web_server.__version__,
+        "auth_required": True,
+    }
+
+
 def test_status_reports_auth_disabled_in_loopback_mode(loopback_client):
     r = loopback_client.get("/api/status")
     assert r.status_code == 200

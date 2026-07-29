@@ -723,7 +723,7 @@ class TestTerminatePid:
         calls = []
         monkeypatch.setattr(status, "_IS_WINDOWS", True)
 
-        def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0):
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0, **kwargs):
             calls.append((cmd, capture_output, text, timeout, creationflags))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -2203,3 +2203,174 @@ class TestRuntimeStatusUpdatedAtContract:
         assert parsed.tzinfo is not None
         # And it survives the normalization funnel unchanged (canonical form).
         assert status.normalize_updated_at(updated_at) == updated_at
+
+
+class TestResolveGatewayLiveness:
+    """The single liveness ladder both dashboard status surfaces share.
+
+    Before this existed, /api/status and /api/messaging/platforms each
+    open-coded their own ladder and disagreed on the same page load — the
+    sidebar read "running" while the Channels page rendered "The gateway is
+    not running." These pin the ladder's ordering and its fail-open signal.
+    """
+
+    def test_pid_rung_wins_and_skips_later_rungs(self):
+        calls = {"health": 0, "runtime_pid": 0}
+
+        def _health():
+            calls["health"] += 1
+            return True, {"pid": 999}
+
+        def _runtime_pid(runtime, **kw):
+            calls["runtime_pid"] += 1
+            return 888
+
+        result = status.resolve_gateway_liveness(
+            runtime=None,
+            health_probe=_health,
+            pid_probe=lambda *a, **k: 4242,
+            runtime_pid_probe=_runtime_pid,
+        )
+
+        assert result.running is True
+        assert result.pid == 4242
+        assert result.source == "pid"
+        # The authoritative rung answered: no lower rung should have run.
+        assert calls == {"health": 0, "runtime_pid": 0}
+
+    def test_health_probe_answers_when_no_local_pid(self):
+        """Cross-container gateway: no local PID, but the remote is alive.
+
+        This is the rung /api/messaging/platforms was missing entirely, which
+        is what made it contradict the sidebar in Docker Compose deployments.
+        """
+        result = status.resolve_gateway_liveness(
+            runtime=None,
+            health_probe=lambda: (True, {"pid": 4321, "gateway_state": "running"}),
+            pid_probe=lambda *a, **k: None,
+            runtime_pid_probe=lambda *a, **k: None,
+        )
+
+        assert result.running is True
+        assert result.source == "health"
+        # Display-only PID from the remote container.
+        assert result.pid == 4321
+        assert result.health_body == {"pid": 4321, "gateway_state": "running"}
+
+    def test_runtime_status_rung_answers_when_pid_file_absent(self):
+        """Launch-service-managed gateway: live process, no gateway.pid."""
+        result = status.resolve_gateway_liveness(
+            runtime={"gateway_state": "running", "pid": 777},
+            health_probe=None,
+            pid_probe=lambda *a, **k: None,
+            runtime_pid_probe=lambda *a, **k: 777,
+        )
+
+        assert result.running is True
+        assert result.pid == 777
+        assert result.source == "runtime_status"
+
+    def test_reports_down_when_every_rung_declines(self):
+        result = status.resolve_gateway_liveness(
+            runtime=None,
+            health_probe=lambda: (False, None),
+            pid_probe=lambda *a, **k: None,
+            runtime_pid_probe=lambda *a, **k: None,
+        )
+
+        assert result.running is False
+        assert result.pid is None
+        assert result.source == "none"
+        # Nothing raised, so this is a confident "down", not "unknown".
+        assert result.probe_error is False
+
+    def test_probe_exception_degrades_instead_of_raising(self):
+        """A raising rung must fall through, never propagate.
+
+        Status endpoints poll this constantly; an exotic /proc or a
+        permissions error must not turn into a 500.
+        """
+        def _boom(*a, **k):
+            raise RuntimeError("probe exploded")
+
+        result = status.resolve_gateway_liveness(
+            runtime=None,
+            health_probe=None,
+            pid_probe=_boom,
+            runtime_pid_probe=lambda *a, **k: None,
+        )
+
+        assert result.running is False
+        # probe_error distinguishes "down" from "couldn't tell" for callers
+        # that must fail OPEN (the kanban dispatcher warning).
+        assert result.probe_error is True
+
+    def test_probe_exception_still_lets_a_lower_rung_win(self):
+        def _boom(*a, **k):
+            raise RuntimeError("pid probe exploded")
+
+        result = status.resolve_gateway_liveness(
+            runtime={"gateway_state": "running", "pid": 555},
+            health_probe=None,
+            pid_probe=_boom,
+            runtime_pid_probe=lambda *a, **k: 555,
+        )
+
+        assert result.running is True
+        assert result.source == "runtime_status"
+
+    def test_profile_dir_scopes_every_read_to_that_profile(self, tmp_path):
+        """Gateway identity files live in the per-profile home.
+
+        The status readers resolve process-level paths and deliberately
+        ignore the HERMES_HOME contextvar override (#56986), so the profile
+        directory must be threaded through explicitly or a scoped request
+        silently reports a DIFFERENT profile's gateway (#71211).
+        """
+        profile_dir = tmp_path / "profiles" / "worker"
+        profile_dir.mkdir(parents=True)
+        seen = {}
+
+        def _pid(pid_path=None, **kw):
+            seen["pid_path"] = pid_path
+            return None
+
+        def _reader(path=None):
+            seen["status_path"] = path
+            return None
+
+        def _runtime_pid(runtime, *, expected_home=None):
+            seen["expected_home"] = expected_home
+            return None
+
+        status.resolve_gateway_liveness(
+            profile_dir=profile_dir,
+            health_probe=None,
+            pid_probe=_pid,
+            runtime_reader=_reader,
+            runtime_pid_probe=_runtime_pid,
+        )
+
+        assert seen["pid_path"] == profile_dir / "gateway.pid"
+        assert seen["status_path"] == profile_dir / "gateway_state.json"
+        # expected_home is what stops a recycled PID belonging to another
+        # profile's live gateway from being reported as this profile's.
+        assert seen["expected_home"] == profile_dir
+
+    def test_supplied_runtime_is_not_re_read(self):
+        """Callers that already read the state file must not pay for it twice."""
+        reads = {"count": 0}
+
+        def _reader(path=None):
+            reads["count"] += 1
+            return None
+
+        status.resolve_gateway_liveness(
+            runtime={"gateway_state": "running", "pid": 1},
+            health_probe=None,
+            pid_probe=lambda *a, **k: None,
+            runtime_reader=_reader,
+            runtime_pid_probe=lambda *a, **k: None,
+        )
+
+        assert reads["count"] == 0

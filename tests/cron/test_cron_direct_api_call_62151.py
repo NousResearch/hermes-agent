@@ -45,6 +45,34 @@ def test_should_use_direct_api_call_only_for_cron_openai_wire():
     assert should_use_direct_api_call(moa) is False
 
 
+def test_should_use_direct_api_call_for_delegated_children():
+    """#60203: delegated children share the cron nested-pool wedge and must
+    take the inline path — via the delegation ContextVar (how the runner
+    executes them) or the platform='subagent' stamp as a fallback."""
+    from agent.delegation_context import delegated_child_context
+
+    # Platform stamp alone (child agents are built with platform="subagent").
+    assert should_use_direct_api_call(_make_agent(platform="subagent")) is True
+
+    # ContextVar path: any platform, running inside _run_single_child's
+    # delegated_child_context().
+    agent = _make_agent(platform="cli")
+    with delegated_child_context():
+        assert should_use_direct_api_call(agent) is True
+    assert should_use_direct_api_call(agent) is False  # reset outside
+
+    # Non-OpenAI-wire children keep their established transports.
+    for api_mode in ("codex_responses", "anthropic_messages", "bedrock_converse"):
+        child = _make_agent(platform="subagent")
+        child.api_mode = api_mode
+        assert should_use_direct_api_call(child) is False
+
+    # MoA children keep the worker path.
+    moa_child = _make_agent(platform="subagent")
+    moa_child.provider = "moa"
+    assert should_use_direct_api_call(moa_child) is False
+
+
 def test_direct_api_call_runs_two_sequential_requests_on_same_thread():
     """Mirror the 2nd+ call failure mode: two back-to-back completions.create."""
     agent = _make_agent()

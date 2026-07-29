@@ -12,7 +12,12 @@ interface ContextUsagePanelProps {
   sessionId: string | null
 }
 
-export function ContextUsagePanel({ currentUsage, onUsageSnapshot, requestGateway, sessionId }: ContextUsagePanelProps) {
+export function ContextUsagePanel({
+  currentUsage,
+  onUsageSnapshot,
+  requestGateway,
+  sessionId
+}: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
   const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null)

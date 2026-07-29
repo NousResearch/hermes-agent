@@ -188,12 +188,7 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it.
 
-    python-dotenv does not handle corrupted lines where multiple
-    KEY=VALUE pairs are concatenated on a single line (missing newline).
-    This produces mangled values — e.g. a bot token duplicated 8×
-    (see #8908).
-
-    Also strips embedded null bytes which crash ``os.environ[k] = v``
+    Strips embedded null bytes which crash ``os.environ[k] = v``
     with ``ValueError: embedded null byte`` — typically introduced by
     copy-pasting API keys from terminals or rich-text editors.
 
@@ -203,9 +198,8 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     to the errors=replace corruption path. Order of BOM checks matters:
     UTF-32-LE's BOM starts with UTF-16-LE's FF FE.
 
-    We delegate to ``hermes_cli.config._sanitize_env_lines`` which
-    already knows all valid Hermes env-var names and can split
-    concatenated lines correctly.
+    ``hermes_cli.config._sanitize_env_lines`` normalizes line endings while
+    treating content after the first ``=`` as opaque for boundary discovery.
     """
     if not path.exists():
         return
@@ -317,7 +311,7 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
-    # Fix corrupted .env files before python-dotenv parses them (#8908).
+    # Normalize safe formatting and remove invalid NUL bytes before parsing.
     if user_env.exists():
         _sanitize_env_file_if_needed(user_env)
     if project_env_path and project_env_path.exists():
@@ -510,6 +504,21 @@ def _load_secrets_config(home_path: Path) -> dict:
     config_path = home_path / "config.yaml"
     if not config_path.exists():
         return {}
+    # Prefer the shared (mtime, size)-keyed raw-config cache — this is the
+    # first config.yaml read in a normal `hermes` startup, so populating the
+    # shared cache here lets main.py's early bridge and hermes_logging reuse
+    # the same parse (one parse per process instead of 3-4). Falls back to a
+    # direct isolated parse if the shared reader is unavailable, preserving
+    # the "malformed config can't take down dotenv loading" property (the
+    # shared reader also swallows parse errors and returns {}).
+    if home_path == _process_hermes_home():
+        try:
+            from hermes_cli.config import read_raw_config
+
+            data = read_raw_config() or {}
+            return data.get("secrets") or {}
+        except Exception:
+            pass
     try:
         import yaml  # type: ignore
     except ImportError:
@@ -520,3 +529,13 @@ def _load_secrets_config(home_path: Path) -> dict:
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}
+
+
+def _process_hermes_home() -> Path:
+    """The HERMES_HOME the shared config cache is keyed to."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home()
+    except Exception:
+        return Path.home() / ".hermes"

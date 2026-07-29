@@ -6,6 +6,9 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 import asyncio
 import concurrent.futures
 import json
+import logging
+import os
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -122,6 +125,71 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+
+
+class TestMCPParallelSafetyProvenance:
+    def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+
+        first = SimpleNamespace(session=object(), _registered_tool_names=[])
+        second = SimpleNamespace(session=object(), _registered_tool_names=[])
+
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_parallel = set(mcp_tool._parallel_safe_servers)
+            mcp_tool._servers.clear()
+            mcp_tool._servers.update({"foo-bar": first, "foo_bar": second})
+            mcp_tool._parallel_safe_servers.clear()
+
+        try:
+            monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+            monkeypatch.setattr(
+                mcp_tool, "_filter_suspicious_mcp_servers", lambda servers: servers
+            )
+            mcp_tool.register_mcp_servers(
+                {
+                    "foo-bar": {"supports_parallel_tool_calls": True},
+                    "foo_bar": {"supports_parallel_tool_calls": False},
+                }
+            )
+            with mcp_tool._lock:
+                assert "foo-bar" in mcp_tool._parallel_safe_servers
+                assert "foo_bar" not in mcp_tool._parallel_safe_servers
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._parallel_safe_servers.clear()
+                mcp_tool._parallel_safe_servers.update(saved_parallel)
+
+    def test_tool_provenance_keeps_exact_raw_server_names(self):
+        import tools.mcp_tool as mcp_tool
+
+        first_tool = "mcp__foo_bar__first"
+        second_tool = "mcp__foo_bar__second"
+        with mcp_tool._lock:
+            saved_map = dict(mcp_tool._mcp_tool_server_names)
+            saved_parallel = set(mcp_tool._parallel_safe_servers)
+            mcp_tool._mcp_tool_server_names.clear()
+            mcp_tool._parallel_safe_servers.clear()
+            mcp_tool._parallel_safe_servers.add("foo-bar")
+
+        try:
+            mcp_tool._track_mcp_tool_server(first_tool, "foo-bar")
+            mcp_tool._track_mcp_tool_server(second_tool, "foo_bar")
+
+            assert mcp_tool.is_mcp_tool_parallel_safe(first_tool) is True
+            assert mcp_tool.is_mcp_tool_parallel_safe(second_tool) is False
+            assert mcp_tool.get_registered_mcp_server_names() == {
+                "foo-bar",
+                "foo_bar",
+            }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._mcp_tool_server_names.clear()
+                mcp_tool._mcp_tool_server_names.update(saved_map)
+                mcp_tool._parallel_safe_servers.clear()
+                mcp_tool._parallel_safe_servers.update(saved_parallel)
 
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
@@ -1085,6 +1153,103 @@ class TestDiscoverAndRegister:
         _servers.pop("srv", None)
 
 
+    def test_same_server_normalization_collision_skips_all_ambiguous_tools(self, caplog):
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("read-file"),
+                _make_mcp_tool("read_file"),
+                _make_mcp_tool("safe_tool"),
+            ],
+        )
+        config = {"tools": {"resources": False, "prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        assert registered == ["mcp__srv__safe_tool"]
+        assert registry.get_entry("mcp__srv__read_file") is None
+        assert registry.get_entry("mcp__srv__safe_tool") is not None
+        assert any(
+            "name normalization collision" in record.message
+            and "tool 'read-file'" in record.message
+            and "tool 'read_file'" in record.message
+            for record in caplog.records
+        )
+
+    def test_cross_server_normalization_collision_preserves_first_owner(self, caplog):
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        first = _make_mock_server(
+            "foo-bar",
+            session=MagicMock(),
+            tools=[_make_mcp_tool("search")],
+        )
+        second = _make_mock_server(
+            "foo_bar",
+            session=MagicMock(),
+            tools=[_make_mcp_tool("search")],
+        )
+        config = {"tools": {"resources": False, "prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            first_registered = _register_server_tools("foo-bar", first, config)
+            second_registered = _register_server_tools("foo_bar", second, config)
+
+        assert first_registered == ["mcp__foo_bar__search"]
+        assert second_registered == []
+        entry = registry.get_entry("mcp__foo_bar__search")
+        assert entry is not None
+        assert entry.toolset == "mcp-foo-bar"
+        assert any(
+            "already owned by MCP toolset 'mcp-foo-bar'" in record.message
+            for record in caplog.records
+        )
+
+    def test_raw_tool_collision_with_generated_utility_skips_both(self, caplog):
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("list_resources"),
+                _make_mcp_tool("safe_tool"),
+            ],
+        )
+        server.initialize_result = SimpleNamespace(
+            capabilities=SimpleNamespace(resources=object(), prompts=None)
+        )
+        config = {"tools": {"prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        assert "mcp__srv__list_resources" not in registered
+        assert registry.get_entry("mcp__srv__list_resources") is None
+        assert "mcp__srv__safe_tool" in registered
+        assert "mcp__srv__read_resource" in registered
+        assert any(
+            "tool 'list_resources'" in record.message
+            and "generated utility 'list_resources'" in record.message
+            for record in caplog.records
+        )
+
 # ---------------------------------------------------------------------------
 # MCPServerTask (run / start / shutdown)
 # ---------------------------------------------------------------------------
@@ -1192,6 +1357,49 @@ class TestMCPServerTask:
                 "mcp__srv__list_prompts",
                 "mcp__srv__get_prompt",
             }
+
+    def test_refresh_removes_old_tool_when_new_list_becomes_ambiguous(self, caplog):
+        """A newly ambiguous list must not leave the old handler callable."""
+        from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = MCPServerTask("srv")
+        server._config = {"tools": {"resources": False, "prompts": False}}
+        server._tools = [_make_mcp_tool("read_file")]
+        server._registered_tool_names = ["mcp__srv__read_file"]
+        server.session = MagicMock()
+        server.session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(
+                tools=[
+                    _make_mcp_tool("read_file"),
+                    _make_mcp_tool("read-file"),
+                ]
+            )
+        )
+        registry.register(
+            name="mcp__srv__read_file",
+            toolset="mcp-srv",
+            schema={
+                "name": "mcp__srv__read_file",
+                "description": "Old",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             patch("tools.mcp_tool._forget_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            asyncio.run(server._refresh_tools())
+
+        assert registry.get_entry("mcp__srv__read_file") is None
+        assert server._registered_tool_names == []
+        assert any(
+            "name normalization collision" in record.message
+            for record in caplog.records
+        )
 
     def test_schedule_tools_refresh_keeps_task_until_done(self):
         """Background refresh tasks are strongly referenced and then discarded."""
@@ -3874,6 +4082,52 @@ class TestMCPSelectiveToolLoading:
             "mcp__ink_exclude__list_services",
         ]
 
+    def test_exclude_filter_supports_globs(self):
+        """fnmatch globs in exclude — the Cloudflare flat-mode shape
+        (``*_radar_*`` etc.). Previously silently matched nothing."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"exclude": ["*_radar_*", "delete_*"]},
+        }
+        registered, _ = self._run_discover(
+            "ink_glob",
+            ["get_radar_summary", "get_accounts_radar_http", "delete_service",
+             "create_service", "list_services"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == [
+            "mcp__ink_glob__create_service",
+            "mcp__ink_glob__list_services",
+        ]
+
+    def test_include_filter_supports_globs(self):
+        """Globs work symmetrically on the include whitelist."""
+        config = {
+            "url": "https://mcp.example.com",
+            "tools": {"include": ["get_zones_*"]},
+        }
+        registered, _ = self._run_discover(
+            "ink_glob_inc",
+            ["get_zones_dns_records", "get_zones_settings", "delete_zone",
+             "get_accounts"],
+            config,
+            session=SimpleNamespace(),
+        )
+        assert registered == [
+            "mcp__ink_glob_inc__get_zones_dns_records",
+            "mcp__ink_glob_inc__get_zones_settings",
+        ]
+
+    def test_exact_names_still_match_exactly(self):
+        """No-metachar entries stay literal — 'docs' must not glob-match
+        'docs_search', and exact matching is unchanged."""
+        from tools.mcp_tool import matches_name_filter
+        assert matches_name_filter("docs", {"docs"})
+        assert not matches_name_filter("docs_search", {"docs"})
+        assert matches_name_filter("docs_search", {"docs*"})
+        assert not matches_name_filter("anything", set())
+
     def test_include_filter_skips_utility_tools_without_capabilities(self):
         config = {
             "url": "https://mcp.example.com",
@@ -4149,8 +4403,8 @@ class TestMCPBuiltinCollisionGuard:
 
         _servers.pop("minimax", None)
 
-    def test_mcp_tool_allowed_when_collision_is_another_mcp(self):
-        """Collision between two MCP toolsets is allowed (last wins)."""
+    def test_mcp_tool_rejected_when_collision_is_another_mcp(self):
+        """Cross-server MCP collisions preserve the existing owner."""
         from tools.registry import ToolRegistry
         from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
@@ -4182,9 +4436,13 @@ class TestMCPBuiltinCollisionGuard:
                 _discover_and_register_server("srv", {"command": "test", "args": []})
             )
 
-        # MCP-to-MCP collision is allowed — the new server wins.
-        assert "mcp__srv__do_thing" in registered
-        assert mock_registry.get_toolset_for_tool("mcp__srv__do_thing") == "mcp-srv"
+        # Cross-server MCP collisions fail closed: the existing owner stays active.
+        assert "mcp__srv__do_thing" not in registered
+        entry = mock_registry.get_entry("mcp__srv__do_thing")
+        assert entry is not None
+        assert entry.toolset == "mcp-old"
+        assert entry.schema["description"] == "From another MCP server"
+        assert mock_registry.get_toolset_for_tool("mcp__srv__do_thing") == "mcp-old"
 
         _servers.pop("srv", None)
 
@@ -4562,3 +4820,302 @@ class TestMcpParallelToolCalls:
             register_mcp_servers(config_off)
         with _lock:
             assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+
+
+# ---------------------------------------------------------------------------
+# Cross-process MCP discovery lock (issue #62771)
+# ---------------------------------------------------------------------------
+
+
+class TestMCPDiscoveryCrossProcessLock:
+    """Tests for the cross-process MCP discovery guard in discover_mcp_tools()."""
+
+    @staticmethod
+    def _lock_exclusive(fh):
+        """Lock a file handle exclusively, cross-platform.
+
+        Mirrors production _try_acquire_mcp_discovery_lock: fcntl on POSIX,
+        portalocker on Windows (portalocker only ships on win32 installs).
+        """
+        if sys.platform == "win32":
+            import portalocker
+
+            self._lock_exclusive(fh)
+        else:
+            import fcntl
+
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    @pytest.fixture(autouse=True)
+    def _fast_retries(self):
+        """Override retry constants so tests are fast."""
+        import tools.mcp_tool as mcp_tool
+        orig_max = mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES
+        orig_delay = mcp_tool._MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES = 3
+        mcp_tool._MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 0.01
+        yield
+        mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES = orig_max
+        mcp_tool._MCP_DISCOVERY_LOCK_RETRY_DELAY_S = orig_delay
+
+    def test_lock_acquired_path(self, tmp_path):
+        """Lock acquired -> discovery runs normally, lock released at end."""
+        from tools.mcp_tool import (
+            _LockCookie,
+            discover_mcp_tools,
+        )
+
+        lock_file = tmp_path / ".mcp-discovery.lock"
+        fh = open(lock_file, "w", encoding="utf-8")
+        cookie = _LockCookie(fh)
+
+        def mock_acquire():
+            return cookie
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+        with patch.object(cookie, "release", wraps=cookie.release) as release_spy:
+            with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", mock_acquire), \
+                 patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+                 patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp__test_srv__ping"]) as reg_spy:
+                result = discover_mcp_tools()
+            assert result == ["mcp__test_srv__ping"]
+            release_spy.assert_called_once()
+
+    def test_lock_held_retries_then_acquires(self):
+        """First attempt sees lock held; retry succeeds; then discovery runs."""
+        from tools.mcp_tool import (
+            _LOCK_UNAVAILABLE,
+            discover_mcp_tools,
+        )
+
+        import tempfile
+        from tools.mcp_tool import _LockCookie
+
+        lock_path = [None]
+        call_count = [0]
+
+        def mock_acquire():
+            call_count[0] += 1
+            if call_count[0] <= 1:
+                return None   # first call: lock held
+            # build a real cookie so release() works
+            tf = tempfile.NamedTemporaryFile(
+                prefix="mcp-lock-", suffix=".tmp", delete=False
+            )
+            lock_path[0] = tf.name
+            self._lock_exclusive(tf)
+            return _LockCookie(tf)
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+        try:
+            with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", mock_acquire), \
+                 patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+                 patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp__test_srv__ping"]) as reg_spy:
+                result = discover_mcp_tools()
+            assert result == ["mcp__test_srv__ping"]
+            # register_mcp_servers must be called (local discovery ran)
+            reg_spy.assert_called_once_with(mock_config)
+        finally:
+            if lock_path[0]:
+                try:
+                    os.unlink(lock_path[0])
+                except Exception:
+                    pass
+
+    def test_lock_held_retries_exhausted_fallback(self):
+        """All retry attempts see lock held -> runs discovery unguarded."""
+        from tools.mcp_tool import (
+            _LOCK_UNAVAILABLE,
+            discover_mcp_tools,
+            _MCP_DISCOVERY_LOCK_MAX_RETRIES,
+        )
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+        # Every attempt returns None (lock held)
+        with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", return_value=None), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+             patch("tools.mcp_tool.register_mcp_servers") as reg_spy, \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            result = discover_mcp_tools()
+        # Must still run local discovery
+        reg_spy.assert_called_once_with(mock_config)
+
+    def test_lock_unavailable_fallback(self):
+        """Lock unavailable/broken -> run discovery unguarded (no retry)."""
+        from tools.mcp_tool import (
+            _LOCK_UNAVAILABLE,
+            discover_mcp_tools,
+        )
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+        with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", return_value=_LOCK_UNAVAILABLE), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+             patch("tools.mcp_tool.register_mcp_servers") as reg_spy, \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            result = discover_mcp_tools()
+        reg_spy.assert_called_once_with(mock_config)
+
+    def test_windows_portalocker_handle_lifetime(self):
+        """_LockCookie keeps file handle alive until release()."""
+        import tempfile
+
+        from tools.mcp_tool import _LockCookie
+
+        with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
+            lock_path = tf.name
+
+        try:
+            fh = open(lock_path, "w", encoding="utf-8")
+            self._lock_exclusive(fh)
+            cookie = _LockCookie(fh)
+            assert not fh.closed
+            fno = fh.fileno()
+            assert fno > 0
+            cookie.release()
+            assert fh.closed
+        finally:
+            try:
+                os.unlink(lock_path)
+            except Exception:
+                pass
+
+    def test_double_release_safety(self):
+        """Calling release() twice is safe (no exception)."""
+        import tempfile
+
+        from tools.mcp_tool import _LockCookie
+
+        with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
+            lock_path = tf.name
+
+        try:
+            fh = open(lock_path, "w", encoding="utf-8")
+            self._lock_exclusive(fh)
+            cookie = _LockCookie(fh)
+            cookie.release()
+            assert fh.closed
+            # Second release -- must not raise
+            cookie.release()
+        finally:
+            try:
+                os.unlink(lock_path)
+            except Exception:
+                pass
+
+    def test_posix_flock_acquire_and_release(self):
+        """_acquire_lock_on_fh uses fcntl.flock on POSIX."""
+        import sys
+        import tempfile
+        from unittest.mock import MagicMock
+
+        mock_fcntl = MagicMock()
+        mock_fcntl.LOCK_EX = 2
+        mock_fcntl.LOCK_NB = 4
+
+        with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
+            lock_path = tf.name
+
+        try:
+            fh = open(lock_path, "w", encoding="utf-8")
+            with patch.dict("sys.modules", {"fcntl": mock_fcntl}), \
+                 patch("tools.mcp_tool.os.name", "posix"):
+                from tools.mcp_tool import _acquire_lock_on_fh
+                result = _acquire_lock_on_fh(fh)
+            assert result is True
+            mock_fcntl.flock.assert_called_once_with(
+                fh.fileno(), mock_fcntl.LOCK_EX | mock_fcntl.LOCK_NB
+            )
+            fh.close()
+        finally:
+            try:
+                os.unlink(lock_path)
+            except Exception:
+                pass
+
+    def test_posix_flock_oserror_eagain_returns_false(self):
+        """POSIX fcntl.flock raising OSError(EAGAIN) -> return False (lock held)."""
+        import errno
+        import tempfile
+        from unittest.mock import MagicMock, patch
+
+        mock_fcntl = MagicMock()
+        mock_fcntl.LOCK_EX = 2
+        mock_fcntl.LOCK_NB = 4
+        mock_fcntl.flock.side_effect = OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+        with tempfile.NamedTemporaryFile(prefix="mcp-lock-", suffix=".tmp", delete=False) as tf:
+            lock_path = tf.name
+
+        try:
+            fh = open(lock_path, "w", encoding="utf-8")
+            with patch.dict("sys.modules", {"fcntl": mock_fcntl}), \
+                 patch("tools.mcp_tool.os.name", "posix"):
+                from tools.mcp_tool import _acquire_lock_on_fh
+                result = _acquire_lock_on_fh(fh)
+            assert result is False
+            fh.close()
+        finally:
+            try:
+                os.unlink(lock_path)
+            except Exception:
+                pass
+
+    def test_two_concurrent_discovery_attempts(self):
+        """Two sequential calls both end up with a non-empty registry
+        (no early empty return). Each call gets its own cookie directly
+        on first acquire attempt."""
+        from tools.mcp_tool import (
+            _LOCK_UNAVAILABLE,
+            _LockCookie,
+            discover_mcp_tools,
+        )
+
+        mock_config = {"test_srv": {"command": "echo", "enabled": True}}
+
+        # Build two real cookie handles so release() works
+        import tempfile
+        tf1 = tempfile.NamedTemporaryFile(
+            prefix="mcp-lock-1-", suffix=".tmp", delete=False
+        )
+        tf2 = tempfile.NamedTemporaryFile(
+            prefix="mcp-lock-2-", suffix=".tmp", delete=False
+        )
+        lock_path1 = tf1.name
+        lock_path2 = tf2.name
+        cookie1 = _LockCookie(tf1)
+        cookie2 = _LockCookie(tf2)
+        self._lock_exclusive(tf1)
+        self._lock_exclusive(tf2)
+
+        def make_sequencer():
+            state = {"call": 0, "cookie1": cookie1, "cookie2": cookie2}
+            def seq():
+                state["call"] += 1
+                if state["call"] == 1:
+                    return state["cookie1"]
+                else:
+                    return state["cookie2"]
+            return seq
+
+        seq_fn = make_sequencer()
+
+        try:
+            with patch("tools.mcp_tool._try_acquire_mcp_discovery_lock", side_effect=seq_fn), \
+                 patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._load_mcp_config", return_value=mock_config), \
+                 patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp__test_srv__ping"]):
+                r1 = discover_mcp_tools()
+                r2 = discover_mcp_tools()
+
+            assert r1 == ["mcp__test_srv__ping"]
+            assert r2 == ["mcp__test_srv__ping"]
+        finally:
+            for path in (lock_path1, lock_path2):
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass

@@ -536,19 +536,40 @@ def render_blocks(
 
 
 def _split_text(text: str, limit: int) -> List[str]:
-    """Split ``text`` into <= ``limit``-char chunks on line, then hard, boundaries."""
+    """Split ``text`` into <= ``limit``-char chunks on line, then hard, boundaries.
+
+    Chunks are fence-balanced: when a split lands inside a ``` code span that
+    survived into section text (the renderer normally routes fenced blocks to
+    ``rich_text_preformatted``, but mrkdwn text can still carry fences), the
+    fence is closed at the end of the chunk and reopened on the next so each
+    section renders correctly on its own.
+    """
     if len(text) <= limit:
         return [text]
+    # Reserve headroom for the close/reopen markers the balancing pass adds.
+    split_limit = max(limit - 8, limit // 2, 1) if "```" in text else limit
     out: List[str] = []
     remaining = text
-    while len(remaining) > limit:
-        cut = remaining.rfind("\n", 0, limit)
+    while len(remaining) > split_limit:
+        cut = remaining.rfind("\n", 0, split_limit)
         if cut <= 0:
-            cut = limit
+            cut = split_limit
         out.append(remaining[:cut])
         remaining = remaining[cut:].lstrip("\n")
     if remaining:
         out.append(remaining)
+    if len(out) > 1 and "```" in text:
+        balanced: List[str] = []
+        reopen = False
+        for chunk in out:
+            if reopen:
+                chunk = "```\n" + chunk
+            odd = chunk.count("```") % 2 == 1
+            if odd:
+                chunk += "\n```"
+            reopen = odd
+            balanced.append(chunk)
+        out = balanced
     return out
 
 

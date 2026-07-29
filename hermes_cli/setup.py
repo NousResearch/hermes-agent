@@ -23,7 +23,6 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
-from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -92,7 +91,7 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "gemini": [
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
-        "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
+        "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
     ],
     "vertex": [
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview",
@@ -547,6 +546,35 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
+    # STT — show configured provider
+    stt_provider = cfg_get(config, "stt", "provider", default="local") or "local"
+    _stt_feature = subscription_features.features.get("stt")
+    if _stt_feature is not None and _stt_feature.managed_by_nous:
+        tool_status.append(("Speech-to-Text (OpenAI via Nous subscription)", True, None))
+    elif stt_provider == "openai" and (
+        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+    ):
+        tool_status.append(("Speech-to-Text (OpenAI)", True, None))
+    elif stt_provider == "groq" and get_env_value("GROQ_API_KEY"):
+        tool_status.append(("Speech-to-Text (Groq Whisper)", True, None))
+    elif stt_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
+        tool_status.append(("Speech-to-Text (ElevenLabs Scribe)", True, None))
+    elif stt_provider == "xai":
+        tool_status.append(("Speech-to-Text (xAI)", True, None))
+    elif stt_provider == "deepinfra" and get_env_value("DEEPINFRA_API_KEY"):
+        tool_status.append(("Speech-to-Text (DeepInfra)", True, None))
+    else:
+        try:
+            fw_ok = importlib.util.find_spec("faster_whisper") is not None
+        except Exception:
+            fw_ok = False
+        if fw_ok:
+            tool_status.append(("Speech-to-Text (Local Whisper)", True, None))
+        else:
+            tool_status.append(
+                ("Speech-to-Text (Local Whisper — not installed)", False, "run 'hermes tools' → Speech-to-Text")
+            )
+
     if subscription_features.modal.managed_by_nous:
         tool_status.append(("Modal Execution (Nous subscription)", True, None))
     elif cfg_get(config, "terminal", "backend") == "modal":
@@ -766,12 +794,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     config.clear()
     config.update(_refreshed)
 
-    # Derive the selected provider for downstream steps (vision setup).
-    selected_provider = None
-    _m = config.get("model")
-    if isinstance(_m, dict):
-        selected_provider = _m.get("provider")
-
     # Credential rotation, vision-backend selection, and TTS provider are no
     # longer prompted here. They have safe defaults (rotation off, vision
     # auto-detected from the main provider, TTS = Edge) and are configurable
@@ -851,8 +873,6 @@ def _install_neutts_deps() -> bool:
 
 def _install_kittentts_deps() -> bool:
     """Install KittenTTS dependencies with user approval. Returns True on success."""
-    import subprocess
-    import sys
 
     wheel_url = (
         "https://github.com/KittenML/KittenTTS/releases/download/"
@@ -896,16 +916,19 @@ def _xai_oauth_logged_in_for_setup() -> bool:
 def _run_xai_oauth_login_from_setup() -> bool:
     """Run the xAI Grok OAuth device-code login from inside the setup wizard.
 
+    Saves OAuth tokens only. Does **not** switch the active inference
+    provider or rewrite ``model.provider`` — callers (TTS setup, tools
+    config) only need credentials for side tools.
+
     Returns True on success, False on any failure (the caller falls back
     to whatever the user picked next, e.g. Edge TTS).
     """
     try:
         from hermes_cli.auth import (
-            DEFAULT_XAI_OAUTH_BASE_URL,
             _is_remote_session,
             _save_xai_oauth_tokens,
-            _update_config_for_provider,
             _xai_oauth_device_code_login,
+            unsuppress_credential_source,
         )
     except Exception as exc:
         print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
@@ -922,10 +945,11 @@ def _run_xai_oauth_login_from_setup() -> bool:
             redirect_uri=creds.get("redirect_uri", ""),
             last_refresh=creds.get("last_refresh"),
             auth_mode="oauth_device_code",
+            set_active=False,
         )
-        _update_config_for_provider(
-            "xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL)
-        )
+        # Mirror model/dashboard re-login: clear device_code suppression so
+        # the pool can seed from the singleton after a prior `auth remove`.
+        unsuppress_credential_source("xai-oauth", "device_code")
         return True
     except Exception as exc:
         print_warning(f"xAI Grok OAuth login failed: {exc}")
@@ -1247,6 +1271,28 @@ def setup_terminal_backend(config: dict):
         config["terminal"].setdefault(
             "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
+        print()
+        print_info("Docker sandboxes can be protected with the egress credential firewall.")
+        print_info(
+            "It routes sandbox traffic through iron-proxy so containers receive "
+            "proxy tokens instead of real API keys."
+        )
+        print_info(
+            "   Docker only for now; Modal, SSH, Daytona, and Singularity are not wired yet."
+        )
+        if prompt_yes_no("  Enable egress firewall for Docker sandboxes?", False):
+            proxy_cfg = config.setdefault("proxy", {})
+            proxy_cfg["enabled"] = True
+            proxy_cfg.setdefault("enforce_on_docker", True)
+            print_success("Egress firewall enabled in config")
+            print_info(
+                "Run `hermes egress setup` then `hermes egress start` to mint "
+                "tokens and launch the proxy."
+            )
+        else:
+            print_info(
+                "Skipping egress firewall. You can enable it later with `hermes egress setup`."
+            )
 
     elif selected_backend == "singularity":
         print_success("Terminal backend: Singularity/Apptainer")
@@ -1428,7 +1474,7 @@ def setup_terminal_backend(config: dict):
                 ssh_cmd.extend(["-p", port])
             ssh_cmd.append(f"{user}@{host}" if user else host)
             ssh_cmd.append("echo ok")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             if result.returncode == 0:
                 print_success("  SSH connection successful!")
             else:
@@ -2200,6 +2246,37 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
+# Shared Metrics
+# =============================================================================
+
+
+def setup_telemetry(config: dict):
+    """Configure the local, privacy-safe shared-metrics subscriber."""
+    print_header("Shared Metrics")
+    print_info("Shared metrics contain only bounded counters and histograms.")
+    print_info("Packages stay under this Hermes profile and are not uploaded.")
+
+    telemetry = config.get("telemetry")
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+        config["telemetry"] = telemetry
+    shared_metrics = telemetry.get("shared_metrics")
+    if not isinstance(shared_metrics, dict):
+        shared_metrics = {}
+        telemetry["shared_metrics"] = shared_metrics
+
+    current = shared_metrics.get("enabled") is True
+    shared_metrics["enabled"] = prompt_yes_no(
+        "Enable local shared metrics?",
+        default=current,
+    )
+    if shared_metrics["enabled"]:
+        print_success("Local shared metrics enabled.")
+    else:
+        print_info("Local shared metrics disabled.")
+
+
+# =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
 
@@ -2607,6 +2684,7 @@ SETUP_SECTIONS = [
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
+    ("telemetry", "Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
@@ -2705,6 +2783,7 @@ def run_setup_wizard(args):
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
+      hermes setup telemetry — just local shared metrics
       hermes setup agent     — just agent settings
     """
     from hermes_cli.config import is_managed, managed_error
@@ -3089,7 +3168,6 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
 
     Either way nothing is enabled that the user did not explicitly choose.
     """
-    from hermes_cli.config import load_config
 
     print()
     print_header("Blank Slate Setup")

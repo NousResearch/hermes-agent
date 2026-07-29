@@ -27,8 +27,11 @@ class FakeWebSocket {
   static OPEN = 1
   static CLOSED = 3
   // Flipped by the test: 'open' = next socket connects; 'fail' = next socket
-  // errors (a dead remote). Mirrors a VPS going away after the first connect.
-  static mode: 'open' | 'fail' = 'open'
+  // errors (a dead remote); 'closeCode' = the gateway accepts the WS upgrade
+  // and immediately closes with FakeWebSocket.closeCode instead of firing
+  // 'error' (the hermes_cli/web_server.py auth-rejection shape).
+  static mode: 'closeCode' | 'fail' | 'open' = 'open'
+  static closeCode = 4401
   static instances: FakeWebSocket[] = []
 
   readyState = 0
@@ -36,13 +39,16 @@ class FakeWebSocket {
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
-    const willOpen = FakeWebSocket.mode === 'open'
+    const mode = FakeWebSocket.mode
     // Resolve on the next microtask/macrotask so connect()'s promise wiring is
-    // in place before open/error fires (matches real async socket handshake).
+    // in place before open/error/close fires (matches real async handshake).
     setTimeout(() => {
-      if (willOpen) {
+      if (mode === 'open') {
         this.readyState = FakeWebSocket.OPEN
         this.emit('open', {})
+      } else if (mode === 'closeCode') {
+        this.readyState = FakeWebSocket.CLOSED
+        this.emit('close', { code: FakeWebSocket.closeCode })
       } else {
         this.readyState = FakeWebSocket.CLOSED
         this.emit('error', {})
@@ -145,6 +151,7 @@ beforeEach(() => {
 
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
+  FakeWebSocket.closeCode = 4401
   FakeWebSocket.instances = []
   connectionApplied = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
@@ -315,6 +322,175 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('BOOT FIX: a transient connect failure during boot retries instead of failing immediately', async () => {
+    // The remote-gateway version of this bug: the route (e.g. over Tailscale)
+    // just isn't up yet at launch. Stock boot() had zero retries here — one
+    // failed connect and the app went straight to the fatal overlay.
+    FakeWebSocket.mode = 'fail'
+    render(<Harness />)
+    await flushAsync()
+
+    // First attempt failed, but that alone must not be fatal.
+    expect($gatewayState.get()).not.toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    // The route comes up before the first scheduled retry fires.
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+  })
+
+  it('BOOT FIX: an auth rejection during boot fails fast without retrying', async () => {
+    // Distinct from the transport-failure case above: a stale/rejected OAuth
+    // ticket can never succeed by retrying, so this must still fail on the
+    // first attempt exactly like stock boot() did.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => ({
+      authMode: 'oauth' as const,
+      baseUrl: 'https://vps.example.com',
+      profile: 'default',
+      token: '',
+      wsUrl: 'wss://vps.example.com/api/ws?ticket=stale'
+    })) as unknown as typeof desktop.getConnection
+    desktop.getGatewayWsUrl = vi.fn(async () => ({
+      error: 'ticket expired',
+      needsOauthLogin: true,
+      ok: false as const
+    })) as unknown as typeof desktop.getGatewayWsUrl
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    // resolveGatewayWsUrl throws before gateway.connect() ever runs — no
+    // socket was created.
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    // No retry got scheduled: advancing well past the backoff window doesn't
+    // draw another getConnection() call.
+    await advanceBackoff()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it('BOOT FIX: a handshake refused with an auth close code (4401) fails fast without retrying', async () => {
+    // The gateway can reject an unauthorized/expired session by accepting the
+    // WS upgrade and immediately closing with an app-level auth code
+    // (hermes_cli/web_server.py) instead of ever firing 'error'. That must
+    // fail fast like the stale-ticket case above, not sit through the
+    // connect timeout and then retry for ~45s behind the same overlay.
+    FakeWebSocket.mode = 'closeCode'
+    FakeWebSocket.closeCode = 4401
+    render(<Harness />)
+    await flushAsync()
+
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($desktopBoot.get().error).toBeTruthy()
+    // Not just "some error" — it must be the sign-in-recovery text
+    // isRemoteReauthError() string-matches on (boot-failure-reauth.ts), or the
+    // overlay drops into the generic local-only Retry/Repair buttons instead
+    // of the actual fix (sign in again).
+    expect($desktopBoot.get().error).toMatch(/remote gateway session has expired/i)
+
+    // No retry got scheduled: advancing well past the backoff window draws no
+    // second socket.
+    await advanceBackoff()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('BOOT FIX: a handshake refused with a policy close code (4403) fails fast but is not sign-in-shaped', async () => {
+    // 4403 means the gateway rejected the connection on host/origin/policy
+    // grounds (embedded chat disabled, wrong Host header, etc. —
+    // web_server.py:18632,18640), not an expired session. It must still fail
+    // fast (retrying a server-issued refusal is pointless) but must NOT carry
+    // needsOauthLogin or the sign-in message — re-authenticating can't fix it,
+    // so routing to the reauth overlay would be actively misleading.
+    FakeWebSocket.mode = 'closeCode'
+    FakeWebSocket.closeCode = 4403
+    render(<Harness />)
+    await flushAsync()
+
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().error).not.toMatch(/remote gateway session has expired/i)
+    expect($desktopBoot.get().error).toBe('Could not connect to Hermes gateway')
+
+    // No retry got scheduled.
+    await advanceBackoff()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('BOOT FIX: repeated transient failures escalate to a recoverable error, and retries continue afterward', async () => {
+    FakeWebSocket.mode = 'fail'
+    render(<Harness />)
+    await flushAsync()
+    expect($desktopBoot.get().error).toBeNull()
+
+    // Walk the backoff past the escalation threshold (mirrors the post-boot
+    // reconnect loop's own >=6-attempt walk above).
+    for (let i = 0; i < 8; i += 1) {
+      await advanceBackoff()
+    }
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    const attemptsAtEscalation = FakeWebSocket.instances.length
+    expect(attemptsAtEscalation).toBeGreaterThan(1)
+
+    // Retrying must not stop once the overlay is up — a later attempt (the
+    // "7th try") still runs and can recover.
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(attemptsAtEscalation)
+  })
+
+  it('BOOT FIX: a pending boot retry does not re-dial after a soft gateway switch', async () => {
+    // The race: boot() schedules a retry, then before it fires the user
+    // applies a different gateway (softSwitch, driven by connectionApplied).
+    // A stale retry that re-enters boot() here would call gateway.connect()
+    // while the switch's own dial already flipped the socket to 'connecting'
+    // (or past it, to 'open') — connect() short-circuits on that state without
+    // awaiting a real socket, so boot() would treat the connection as open
+    // before it actually is and re-run completeDesktopBoot() behind the
+    // switch's back.
+    const desktop = fakeDesktop()
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    FakeWebSocket.mode = 'fail'
+    render(<Harness />)
+    await flushAsync()
+
+    // Initial boot failed once; a retry is pending (not yet fired).
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($desktopBoot.get().error).toBeNull()
+    const dialsBeforeSwitch = desktop.getConnection.mock.calls.length
+
+    // The remote comes up before the switch dials, so the switch itself
+    // succeeds cleanly — isolating the assertion to "did the stale retry
+    // re-fire", not "did the switch also fail".
+    FakeWebSocket.mode = 'open'
+    act(() => connectionApplied?.())
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+    // softSwitch's own dial: exactly one new socket, one new getConnection call.
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(desktop.getConnection.mock.calls.length).toBe(dialsBeforeSwitch + 1)
+
+    // Advance well past where the stale retry would have fired (1s) — nothing
+    // new dials.
+    await advanceBackoff()
+
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(desktop.getConnection.mock.calls.length).toBe(dialsBeforeSwitch + 1)
   })
 
   it('FIX: a failed session-list fetch during boot is non-fatal — the app still boots', async () => {

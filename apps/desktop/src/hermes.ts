@@ -222,6 +222,11 @@ export type {
 export class HermesGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
+      // Same text backend-health.ts uses for a rejected refresh token —
+      // isRemoteReauthError() string-matches on it, which is what routes the
+      // boot-failure overlay to its sign-in recovery path instead of the
+      // generic local-only Retry/Repair buttons.
+      authRejectedErrorMessage: 'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,

@@ -50,6 +50,11 @@ type PendingCall = {
 }
 
 export interface GatewayClientOptions {
+  /** Message for a handshake rejected by an auth close code (4401). Defaults
+   *  to connectErrorMessage; callers that want the boot-failure overlay to
+   *  route to its sign-in recovery path should set this to text
+   *  isRemoteReauthError() recognizes. */
+  authRejectedErrorMessage?: string
   closedErrorMessage?: string
   connectErrorMessage?: string
   connectTimeoutMs?: number
@@ -70,6 +75,11 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 export class JsonRpcGatewayClient {
   private nextId = 0
   private pending = new Map<GatewayRequestId, PendingCall>()
+  // Set for the duration of an in-flight connect() handshake, null once it
+  // settles (open/error/timeout/close). Lets close() reject a handshake
+  // that's still pending instead of leaving it to dangle until the connect
+  // timeout fires.
+  private rejectInFlightHandshake: ((error: Error) => void) | null = null
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
@@ -78,9 +88,12 @@ export class JsonRpcGatewayClient {
     Pick<GatewayClientOptions, 'socketFactory'>
 
   constructor(options: GatewayClientOptions = {}) {
+    const connectErrorMessage = options.connectErrorMessage ?? 'WebSocket connection failed'
+
     this.options = {
+      authRejectedErrorMessage: options.authRejectedErrorMessage ?? connectErrorMessage,
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
-      connectErrorMessage: options.connectErrorMessage ?? 'WebSocket connection failed',
+      connectErrorMessage,
       connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
@@ -128,6 +141,12 @@ export class JsonRpcGatewayClient {
     const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
     this.socket = socket
 
+    // Latched once the opening-handshake promise below settles (open, error,
+    // timeout, or an auth-rejecting close). Local to this connect() call —
+    // this.rejectInFlightHandshake (settled the same way) is the instance-wide
+    // hook close() uses to tear down a handshake that's still pending.
+    let handshakeSettled = false
+
     socket.addEventListener('message', message => {
       if (this.socket !== socket) {
         return
@@ -136,7 +155,7 @@ export class JsonRpcGatewayClient {
       this.handleMessage(message.data)
     })
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', event => {
       if (this.socket !== socket) {
         return
       }
@@ -144,10 +163,36 @@ export class JsonRpcGatewayClient {
       this.socket = null
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
+
+      if (handshakeSettled) {
+        return
+      }
+
+      // The gateway can reject an unauthorized/expired session by accepting
+      // the WS upgrade and immediately closing with an app-level auth code
+      // (hermes_cli/web_server.py) instead of ever firing 'error' — that code
+      // is only ever observable here. 4401 (auth rejected) gets
+      // authRejectedErrorMessage and needsOauthLogin so
+      // isGatewayReauthRequired() routes it to sign-in; 4403 (host/origin/
+      // policy rejection — embedded chat disabled, wrong Host header, etc.)
+      // gets the close code but not the sign-in flag, since re-authenticating
+      // can't fix it.
+      const code = event.code
+      const err = new Error(
+        code === 4401 ? this.options.authRejectedErrorMessage : this.options.connectErrorMessage
+      ) as Error & { needsOauthLogin?: boolean; wsCloseCode?: number }
+
+      if (code === 4401) {
+        err.needsOauthLogin = true
+        err.wsCloseCode = code
+      } else if (code === 4403) {
+        err.wsCloseCode = code
+      }
+
+      this.rejectInFlightHandshake?.(err)
     })
 
     await new Promise<void>((resolve, reject) => {
-      let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
 
       const cleanup = () => {
@@ -159,23 +204,36 @@ export class JsonRpcGatewayClient {
         socket.removeEventListener('error', onError)
       }
 
-      const onOpen = () => {
-        if (settled || this.socket !== socket) {
+      this.rejectInFlightHandshake = error => {
+        if (handshakeSettled) {
           return
         }
 
-        settled = true
+        handshakeSettled = true
+        this.rejectInFlightHandshake = null
+        cleanup()
+        reject(error)
+      }
+
+      const onOpen = () => {
+        if (handshakeSettled || this.socket !== socket) {
+          return
+        }
+
+        handshakeSettled = true
+        this.rejectInFlightHandshake = null
         cleanup()
         this.setState('open')
         resolve()
       }
 
       const onError = () => {
-        if (settled || this.socket !== socket) {
+        if (handshakeSettled || this.socket !== socket) {
           return
         }
 
-        settled = true
+        handshakeSettled = true
+        this.rejectInFlightHandshake = null
         cleanup()
         this.setState('error')
         reject(new Error(this.options.connectErrorMessage))
@@ -186,25 +244,29 @@ export class JsonRpcGatewayClient {
 
       if (this.options.connectTimeoutMs > 0) {
         timer = setTimeout(() => {
-          if (settled) {
+          // handshakeSettled covers the normal endings: open/error settled
+          // it, or close() settled it via rejectInFlightHandshake (whose
+          // cleanup also clears this timer). The socket-identity check is
+          // defense in depth for any future path that swaps this.socket
+          // without settling the in-flight handshake — a stale timer must
+          // never stomp a newer, already-open connection back to 'error'.
+          if (handshakeSettled || this.socket !== socket) {
             return
           }
 
-          settled = true
+          handshakeSettled = true
+          this.rejectInFlightHandshake = null
           cleanup()
 
           // Drop the half-open socket so the next connect() starts clean
           // instead of short-circuiting on a zombie 'connecting' state.
-          if (this.socket === socket) {
-            try {
-              socket.close()
-            } catch {
-              // ignore
-            }
-
-            this.socket = null
+          try {
+            socket.close()
+          } catch {
+            // ignore
           }
 
+          this.socket = null
           this.setState('error')
           reject(new Error(this.options.connectErrorMessage))
         }, this.options.connectTimeoutMs)
@@ -225,6 +287,7 @@ export class JsonRpcGatewayClient {
       this.socket = null
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
+      this.rejectInFlightHandshake?.(new Error(this.options.closedErrorMessage))
     }
   }
 

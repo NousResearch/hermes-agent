@@ -271,6 +271,12 @@ export function useGatewayBoot({
       reconnectAttempt = 0
       escalated = false
       reauthNotified = false
+      // A pending boot retry (scheduled while the app was still on its first
+      // gateway) must not fire into this new dial — its stale attempt/escalated
+      // counters belong to the gateway we're switching away from.
+      clearBootRetryTimer()
+      bootRetryAttempt = 0
+      bootEscalated = false
       callbacksRef.current.beforeConnectionSwitch()
       wipeSessionListsForGatewaySwitch()
 
@@ -465,7 +471,62 @@ export function useGatewayBoot({
       })
     })
 
+    // --- Boot-connect retry machinery -----------------------------------------
+    // A remote gateway (e.g. reached over Tailscale) may not have a route open
+    // yet at launch — that's a transient transport failure, not a reason to
+    // brick boot on the first try. Kept independent from the post-boot
+    // reconnect counters above: boot() hasn't set bootCompleted yet, so
+    // scheduleReconnect's own guards never fire during this phase.
+    let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    let bootRetryAttempt = 0
+    // Raised once a retried boot crosses RECONNECT_ESCALATE_AFTER failures, so
+    // the recovery overlay replaces the dead-end CONNECTING screen. Retries
+    // keep going after this — a later success still reaches completeDesktopBoot
+    // and clears the overlay, same as the post-boot reconnect escalation.
+    let bootEscalated = false
+
+    const clearBootRetryTimer = () => {
+      if (bootRetryTimer !== null) {
+        clearTimeout(bootRetryTimer)
+        bootRetryTimer = null
+      }
+    }
+
+    const scheduleBootRetry = () => {
+      if (cancelled || bootRetryTimer !== null || $gatewaySwitching.get()) {
+        return
+      }
+
+      // Same 1s, 2s, 4s … capped-at-15s backoff as the post-boot reconnect loop.
+      const delay = Math.min(15_000, 1_000 * 2 ** Math.min(bootRetryAttempt, 4))
+      bootRetryAttempt += 1
+      bootRetryTimer = setTimeout(() => {
+        bootRetryTimer = null
+
+        // Re-check at fire time, not just at schedule time: a softSwitch (or
+        // unmount) can land in the gap between scheduling and firing. Without
+        // this, boot() re-enters while a switch is dialing — gateway.connect()
+        // short-circuits on the 'connecting' state without awaiting the new
+        // socket, so wsOpen would go true before that dial actually opens.
+        if (cancelled || bootCompleted || $gatewaySwitching.get()) {
+          return
+        }
+
+        void boot()
+      }, delay)
+    }
+
     async function boot() {
+      // Only the WS connect step (mint URL + open socket) is retry-eligible.
+      // desktop.getConnection() already ran its own wait/backoff in the main
+      // process (see waitForHermes above), so a failure there is terminal, not
+      // transient. Likewise a failure after the socket is open (profile/config/
+      // cwd fetches) keeps the original fail-fast behavior — only the "is the
+      // gateway reachable at all" step is what a not-yet-routed remote gateway
+      // actually hits.
+      let reachedConnectPhase = false
+      let wsOpen = false
+
       try {
         const conn = await desktop.getConnection()
 
@@ -473,11 +534,22 @@ export function useGatewayBoot({
           return
         }
 
-        setDesktopBootStep({
-          phase: 'renderer.gateway.connect',
-          message: translateNow('boot.steps.connectingGateway'),
-          progress: 95
-        })
+        reachedConnectPhase = true
+
+        // Skip the progress ping once the recovery overlay is up: applyDesktopBootProgress
+        // treats a step's implicit running:true as "boot is healthy again" and
+        // clears the error on the *next* ping — which would flicker the overlay
+        // away mid-retry, before this attempt even resolves. completeDesktopBoot()
+        // still fires unconditionally on an eventual success, so recovery isn't
+        // delayed by skipping this one.
+        if (!bootEscalated) {
+          setDesktopBootStep({
+            phase: 'renderer.gateway.connect',
+            message: translateNow('boot.steps.connectingGateway'),
+            progress: 95
+          })
+        }
+
         publish(conn)
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
@@ -486,6 +558,7 @@ export function useGatewayBoot({
         // connectivity failures remain retryable.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
+        wsOpen = true
 
         if (cancelled) {
           return
@@ -525,12 +598,40 @@ export function useGatewayBoot({
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err)
-          failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
-          setSessionsLoading(false)
+        if (cancelled) {
+          return
         }
+
+        // Transport failure while dialing the gateway — a remote gateway (e.g.
+        // over Tailscale) may not have a route open yet. Retry with backoff
+        // instead of an immediate fatal. Two shapes still fall through to the
+        // fail-fast branch below, same split as the post-boot reconnect loop:
+        // a 4401 auth rejection (the case isGatewayReauthRequired()
+        // recognizes — signing in is the only fix) and any other handshake
+        // the gateway explicitly refused with a WS close code (wsCloseCode,
+        // e.g. a 4403 policy refusal) — the server already made a decision,
+        // so retrying is pointless either way.
+        const gatewayRefusedHandshake =
+          isGatewayReauthRequired(err) || typeof (err as { wsCloseCode?: unknown } | null)?.wsCloseCode === 'number'
+
+        if (reachedConnectPhase && !wsOpen && !gatewayRefusedHandshake) {
+          if (bootRetryAttempt >= RECONNECT_ESCALATE_AFTER && !bootEscalated) {
+            bootEscalated = true
+            const message = err instanceof Error ? err.message : String(err)
+            failDesktopBoot(message)
+            notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+            setSessionsLoading(false)
+          }
+
+          scheduleBootRetry()
+
+          return
+        }
+
+        const message = err instanceof Error ? err.message : String(err)
+        failDesktopBoot(message)
+        notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+        setSessionsLoading(false)
       }
     }
 
@@ -575,6 +676,7 @@ export function useGatewayBoot({
       cancelled = true
       $gatewaySwitching.set(false)
       clearReconnectTimer()
+      clearBootRetryTimer()
       clearInterval(keepaliveTimer)
       offWorking()
       offAttention()

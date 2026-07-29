@@ -111,6 +111,8 @@ from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
 
+from tools.registry import tool_error
+
 logger = logging.getLogger(__name__)
 
 # Upper bound for the OSV malware preflight during stdio MCP startup. The
@@ -3899,16 +3901,14 @@ def _handle_auth_error_and_retry(
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
-    return json.dumps({
-        "error": (
-            f"MCP server '{server_name}' requires re-authentication. "
-            f"Run `hermes mcp login {server_name}` (or delete the tokens "
-            f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
-            f"this tool — ask the user to re-authenticate."
-        ),
-        "needs_reauth": True,
-        "server": server_name,
-    }, ensure_ascii=False)
+    return tool_error(
+        f"MCP server '{server_name}' requires re-authentication. "
+        f"Run `hermes mcp login {server_name}` (or delete the tokens "
+        f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
+        f"this tool — ask the user to re-authenticate.",
+        needs_reauth=True,
+        server=server_name,
+    )
 
 
 # Substrings (lower-cased match) that indicate the MCP server rejected
@@ -4498,9 +4498,7 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
 
 def _interrupted_call_result() -> str:
     """Standardized JSON error for a user-interrupted MCP tool call."""
-    return json.dumps({
-        "error": "MCP call interrupted: user sent a new message"
-    }, ensure_ascii=False)
+    return tool_error("MCP call interrupted: user sent a new message")
 
 
 # ---------------------------------------------------------------------------
@@ -4696,23 +4694,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             age = time.monotonic() - opened_at
             if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
                 remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
-                return json.dumps({
-                    "error": (
-                        f"MCP server '{server_name}' is unreachable after "
-                        f"{_server_error_counts[server_name]} consecutive "
-                        f"failures. Auto-retry available in ~{remaining}s. "
-                        f"Do NOT retry this tool yet — use alternative "
-                        f"approaches or ask the user to check the MCP server."
-                    )
-                }, ensure_ascii=False)
+                return tool_error(
+                    f"MCP server '{server_name}' is unreachable after "
+                    f"{_server_error_counts[server_name]} consecutive "
+                    f"failures. Auto-retry available in ~{remaining}s. "
+                    f"Do NOT retry this tool yet — use alternative "
+                    f"approaches or ask the user to check the MCP server."
+                )
             # Cooldown elapsed → fall through as a half-open probe.
 
         server = _get_connected_server_for_call(server_name)
         if not server:
             _bump_server_error(server_name)
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            return tool_error(f"MCP server '{server_name}' is not connected")
 
         if not server.session:
             # No live session. A reconnect may already be completing (the
@@ -4737,16 +4731,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # _reset_server_error).
                 _bump_server_error(server_name)
                 if _signal_reconnect(server):
-                    return json.dumps({
-                        "error": (
-                            f"MCP server '{server_name}' transport is down; "
-                            f"reconnect requested. Do NOT retry this tool "
-                            f"immediately — give it a few seconds to come back."
-                        )
-                    }, ensure_ascii=False)
-                return json.dumps({
-                    "error": f"MCP server '{server_name}' is not connected"
-                }, ensure_ascii=False)
+                    return tool_error(
+                        f"MCP server '{server_name}' transport is down; "
+                        f"reconnect requested. Do NOT retry this tool "
+                        f"immediately — give it a few seconds to come back."
+                    )
+                return tool_error(f"MCP server '{server_name}' is not connected")
 
         async def _call():
             _mark_server_call_started(server)
@@ -4779,11 +4769,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     res_text = getattr(getattr(block, "resource", None), "text", None)
                     if res_text:
                         error_text += str(res_text)
-                return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
-                    )
-                }, ensure_ascii=False)
+                return tool_error(_sanitize_error(
+                    error_text or "MCP tool returned an error"
+                ))
 
             # Collect text from content blocks. MCP tool results can also
             # include ImageContent blocks (screenshot / Blockbench / Playwright
@@ -4891,11 +4879,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-                )
-            }, ensure_ascii=False)
+            return tool_error(_sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+            ))
 
     return _handler
 
@@ -4906,9 +4892,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            return tool_error(f"MCP server '{server_name}' is not connected")
 
         async def _call():
             _mark_server_call_started(server)
@@ -4951,11 +4935,9 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-                )
-            }, ensure_ascii=False)
+            return tool_error(_sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+            ))
 
     return _handler
 
@@ -4964,13 +4946,9 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        from tools.registry import tool_error
-
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            return tool_error(f"MCP server '{server_name}' is not connected")
 
         uri = args.get("uri")
         if not uri:
@@ -5018,11 +4996,9 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-                )
-            }, ensure_ascii=False)
+            return tool_error(_sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+            ))
 
     return _handler
 
@@ -5033,9 +5009,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            return tool_error(f"MCP server '{server_name}' is not connected")
 
         async def _call():
             _mark_server_call_started(server)
@@ -5083,11 +5057,9 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-                )
-            }, ensure_ascii=False)
+            return tool_error(_sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+            ))
 
     return _handler
 
@@ -5096,13 +5068,9 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        from tools.registry import tool_error
-
         server = _get_connected_server_for_call(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            return tool_error(f"MCP server '{server_name}' is not connected")
 
         name = args.get("name")
         if not name:
@@ -5154,11 +5122,9 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
             )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
-                )
-            }, ensure_ascii=False)
+            return tool_error(_sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+            ))
 
     return _handler
 

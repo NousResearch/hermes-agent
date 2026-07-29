@@ -469,11 +469,13 @@ class TestFetchModelsDev:
         mock_fetch.assert_called_once_with(allow_network=False)
 
     @patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY)
-    def test_provider_info_default_allows_network(self, mock_fetch):
+    def test_provider_info_default_preserves_zero_argument_fetch(self, mock_fetch):
+        """Default path must stay a zero-arg call: many test sites monkeypatch
+        fetch_models_dev with zero-arg lambdas."""
         info = get_provider_info("anthropic")
 
         assert info is not None
-        mock_fetch.assert_called_once_with(allow_network=True)
+        mock_fetch.assert_called_once_with()
 
     def test_provider_definition_propagates_network_disabled(self):
         from hermes_cli.providers import get_provider

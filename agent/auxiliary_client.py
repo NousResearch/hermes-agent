@@ -4741,14 +4741,15 @@ def _try_configured_fallback_for_unavailable_client(
 
 
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
-    """Resolve inline or env-backed API key from a fallback-chain entry."""
-    explicit = str(entry.get("api_key") or "").strip()
-    if explicit:
-        return explicit
-    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
-    if key_env:
-        return os.getenv(key_env, "").strip() or None
-    return None
+    """Resolve inline or env-backed API key from a fallback-chain entry.
+
+    Delegates to the centralized, secret-scope-aware resolver so this path
+    doesn't leak another profile's credential via a raw ``os.getenv`` under
+    gateway multiplexing (see ``hermes_cli.fallback_config.resolve_entry_api_key``).
+    """
+    from hermes_cli.fallback_config import resolve_entry_api_key
+
+    return resolve_entry_api_key(entry)
 
 
 def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:

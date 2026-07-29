@@ -4677,9 +4677,11 @@ def cmd_import(args):
 
 def _print_version_info(*, check_updates: bool = True) -> None:
     from hermes_cli.config import detect_install_method
-    from hermes_cli.banner import format_banner_version_label
+    from hermes_cli.slash_exec import CommandContext, execute_command
 
-    print(format_banner_version_label())
+    # Core version line is registry-owned (shared with the gateway /version);
+    # the install/python/SDK detail below is CLI-only decoration.
+    print(execute_command("version", CommandContext(surface="cli")).text)
     print(f"Install directory: {PROJECT_ROOT}")
     print(f"Install method: {detect_install_method(PROJECT_ROOT)}")
 

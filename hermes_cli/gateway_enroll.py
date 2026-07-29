@@ -114,6 +114,8 @@ def _post_enroll(
     failure. The connector returns ``{secret, deliveryKey, tenant, gatewayId}``
     on success, ``{error}`` at 400/401/403.
     """
+    from hermes_cli.urllib_security import open_credentialed_url
+
     url = f"{connector_base_url.rstrip('/')}/relay/enroll"
     data = json.dumps({"enrollmentToken": enrollment_token, "gatewayId": gateway_id}).encode("utf-8")
     req = urllib.request.Request(
@@ -127,7 +129,7 @@ def _post_enroll(
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         detail = ""

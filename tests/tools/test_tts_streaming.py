@@ -124,9 +124,11 @@ def test_never_swaps_provider_for_streaming(monkeypatch):
 
 
 def test_elevenlabs_available_reflects_key(monkeypatch):
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "ELEVENLABS_API_KEY" else None)
+    # Key lookups now route through the provider-secret resolver
+    # (config > env/.env > credential pool), not bare get_env_value.
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "key" if env == "ELEVENLABS_API_KEY" else "")
     assert ts.ElevenLabsStreamer.available() is True
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: None)
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "")
     assert ts.ElevenLabsStreamer.available() is False
 
 
@@ -384,6 +386,41 @@ def test_streaming_provider_auto_none_when_nothing_usable(monkeypatch):
     ) is None
 
 
+# ── Credential routing: resolve_provider_secret, never bare env ──────────
+
+
+def test_elevenlabs_available_routes_through_secret_resolver(monkeypatch):
+    calls = []
+
+    def _fake_resolve(env_var, provider_id):
+        calls.append((env_var, provider_id))
+        return "pool-key"
+
+    monkeypatch.setattr(ts, "_resolve_key", _fake_resolve)
+    assert ts.ElevenLabsStreamer.available() is True
+    assert ("ELEVENLABS_API_KEY", "elevenlabs") in calls
+
+
+def test_gemini_available_falls_back_to_google_key(monkeypatch):
+    keys = {"GOOGLE_API_KEY": "g-key"}
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: keys.get(env, ""))
+    assert ts.GeminiStreamer.available() is True
+    keys.clear()
+    assert ts.GeminiStreamer.available() is False
+
+
+def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("tools.xai_http")
+    fake.resolve_xai_http_credentials = lambda: {"api_key": "xai-key"}
+    monkeypatch.setitem(sys.modules, "tools.xai_http", fake)
+    assert ts.XAIStreamer.available() is True
+    fake.resolve_xai_http_credentials = lambda: {"api_key": ""}
+    assert ts.XAIStreamer.available() is False
+
+
 # ── Gemini SSE parsing ────────────────────────────────────────────────────
 
 
@@ -429,7 +466,7 @@ def test_gemini_streamer_decodes_sse_pcm_chunks(monkeypatch):
     fake_requests = types.ModuleType("requests")
     fake_requests.post = _post
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "g-key" if k in ("GEMINI_API_KEY", "GOOGLE_API_KEY") else None)
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "g-key")
 
     streamer = ts.GeminiStreamer({}, {"voice": "Kore"})
     assert list(streamer.stream("Hello there.")) == [pcm1, pcm2]
@@ -447,3 +484,18 @@ def test_xai_streamer_yields_collected_frames(monkeypatch):
     streamer.tts_config, streamer.section = {}, {}
     monkeypatch.setattr(streamer, "_collect_async", lambda text: list(frames))
     assert list(streamer.stream("A sentence.")) == frames
+
+
+# ── 16 MiB per-sentence stream cap ───────────────────────────────────────
+
+
+def test_stream_cap_truncates_runaway_upstream(monkeypatch):
+    monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
+
+    def _endless():
+        while True:
+            yield b"\x00" * 64
+
+    out = list(ts._capped(_endless(), "test"))
+    assert len(out) == 1  # 64 ok, 128 > cap → stop
+    assert sum(len(c) for c in out) <= 100

@@ -32,6 +32,27 @@ from tools.tts_tool import _get_provider, _load_tts_config, get_env_value
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on the PCM bytes accepted from one provider stream for one
+# sentence. Mirrors the 16 MiB bounded-upstream-body invariant of the sync
+# providers (``_read_tts_response_bytes`` in tools.tts_tool): a buggy or
+# hostile endpoint must not be able to feed us unbounded audio.
+_STREAM_SENTENCE_BYTE_CAP = 16 * 1024 * 1024
+
+
+def _resolve_key(env_var: str, provider_id: str) -> str:
+    """Provider secret lookup: config > env/.env > credential pool.
+
+    Thin, monkeypatchable seam over ``tools.tts_tool._resolve_provider_key``
+    (which delegates to ``resolve_provider_secret``). ALL streaming-provider
+    key lookups go through here — never bare ``get_env_value``.
+    """
+    try:
+        from tools.tts_tool import _resolve_provider_key
+
+        return _resolve_provider_key(env_var, provider_id) or ""
+    except Exception:
+        return get_env_value(env_var) or ""
+
 
 # ---------------------------------------------------------------------------
 # Interruption latch — lets the model know it was cut off mid-speech
@@ -204,7 +225,7 @@ class ElevenLabsStreamer(StreamingTTSProvider):
 
     @staticmethod
     def available() -> bool:
-        return bool(get_env_value("ELEVENLABS_API_KEY"))
+        return bool(_resolve_key("ELEVENLABS_API_KEY", "elevenlabs"))
 
     def stream(self, text: str) -> Iterator[bytes]:
         from tools.tts_tool import (
@@ -215,7 +236,7 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         )
 
         client = _import_elevenlabs()(
-            api_key=get_env_value("ELEVENLABS_API_KEY"),
+            api_key=_resolve_key("ELEVENLABS_API_KEY", "elevenlabs"),
             **_elevenlabs_environment_kwargs(self.section),
         )
         voice_id = self.section.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
@@ -269,16 +290,33 @@ class OpenAIStreamer(StreamingTTSProvider):
             input=text,
             response_format="pcm",
         ) as response:
-            yield from response.iter_bytes()
+            yield from _capped(response.iter_bytes(), "OpenAI streaming TTS")
+
+
+def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:
+    """Pass chunks through, aborting past the 16 MiB per-sentence cap.
+
+    The streaming mirror of ``_read_tts_response_bytes``'s bounded-body
+    invariant: one sentence of PCM should never approach the cap, so
+    exceeding it means a runaway/hostile upstream — stop pulling.
+    """
+    total = 0
+    for chunk in chunks:
+        total += len(chunk)
+        if total > _STREAM_SENTENCE_BYTE_CAP:
+            logger.warning("%s exceeded %d bytes for one sentence; truncating",
+                           label, _STREAM_SENTENCE_BYTE_CAP)
+            return
+        yield chunk
 
 
 @register("gemini")
 class GeminiStreamer(StreamingTTSProvider):
     """Gemini ``streamGenerateContent?alt=sse`` → base64 PCM chunks (24 kHz).
 
-    Each SSE event carries one base64-encoded PCM chunk under
-    ``candidates[0].content.parts[*].inlineData.data``; we decode and yield
-    each one as it arrives.
+    Salvaged from PR #47588 (@Cdddo) and rebased onto the post-campaign
+    infrastructure: credentials via the provider-secret resolver, requests
+    (not httpx) with a bounded streamed body, and main's provider ABC.
     """
 
     sample_rate = 24000
@@ -286,7 +324,8 @@ class GeminiStreamer(StreamingTTSProvider):
     @staticmethod
     def available() -> bool:
         return bool(
-            get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")
+            _resolve_key("GEMINI_API_KEY", "gemini")
+            or _resolve_key("GOOGLE_API_KEY", "gemini")
         )
 
     def stream(self, text: str) -> Iterator[bytes]:
@@ -302,7 +341,8 @@ class GeminiStreamer(StreamingTTSProvider):
         )
 
         api_key = (
-            get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")
+            _resolve_key("GEMINI_API_KEY", "gemini")
+            or _resolve_key("GOOGLE_API_KEY", "gemini")
         )
         model = str(self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
         voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
@@ -354,26 +394,35 @@ class GeminiStreamer(StreamingTTSProvider):
                         except (ValueError, TypeError) as exc:
                             logger.warning("Gemini SSE: bad base64 audio: %s", exc)
 
-        yield from _sse_chunks()
+        yield from _capped(_sse_chunks(), "Gemini streaming TTS")
 
 
 @register("xai")
 class XAIStreamer(StreamingTTSProvider):
     """xAI WebSocket TTS → binary PCM frames (24 kHz mono int16).
 
-    xAI's chunked TTS API is WebSocket-only (``wss://api.x.ai/v1/tts``).
-    The async WS loop is bridged to the sync iterator contract via
-    ``_collect_async`` — the seam unit tests monkeypatch.
+    Salvaged from PR #47588 (@Cdddo): xAI's chunked TTS API is
+    WebSocket-only (``wss://api.x.ai/v1/tts``). Credentials route through
+    ``resolve_xai_http_credentials`` (OAuth or XAI_API_KEY), same as the
+    sync ``_generate_xai_tts`` path. The async WS loop is bridged to the
+    sync iterator contract via ``_collect_async`` — the seam unit tests
+    monkeypatch.
     """
 
     sample_rate = 24000
 
     @staticmethod
     def available() -> bool:
-        return bool(get_env_value("XAI_API_KEY"))
+        try:
+            from tools.xai_http import resolve_xai_http_credentials
+
+            creds = resolve_xai_http_credentials()
+            return bool(str(creds.get("api_key") or "").strip())
+        except Exception:
+            return False
 
     def stream(self, text: str) -> Iterator[bytes]:
-        yield from self._collect_async(text)
+        yield from _capped(iter(self._collect_async(text)), "xAI streaming TTS")
 
     # -- async→sync bridge (test seam) ------------------------------------
 
@@ -394,10 +443,12 @@ class XAIStreamer(StreamingTTSProvider):
         import websockets
 
         from tools.tts_tool import DEFAULT_XAI_VOICE_ID
+        from tools.xai_http import resolve_xai_http_credentials
 
-        api_key = (get_env_value("XAI_API_KEY") or "").strip()
+        creds = resolve_xai_http_credentials()
+        api_key = str(creds.get("api_key") or "").strip()
         if not api_key:
-            raise RuntimeError("XAI_API_KEY not set; cannot use xAI streaming TTS")
+            raise RuntimeError("No xAI credentials for streaming TTS")
         voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
         ws_url = str(
             self.section.get("streaming_url") or "wss://api.x.ai/v1/tts"

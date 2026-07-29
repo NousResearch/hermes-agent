@@ -10,6 +10,8 @@ Hermes Agent supports full voice interaction across CLI and messaging platforms.
 
 If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
+For hands-free session start — saying "hey hermes" (or any phrase) to open a fresh voice session on the CLI, TUI, or desktop app — see [Wake Word](/user-guide/features/wake-word).
+
 ## Prerequisites
 
 Before using voice features, make sure you have:

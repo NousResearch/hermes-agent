@@ -29,11 +29,13 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
+import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
+import { requestVoiceConversationStart } from '@/store/composer'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $previewTarget } from '@/store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, ensureGatewayProfile, newSessionInProfile, normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -54,6 +56,7 @@ import {
   setMessages
 } from '@/store/session'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import { armWakeWord } from '@/store/wake-word'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -662,9 +665,41 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const handleGatewayEventWithPlugins = useCallback(
     (event: Parameters<typeof handleDesktopGatewayEvent>[0]) => {
       emitGatewayEvent(event)
+
+      if (event.type === 'wake.detected') {
+        const payload = event.payload as
+          | { profile?: null | string; start_new_session?: boolean }
+          | undefined
+
+        // Audible confirmation that the wake registered, before voice capture
+        // starts. Gated by the shared sound-mute toggle.
+        playWakeSound()
+
+        // Multi-profile routing: a wake phrase enrolled by another profile
+        // re-homes the gateway to that profile first (live swap — same path
+        // as clicking it in the profile rail), then opens the fresh session
+        // and starts voice there.
+        const targetProfile = payload?.profile?.trim()
+        const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+        if (targetProfile && normalizeProfileKey(targetProfile) !== activeProfile) {
+          if (payload?.start_new_session !== false) {
+            newSessionInProfile(targetProfile)
+          } else {
+            void ensureGatewayProfile(normalizeProfileKey(targetProfile))
+          }
+        } else if (payload?.start_new_session !== false) {
+          startFreshSessionDraft()
+        }
+
+        requestVoiceConversationStart()
+
+        return
+      }
+
       handleDesktopGatewayEvent(event)
     },
-    [handleDesktopGatewayEvent]
+    [handleDesktopGatewayEvent, startFreshSessionDraft]
   )
 
   useGatewayBoot({
@@ -684,6 +719,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshHermesConfig,
     refreshSessions
   })
+
+  useEffect(() => {
+    if (gatewayState === 'open') {
+      // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
+      // same listener this auto-arm claims.
+      void armWakeWord(requestGateway)
+    }
+  }, [gatewayState, requestGateway])
 
   // Only the open messaging transcript needs its own poll — local chats are
   // live over the websocket already.

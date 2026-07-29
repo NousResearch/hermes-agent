@@ -180,6 +180,26 @@ voice = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
+# "Hey Hermes" wake word — on-device hotword detection. All engines are
+# optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
+# open-vocabulary phrases (any typed phrase, zero training), Porcupine is
+# the premium alternative. Desktop installs ([--include-desktop]) eager-install
+# [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
+# first /wake; mirrored in tools/lazy_deps.py.
+wake = [
+  "openwakeword==0.6.0",
+  "onnxruntime==1.27.0",
+  "sherpa-onnx==1.13.4",
+  "sentencepiece==0.2.2",
+  "pvporcupine==4.0.3",
+  "sounddevice==0.5.5",
+  "numpy==2.4.3",
+  # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
+  # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
+  # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
+  # macOS equivalent, bridged in tools/wake_word.py.
+  "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
+]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
 # (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the

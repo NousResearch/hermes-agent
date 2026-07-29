@@ -140,6 +140,40 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # small silk-v3 codec binding; installed on first .silk transcription.
     "stt.silk": ("pilk==0.2.4",),
 
+    # ─── Wake word ("Hey Hermes") engines ──────────────────────────────────
+    # Keep in sync with the `wake` extra in pyproject.toml. openWakeWord is the
+    # free, local default (ONNX runtime); Porcupine is the premium engine.
+    # openWakeWord's ONNX embedding model returns near-zero scores on macOS
+    # ARM64 (dscripka/openWakeWord#336), so the wake word runs on the tflite
+    # backend there. Upstream declares tflite-runtime for Linux only;
+    # ai-edge-litert is the macOS equivalent, bridged in tools/wake_word.py.
+    # It lives in its own feature because lazy-dep specs cannot carry PEP 508
+    # environment markers (_spec_is_safe rejects ";"), so the platform gate is
+    # applied by the caller instead.
+    "wake.openwakeword.tflite": (
+        "ai-edge-litert==2.1.6",
+    ),
+    "wake.openwakeword": (
+        "openwakeword==0.6.0",
+        "onnxruntime==1.27.0",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    # Open-vocabulary keyword spotting: any typed phrase, zero training.
+    # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
+    # tokenization) even though sherpa-onnx doesn't declare it.
+    "wake.sherpa": (
+        "sherpa-onnx==1.13.4",
+        "sentencepiece==0.2.2",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    "wake.porcupine": (
+        "pvporcupine==4.0.3",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 

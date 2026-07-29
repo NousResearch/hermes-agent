@@ -2374,6 +2374,42 @@ DEFAULT_CONFIG = {
         # surrounding punctuation ignored. Set [] to disable.
         "stop_phrases": ["stop"],
     },
+
+    # "Hey Hermes" hands-free wake word. Always-on, on-device hotword
+    # detection that starts a fresh voice session — the "Hey Siri" pattern.
+    # Off by default; toggle with /wake or `wake_word.enabled: true`.
+    "wake_word": {
+        "enabled": False,
+        "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
+        "provider": "openwakeword",   # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
+        "phrase": "hey hermes",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
+        "sensitivity": 0.6,           # 0.0-1.0 detection threshold, consistent across engines (higher = stricter, fewer false triggers)
+        "confirmation_frames": 3,     # openWakeWord only: consecutive over-threshold frames required to fire (higher = fewer false triggers on ambient speech, slightly more latency; 1 = old single-frame behavior)
+        "start_new_session": True,    # start a fresh session on wake vs. continue the current one
+        "profile_routing": True,      # sherpa only: also listen for every wake-enabled profile's phrase and route the wake to the matching profile
+        "openwakeword": {
+            # "hey_hermes" (the bundled, works-out-of-the-box default) OR a
+            # built-in openWakeWord name ("hey_jarvis", "alexa", "hey_mycroft",
+            # ...) OR a path to a custom .onnx/.tflite model for another phrase.
+            # See the wake-word docs for the custom-model training guide.
+            "model": "hey_hermes",
+            # "" (auto — tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite".
+            # openWakeWord's onnx backend scores near-zero on macOS ARM64
+            # (dscripka/openWakeWord#336), so auto avoids a listener that arms
+            # but never fires. Set explicitly only to override that choice.
+            "inference_framework": "",
+        },
+        "sherpa": {
+            # Optional path to a sherpa-onnx KWS model directory. Empty =
+            # auto-download the small English zipformer model on first use.
+            "model_dir": "",
+        },
+        "porcupine": {
+            # Built-in keyword ("jarvis", "computer", "bumblebee", ...) or a path
+            # to a custom .ppn from the Picovoice Console.
+            "keyword": "jarvis",
+        },
+    },
     
     "human_delay": {
         "mode": "off",
@@ -4444,6 +4480,13 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "PORCUPINE_ACCESS_KEY": {
+        "description": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)",
+        "prompt": "Picovoice access key",
+        "url": "https://console.picovoice.ai/",
         "password": True,
         "category": "tool",
     },

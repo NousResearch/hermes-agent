@@ -276,6 +276,43 @@ def test_build_models_payload_can_probe_only_current_custom_provider():
     assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
 
 
+def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
+    """CLI /model picker must pass force_refresh to probe flags (#65652, #65650).
+
+    Normal open (/model bare) skips non-current probes; /model --refresh probes
+    all custom providers to freshen their model lists.
+    """
+    ctx = _empty_ctx()
+
+    # Normal open — skip non-current probes
+    force_refresh = False
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as mock_list:
+        build_models_payload(
+            ctx,
+            probe_custom_providers=force_refresh,
+            probe_current_custom_provider=not force_refresh,
+        )
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is False
+    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is True
+
+    # Refresh open — probe everything
+    force_refresh = True
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as mock_list:
+        build_models_payload(
+            ctx,
+            probe_custom_providers=force_refresh,
+            probe_current_custom_provider=not force_refresh,
+        )
+    assert mock_list.call_args.kwargs["probe_custom_providers"] is True
+    assert mock_list.call_args.kwargs["probe_current_custom_provider"] is False
+
+
 def test_list_authenticated_providers_force_fresh_is_keyword_only():
     """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
 
@@ -417,6 +454,55 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
     ]
 
 
+def test_explicit_only_keeps_unauthenticated_current_provider_visible():
+    """Desktop's configured-only picker must retain its saved provider row."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            picker_hints=True,
+        )
+
+    assert [row["slug"] for row in payload["providers"]] == ["deepseek"]
+    row = payload["providers"][0]
+    assert row["source"] == "configured-current"
+    assert row["authenticated"] is False
+    assert row["models"] == ["deepseek-v4-pro"]
+    assert "DEEPSEEK_API_KEY" in row["warning"]
+def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
+    """If the saved provider is currently unauthenticated, keep a visible row
+    with the saved model so GUI pickers don't silently jump to another
+    authenticated provider."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx, include_unconfigured=True, picker_hints=True,
+        )
+
+    deepseek = next(r for r in payload["providers"] if r["slug"] == "deepseek")
+    assert deepseek["source"] == "configured-current"
+    assert deepseek["is_current"] is True
+    assert deepseek["authenticated"] is False
+    assert deepseek["models"] == ["deepseek-v4-pro"]
+    assert deepseek["total_models"] == 1
+    assert deepseek["auth_type"] == "api_key"
+    assert "DEEPSEEK_API_KEY" in deepseek["warning"]
+    assert "saved model only" in deepseek["warning"]
+
+
+def test_include_unconfigured_does_not_duplicate_configured_current_row():
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            include_unconfigured=True,
+            picker_hints=True,
+        )
+
+    assert sum(row["slug"] == "deepseek" for row in payload["providers"]) == 1
+
 def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     rows = [
         {"slug": "moa", "name": "MoA", "models": ["review"],
@@ -450,10 +536,10 @@ def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     ):
         payload = build_models_payload(ctx, explicit_only=True)
 
-    assert [row["slug"] for row in payload["providers"]] == ["moa"]
+    assert [row["slug"] for row in payload["providers"]] == ["moa", "openrouter"]
     assert payload["providers"][0]["models"] == ["review"]
-
-
+    assert payload["providers"][1]["source"] == "configured-current"
+    assert payload["providers"][1]["authenticated"] is False
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 
@@ -945,3 +1031,125 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
+
+
+# ─── _apply_featured (one-flagship-per-lab shortlist) ──────────────────
+
+
+class _FakeInfo:
+    def __init__(self, release_date: str) -> None:
+        self.release_date = release_date
+
+
+def _apply_featured_with_dates(rows, dates: dict[str, str]):
+    """Run _apply_featured with a deterministic models.dev stub."""
+    from hermes_cli import inventory
+
+    def _fake_get_model_info(provider, model):
+        return _FakeInfo(dates[model]) if model in dates else None
+
+    with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
+        inventory._apply_featured(rows)
+
+
+def test_apply_featured_keeps_newest_n_per_lab():
+    """Each lab keeps its newest _FEATURED_PER_LAB models by release_date; the
+    older tail is dropped. Uses a lab with more than N models to exercise the
+    cut."""
+    from hermes_cli.inventory import _FEATURED_PER_LAB
+
+    # One lab ("a") with N+2 dated models, plus a second lab so the row counts
+    # as a multi-lab aggregator.
+    a_models = [f"a/m{i}" for i in range(_FEATURED_PER_LAB + 2)]
+    rows = [{"slug": "nous", "models": [*a_models, "b/solo"]}]
+    # m0 newest … m{N+1} oldest (descending dates), b/solo dated in the middle.
+    dates = {f"a/m{i}": f"2026-{12 - i:02d}-01" for i in range(_FEATURED_PER_LAB + 2)}
+    dates["b/solo"] = "2026-01-01"
+    _apply_featured_with_dates(rows, dates)
+
+    featured = rows[0]["featured_models"]
+    # Lab "a" keeps its newest N (m0..m{N-1}); the two oldest drop. "b" keeps its one.
+    assert featured == [*a_models[:_FEATURED_PER_LAB], "b/solo"]
+    assert f"a/m{_FEATURED_PER_LAB}" not in featured
+    assert f"a/m{_FEATURED_PER_LAB + 1}" not in featured
+
+
+def test_apply_featured_keeps_whole_lab_when_under_the_cap():
+    """A lab with <= _FEATURED_PER_LAB models keeps all of them."""
+    rows = [
+        {
+            "slug": "nous",
+            "models": ["anthropic/opus", "anthropic/haiku", "google/gemini"],
+        }
+    ]
+    _apply_featured_with_dates(
+        rows,
+        {
+            "anthropic/opus": "2026-07-01",
+            "anthropic/haiku": "2026-03-01",
+            "google/gemini": "2026-05-01",
+        },
+    )
+    # Both anthropic models (2 <= 5) and the single google model survive, in
+    # the row's original order.
+    assert rows[0]["featured_models"] == [
+        "anthropic/opus",
+        "anthropic/haiku",
+        "google/gemini",
+    ]
+
+
+def test_apply_featured_ranks_within_list_not_against_now():
+    """The kept models are the newest *in the list*, even if every model is old
+    — the current date never enters the comparison."""
+    rows = [{"slug": "nous", "models": ["a/one", "a/two", "b/three"]}]
+    _apply_featured_with_dates(
+        rows,
+        {"a/one": "2019-01-01", "a/two": "2020-01-01", "b/three": "2018-06-01"},
+    )
+    # Both "a" models kept (2 <= 5), ordered by the row; "b" kept.
+    assert rows[0]["featured_models"] == ["a/one", "a/two", "b/three"]
+
+
+def test_apply_featured_tie_breaks_on_list_order():
+    """Same release_date within a lab falls back to curated (earliest) order
+    when the cut has to choose."""
+    from hermes_cli.inventory import _FEATURED_PER_LAB
+
+    # N+1 same-dated models in lab "x" so exactly one must be dropped; the LAST
+    # one in list order loses the tie.
+    x_models = [f"x/m{i}" for i in range(_FEATURED_PER_LAB + 1)]
+    rows = [{"slug": "nous", "models": [*x_models, "y/solo"]}]
+    dates = {m: "2026-07-09" for m in x_models}
+    dates["y/solo"] = "2026-01-01"
+    _apply_featured_with_dates(rows, dates)
+
+    featured = rows[0]["featured_models"]
+    # Earliest N in list order survive the tie; the last is dropped.
+    assert featured == [*x_models[:_FEATURED_PER_LAB], "y/solo"]
+    assert x_models[_FEATURED_PER_LAB] not in featured
+
+
+def test_apply_featured_undated_lab_falls_back_to_list_order():
+    """A lab whose models have no models.dev date keeps them in list order
+    (undated sorts last, ties broken by position), up to the per-lab cap."""
+    rows = [{"slug": "nous", "models": ["a/first", "a/second", "b/only"]}]
+    _apply_featured_with_dates(rows, {"b/only": "2026-01-01"})  # a/* undated
+    # Both undated "a" models kept (2 <= 5), in list order; "b" kept.
+    assert rows[0]["featured_models"] == ["a/first", "a/second", "b/only"]
+
+
+def test_apply_featured_empty_for_single_lab_provider():
+    """A provider serving one lab is not an aggregator — no shortlist, so the
+    caller falls back to top-N instead of hiding models."""
+    rows = [{"slug": "deepseek", "models": ["deepseek-v4-pro", "deepseek-v4-flash"]}]
+    _apply_featured_with_dates(rows, {})
+    assert rows[0]["featured_models"] == []
+
+
+def test_apply_featured_empty_for_prefixless_models():
+    """Models with no vendor/ prefix (ollama, custom endpoints) get no
+    shortlist — there are no labs to split on."""
+    rows = [{"slug": "ollama", "models": ["qwen3:latest", "llama3.2:latest"]}]
+    _apply_featured_with_dates(rows, {})
+    assert rows[0]["featured_models"] == []

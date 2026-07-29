@@ -1,8 +1,9 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useEffect, useState } from 'react'
+import { type FC, useCallback, useEffect, useMemo, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -20,11 +21,11 @@ import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import {
-  $approvalInlineVisible,
-  $approvalRequest,
   type ApprovalRequest,
   clearApprovalRequest,
-  registerApprovalInlineAnchor
+  registerApprovalInlineAnchor,
+  sessionApprovalInlineVisible,
+  sessionApprovalRequest
 } from '@/store/prompts'
 
 import type { ToolPart } from './fallback-model'
@@ -48,7 +49,11 @@ export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
 type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 
 export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
-  const request = useStore($approvalRequest)
+  // The tool row lives in whichever session's transcript rendered it — read
+  // THAT session's approval (works for the primary and every tile).
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const $request = useMemo(() => sessionApprovalRequest(sessionId), [sessionId])
+  const request = useStore($request)
 
   if (!request || !APPROVAL_TOOLS.has(part.toolName)) {
     return null
@@ -58,15 +63,18 @@ export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
 }
 
 const InlineApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
-  useEffect(() => registerApprovalInlineAnchor(), [])
+  useEffect(() => registerApprovalInlineAnchor(request.sessionId), [request.sessionId])
 
   return <ApprovalBar request={request} surface="inline" />
 }
 
 export const PendingApprovalFallback: FC = () => {
   const { t } = useI18n()
-  const request = useStore($approvalRequest)
-  const inlineVisible = useStore($approvalInlineVisible)
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const $request = useMemo(() => sessionApprovalRequest(sessionId), [sessionId])
+  const $inlineVisible = useMemo(() => sessionApprovalInlineVisible(sessionId), [sessionId])
+  const request = useStore($request)
+  const inlineVisible = useStore($inlineVisible)
 
   if (!request || inlineVisible) {
     return null
@@ -110,13 +118,18 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   const busy = submitting !== null
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
+  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
+  const allowSession = choices ? choices.includes('session') : true
+  const allowAlways = choices ? choices.includes('always') : allowPermanent
+  const hasMoreOptions = allowSession || allowAlways
   const hasCommand = request.command.trim().length > 0
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
       // Another bar (or the keyboard path) may have already resolved this
-      // approval; the atom is the single source of truth, so bail if it's gone.
-      if (busy || !$approvalRequest.get()) {
+      // approval; the map is the single source of truth, so bail if this
+      // session's request is gone.
+      if (busy || !sessionApprovalRequest(request.sessionId).get()) {
         return
       }
 
@@ -183,38 +196,42 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
             {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
             {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
           </Button>
-          <span aria-hidden className="w-px self-stretch bg-primary/20" />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                aria-label={copy.moreOptions}
-                className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
-                disabled={busy}
-                size="xs"
-                variant="ghost"
-              >
-                <ChevronDown className="size-3" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="min-w-44">
-              <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
-              {allowPermanent && (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    // Defer one tick so the menu fully unmounts before the dialog
-                    // mounts — otherwise Radix's focus-return races the dialog and
-                    // dismisses it via onInteractOutside.
-                    setTimeout(() => setConfirmAlways(true), 0)
-                  }}
+          {hasMoreOptions && <span aria-hidden className="w-px self-stretch bg-primary/20" />}
+          {hasMoreOptions && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label={copy.moreOptions}
+                  className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
+                  disabled={busy}
+                  size="xs"
+                  variant="ghost"
                 >
-                  {copy.alwaysAllowMenu}
+                  <ChevronDown className="size-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-44">
+                {allowSession && (
+                  <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+                )}
+                {allowAlways && (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      // Defer one tick so the menu fully unmounts before the dialog
+                      // mounts — otherwise Radix's focus-return races the dialog and
+                      // dismisses it via onInteractOutside.
+                      setTimeout(() => setConfirmAlways(true), 0)
+                    }}
+                  >
+                    {copy.alwaysAllowMenu}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
+                  {copy.reject}
                 </DropdownMenuItem>
-              )}
-              <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-                {copy.reject}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         <Button

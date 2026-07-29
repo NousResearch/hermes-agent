@@ -9,6 +9,7 @@ endpoint.
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -148,9 +149,10 @@ class TestGenerate:
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
         assert captured["input"][0]["content"][0]["type"] == "input_text"
-        assert captured["tool_choice"]["type"] == "allowed_tools"
-        assert captured["tool_choice"]["mode"] == "required"
-        assert captured["tool_choice"]["tools"] == [{"type": "image_generation"}]
+        # Regression for #19505: the Codex backend 400s on every tool_choice
+        # shape we have for the hosted ``image_generation`` tool, so the
+        # provider must omit tool_choice entirely and rely on instructions.
+        assert "tool_choice" not in captured
 
         tool = captured["tools"][0]
         assert tool["type"] == "image_generation"
@@ -306,6 +308,109 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
+
+    def test_tool_choice_400_surfaces_verbatim_not_as_capability_error(
+        self, provider, monkeypatch
+    ):
+        """The tool_choice 400 must NOT be reported as an account limitation.
+
+        Regression for #19505 / #49008 / #31335: a previous version classified
+        this exact request-shape rejection as "Image generation is not enabled
+        for the current Codex account", telling every affected user to abandon
+        Codex over a bug in our own payload. The wire error must reach the user
+        unedited so it stays diagnosable.
+
+        Drives the REAL httpx boundary (not a mocked ``_collect_image_b64``) so
+        the classification path is actually exercised — mocking the collector
+        would skip the code under test entirely.
+        """
+        import httpx
+
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        body = json.dumps({
+            "error": {
+                "message": "Tool choice 'image_generation' not found in 'tools' parameter.",
+                "type": "invalid_request_error",
+                "param": "tool_choice",
+            }
+        })
+
+        def _handler(request):
+            return httpx.Response(400, text=body, request=request)
+
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda *args, **kwargs: real_client(
+                transport=httpx.MockTransport(_handler),
+                headers=kwargs.get("headers"),
+                timeout=kwargs.get("timeout"),
+            ),
+        )
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "HTTP 400" in result["error"]
+        assert "tools' parameter" in result["error"]
+        # The account-entitlement misdiagnosis must not come back.
+        assert "not enabled for the current Codex account" not in result["error"]
+        assert result["error_type"] != "capability_unsupported"
+
+
+class TestRequestShape:
+    def test_payload_omits_tool_choice(self):
+        """Codex rejects every tool_choice shape for hosted image_generation."""
+        payload = codex_plugin._build_responses_payload(
+            prompt="a red circle",
+            size="1024x1024",
+            quality="low",
+        )
+        assert "tool_choice" not in payload
+        # The hosted tool itself is still requested, and instructions do the steering.
+        assert payload["tools"][0]["type"] == "image_generation"
+        assert payload["instructions"]
+
+    def test_http_error_body_is_truncated_but_preserved(self, monkeypatch):
+        """A large error body is capped at 500 chars and still surfaced."""
+        import httpx
+
+        body = json.dumps({
+            "metadata": "x" * 600,
+            "error": {
+                "message": "Tool choice 'image_generation' not found in 'tools' parameter."
+            },
+        })
+
+        def _handler(request):
+            return httpx.Response(400, text=body, request=request)
+
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda *args, **kwargs: real_client(
+                transport=httpx.MockTransport(_handler),
+                headers=kwargs.get("headers"),
+                timeout=kwargs.get("timeout"),
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="HTTP 400") as excinfo:
+            codex_plugin._collect_image_b64(
+                "codex-token",
+                prompt="a cat",
+                size="1024x1024",
+                quality="low",
+            )
+
+        message = str(excinfo.value)
+        # Body is capped, but the actionable wire message still reaches the user.
+        assert "tools' parameter" in message
+        assert len(message) < len(body)
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

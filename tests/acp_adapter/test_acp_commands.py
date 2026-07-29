@@ -16,11 +16,17 @@ class FakeAgent:
         self.disabled_toolsets = []
         self.tools = []
         self.valid_tool_names = set()
+        self._supports_active_turn_redirect = True
         self.steers = []
+        self.redirects = []
         self.runs = []
 
     def steer(self, text):
         self.steers.append(text)
+        return True
+
+    def redirect(self, text):
+        self.redirects.append(text)
         return True
 
     def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
@@ -145,6 +151,62 @@ async def test_acp_steer_after_zed_interrupt_replays_interrupted_prompt_with_gui
         "write hi to a text file\n\nUser correction/guidance after interrupt: write HELLO instead"
     ]
     assert state.interrupted_prompt_text == ""
+
+
+@pytest.mark.asyncio
+async def test_acp_plain_correction_redirects_running_turn():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.is_running = True
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="No, use Postgres instead")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.redirects == ["No, use Postgres instead"]
+    assert state.queued_prompts == []
+    assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_plain_correction_after_cancel_replays_original_prompt():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.interrupted_prompt_text = "implement it with SQLite"
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="No, use Postgres instead")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.runs == [
+        "implement it with SQLite\n\n"
+        "User correction/guidance after interrupt: No, use Postgres instead"
+    ]
+    assert state.interrupted_prompt_text == ""
+
+
+@pytest.mark.asyncio
+async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.is_running = True
+    state.current_prompt_text = "original request"
+    observed = {}
+
+    def interrupt():
+        acquired = state.runtime_lock.acquire(blocking=False)
+        observed["lock_held"] = not acquired
+        if acquired:
+            state.runtime_lock.release()
+
+    fake.interrupt = interrupt
+
+    await acp_agent.cancel(state.session_id)
+
+    assert observed["lock_held"] is True
+    assert state.cancel_event.is_set()
+    assert state.interrupted_prompt_text == "original request"
 
 
 @pytest.mark.asyncio

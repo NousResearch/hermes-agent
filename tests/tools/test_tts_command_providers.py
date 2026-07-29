@@ -14,6 +14,8 @@ differences) Windows.
 
 import json
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -37,6 +39,7 @@ from tools.tts_tool import (
     _render_command_tts_template,
     _resolve_command_provider_config,
     _resolve_max_text_length,
+    _run_command_tts,
     _shell_quote_context,
     check_tts_requirements,
     text_to_speech_tool,
@@ -55,6 +58,13 @@ def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
         f'shutil.copyfile(sys.argv[1], sys.argv[2])" '
         f'{{input_path}} {output_placeholder}'
     )
+
+
+def _shell_command(*args: str) -> str:
+    """Return a shell command string for subprocess.Popen(shell=True)."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(list(args))
+    return " ".join(shlex.quote(str(arg)) for arg in args)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +122,44 @@ class TestResolveCommandProviderConfig:
             },
         }
         assert _resolve_command_provider_config("piper", cfg) is None
+
+
+class TestCommandTtsEnv:
+    def test_command_provider_uses_sanitized_child_env(self, monkeypatch):
+        """Salvage of #56332: command TTS must not inherit Hermes secrets."""
+        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "sk-vision")
+        monkeypatch.setenv("GATEWAY_RELAY_SECRET", "relay-secret")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.setenv("MY_SAFE_TTS_VAR", "keep")
+
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+
+        result = _run_command_tts("echo hi", timeout=1)
+
+        assert result.returncode == 0
+        env = captured["env"]
+        assert "AUXILIARY_VISION_API_KEY" not in env
+        assert "GATEWAY_RELAY_SECRET" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert env["MY_SAFE_TTS_VAR"] == "keep"
 
 
 class TestGetNamedProviderConfig:
@@ -201,10 +249,19 @@ class TestConfigGetters:
         assert _get_command_tts_output_format({"format": "ogg"}, "/tmp/clip.xyz") == "ogg"
 
     def test_output_format_rejects_unknown(self):
-        assert _get_command_tts_output_format({"format": "m4a"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
+        assert _get_command_tts_output_format({"format": "midi"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
     def test_output_format_supported_set(self):
-        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset({"mp3", "wav", "ogg", "flac"})
+        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset(
+            {"mp3", "wav", "ogg", "flac", "m4a", "aac", "amr", "opus"}
+        )
+
+    def test_output_format_accepts_extended_formats(self):
+        # m4a/aac/amr/opus are common ffmpeg-producible containers/codecs;
+        # honored both via explicit config and via the output path suffix.
+        for fmt in ("m4a", "aac", "amr", "opus"):
+            assert _get_command_tts_output_format({"format": fmt}) == fmt
+            assert _get_command_tts_output_format({}, f"/tmp/clip.{fmt}") == fmt
 
     def test_voice_compatible_boolean(self):
         assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True
@@ -346,6 +403,113 @@ class TestRenderCommandTtsTemplate:
             placeholders,
         )
         assert '"bob\'s voice"' in rendered
+
+
+# ---------------------------------------------------------------------------
+# _run_command_tts idle/progress timeout behavior
+# ---------------------------------------------------------------------------
+
+class TestRunCommandTts:
+    def test_reads_process_output_in_large_chunks(self):
+        read_sizes: dict[str, list[int]] = {"stdout": [], "stderr": []}
+
+        class FakeStream:
+            def __init__(self, name: str, chunks: list[str]):
+                self.name = name
+                self.chunks = chunks
+
+            def read(self, size: int) -> str:
+                read_sizes[self.name].append(size)
+                if self.chunks:
+                    return self.chunks.pop(0)
+                return ""
+
+        class FakeProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.returncode = 0
+                self.stdout = FakeStream("stdout", ["done"])
+                self.stderr = FakeStream("stderr", ["tick"])
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        with patch("tools.tts_tool.subprocess.Popen", return_value=FakeProcess()):
+            result = _run_command_tts("fake tts", timeout=0.25)
+
+        assert result.returncode == 0
+        assert result.stdout == "done"
+        assert result.stderr == "tick"
+        assert read_sizes["stdout"][0] == 65536
+        assert read_sizes["stderr"][0] == 65536
+
+    def test_closed_pipes_still_running_honors_idle_timeout(self):
+        class ClosedStream:
+            def read(self, size: int) -> str:
+                return ""
+
+        class FakeProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.returncode = None
+                self.stdout = ClosedStream()
+                self.stderr = ClosedStream()
+
+            def wait(self, timeout=None):
+                if timeout is None:
+                    self.returncode = 0
+                    return self.returncode
+                raise subprocess.TimeoutExpired("fake tts", timeout)
+
+        process = FakeProcess()
+        with (
+            patch("tools.tts_tool.subprocess.Popen", return_value=process),
+            patch("tools.tts_tool._terminate_command_tts_process_tree"),
+        ):
+            with pytest.raises(subprocess.TimeoutExpired):
+                _run_command_tts("fake tts", timeout=0.25)
+
+    def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
+        script = tmp_path / "progress_then_exit.py"
+        script.write_text(
+            "\n".join([
+                "import sys, time",
+                "for idx in range(4):",
+                "    print(f'tick {idx}', file=sys.stderr, flush=True)",
+                "    time.sleep(0.15)",
+                "print('done', flush=True)",
+            ]),
+            encoding="utf-8",
+        )
+
+        result = _run_command_tts(
+            _shell_command(sys.executable, "-u", str(script)),
+            timeout=0.25,
+        )
+
+        assert result.returncode == 0
+        assert "tick 3" in result.stderr
+        assert "done" in result.stdout
+
+    def test_silent_after_progress_still_times_out_with_stderr(self, tmp_path):
+        script = tmp_path / "progress_then_hang.py"
+        script.write_text(
+            "\n".join([
+                "import sys, time",
+                "print('starting tier 1', file=sys.stderr, flush=True)",
+                "time.sleep(1.0)",
+            ]),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+            _run_command_tts(
+                _shell_command(sys.executable, "-u", str(script)),
+                timeout=0.2,
+            )
+
+        assert "starting tier 1" in (excinfo.value.stderr or "")
+        assert isinstance(excinfo.value.__cause__, subprocess.TimeoutExpired)
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +657,55 @@ class TestTextToSpeechToolWithCommandProvider:
 
 class TestCheckTtsRequirements:
     def test_configured_command_provider_satisfies_requirement(self):
-        cfg = {"providers": {"x": {"type": "command", "command": "echo x"}}}
+        cfg = {
+            "provider": "x",
+            "providers": {"x": {"type": "command", "command": "echo x"}},
+        }
         with patch("tools.tts_tool._load_tts_config", return_value=cfg):
             assert check_tts_requirements() is True
+
+
+class TestCommandTtsEnvPassthrough:
+    def test_env_passthrough_restores_named_keys(self, monkeypatch):
+        """A provider's env_passthrough allowlist re-adds its own API key
+        without unscrubbing everything else."""
+        monkeypatch.setenv("MY_TTS_API_KEY", "sk-provider")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+        captured = {}
+
+        class _Stream:
+            def read(self, size):
+                return ""
+
+        class Proc:
+            returncode = 0
+            stdout = _Stream()
+            stderr = _Stream()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            return Proc()
+
+        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+
+        result = _run_command_tts(
+            "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
+        )
+
+        assert result.returncode == 0
+        env = captured["env"]
+        assert env["MY_TTS_API_KEY"] == "sk-provider"
+        assert "OPENAI_API_KEY" not in env
+
+    def test_allowlist_parsed_from_provider_config(self):
+        from tools.tts_tool import _command_provider_env_passthrough
+
+        assert _command_provider_env_passthrough(
+            {"env_passthrough": ["A_KEY", " B_KEY ", ""]}
+        ) == ["A_KEY", "B_KEY"]
+        assert _command_provider_env_passthrough({}) == []
+        assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []

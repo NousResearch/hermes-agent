@@ -52,6 +52,43 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
     assert parts[0]["thoughtSignature"] == "sig-123"
 
 
+def test_build_native_request_emits_sentinel_for_cross_provider_tool_call():
+    """Cross-provider tool_calls (xAI/Anthropic -> Gemini fallback) carry no
+    Gemini thoughtSignature.  Without a sentinel, Gemini 3 thinking models
+    reject the request with 400 INVALID_ARGUMENT.  The native adapter must
+    emit the same ``skip_thought_signature_validator`` sentinel that the
+    Cloud Code Assist adapter already uses for the same scenario.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}',
+                        },
+                        # No extra_content — this tool_call originated from a
+                        # non-Gemini provider during fallback.
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert parts[0]["functionCall"]["name"] == "get_weather"
+    assert parts[0]["thoughtSignature"] == "skip_thought_signature_validator"
+
+
 def test_build_native_request_uses_original_function_name_for_tool_result():
     from agent.gemini_native_adapter import build_gemini_request
 
@@ -83,6 +120,48 @@ def test_build_native_request_uses_original_function_name_for_tool_result():
 
     tool_response = request["contents"][1]["parts"][0]["functionResponse"]
     assert tool_response["name"] == "get_weather"
+
+
+
+def test_build_native_request_prefers_call_name_over_unwrapped_result_name():
+    """Gemini must receive the bridge call name, not the internal MCP name."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_call",
+                            "arguments": (
+                                '{"name": "mcp__github__create_issue", '
+                                '"arguments": {"title": "Regression"}}'
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "mcp__github__create_issue",
+                "tool_name": "mcp__github__create_issue",
+                "tool_call_id": "call_1",
+                "content": '{"number": 123}',
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    function_call = request["contents"][0]["parts"][0]["functionCall"]
+    function_response = request["contents"][1]["parts"][0]["functionResponse"]
+    assert function_call["name"] == "tool_call"
+    assert function_response["name"] == function_call["name"]
 
 
 def test_parallel_tool_results_merge_into_one_user_content():
@@ -461,3 +540,53 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+# ---------------------------------------------------------------------------
+# X-Goog-Api-Client header tests
+# ---------------------------------------------------------------------------
+
+
+def test_x_goog_api_client_header_is_set():
+    """The X-Goog-Api-Client header should be set on inference requests."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(api_key="fake-key", model="gemini-2.0-flash")
+    headers = client._headers()
+
+    assert "X-Goog-Api-Client" in headers, "X-Goog-Api-Client header missing"
+    assert "hermes-agent/" in headers["X-Goog-Api-Client"], (
+        "hermes-agent not found in X-Goog-Api-Client header"
+    )
+
+
+def test_x_goog_api_client_header_format():
+    """Header value should be 'hermes-agent/<version>' matching the package version."""
+    from agent.gemini_native_adapter import GeminiNativeClient, _HERMES_VERSION
+
+    client = GeminiNativeClient(api_key="fake-key", model="gemini-2.0-flash")
+    headers = client._headers()
+
+    expected = f"hermes-agent/{_HERMES_VERSION}"
+    assert headers["X-Goog-Api-Client"] == expected
+
+
+def test_user_agent_contains_version():
+    """User-Agent should include the hermes-agent version."""
+    from agent.gemini_native_adapter import GeminiNativeClient, _HERMES_VERSION
+
+    client = GeminiNativeClient(api_key="fake-key", model="gemini-2.0-flash")
+    headers = client._headers()
+
+    assert f"hermes-agent/{_HERMES_VERSION}" in headers["User-Agent"]
+
+
+def test_hermes_version_is_valid():
+    """_HERMES_VERSION should be a non-empty string."""
+    from agent.gemini_native_adapter import _HERMES_VERSION
+
+    assert isinstance(_HERMES_VERSION, str)
+    assert len(_HERMES_VERSION) > 0
+    assert _HERMES_VERSION != "0.0.0", (
+        "Version should resolve from hermes_cli.__version__, not the fallback"
+    )

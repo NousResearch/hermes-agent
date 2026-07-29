@@ -74,9 +74,14 @@ import pytest
     ("anthropic/claude-opus-4-20250514", 240.0),
     ("anthropic/claude-sonnet-4.5", 180.0),
     ("anthropic/claude-sonnet-4.6", 180.0),
+    # Anthropic Mythos-class named reasoning models — deep-reasoning tier.
+    ("anthropic/claude-fable-5", 600.0),
+    ("claude-fable-5", 600.0),
+    ("claude-fable", 600.0),
     # xAI Grok reasoning variants — explicit, not bare `grok`.
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
+    ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):

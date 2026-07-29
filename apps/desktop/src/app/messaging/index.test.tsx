@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -53,12 +53,16 @@ afterEach(() => {
 
 async function renderMessaging() {
   const { MessagingView } = await import('./index')
+  let result: ReturnType<typeof render>
+  await act(async () => {
+    result = render(
+      <MemoryRouter>
+        <MessagingView />
+      </MemoryRouter>
+    )
+  })
 
-  return render(
-    <MemoryRouter>
-      <MessagingView />
-    </MemoryRouter>
-  )
+  return result!
 }
 
 describe('MessagingView setup-guide link', () => {
@@ -82,7 +86,9 @@ describe('MessagingView setup-guide link', () => {
     await renderMessaging()
 
     const link = await screen.findByText('Open setup guide')
-    fireEvent.click(link)
+    await act(async () => {
+      fireEvent.click(link)
+    })
 
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
   })

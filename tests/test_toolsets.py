@@ -31,6 +31,15 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_x_search_toolset_marks_read_only_and_points_to_xurl(self):
+        ts = get_toolset("x_search")
+        assert ts is not None
+        assert ts["tools"] == ["x_search"]
+        description = ts["description"].lower()
+        assert "read-only" in description
+        assert "xurl" in description
+        assert "authenticated" in description
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

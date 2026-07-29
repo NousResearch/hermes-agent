@@ -58,6 +58,38 @@ class CapabilityDescriptor:
     emoji: str = "\U0001f50c"  # 🔌 default (matches PlatformEntry default)
     platform_hint: str = ""
     pii_safe: bool = False
+    # Whether the connector can supply surrounding channel/group CONTEXT for an
+    # addressed turn (Model A pull / Model B buffer, per platform). Optional +
+    # defaults False so an older connector that never sends it is treated as
+    # "no context" — additive within contract_version 1. from_json filters
+    # unknown keys, so a connector sending this to an older gateway is safe too.
+    supports_context: bool = False
+    # Op-level capability discovery (Phase 1 parity): the outbound op names the
+    # connector's sender for this platform actually implements (e.g.
+    # ["send", "edit", "typing", "follow_up", "get_chat_info"]). Empty tuple =
+    # the connector predates the field; callers MUST treat that as "legacy op
+    # set" (send/edit/typing/follow_up) rather than "nothing supported", so an
+    # old connector keeps working unchanged. Additive within contract_version 1.
+    # Stored as a tuple so the frozen dataclass stays hashable/immutable.
+    supported_ops: tuple = ()
+
+    # The op set every connector supported before ``supported_ops`` existed.
+    # Used as the assumed capability set when a legacy connector sends no list.
+    LEGACY_OPS = ("send", "edit", "typing", "follow_up")
+
+    def supports_op(self, op: str) -> bool:
+        """Whether the connector advertises the outbound op ``op``.
+
+        Fail-open for legacy connectors: an empty ``supported_ops`` means the
+        connector predates op discovery, so assume the legacy op set (the four
+        ops every connector implemented before the field existed). A NEW op
+        (e.g. ``get_chat_info``) is therefore only True when explicitly
+        advertised — exactly the discovery semantics Phase 1 needs: the gateway
+        can probe capability without trying the op and parsing an error.
+        """
+        if not self.supported_ops:
+            return op in self.LEGACY_OPS
+        return op in self.supported_ops
 
     def to_json(self) -> str:
         """Serialize to a compact, stable JSON string for the handshake frame."""
@@ -74,6 +106,32 @@ class CapabilityDescriptor:
         raw = json.loads(data)
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         filtered = {k: v for k, v in raw.items() if k in known}
+        # Normalize the chunking bound at the trust boundary. A connector may
+        # advertise max_message_length 0 ("no limit"), and a buggy/hostile one
+        # may send 0 or a negative; either is a degenerate value that would flow
+        # straight into the adapter's MAX_MESSAGE_LENGTH and truncate_message().
+        # Map it to the documented 4096 default (docs/relay-connector-contract.md;
+        # mirrors from_platform_entry's `or 4096`) so from_json never yields a
+        # descriptor that can't chunk a real message.
+        if "max_message_length" in filtered:
+            try:
+                if int(filtered["max_message_length"]) <= 0:
+                    filtered["max_message_length"] = 4096
+            except (TypeError, ValueError):
+                filtered["max_message_length"] = 4096
+        # Normalize supported_ops at the trust boundary: JSON carries a list;
+        # the frozen dataclass stores a tuple. Non-list/malformed values (or a
+        # list holding non-strings) degrade to () — the legacy-op-set fallback —
+        # rather than raising, matching the "malformed input never breaks the
+        # handshake" posture above.
+        if "supported_ops" in filtered:
+            raw_ops = filtered["supported_ops"]
+            if isinstance(raw_ops, (list, tuple)):
+                filtered["supported_ops"] = tuple(
+                    str(op) for op in raw_ops if isinstance(op, str) and op
+                )
+            else:
+                filtered["supported_ops"] = ()
         return cls(**filtered)
 
     @classmethod

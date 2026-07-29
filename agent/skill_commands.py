@@ -54,6 +54,21 @@ _BUNDLE_MARKER = " skill bundle,"
 _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
+# The skill name sits in the first quoted span of the activation note, for both
+# the single-skill and the bundle header ("work" / "/clean /work").
+_SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
+
+# SQL LIKE pattern matching a skill-expanded turn, for listing queries that
+# have to recognize scaffolding before the row reaches Python. The prefix
+# contains no LIKE wildcards (`%`, `_`), so it needs no ESCAPE clause.
+SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
+
+# Marks where a preview query joined the head and tail of a long scaffolded
+# message. ``describe_skill_invocation`` may hand back a span that runs across
+# the joint (a bundle instruction cut off by the head window); callers cut the
+# description there rather than show the skill body on the far side.
+SKILL_EXCERPT_JOINT = "\x1e"
+
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     """Recover the user's instruction from a slash-skill-expanded turn.
@@ -80,6 +95,45 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
         return _extract_single_skill_user_instruction(content)
 
     return None
+
+
+def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
+    """Render a slash-skill-expanded turn the way the user typed it.
+
+    The expanded message embeds the whole skill body, so any surface that
+    summarizes a user turn from its raw content — session titles, sidebar
+    previews, the ``/rewind`` picker — otherwise shows the skill's own prose
+    as if the user had written it. That is how a skill's opening line ends up
+    as a session title.
+
+    Returns ``"/work — fix the title leak"``, or ``"/work"`` for a bare
+    invocation, or ``None`` when *content* is not skill scaffolding (the
+    caller should then summarize it as an ordinary message).
+
+    *separator* joins the command and the instruction. Previews use the
+    default em dash; pass ``" "`` for the literal invocation the user typed,
+    which is what chat transcripts render.
+    """
+    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return None
+
+    match = _SKILL_NAME_RE.match(content)
+    name = (match.group(1) if match else "").strip()
+    # Bundle headers already carry their typed "/a /b" keys; a single skill is
+    # a bare name.
+    label = name if name.startswith("/") else f"/{name}"
+
+    instruction = extract_user_instruction_from_skill_message(content)
+    if instruction and instruction is not content:
+        # An excerpted message (head + tail, joined by SKILL_EXCERPT_JOINT) can
+        # put the joint inside the matched span — keep only the side the
+        # instruction marker was found on.
+        instruction = instruction.split(SKILL_EXCERPT_JOINT)[0]
+        instruction = " ".join(instruction.split())
+        if instruction:
+            return f"{label}{separator}{instruction}" if name else instruction
+
+    return label if name else None
 
 
 def _extract_single_skill_user_instruction(message: str) -> Optional[str]:
@@ -329,6 +383,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -374,7 +429,32 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    # Skip if this skill's auto-generated /command collides
+                    # with a core Hermes slash command (name or alias). The
+                    # skill remains fully loadable via /skill <name>.
+                    # Uses resolve_command() so aliases and case variants are
+                    # covered without maintaining a separate cache.
+                    if resolve_command(cmd_name) is not None:
+                        logger.warning(
+                            "Skill %r generates slash command '/%s' which "
+                            "collides with a core Hermes command; skipping "
+                            "auto-registration. Use '/skill %s' instead.",
+                            name, cmd_name, name,
+                        )
+                        continue
+                    # Dedup on the resolved slug, not just the raw name: two
+                    # distinct frontmatter names can normalize to the same
+                    # slug (e.g. "git_helper" vs "git-helper"). First-wins
+                    # preserves local-before-external precedence.
+                    cmd_key = f"/{cmd_name}"
+                    if cmd_key in _skill_commands:
+                        logger.warning(
+                            "Skill %r maps to slash command %s already claimed "
+                            "by %r; keeping the first and skipping this one.",
+                            name, cmd_key, _skill_commands[cmd_key]["name"],
+                        )
+                        continue
+                    _skill_commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -427,8 +507,8 @@ def reload_skills() -> Dict[str, Any]:
             }
 
         ``description`` is the skill's full SKILL.md frontmatter
-        ``description:`` field — the same string the system prompt renders
-        as ``    - name: description`` for pre-existing skills.
+        ``description:`` field. Note: the system prompt skill index
+        truncates this to the first 57 chars; see ``extract_skill_description``.
     """
     # Snapshot pre-reload state (name -> description) from the current
     # slash-command cache. Using dicts lets the post-rescan diff carry

@@ -44,7 +44,7 @@ The center of the app. You get:
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
-- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent.
+- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries.
 
 #### Status bar
 
@@ -53,6 +53,23 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 - **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
+
+#### Repository discovery
+
+Hermes Desktop discovers local Git repositories for the Projects sidebar by scanning your home directory to a bounded depth. You can change this per profile in **Settings → Workspace**, or in `config.yaml`:
+
+```yaml
+desktop:
+  repo_scan_enabled: true
+  repo_scan_roots: []
+  repo_scan_exclude_paths: []
+```
+
+- Set `repo_scan_enabled: false` to stop the filesystem scan completely. Existing disk-discovery cache rows for that profile are cleared; explicit projects and repositories inferred from intentional Hermes sessions remain available.
+- Set `repo_scan_roots` to a list of folders to restrict scanning. An empty list preserves the default home-directory scan.
+- Set `repo_scan_exclude_paths` to folders whose complete subtrees should be skipped.
+
+Changing any of these values invalidates only that profile's disk-discovery cache and starts a policy-compliant refresh. **Hide from sidebar** remains a separate per-item curation action.
 
 #### Choosing a model
 
@@ -220,6 +237,17 @@ The remote gateway host is configured per [profile](./profiles.md), so each prof
 
 For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend); the env vars are catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](../reference/environment-variables.md#web-dashboard--hermes-desktop).
 
+## Extending the desktop app
+
+The desktop app is contribution-driven — panes, pages, sidebar nav, status-bar
+items, palette commands, keybinds, and themes all register through one SDK, and
+you can add your own. A plugin is a single ESM file dropped in
+`$HERMES_HOME/desktop-plugins/<id>/plugin.js`; the app loads it within seconds and
+hot-reloads every save. Manage installed plugins live in **Settings → Plugins**.
+
+See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
+reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
+
 ## Troubleshooting
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure. You can also tail it from the CLI:
@@ -289,6 +317,32 @@ npm run pack         # unpacked app under release/ (no installer)
 ```
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+
+### macOS permissions and local rebuilds (TCC)
+
+macOS remembers permission grants (Full Disk Access, Desktop/Downloads/Documents,
+Accessibility, Automation, microphone) against the app's *code-signing identity*,
+not its path. Locally built and self-updated apps are signed with a stable
+identifier-pinned ad-hoc signature, so grants persist across updates out of the
+box.
+
+For the strongest guarantee — a certificate-anchored identity, the same
+mechanism yabai/skhd users rely on — create a self-signed code-signing
+certificate once and tell Hermes to use it:
+
+1. Keychain Access → Certificate Assistant → **Create a Certificate…**
+2. Name: `Hermes Local Signing`, Identity Type: *Self-Signed Root*,
+   Certificate Type: **Code Signing**.
+3. `hermes config set desktop.macos_signing_identity "Hermes Local Signing"`
+
+The next update re-signs the rebuilt app with that certificate; every TCC grant
+survives. No Apple Developer account is required. Notarized release builds are
+detected and never re-signed.
+
+One-time note: changing the signing identity (including the first update after
+this fix) changes the app's identity once, so macOS will re-prompt one final
+time. Grants are stable from then on. If a permission gets stuck, reset it with
+`tccutil reset All com.nousresearch.hermes` and re-grant.
 
 ## See also
 

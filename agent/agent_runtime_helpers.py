@@ -26,10 +26,11 @@ import copy
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
@@ -37,6 +38,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
+from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -357,6 +359,108 @@ def sanitize_tool_call_arguments(
     return repaired
 
 
+# Session-scoped in-flight registry backing note_turn_start's cross-agent
+# check.  The per-agent marker catches a second turn on the SAME AIAgent
+# object, but the gateway caches agents per *routing key* (``_agent_cache``
+# in gateway/run.py) while the durable transcript is keyed by *session_id* —
+# and the key→id mapping is many-to-one (``switch_session``: /resume from a
+# second chat/topic, CLI-continuity rebinding, async-delegation pinning,
+# topic-binding tip-walks).  Two routing keys mapped to one session_id run
+# concurrent turns on two different agent objects, which per-agent state can
+# never see (#64934).  Keyed by session_id so that route produces the same
+# named warning.  Process-local by design — same visibility scope as the
+# per-agent marker it extends.
+_INFLIGHT_TURNS_BY_SESSION: Dict[str, Tuple[str, float]] = {}
+_INFLIGHT_TURNS_LOCK = threading.Lock()
+
+
+def note_turn_start(agent, turn_id: str):
+    """Tripwire: detect a turn starting while a previous turn of the same
+    agent — or of the same underlying *session* on a different agent object —
+    has not completed its turn-end persist.
+
+    Two turns interleaving on one session corrupt the durable transcript:
+    their flushes race (user rows can persist out of arrival order), a row
+    can be swallowed by the identity-marker dedup over shared history dicts,
+    and the second turn runs on a history base that never saw the first
+    turn's exchange. This helper does NOT prevent any of that — it names the
+    occurrence, with both turn ids, so the dispatch route that let the
+    second turn through the busy guard can be identified from logs.
+
+    Returns the previous in-flight turn_id when an overlap is detected,
+    else None. Takes ownership of the in-flight slot either way, so a turn
+    that crashed before its persist produces at most one warning."""
+    prev = getattr(agent, "_inflight_turn_id", None)
+    prev_started = getattr(agent, "_inflight_turn_started", 0.0)
+    agent._inflight_turn_id = turn_id
+    agent._inflight_turn_started = time.time()
+    overlap = None
+    if prev and prev != turn_id:
+        logger.warning(
+            "turn %s starting while turn %s (started %.0fs ago) has not "
+            "completed its turn-end persist (session=%s) — concurrent turns "
+            "on one session; transcript writes may interleave",
+            turn_id,
+            prev,
+            time.time() - prev_started if prev_started else -1.0,
+            getattr(agent, "session_id", None) or "-",
+        )
+        overlap = prev
+
+    # Cross-agent leg: same session_id in flight under a different agent
+    # object means two routing keys resolve to one durable session — the
+    # busy guard (keyed by routing key) cannot see this overlap at all.
+    # Persist-disabled agents (background-review forks) deliberately share
+    # the live parent's session_id for prompt-cache warmth but can never
+    # write to the transcript — they must not register here (would warn a
+    # false overlap against the parent's real turn) nor pop the parent's
+    # slot at their persist (note_turn_persisted skips them symmetrically).
+    session_id = getattr(agent, "session_id", None)
+    if session_id and not getattr(agent, "_persist_disabled", False):
+        now = time.time()
+        with _INFLIGHT_TURNS_LOCK:
+            entry = _INFLIGHT_TURNS_BY_SESSION.get(session_id)
+            _INFLIGHT_TURNS_BY_SESSION[session_id] = (turn_id, now)
+        # Stamp the session id this turn registered under: compression can
+        # rotate agent.session_id mid-turn, and the persist-time clear must
+        # pop the slot the turn actually holds, not the rotated id.
+        agent._inflight_turn_session_id = session_id
+        if entry and entry[0] not in (turn_id, prev):
+            logger.warning(
+                "turn %s starting while turn %s (started %.0fs ago) is still "
+                "in flight on session %s under a different agent object — "
+                "two routing keys are mapped to one session_id; concurrent "
+                "turns on one session; transcript writes may interleave",
+                turn_id,
+                entry[0],
+                now - entry[1] if entry[1] else -1.0,
+                session_id,
+            )
+            overlap = overlap or entry[0]
+    return overlap
+
+
+def note_turn_persisted(agent):
+    """Clear the in-flight marker at turn-end persist (see note_turn_start).
+
+    Called from the single persist funnel; unconditional by design — when two
+    turns genuinely overlap, the first persist clears the second turn's slot
+    and the tripwire under-reports instead of double-reporting. A diagnostic
+    must never be noisier than the defect it hunts."""
+    agent._inflight_turn_id = None
+    # Symmetric with note_turn_start's cross-agent leg: persist-disabled
+    # forks never registered a session slot, and their persist funnel still
+    # runs — popping here would steal the live parent turn's slot and make
+    # the tripwire under-report the real overlap it exists to catch.
+    if not getattr(agent, "_persist_disabled", False):
+        session_id = getattr(agent, "_inflight_turn_session_id", None) or getattr(
+            agent, "session_id", None
+        )
+        if session_id:
+            with _INFLIGHT_TURNS_LOCK:
+                _INFLIGHT_TURNS_BY_SESSION.pop(session_id, None)
+    agent._inflight_turn_session_id = None
+
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history.
@@ -426,6 +530,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             or m.get("finish_reason") == "incomplete"
         )
 
+    def _is_verification_candidate(m: Dict) -> bool:
+        return m.get("finish_reason") in {
+            "verification_required",
+            "verify_hook_continue",
+        }
+
     collapsed: List[Dict] = []
     for msg in messages:
         if (
@@ -438,6 +548,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and not _is_codex_interim(collapsed[-1])
         ):
             prev = collapsed[-1]
+            # Verification candidate collapsing: when the earlier assistant
+            # message is a provisional candidate (finish_reason =
+            # verification_required / verify_hook_continue), the later
+            # response supersedes it for model replay — replace rather than
+            # union. Both remain durable in state.db; this only affects the
+            # in-memory sequence sent to the model. (#65919 §7)
+            if _is_verification_candidate(prev):
+                collapsed[-1] = msg
+                repairs += 1
+                continue
             # Union tool_calls (preserve order, both may carry them).
             prev_calls = list(prev.get("tool_calls") or [])
             new_calls = list(msg.get("tool_calls") or [])
@@ -545,6 +665,10 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                     if prev_content and new_content
                     else (prev_content or new_content)
                 )
+                # Merged content invalidates the api_content sidecar (exact
+                # bytes previously sent for the pre-merge message) — drop it
+                # so replay can't substitute stale bytes.
+                drop_stale_api_content(prev)
                 repairs += 1
                 continue
         merged.append(msg)
@@ -601,16 +725,16 @@ def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
 
     Handles four cases:
-      1. Closed tag pairs (``<think>…</think>``) — the common path when
+      1. Closed tag pairs (`` <think>… ``) — the common path when
          the provider emits complete reasoning blocks.
       2. Unterminated open tag at a block boundary (start of text or
          after a newline) — e.g. MiniMax M2.7 / NIM endpoints where the
          closing tag is dropped.  Everything from the open tag to end
          of string is stripped.  The block-boundary check mirrors
          ``gateway/stream_consumer.py``'s filter so models that mention
-         ``<think>`` in prose aren't over-stripped.
+         `` <think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
-      4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
+      4. Tag variants: `` <think>``, ``<thinking>``, ``<reasoning>``,
          ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
          case-insensitive.
 
@@ -630,6 +754,39 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    # Coerce non-string content to text before any regex runs.  Providers
+    # that return assistant ``content`` as a list of blocks (Anthropic via
+    # OpenRouter emits ``[{"type":"text",...}, {"type":"thinking",...}]``) or
+    # as a dict flow into this shared helper from several callers — most
+    # notably ``_interim_assistant_visible_text`` reading a *stored* history
+    # message whose content was persisted as a list.  A raw list/dict reaching
+    # ``re.sub`` below raises ``TypeError: expected string or bytes-like
+    # object, got 'list'``, which the outer conversation loop swallows and
+    # retries forever (observed as an infinite "preparing terminal…" loop on
+    # Anthropic models via OpenRouter).  Flatten here so every caller is safe.
+    if not isinstance(content, str):
+        if isinstance(content, list):
+            _parts: list[str] = []
+            for _part in content:
+                if isinstance(_part, str):
+                    _parts.append(_part)
+                elif isinstance(_part, dict):
+                    _ptype = str(_part.get("type") or "").strip().lower()
+                    # Drop reasoning/thinking blocks outright — this function's
+                    # whole job is to strip them, and their text lives under
+                    # different keys ("thinking", "reasoning") per provider.
+                    if _ptype in {"thinking", "reasoning", "redacted_thinking"}:
+                        continue
+                    _text = _part.get("text")
+                    if isinstance(_text, str) and _text:
+                        _parts.append(_text)
+            content = "".join(_parts)
+        elif isinstance(content, dict):
+            content = str(content.get("text") or content.get("content") or "")
+        else:
+            content = str(content)
+        if not content:
+            return ""
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.
@@ -691,6 +848,25 @@ def strip_think_blocks(agent, content: str) -> str:
     )
     return content
 
+
+
+def sync_credential_pool_entry_id(agent) -> None:
+    """Rebind ``agent._credential_pool_entry_id`` from the current pool + key.
+
+    OAuth refreshes can replace the runtime token before a failed request is
+    recovered, so the mutable API-key value alone cannot reliably attribute
+    the failure to its source entry.  This resolves the stable pool-entry ID
+    for the agent's current ``api_key`` and clears it when no pool is bound.
+    """
+    pool = getattr(agent, "_credential_pool", None)
+    try:
+        agent._credential_pool_entry_id = (
+            pool.entry_id_for_api_key(getattr(agent, "api_key", None))
+            if pool is not None
+            else None
+        )
+    except Exception:
+        agent._credential_pool_entry_id = None
 
 
 def recover_with_credential_pool(
@@ -765,6 +941,43 @@ def recover_with_credential_pool(
             )
             return False, has_retried_429
 
+    # Attribute the failure to the API key the agent actually dispatched the
+    # request with, not to pool.current(). The current() pointer is shared,
+    # mutable state — round-robin select() advances it on every call, and
+    # concurrent turns or a second process (gateway/dashboard) reloading the
+    # pool reset it to None — so by the time recovery runs it routinely points
+    # at a DIFFERENT, healthy entry. Marking that entry exhausted copies this
+    # request's error/reset time onto it and can take the whole pool offline
+    # from a single rate-limited key (#43747). ``_swap_credential`` keeps
+    # ``agent.api_key`` in sync with the entry in use, so it identifies the
+    # failing entry exactly; fall back to current()'s key only when the agent
+    # carries no key at all.
+    _api_key_hint = getattr(agent, "api_key", None) or None
+    _raw_credential_id = getattr(agent, "_credential_pool_entry_id", None)
+    _credential_id = (
+        _raw_credential_id
+        if isinstance(_raw_credential_id, str) and _raw_credential_id
+        else None
+    )
+    if not _api_key_hint:
+        _cur = pool.current()
+        if _cur:
+            _api_key_hint = getattr(_cur, "runtime_api_key", None)
+            if not _credential_id:
+                _current_id = getattr(_cur, "id", None)
+                if isinstance(_current_id, str) and _current_id:
+                    _credential_id = _current_id
+
+    def _rotate_failed_credential(rotate_status: int):
+        kwargs = {
+            "status_code": rotate_status,
+            "error_context": error_context,
+            "api_key_hint": _api_key_hint,
+        }
+        if _credential_id:
+            kwargs["credential_id"] = _credential_id
+        return pool.mark_exhausted_and_rotate(**kwargs)
+
     effective_reason = classified_reason
     if effective_reason is None:
         if status_code == 402:
@@ -795,7 +1008,10 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        # Runtime credentials can be resolved by a separate pool instance,
+        # leaving this recovery pool without ``current_id``. Match the key
+        # that actually failed instead of quarantining a different account.
+        next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -811,7 +1027,21 @@ def recover_with_credential_pool(
         # rotate immediately. This prevents the "cancel-between-429s" trap
         # where has_retried_429 (a local var) gets reset on each new prompt,
         # causing the pool to retry the same exhausted credential forever.
-        current_entry = pool.current()
+        # Prefer the entry matching the failing key over the shared current()
+        # pointer, for the same attribution reason as above.
+        current_entry = None
+        if _credential_id:
+            current_entry = next(
+                (e for e in pool.entries() if e.id == _credential_id),
+                None,
+            )
+        if _api_key_hint:
+            current_entry = current_entry or next(
+                (e for e in pool.entries() if e.runtime_api_key == _api_key_hint),
+                None,
+            )
+        if current_entry is None:
+            current_entry = pool.current()
         current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
         if current_last_status == STATUS_EXHAUSTED:
             _ra().logger.info(
@@ -819,7 +1049,7 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = _rotate_failed_credential(rotate_status)
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -843,7 +1073,7 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -858,7 +1088,7 @@ def recover_with_credential_pool(
         # Subscription/entitlement 403s look like auth failures on the wire
         # but refresh cannot fix them — the OAuth token is already valid,
         # the account simply lacks the entitlement.  Without this guard,
-        # ``try_refresh_current()`` keeps minting fresh tokens against the
+        # the refresh path keeps minting fresh tokens against the
         # same unsubscribed account and the main agent loop spins re-issuing
         # the same 403 until the user Ctrl+C's.
         #
@@ -911,9 +1141,16 @@ def recover_with_credential_pool(
                 agent.provider or "provider",
             )
             return False, has_retried_429
-        refreshed = pool.try_refresh_current()
+        # Refresh the entry that supplied the failing key, not current():
+        # the shared pointer can reference a different, healthy entry, and
+        # refreshing it would consume that entry's single-use refresh token
+        # (or mark it exhausted on failure) for a failure it never had.
+        refresh_kwargs = {"api_key_hint": _api_key_hint}
+        if _credential_id:
+            refresh_kwargs["credential_id"] = _credential_id
+        refreshed = pool.try_refresh_matching(**refresh_kwargs)
         if refreshed is not None:
-            # ``try_refresh_current()`` re-mints a fresh OAuth token and reports
+            # ``try_refresh_matching()`` re-mints a fresh OAuth token and reports
             # success even when the upstream keeps rejecting it — a single-entry
             # pool (common for OAuth/Max subscribers) has nothing to rotate to,
             # so a bare "refreshed → retry" loop spins forever on the same dead
@@ -941,9 +1178,9 @@ def recover_with_credential_pool(
             agent._swap_credential(refreshed)
             return True, has_retried_429
         # Refresh failed — rotate to next credential instead of giving up.
-        # The failed entry is already marked exhausted by try_refresh_current().
+        # The failed entry is already marked exhausted by the refresh attempt.
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",
@@ -984,15 +1221,29 @@ def try_recover_primary_transport(
     if agent._is_openrouter_url():
         return False
     provider_lower = (agent.provider or "").strip().lower()
-    if provider_lower in {"nous", "nous-research"}:
+    # Portal OpenAI-wire traffic still rides aggregator retry infra, so one
+    # more rebuilt OpenAI client won't help. Portal Claude on the native
+    # Messages route holds a local Anthropic SDK client whose connection
+    # pool *does* need the rebuild every other anthropic_messages provider
+    # already gets — don't blanket-skip the dual-wire path.
+    if (
+        provider_lower in {"nous", "nous-portal", "nousresearch"}
+        and getattr(agent, "api_mode", None) != "anthropic_messages"
+    ):
         return False
 
     try:
-        # Close existing client to release stale connections
+        # Retire the existing client to release stale connections. #70773:
+        # never hard-close the shared client here — this runs on the
+        # conversation-loop thread while workers from stale-killed streaming
+        # attempts may still be unwinding their SSL BIOs on the old pool.
+        # ``_retire_shared_openai_client`` shuts the sockets down (FD-safe
+        # from any thread) and defers the FD release to GC, which cannot
+        # complete until every borrowing thread has unwound.
         if getattr(agent, "client", None) is not None:
             try:
-                agent._close_openai_client(
-                    agent.client, reason="primary_recovery", shared=True,
+                agent._retire_shared_openai_client(
+                    agent.client, reason="primary_recovery",
                 )
             except Exception:
                 pass
@@ -1002,6 +1253,7 @@ def try_recover_primary_transport(
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent.model = rt["model"]
         agent.provider = rt["provider"]
+        agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -1018,6 +1270,14 @@ def try_recover_primary_transport(
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
+        elif (agent.provider or "").strip().lower() == "moa":
+            # MoA is a virtual provider with empty client_kwargs — rebuilding
+            # via _create_openai_client would raise "api_key client option
+            # must be set". Recreate the facade through the shared factory so
+            # the reference_callback relay survives recovery (#53802).
+            from agent.moa_loop import build_moa_facade
+
+            agent.client = build_moa_facade(agent, agent.model)
         else:
             agent.client = agent._create_openai_client(
                 dict(rt["client_kwargs"]),
@@ -1165,6 +1425,7 @@ def restore_primary_runtime(agent) -> bool:
         # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
+        agent.requested_provider = rt.get("requested_provider", agent.provider)
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
@@ -1180,7 +1441,18 @@ def restore_primary_runtime(agent) -> bool:
         )
 
         # ── Rebuild client for the primary provider ──
-        if agent.api_mode == "anthropic_messages":
+        if agent.provider == "moa":
+            # MoA is a virtual chat-completions provider.  It never has real
+            # OpenAI client kwargs; restoring it after a fallback must recreate
+            # the facade, not call OpenAI() with an empty api_key.  Use the
+            # shared factory so the restored facade keeps the reference_callback
+            # relay wired at init — a bare MoAClient() would silently stop
+            # emitting moa.reference/moa.aggregating display events (#53802).
+            from agent.moa_loop import build_moa_facade
+
+            agent.client = build_moa_facade(agent, agent.model)
+            agent._anthropic_client = None
+        elif agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
@@ -1208,7 +1480,43 @@ def restore_primary_runtime(agent) -> bool:
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
-        # ── Re-select from the credential pool if one is available ──
+        # ── Rebind and re-select the primary credential pool ──
+        # A cross-provider fallback attaches the fallback provider's pool. The
+        # runtime fields above restore the primary, but leaving that pool in
+        # place makes the next primary 401/429 hit the provider-mismatch guard
+        # and disables credential rotation. Reload the primary pool first; if
+        # auth storage is temporarily unreadable, clear the mismatched pool.
+        primary_provider = str(rt.get("provider") or "").strip().lower()
+        pool = getattr(agent, "_credential_pool", None)
+        pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
+        pool_matches_primary = pool_provider == primary_provider
+        if (
+            primary_provider == "custom"
+            and pool_provider.startswith("custom:")
+        ):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+
+                primary_key = (
+                    get_custom_provider_pool_key(str(rt.get("base_url") or "")) or ""
+                ).strip().lower()
+                pool_matches_primary = bool(primary_key) and primary_key == pool_provider
+            except Exception:
+                pool_matches_primary = False
+        if pool is not None and pool_provider and not pool_matches_primary:
+            agent._credential_pool = None
+            agent._credential_pool_entry_id = None
+            try:
+                from agent.credential_pool import load_pool
+
+                agent._credential_pool = load_pool(primary_provider)
+            except Exception as exc:
+                logger.warning(
+                    "Restore could not reload primary credential pool for %s: %s",
+                    primary_provider,
+                    exc,
+                )
+
         # The snapshot's api_key was captured at construction time.  Across
         # turns the pool may have rotated (token revocation, billing/rate-limit
         # exhaustion, cooldown), leaving the snapshot key stale.  Restoring it
@@ -1217,12 +1525,12 @@ def restore_primary_runtime(agent) -> bool:
         # the pool for its current best entry and swap the live credential in.
         # When the pool is absent, empty, or the entry has no usable key, we
         # keep the snapshot key (the existing behavior).  Fixes #25205.
+        agent._credential_pool_entry_id = None
         pool = getattr(agent, "_credential_pool", None)
         if pool is not None and pool.has_available():
             entry = pool.select()
             if entry is not None:
                 entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
-                primary_provider = str(rt.get("provider") or "").strip().lower()
                 entry_matches_primary = entry_provider == primary_provider
                 # Custom endpoints all carry the generic ``custom`` provider on
                 # the agent while the pool entry is keyed ``custom:<name>`` (see
@@ -1270,6 +1578,13 @@ def restore_primary_runtime(agent) -> bool:
                         entry_provider or "?",
                         primary_provider or "?",
                     )
+
+        # ── Restore reasoning_config if it was saved ──
+        # switch_model saves reasoning_config in _primary_runtime. If the
+        # snapshot predates that (older sessions), keep the current value.
+        saved_reasoning = rt.get("reasoning_config")
+        if saved_reasoning is not None:
+            agent.reasoning_config = dict(saved_reasoning)
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
@@ -1588,7 +1903,15 @@ def anthropic_prompt_cache_policy(
 
     if is_native_anthropic:
         return True, True
-    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
+    # Envelope layout is an OpenAI-wire construct. Portal Claude on the native
+    # Messages route must fall through to the third-party anthropic_messages
+    # branch below, which emits inner-block cache_control breakpoints; the
+    # envelope form would be dropped and serve 0% cache hits.
+    if (
+        (is_openrouter or is_nous_portal)
+        and (is_claude or is_kimi)
+        and not is_anthropic_wire
+    ):
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -1752,8 +2075,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     from hermes_cli.providers import determine_api_mode
 
     # ── Determine api_mode if not provided ──
+    # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
+    # resolve correctly; without it determine_api_mode falls back to the
+    # openai_chat overlay default.
     if not api_mode:
-        api_mode = determine_api_mode(new_provider, base_url)
+        api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
@@ -1788,6 +2114,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         for name in (
             "model",
             "provider",
+            "requested_provider",
             "base_url",
             "api_mode",
             "api_key",
@@ -1806,6 +2133,19 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
     _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
+    _snapshot["_credential_pool_entry_id"] = getattr(
+        agent, "_credential_pool_entry_id", _MISSING
+    )
+
+    def _restore_snapshot() -> None:
+        for _name, _value in _snapshot.items():
+            if _value is _MISSING:
+                # Attribute did not exist before the swap — don't fabricate it.
+                continue
+            try:
+                setattr(agent, _name, _value)
+            except Exception:  # noqa: BLE001
+                pass
 
     try:
         # Clear the per-config context_length override so the new model's
@@ -1816,6 +2156,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
+        agent.requested_provider = new_provider
         # Use the new base_url when provided. When it's empty AND the
         # provider is actually changing, do NOT fall back to the current
         # (old provider's) URL — that silently pairs the new provider label
@@ -1858,6 +2199,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+            # A pool bound to the old provider is worse than no pool: the
+            # recovery guard rejects it and every later 401/429 skips rotation.
+            agent._credential_pool = None
+            agent._credential_pool_entry_id = None
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
@@ -1867,10 +2212,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                     "continuing without pool rotation this turn",
                     new_provider, _pool_exc,
                 )
-
         # ── Build new client ──
         if (new_provider or "").strip().lower() == "moa":
-            from agent.moa_loop import MoAClient
+            from agent.moa_loop import build_moa_facade
 
             # The MoA virtual provider speaks only chat.completions via the
             # MoAClient facade — the aggregator's real transport
@@ -1887,7 +2231,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
-            agent.client = MoAClient(agent.model or "default")
+            agent.client = build_moa_facade(agent, agent.model)
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,
@@ -1963,21 +2307,49 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 reason="switch_model",
                 shared=True,
             )
+
+        sync_credential_pool_entry_id(agent)
     except Exception:
         # Rollback every mutated field to the pre-swap snapshot so the agent
         # is left consistent (old model + old provider + old client) and the
         # caller's exception handler can surface a meaningful warning.  The
         # exception is re-raised; cli.py / gateway/run.py / tui_gateway catch
         # it and print "Agent swap failed; change applied to next session".
-        for _name, _value in _snapshot.items():
-            if _value is _MISSING:
-                # Attribute did not exist before the swap — don't fabricate it.
-                continue
-            try:
-                setattr(agent, _name, _value)
-            except Exception:  # noqa: BLE001
-                pass
+        _restore_snapshot()
         raise
+
+    # ── LM Studio: preload before probing context length ──
+    _sm_custom_providers = None
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            get_custom_provider_context_length,
+            load_config,
+        )
+
+        _sm_cfg = load_config()
+        _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
+        _destination_context_intent = get_custom_provider_context_length(
+            model=agent.model,
+            base_url=agent.base_url,
+            custom_providers=_sm_custom_providers,
+        )
+    except Exception:
+        _destination_context_intent = None
+    agent._config_context_length = _destination_context_intent
+    _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
+        _destination_context_intent
+    )
+    if agent._lmstudio_load_was_unverified(_runtime_context_length):
+        logger.warning(
+            "LM Studio model activation was rejected or completed without a "
+            "verifiable active context length during model switch; continuing "
+            "with configured context"
+        )
+    _effective_context_length = agent._effective_lmstudio_context_length(
+        _destination_context_intent,
+        _runtime_context_length,
+    )
 
     # ── Re-evaluate prompt caching ──
     agent._use_prompt_caching, agent._use_native_cache_layout = (
@@ -1989,22 +2361,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         )
     )
 
-    # ── LM Studio: preload before probing context length ──
-    agent._ensure_lmstudio_runtime_loaded()
-
     # ── Update context compressor ──
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         from agent.model_metadata import get_model_context_length
-        # Re-read custom_providers from live config so per-model
-        # context_length overrides are honored when switching to a
-        # custom provider mid-session (closes #15779).
-        _sm_custom_providers = None
-        try:
-            from hermes_cli.config import load_config, get_compatible_custom_providers
-            _sm_cfg = load_config()
-            _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
-        except Exception:
-            _sm_custom_providers = None
+        if _sm_custom_providers is None:
+            try:
+                from hermes_cli.config import get_compatible_custom_providers, load_config
+                _sm_custom_providers = get_compatible_custom_providers(load_config())
+            except Exception:
+                _sm_custom_providers = None
         # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
         # token provider). ``get_model_context_length`` expects a
         # string for its live-probe paths; for Foundry the context
@@ -2016,7 +2381,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             base_url=agent.base_url,
             api_key=_ctx_api_key,
             provider=agent.provider,
-            config_context_length=getattr(agent, "_config_context_length", None),
+            config_context_length=_effective_context_length,
             custom_providers=_sm_custom_providers,
         )
         agent.context_compressor.update_model(
@@ -2027,6 +2392,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+
+    # ── Re-resolve reasoning_config from per-model override ──
+    # The new model may have a different reasoning_effort override. Re-read
+    # config so the override takes effect immediately on /model switch —
+    # resolved through the shared chokepoint (per-model > global; YAML
+    # boolean False = disabled).
+    try:
+        from hermes_constants import resolve_reasoning_config
+        from hermes_cli.config import load_config as _sm_load_config
+
+        _reasoning_cfg = _sm_load_config() or {}
+        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        logger.info(
+            "switch_model: reasoning_config resolved for %s: %s",
+            agent.model, agent.reasoning_config,
+        )
+    except Exception as _reasoning_err:
+        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
@@ -2044,12 +2427,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -2119,7 +2504,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
-                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None) -> str:
+                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
+                 skip_tool_execution_middleware: bool = False) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -2277,6 +2663,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 _clarify_tool(
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
+                    multi_select=next_args.get("multi_select", False),
                     callback=agent.clarify_callback,
                 ),
                 next_args,
@@ -2297,8 +2684,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
     else:
         def _execute(next_args: dict) -> Any:
-            return _ra().handle_function_call(
-                function_name, next_args, effective_task_id,
+            dispatch_kwargs = dict(
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
@@ -2310,6 +2696,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            if skip_tool_execution_middleware:
+                dispatch_kwargs["skip_tool_execution_middleware"] = True
+            return _ra().handle_function_call(
+                function_name,
+                next_args,
+                effective_task_id,
+                **dispatch_kwargs,
+            )
+
+    if skip_tool_execution_middleware:
+        return _execute(function_args)
 
     from hermes_cli.middleware import run_tool_execution_middleware
 
@@ -2422,6 +2819,129 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+# Placeholder substituted for an empty non-final message that would otherwise
+# make the provider reject the whole request. Kept identical to the stub-
+# creation placeholder in chat_completion_helpers so a healed transcript reads
+# consistently whether the empty turn was caught at write time or send time.
+_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
+
+
+def _msg_has_payload(msg: Dict[str, Any]) -> bool:
+    """True if ``msg`` carries anything the API treats as non-empty content.
+
+    Covers string content, non-empty multimodal content lists, tool_calls,
+    tool_call_id linkage (tool results), and reasoning payloads. Mirrors the
+    emptiness checks used by ``AIAgent._is_thinking_only_assistant`` but is
+    role-agnostic so it can vet user/assistant/tool turns uniformly.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        if content.strip():
+            return True
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                # any typed block (text/image/tool_use/document/...) counts,
+                # as long as a text block is not itself blank
+                if block.get("type") == "text":
+                    if isinstance(block.get("text"), str) and block["text"].strip():
+                        return True
+                    continue
+                return True
+            elif block:
+                return True
+    elif content not in (None, ""):
+        return True
+    # Structural payloads that make an "empty-content" message still valid.
+    if msg.get("tool_calls"):
+        return True
+    if isinstance(msg.get("reasoning_content"), str) and msg["reasoning_content"].strip():
+        return True
+    if msg.get("reasoning") or msg.get("reasoning_details"):
+        return True
+    # Codex Responses item carriers: a commentary-phase assistant turn
+    # persists with content:"" by DESIGN — its text lives in
+    # ``codex_message_items`` (delivered via the interim callback) and the
+    # structured items are replayed for prefix-cache hits.  Same for
+    # ``codex_reasoning_items``.  These turns are never wire-empty on any
+    # api_mode: the codex transport replays the items, and the
+    # chat-completions transport strips the carriers only after this repair
+    # pass has already run.  Treat them as payload so the repair never
+    # rewrites a designed-empty codex turn (July 2026: a write-time pad that
+    # ignored this broke codex commentary replay in CI).
+    if msg.get("codex_message_items") or msg.get("codex_reasoning_items"):
+        return True
+    return False
+
+
+def repair_empty_non_final_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Heal empty-content non-final messages before they reach the provider.
+
+    Root-cause context: a stream that dies with 0 recovered characters (peer
+    reset, stall-kill) could persist an assistant turn with ``content=None``
+    and no tool_calls. The Anthropic message schema — and the litellm/Bedrock
+    proxies in front of it — reject ANY request whose transcript contains an
+    empty non-final message:
+
+        "all messages must have non-empty content except for the optional
+         final assistant message"  (HTTP 400 INVALID_REQUEST_BODY)
+
+    Once such a message lands mid-transcript it poisons EVERY subsequent turn
+    of that session until it scrolls out of context. The write-time guard in
+    ``chat_completion_helpers`` stops NEW stubs, but sessions already carrying
+    one (persisted before the guard, or fed in from a host history) stay stuck
+    and previously needed a manual DB edit + gateway restart to recover.
+
+    This pass is the self-healing counterpart: it runs unconditionally on the
+    per-call ``api_messages`` copy, so a poisoned transcript repairs itself
+    IN MEMORY on the very next send — no restart, no DB surgery. The final
+    message is left untouched (an empty final assistant turn is legal). The
+    stored conversation history is never mutated; only the wire copy is
+    repaired, so the UI/session trace stays faithful.
+
+    Repair strategy is substitution, not deletion: dropping a mid-transcript
+    turn can break role alternation and tool-call pairing, whereas an honest
+    minimal placeholder keeps the sequence intact and reads correctly as an
+    interrupted turn on replay.
+    """
+    if not messages or len(messages) < 2:
+        return messages
+
+    repaired: List[Dict[str, Any]] = []
+    healed = 0
+    last_idx = len(messages) - 1
+    for idx, msg in enumerate(messages):
+        if (
+            idx != last_idx
+            and isinstance(msg, dict)
+            # tool results are validated by their own orphan/pairing pass; an
+            # empty tool result is a separate (and rarer) concern.
+            and msg.get("role") in ("assistant", "user")
+            and not _msg_has_payload(msg)
+        ):
+            # Shallow-copy so stored history / prompt caching stays byte-stable.
+            fixed = dict(msg)
+            fixed["content"] = _INTERRUPTED_PLACEHOLDER
+            repaired.append(fixed)
+            healed += 1
+        else:
+            repaired.append(msg)
+
+    if healed:
+        _ra().logger.warning(
+            "Pre-call sanitizer: healed %d empty non-final message(s) by "
+            "substituting placeholder content — an empty-content turn was in "
+            "the transcript and would 400 the request ('messages must have "
+            "non-empty content' / INVALID_REQUEST_BODY). Self-recovering the "
+            "poisoned transcript in memory; no restart needed.",
+            healed,
+        )
+        return repaired
+    return messages
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2441,6 +2961,15 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             continue
         filtered.append(msg)
     messages = filtered
+
+    # --- Heal empty-content non-final messages (self-recovery) ---
+    # A dead stream can leave an empty assistant stub (or an empty user turn)
+    # mid-transcript; the provider then 400s EVERY subsequent request until it
+    # scrolls out. Repair it here, on the per-call copy, so a poisoned session
+    # recovers itself in memory on the next send — no restart, no DB edit.
+    # Done first so a substituted turn participates normally in the tool-pair
+    # and dedup passes below.
+    messages = repair_empty_non_final_messages(messages)
 
     # --- Drop empty / malformed tool_calls arrays on assistant messages ---
     # An assistant message carrying ``tool_calls: []`` (an empty array) — or a
@@ -2901,75 +3430,139 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     return changed
 
 
+def _iter_httpx_pool_objects(http_client: Any):
+    """Yield httpcore pool objects reachable from an httpx client.
+
+    Hermes' keepalive client (#10324 / ``_build_keepalive_http_client``) and
+    any ``HTTP(S)_PROXY`` configuration put live connections on *mounted*
+    transports (``client._mounts``), not only on the default
+    ``client._transport``. Walking the default transport alone makes
+    ``force_close_tcp_sockets`` return 0 while a stream is still mid-recv —
+    the interrupt logs success and the provider keeps burning the slot
+    (#72975).
+    """
+    seen_pools: set[int] = set()
+
+    def _emit(pool: Any):
+        if pool is None:
+            return
+        marker = id(pool)
+        if marker in seen_pools:
+            return
+        seen_pools.add(marker)
+        yield pool
+
+    def _pools_for_transport(transport: Any):
+        if transport is None:
+            return
+        # Normal httpx.HTTPTransport / HTTPProxy-as-transport: connections
+        # live under ``_pool``. HTTPProxy itself *is* a ConnectionPool and
+        # may be mounted directly — then ``_connections`` is on the
+        # transport.
+        pool = getattr(transport, "_pool", None)
+        if pool is not None:
+            yield from _emit(pool)
+            return
+        if getattr(transport, "_connections", None) is not None:
+            yield from _emit(transport)
+
+    try:
+        yield from _pools_for_transport(getattr(http_client, "_transport", None))
+        mounts = getattr(http_client, "_mounts", None) or {}
+        for _pattern, mounted in list(mounts.items()):
+            yield from _pools_for_transport(mounted)
+    except Exception:
+        return
+
+
+def _connection_candidates(conn: Any):
+    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    seen: set[int] = set()
+    stack = [conn]
+    while stack:
+        candidate = stack.pop()
+        if candidate is None:
+            continue
+        marker = id(candidate)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        yield candidate
+        inner = getattr(candidate, "_connection", None)
+        if inner is not None and id(inner) not in seen:
+            stack.append(inner)
+
+
 def _iter_pool_sockets(client: Any):
     """Yield raw sockets reachable from an OpenAI/httpx client pool.
 
     httpcore 1.x stores the concrete HTTP11/HTTP2 connection under
     ``conn._connection``; older versions exposed stream attributes directly
-    on the pool entry. Keep the traversal defensive because these are private
-    transport internals and vary across httpx/httpcore releases.
+    on the pool entry. Proxy tunnels wrap another layer
+    (``TunnelHTTPConnection`` / ``ForwardHTTPConnection``). Keep the
+    traversal defensive because these are private transport internals and
+    vary across httpx/httpcore releases.
+
+    Also walks ``httpx`` mount transports — see ``_iter_httpx_pool_objects``.
     """
     try:
         http_client = getattr(client, "_client", None)
         if http_client is None:
-            return
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return
+            # Some SDK wrappers *are* the httpx client (or expose the pool
+            # directly). Fall through so mount-aware discovery still runs.
+            http_client = client
+        pools = list(_iter_httpx_pool_objects(http_client))
+    except Exception:
+        return
+
+    if not pools:
+        return
+
+    seen: set[int] = set()
+    for pool in pools:
         connections = (
             getattr(pool, "_connections", None)
             or getattr(pool, "_pool", None)
             or []
         )
-    except Exception:
-        return
-
-    seen: set[int] = set()
-    for conn in list(connections):
-        candidates = [conn]
-        inner = getattr(conn, "_connection", None)
-        if inner is not None:
-            candidates.append(inner)
-        for candidate in candidates:
-            stream = (
-                getattr(candidate, "_network_stream", None)
-                or getattr(candidate, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                get_extra_info = getattr(stream, "get_extra_info", None)
-                if callable(get_extra_info):
-                    try:
-                        sock = get_extra_info("socket")
-                    except Exception:
-                        sock = None
-            if sock is None:
-                wrapped = getattr(stream, "stream", None)
-                if wrapped is not None:
-                    sock = getattr(wrapped, "_sock", None)
-            if sock is None:
-                # anyio-backed streams expose the raw socket through
-                # SocketAttribute.raw_socket when available.
-                wrapped = getattr(stream, "_stream", None)
-                extra = getattr(wrapped, "extra", None)
-                if callable(extra):
-                    try:
-                        from anyio.abc import SocketAttribute
-                        sock = extra(SocketAttribute.raw_socket)
-                    except Exception:
-                        sock = None
-            if sock is None:
-                continue
-            marker = id(sock)
-            if marker in seen:
-                continue
-            seen.add(marker)
-            yield sock
+        for conn in list(connections):
+            for candidate in _connection_candidates(conn):
+                stream = (
+                    getattr(candidate, "_network_stream", None)
+                    or getattr(candidate, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    get_extra_info = getattr(stream, "get_extra_info", None)
+                    if callable(get_extra_info):
+                        try:
+                            sock = get_extra_info("socket")
+                        except Exception:
+                            sock = None
+                if sock is None:
+                    wrapped = getattr(stream, "stream", None)
+                    if wrapped is not None:
+                        sock = getattr(wrapped, "_sock", None)
+                if sock is None:
+                    # anyio-backed streams expose the raw socket through
+                    # SocketAttribute.raw_socket when available.
+                    wrapped = getattr(stream, "_stream", None)
+                    extra = getattr(wrapped, "extra", None)
+                    if callable(extra):
+                        try:
+                            from anyio.abc import SocketAttribute
+                            sock = extra(SocketAttribute.raw_socket)
+                        except Exception:
+                            sock = None
+                if sock is None:
+                    continue
+                marker = id(sock)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                yield sock
 
 
 def cleanup_dead_connections(agent) -> bool:
@@ -3029,6 +3622,10 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         if isinstance(reason, str) and reason.strip():
             context["reason"] = reason.strip()
         message = payload.get("message") or payload.get("error_description")
+        if not message and isinstance(payload.get("error"), str):
+            # xAI uses a top-level string ``error`` beside a structured
+            # ``code`` (for example personal-team-blocked:spending-limit).
+            message = payload.get("error")
         if isinstance(message, str) and message.strip():
             context["message"] = message.strip()
         for key in ("resets_at", "reset_at"):

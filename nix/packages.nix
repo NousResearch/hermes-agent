@@ -58,6 +58,8 @@
         tui = full.hermesTui;
         web = full.hermesWeb;
         desktop = full.hermesDesktop;
+
+        update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
       };
     };
 }

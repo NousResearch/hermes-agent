@@ -15,6 +15,10 @@ name: History Check
 
 on:
   workflow_call:
+    outputs:
+      review_status:
+        description: "JSON array of review_status objects for the synthesizer."
+        value: ${{ jobs.check-common-ancestor.outputs.review_status }}
 
 permissions:
   contents: read
@@ -22,18 +26,24 @@ permissions:
 jobs:
   check-common-ancestor:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      review_status: ${{ steps.merge-base-check.outputs.review_status }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0 # full history both sides for merge-base
 
-      - name: Reject PRs with no common ancestor on main
+      - id: merge-base-check
+        name: Reject PRs with no common ancestor on main
         run: |
           # `git merge-base` exits non-zero AND prints nothing when the two
           # commits share no ancestor.  We check both conditions explicitly
           # so the failure message is clear regardless of which signal fires
           # first.
           if ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
+            STATUS='[{"source":"unrelated histories","results":[{"kind":"action_required","title":"Unrelated histories","summary":"This PR has no common ancestor with main.","detail":"","how_to_fix":"Rebase your changes onto current main:\n```\ngit fetch origin main\ngit checkout -b fix-branch origin/main\n# re-apply your changes (cherry-pick, copy files, etc.)\ngit push -f origin fix-branch\n```\n"}]}]'
+            echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
             echo ""
             echo "::error::This PR has no common ancestor with main."
             echo ""
@@ -55,3 +65,4 @@ jobs:
             exit 1
           fi
           echo "::notice::Common ancestor with main: $BASE"
+          echo "review_status=[]" >> "$GITHUB_OUTPUT"

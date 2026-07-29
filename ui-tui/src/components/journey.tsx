@@ -7,6 +7,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { deriveStarmapPalette, fadeHex, fadeInk, type StarmapPalette } from '../lib/starmapPalette.js'
 import type { Theme } from '../theme.js'
 
+import { listRowStyle } from './overlayPrimitives.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
 
 interface MutationResult {
@@ -115,12 +116,14 @@ function ChartRow({ palette, row }: { palette: StarmapPalette; row: Run[] }) {
 }
 
 // Full-width selectable row, matching the /agents list treatment: the active
-// row inverts and collapses every segment onto the accent foreground.
+// row carries the shared selection chip (never `inverse`, which swaps against
+// the terminal's unknowable defaults) and collapses onto the chip ink.
 function ListRow({ active, cells, t }: { active: boolean; cells: Cell[]; t: Theme }) {
-  const fg = active ? t.color.accent : t.color.text
+  const row = listRowStyle(t, active)
+  const fg = active ? (row.color ?? t.color.accent) : t.color.text
 
   return (
-    <Text bold={active} color={fg} inverse={active} wrap="truncate-end">
+    <Text backgroundColor={row.backgroundColor} bold={active} color={fg} wrap="truncate-end">
       {cells.map((c, i) => (
         <Text color={active ? fg : (c.color ?? t.color.text)} key={i}>
           {c.text}
@@ -181,6 +184,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
   const doDelete = () => {
     const node = activeNode
+
     if (!node) {
       return
     }
@@ -204,18 +208,22 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
   const doEdit = async () => {
     const node = activeNode
+
     if (!node) {
       return
     }
 
     setBusy(true)
+
     try {
       const detail = await gw.request<NodeDetail>('learning.detail', { id: node.id })
+
       if (!detail.ok || detail.content == null) {
         return setNotice(detail.message || 'cannot edit')
       }
 
       const edited = await openInEditor(detail.content, detail.kind === 'skill' ? '.md' : '.txt')
+
       if (edited == null || edited.trim() === detail.content.trim()) {
         return setNotice('no changes')
       }
@@ -450,7 +458,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
           <Text bold color={t.color.primary}>
             ✦ Journey
           </Text>
-          <Text color={t.color.muted}>  learned skills &amp; memories over time</Text>
+          <Text color={t.color.muted}> learned skills &amp; memories over time</Text>
         </Text>
         <Text wrap="wrap">
           {data.legend.map((item, i) => (

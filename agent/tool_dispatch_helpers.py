@@ -102,54 +102,149 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
-def _should_parallelize_tool_batch(tool_calls) -> bool:
-    """Return True when a tool-call batch is safe to run concurrently."""
-    if len(tool_calls) <= 1:
-        return False
+def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
+    """Split a tool-call batch into ordered ``(kind, calls)`` segments.
 
-    tool_names = [tc.function.name for tc in tool_calls]
-    if any(name in _NEVER_PARALLEL_TOOLS for name in tool_names):
-        return False
+    ``kind`` is ``"parallel"`` (a maximal contiguous run of parallel-safe
+    calls) or ``"sequential"`` (one or more barrier calls that must run
+    in-order on the sequential path).  Segments preserve the model's
+    original call order exactly — a later call never crosses an earlier
+    barrier — so tool-result ordering and side-effect boundaries are
+    identical to fully-sequential execution.  The per-call safety rules
+    are the same ones the old all-or-nothing gate applied to the whole
+    batch:
 
+    * ``_NEVER_PARALLEL_TOOLS`` (interactive tools) → barrier.
+    * Unparseable / non-dict arguments → barrier.
+    * Path-scoped tools (``read_file``/``write_file``/``patch``) join a
+      parallel run only when their target path does not overlap another
+      path already reserved in the same run; an overlap closes the run so
+      the conflicting call starts a NEW run after the first completes.
+    * Anything not in ``_PARALLEL_SAFE_TOOLS`` and not an opted-in MCP
+      tool → barrier.
+
+    Parallel runs shorter than two calls are demoted to sequential (no
+    concurrency win, and the sequential executor owns the richer inline
+    dispatch), and adjacent sequential segments are merged.
+    """
+    segments: list[list] = []  # [kind, calls] pairs, normalized to tuples on return
+    current: list = []
     reserved_paths: list[Path] = []
+
+    def _close_parallel() -> None:
+        nonlocal current, reserved_paths
+        if current:
+            segments.append(["parallel", current])
+            current = []
+            reserved_paths = []
+
+    def _add_sequential(tc) -> None:
+        _close_parallel()
+        if segments and segments[-1][0] == "sequential":
+            segments[-1][1].append(tc)
+        else:
+            segments.append(["sequential", [tc]])
+
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
+
+        if tool_name in _NEVER_PARALLEL_TOOLS:
+            _add_sequential(tool_call)
+            continue
+
         try:
             function_args = json.loads(tool_call.function.arguments)
         except Exception:
+            _raw = tool_call.function.arguments
             logging.debug(
-                "Could not parse args for %s — defaulting to sequential; raw=%s",
+                "Could not parse args for %s — treating as sequential barrier; raw=%s",
                 tool_name,
-                tool_call.function.arguments[:200],
+                _raw[:200] if isinstance(_raw, str) else repr(_raw)[:200],
             )
-            return False
+            _add_sequential(tool_call)
+            continue
         if not isinstance(function_args, dict):
             logging.debug(
-                "Non-dict args for %s (%s) — defaulting to sequential",
+                "Non-dict args for %s (%s) — treating as sequential barrier",
                 tool_name,
                 type(function_args).__name__,
             )
-            return False
-
-        if tool_name in _PATH_SCOPED_TOOLS:
-            scoped_path = _extract_parallel_scope_path(tool_name, function_args)
-            if scoped_path is None:
-                return False
-            if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
-                return False
-            reserved_paths.append(scoped_path)
+            _add_sequential(tool_call)
             continue
 
-        if tool_name not in _PARALLEL_SAFE_TOOLS:
-            # Check if it's an MCP tool from a server that opted into parallel calls.
-            if not _is_mcp_tool_parallel_safe(tool_name):
-                return False
+        if tool_name in _PATH_SCOPED_TOOLS:
+            scoped_path = _extract_parallel_scope_path(tool_name, function_args, execution_cwd=execution_cwd)
+            if scoped_path is None:
+                _add_sequential(tool_call)
+                continue
+            if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
+                # Same-subtree conflict inside this run: close it so this
+                # call starts a fresh run AFTER the conflicting one lands.
+                _close_parallel()
+            reserved_paths.append(scoped_path)
+            current.append(tool_call)
+            continue
 
-    return True
+        if tool_name in _PARALLEL_SAFE_TOOLS or _is_mcp_tool_parallel_safe(tool_name):
+            current.append(tool_call)
+            continue
+
+        _add_sequential(tool_call)
+
+    _close_parallel()
+
+    normalized: list[list] = []
+    for kind, calls in segments:
+        if kind == "parallel" and len(calls) < 2:
+            kind = "sequential"
+        if normalized and normalized[-1][0] == "sequential" and kind == "sequential":
+            normalized[-1][1].extend(calls)
+        else:
+            normalized.append([kind, calls])
+    return [(kind, calls) for kind, calls in normalized]
 
 
-def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Optional[Path]:
-    """Return the normalized file target for path-scoped tools."""
+def _should_parallelize_tool_batch(tool_calls) -> bool:
+    """Return True when the WHOLE tool-call batch is safe to run concurrently.
+
+    Thin view over ``_plan_tool_batch_segments`` kept for callers/tests that
+    only care about the homogeneous case: True iff the planner produces a
+    single all-parallel segment.
+    """
+    if len(tool_calls) <= 1:
+        return False
+    segments = _plan_tool_batch_segments(tool_calls)
+    return len(segments) == 1 and segments[0][0] == "parallel"
+
+
+def _canonical_path(raw_path: str, execution_cwd: Optional[Path] = None) -> Path:
+    """Return a canonical, OS-aware path for overlap detection.
+
+    Uses ``os.path.realpath`` to resolve symlinks on existing path components
+    and ``os.path.normcase`` for case-insensitive platforms (Windows).
+    Falls back to ``Path.cwd()`` when *execution_cwd* is not supplied.
+    """
+    expanded = Path(raw_path).expanduser()
+    base = execution_cwd if execution_cwd is not None else Path.cwd()
+    candidate = expanded if expanded.is_absolute() else base / expanded
+    # realpath resolves symlinks on path components that exist; for
+    # not-yet-created files it canonicalises as far as possible.
+    resolved = os.path.normcase(os.path.realpath(os.path.abspath(str(candidate))))
+    return Path(resolved)
+
+
+def _extract_parallel_scope_path(
+    tool_name: str,
+    function_args: dict,
+    execution_cwd: Optional[Path] = None,
+) -> Optional[Path]:
+    """Return the canonical file target for path-scoped tools.
+
+    *execution_cwd* should be the working directory that the tool will
+    actually use at runtime.  When omitted the process cwd is used,
+    which may differ from the tool execution environment on some
+    platforms (e.g. WSL, sandboxed sub-processes).
+    """
     if tool_name not in _PATH_SCOPED_TOOLS:
         return None
 
@@ -157,16 +252,16 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Optiona
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
 
-    expanded = Path(raw_path).expanduser()
-    if expanded.is_absolute():
-        return Path(os.path.abspath(str(expanded)))
-
-    # Avoid resolve(); the file may not exist yet.
-    return Path(os.path.abspath(str(Path.cwd() / expanded)))
+    return _canonical_path(raw_path, execution_cwd)
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
-    """Return True when two paths may refer to the same subtree."""
+    """Return True when two paths may refer to the same subtree.
+
+    Both *left* and *right* must already be canonical (as returned by
+    ``_extract_parallel_scope_path`` / ``_canonical_path``) so that
+    symlink aliases and case differences are already normalised.
+    """
     left_parts = left.parts
     right_parts = right.parts
     if not left_parts or not right_parts:
@@ -359,7 +454,13 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
-def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict:
+def make_tool_result_message(
+    name: str,
+    content: Any,
+    tool_call_id: str,
+    *,
+    effect_disposition: str | None = None,
+) -> dict:
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table).
@@ -394,6 +495,8 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     else:
         if risk_metadata is not None:
             message["_tool_output_risk"] = risk_metadata
+    if effect_disposition is not None:
+        message["effect_disposition"] = effect_disposition
     return message
 
 
@@ -534,7 +637,9 @@ __all__ = [
     "_DESTRUCTIVE_PATTERNS",
     "_REDIRECT_OVERWRITE",
     "_is_destructive_command",
+    "_plan_tool_batch_segments",
     "_should_parallelize_tool_batch",
+    "_canonical_path",
     "_extract_parallel_scope_path",
     "_paths_overlap",
     "_is_multimodal_tool_result",

@@ -5,6 +5,22 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
+/* Blanket reduced-motion override: kill ALL CSS animations and transitions
+   when the user (or the E2E test harness via prefers-reduced-motion) requests
+   it. Per-component @media rules below handle specific cases; this catches
+   everything else so overlays and loading bars resolve instantly instead of
+   being caught mid-fade by a screenshot. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
@@ -172,6 +188,38 @@
     --context-usage-subagents: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-cyan));
     --context-usage-memory: color-mix(in srgb, var(--ui-orange) 80%, var(--ui-yellow));
     --context-usage-conversation: var(--ui-cyan);
+    /* Diff add/remove, derived from the semantic palette so every diff surface
+       (tool cards, preview, review pane) tracks the theme's green/red. Only the
+       foregrounds need a dark override — they mix toward the page instead of
+       away from it. */
+    --ui-diff-add-border: var(--ui-green);
+    --ui-diff-add-background: color-mix(in srgb, var(--ui-green) 12%, transparent);
+    --ui-diff-add-foreground: color-mix(in srgb, var(--ui-green) 70%, #000);
+    --ui-diff-remove-border: var(--ui-red);
+    --ui-diff-remove-background: color-mix(in srgb, var(--ui-red) 12%, transparent);
+    --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 70%, #000);
+
+    /* Overlay ladder. DESIGN.md: app-wide surfaces must not compete through
+       ad-hoc z-index literals — pick the rung that describes the surface.
+       Values are deliberately sparse so a one-off can slot between two rungs
+       without a renumber. Local stacking inside a component (a sticky header
+       over its own scroll area) stays on plain `z-10`/`z-20`; these rungs are
+       only for surfaces that float over the app. */
+    --z-modal-backdrop: 120;
+    --z-modal: 130;
+    /* A select/dropdown/popover opened from inside a modal, portaled to body. */
+    --z-modal-popover: 140;
+    /* Must clear any open modal: toasts, tooltips, command-surface backdrops. */
+    --z-over-modal: 200;
+    --z-over-modal-content: 210;
+    --z-switcher-backdrop: 219;
+    --z-switcher: 220;
+    /* Boot and blocking states, in the order they can stack. */
+    --z-connecting: 1200;
+    --z-onboarding: 1300;
+    --z-onboarding-popover: 1310;
+    --z-setup: 1400;
+    --z-crash: 1500;
     --ui-bg-chrome: color-mix(
       in srgb,
       var(--theme-background-seed) var(--theme-mix-chrome),
@@ -239,6 +287,13 @@
     --ui-text-secondary: color-mix(in srgb, var(--ui-base) 74%, transparent);
     --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 54%, transparent);
     --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 36%, transparent);
+    /* Transcript scaffolding — thinking headers, settled tool runs, the live
+       activity ticker. One colour for all of them (see `ScaffoldRow`), pitched
+       between the secondary and tertiary greys those lines used to pick
+       individually, and dimmed once more by the fade rule below so the prose
+       reading column stays primary. */
+    --conversation-scaffold-text: color-mix(in srgb, var(--ui-base) 64%, transparent);
+    --conversation-scaffold-meta: color-mix(in srgb, var(--ui-base) 44%, transparent);
     --ui-stroke-primary: color-mix(
       in srgb,
       var(--ui-accent) var(--theme-stroke-primary-accent-mix),
@@ -301,6 +356,10 @@
        :root.dark bumps the alpha since a dark card swallows shadow. Removed on
        focus (the focus border carries the state). */
     --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 10%, transparent);
+    /* Hovered inactive tab: deepen it AWAY from the lighter active surface, so
+       hover can never be mistaken for selected. Dark mode needs more — black
+       over a dark gutter shows less. */
+    --ui-tab-hover-darken: 2.5%;
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
     --dt-composer-ring: var(--ui-base);
@@ -328,10 +387,15 @@
     --dt-spacing-mul: 1;
 
     --radius: 0.75rem;
-    --radius-scalar: 0.6;
+    /* Effective value everywhere: the chat backdrop used to force 0.2 onto the
+       root element at runtime (an ungated leva slider default), so this 0.6
+       only ever applied to the windows that don't mount the backdrop. Pinned
+       to the value the app actually renders at. */
+    --radius-scalar: 0.2;
 
     /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
-       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing. */
+       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing.
+       These are the defaults; each chat surface re-declares the calc against its own measurements (see below). */
     --status-stack-measured-height: 0px;
     --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 
@@ -346,13 +410,16 @@
     /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air
        that scaffolding reads as separate from the reply, not crammed into it. */
     --turn-block-gap: 0.75rem;
+    /* Between adjacent scaffolding, though: a back-to-back run of thinking
+       headers and tool rows is one sequence, not blocks to hold apart. Derived
+       so retuning the block gap carries it along. */
+    --scaffold-block-gap: calc(var(--turn-block-gap) / 3);
     /* Tight gap between tool rows inside a single action group, so a back-to-back
        run still reads as one cohesive sequence. */
     --tool-row-gap: 0.375rem;
-    /* Height of the bounded, auto-scrolling window a long adjacent tool-call run
-       collapses into (see `.tool-group-scroll`). Sized to show a few rows before
-       the scroll + top fade kick in. */
-    --tool-group-scroll-max-h: 6.75rem;
+    /* Resting opacity of a disclosure caret — invisible until hover, except
+       where a surface opts into a faint hint of the affordance. */
+    --disclosure-caret-rest: 0;
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
@@ -423,12 +490,15 @@
     --ui-red: #e75e78;
     --ui-green: #55a583;
     --ui-cyan: #6f9ba6;
+    --ui-diff-add-foreground: color-mix(in srgb, var(--ui-green) 62%, #fff);
+    --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 62%, #fff);
 
     --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
     /* Dark mode: a dark card needs a stronger black inset to show the recess. */
     --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 38%, transparent);
+    --ui-tab-hover-darken: 6%;
     /* Dark needs a lighter resting border than light mode. */
     --dt-input-border: 4%;
 
@@ -497,6 +567,38 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
+/* Inline content links: color at rest, a tinted chip on hover, never an
+   underline. Tint is currentColor-relative (the old `decoration-current/20`
+   idiom), so text and fill share a hue on every theme from one `color`. */
+.link-chip {
+  /* The one knob: resting fill. 0% = color-only until hovered. */
+  --link-chip-tint: 0%;
+
+  /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
+     sets `prose a { font-weight: 500 }`, which outranks a utility class on the
+     anchor — so the override belongs here, on the shared chip. */
+  font-weight: inherit;
+
+  /* `ch`/`em` so the chip tracks the text at any size. Block padding is
+     asymmetric because an inline box's content area is ascent+descent — equal
+     padding paints the glyphs high. Keep it small: `padding-block` doesn't grow
+     the line box, so an over-padded chip creeps into the line above. */
+  padding: 0.05ch 0.5ch 0.2ch;
+  border-radius: 0.25rem;
+  color: var(--dt-primary);
+  background: color-mix(in srgb, currentColor var(--link-chip-tint), transparent);
+  /* Explicit: the base layer underlines every `a` (see the :where(a, …) reset). */
+  text-decoration: none;
+  /* A wrapped link gets a chip per line fragment, not one ragged box. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-color 0.12s ease;
+}
+
+.link-chip:hover {
+  --link-chip-tint: 15%;
+}
+
 /* Hover-reveal suppression — the shared, declarative escape hatch.
    A collapsed pane slides in when the pointer dwells on its thin edge trigger.
    Controls that sit over that edge gutter would drag the panel in by accident.
@@ -520,6 +622,13 @@
   [data-pane-side='right']
   [data-pane-reveal-trigger] {
   pointer-events: none;
+}
+
+/* A pane's self-naming label ("REVIEW" atop the review pane) is redundant
+   when its zone header is showing a tab with the same name — hide it there.
+   Headerless zones (and the pane used outside the tree) keep the label. */
+[data-tree-group][data-zone-header] [data-pane-self-label] {
+  display: none;
 }
 
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {
@@ -586,14 +695,19 @@
   --arc-c2: var(--dt-background);
   --arc-angle: 160deg;
   --arc-width: 0.078125rem;
-  --arc-inset: -0.125rem;
+  /* How far the ring stands off its host, per side. */
+  --arc-standoff: 0.125rem;
+  /* An outset ring is only concentric when its radius grows by the standoff
+     (r = r_host + gap); `border-radius: inherit` leaves the corner pinched.
+     Defaults to the shared `rounded-md`; a host on another radius sets it. */
+  --arc-radius: var(--radius-md);
   --arc-duration: 2.23s;
 
   pointer-events: none;
   position: absolute;
   overflow: hidden;
-  border-radius: inherit;
-  inset: var(--arc-inset);
+  border-radius: calc(var(--arc-radius) + var(--arc-standoff));
+  inset: calc(var(--arc-standoff) * -1);
   padding: var(--arc-width);
   mask:
     linear-gradient(#000 0 0) content-box,
@@ -693,6 +807,23 @@
   --arc-c1: #4f8cff;
   --arc-c2: #ff8c42;
   --arc-duration: 3.27s;
+}
+
+/* Sidebar session row — a thin, clipped, single-line host, so it differs twice
+   from the default ring:
+
+   1. Flush, not outset. The sidebar scroller is `overflow-x-hidden` and rows sit
+      `gap-px` apart, so an outset ring loses its left/right runs to the clip.
+
+   2. A visible tail. `--arc-c2` defaults to `--dt-background` — invisible
+      against the sidebar. With c0 a transparent sentinel and c2 invisible, only
+      the bright c1 stop survives each pass, and the gradient has three of them:
+      three moving dots instead of an arc. Tying c2 to c1 gives each spike a
+      falloff. (`arc-nous` already overrides c2, so the hero is unaffected.) */
+.arc-border.arc-row,
+:root.dark .arc-border.arc-row {
+  --arc-standoff: 0rem;
+  --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -817,6 +948,7 @@ text-* variant utilities. */ .btn-arc {
 /* `[data-state='open']` keeps the trigger looking focused while its dropdown is
    open — Radix moves focus into the list, so the trigger itself loses :focus. */
 .desktop-input-chrome:focus,
+.desktop-input-chrome:focus-within,
 .desktop-input-chrome[data-state='open'] {
   border-color: var(--dt-composer-ring);
   box-shadow: none;
@@ -828,41 +960,47 @@ text-* variant utilities. */ .btn-arc {
 }
 
 @layer components {
-  .scrollbar-dt,
-  .scrollbar-dt * {
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
-  }
+  /* Chromium 121+ (Electron) prefers standard scrollbar-* over
+     ::-webkit-scrollbar and ignores the latter when both are set — platform
+     thin on mac still looks chunky. Use webkit for real thin thumbs; gate the
+     standard props so only non-webkit engines (Firefox) take that path.
+     https://developer.chrome.com/docs/css-ui/scrollbar-styling
+     https://syntackle.com/blog/changes-to-scrollbar-styling-in-chrome-121/
+
+     Any author rule on ::-webkit-scrollbar switches that scroller from
+     platform overlay (fade in on scroll, zero gutter) to classic always-on
+     gutters. `.scrollbar-overlay` opts a surface out of the themed rules so
+     Electron keeps native overlay — used by conversation code blocks where a
+     permanent 4px track eats the card and always draws a bar. */
 
   .scrollbar-dt::-webkit-scrollbar,
-  .scrollbar-dt *::-webkit-scrollbar {
-    width: 0.5rem;
-    height: 0.5rem;
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
+    width: 0.25rem;
+    height: 0.25rem;
   }
 
   .scrollbar-dt::-webkit-scrollbar-track,
   .scrollbar-dt::-webkit-scrollbar-corner,
-  .scrollbar-dt *::-webkit-scrollbar-track,
-  .scrollbar-dt *::-webkit-scrollbar-corner {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-track,
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-corner {
     background: transparent;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb,
-  .scrollbar-dt *::-webkit-scrollbar-thumb {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 18%, transparent);
     border-radius: 9999rem;
-    border: 0.125rem solid transparent;
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb:hover,
-  .scrollbar-dt *::-webkit-scrollbar-thumb:hover {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb:hover {
     background: color-mix(in srgb, var(--dt-midground) 40%, transparent);
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-button,
-  .scrollbar-dt *::-webkit-scrollbar-button {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
     display: none;
   }
 
@@ -870,14 +1008,9 @@ text-* variant utilities. */ .btn-arc {
      render under document.body, outside the `.scrollbar-dt` scope on
      #root. Same visual treatment, applied directly to the overlay
      container so its (and only its) internal scrollbar is themed. */
-  .dt-portal-scrollbar {
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
-  }
-
   .dt-portal-scrollbar::-webkit-scrollbar {
-    width: 0.375rem;
-    height: 0.375rem;
+    width: 0.25rem;
+    height: 0.25rem;
   }
 
   .dt-portal-scrollbar::-webkit-scrollbar-track,
@@ -888,7 +1021,6 @@ text-* variant utilities. */ .btn-arc {
   .dt-portal-scrollbar::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 28%, transparent);
     border-radius: 9999rem;
-    border: 0.0625rem solid transparent;
     background-clip: padding-box;
   }
 
@@ -899,6 +1031,26 @@ text-* variant utilities. */ .btn-arc {
 
   .dt-portal-scrollbar::-webkit-scrollbar-button {
     display: none;
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    .scrollbar-dt,
+    .scrollbar-dt *:not(.scrollbar-overlay) {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
+    }
+
+    .dt-portal-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* Firefox has no real overlay mode; thin + transparent track is the closest
+       match to the Chromium overlay opt-out above. */
+    .scrollbar-overlay {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
   }
 }
 
@@ -1199,6 +1351,14 @@ text-* variant utilities. */ .btn-arc {
   max-width: 100%;
 }
 
+/* A delegation is a list of short rows — goal, model, timer — not prose, so it
+   reads better narrow than stretched across the full reading column. Scoped
+   here rather than as a utility on the element: the rule above sets width on
+   every tool block and would win over it. */
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-delegate-card] {
+  max-width: 75%;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md [data-streamdown='code-block'] code {
   max-width: none;
   font-family: inherit;
@@ -1241,7 +1401,6 @@ text-* variant utilities. */ .btn-arc {
   margin-block: var(--paragraph-gap) 0;
   position: relative;
   transition:
-    border-color 180ms ease-out,
     box-shadow 180ms ease-out,
     background-color 180ms ease-out;
 }
@@ -1250,7 +1409,6 @@ text-* variant utilities. */ .btn-arc {
   animation:
     code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both,
     code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
-  border-color: color-mix(in srgb, var(--dt-ring) 24%, var(--ui-stroke-tertiary));
   box-shadow:
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 10%, transparent),
     0 0.625rem 1.75rem color-mix(in srgb, var(--dt-ring) 8%, transparent);
@@ -1301,15 +1459,18 @@ text-* variant utilities. */ .btn-arc {
   background: transparent !important;
 }
 
-/* Fade scaffolding so the prose reading column stays primary. Two targets:
-   a thinking disclosure fades as one block, and each *individual* tool row
-   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
-   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
-   context, so a child row can never be more opaque than the group — that made
-   it impossible to keep one row lit (an open diff) while its siblings faded.
-   With the fade per-row, each row hovers/focuses independently. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
+/* Fade scaffolding so the prose reading column stays primary. Each surface
+   opts in with `data-conversation-scaffold` — thinking header, tool row, run
+   summary, live status line — instead of being named by its own selector here.
+   Spelling them out individually is how the status line came to sit a shade
+   brighter than the rows either side of it.
+
+   Marked per surface and never on a container: opacity opens a stacking
+   context, so nothing inside a faded parent can be more opaque than it, and
+   one row (an open diff) could not stay lit while its siblings dimmed. Hence
+   the tool group wrapper carries no mark and each row inside it carries its
+   own — no two marked elements nest, so the fade never compounds. */
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -1317,8 +1478,7 @@ text-* variant utilities. */ .btn-arc {
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 
@@ -1384,22 +1544,78 @@ text-* variant utilities. */ .btn-arc {
 /* Conversation block rhythm. assistant-ui renders each range as a direct child
    of the message content with no per-part wrapper, so adjacency rules cover
    every pairing — first block needs no reset, nested tool rows are untouched.
-   Two tiers: scaffolding (tool / thinking) gets a roomy block gap so it reads
-   as separate from the reply; consecutive prose collapses to a tight paragraph
-   rhythm so split-out text parts don't look like a big gap. */
-/* Scaffolding adjacent to anything → roomy block gap. */
+
+   One gap between top-level blocks, whatever they are. Spelling out which
+   *pairs* qualified meant the live status line (not tool, thinking or prose)
+   fell through every branch and carried its own half-size margin instead. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], .aui-md),
-[data-slot='aui_assistant-message-content']
-  > .aui-md
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md)
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md) {
   margin-top: var(--turn-block-gap);
 }
 
-/* Prose ↔ prose → tight paragraph rhythm, matching in-block paragraph spacing. */
+/* Except prose ↔ prose: one reading column that happens to arrive as several
+   parts, so it keeps the in-block paragraph rhythm. Same specificity as the
+   rule above and deliberately after it. */
 [data-slot='aui_assistant-message-content'] > .aui-md + .aui-md {
   margin-top: var(--paragraph-gap);
+}
+
+/* And except scaffolding ↔ scaffolding: the full gap is the space between the
+   reply and the work around it, so a back-to-back run of thinking headers,
+   tool rows and status lines spent it between every line and read as stacked
+   cards. Same list as the rule above minus prose — `data-conversation-scaffold`
+   is the wrong hook here: it's absent on a multi-call tool GROUP, which is most
+   of a real run, and present on rows nested inside one. */
+[data-slot='aui_assistant-message-content']
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'])
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']) {
+  margin-top: var(--scaffold-block-gap);
+}
+
+/* Except a file edit, which is the deliverable rather than another line in the
+   run — a diff you read like a PR, so it keeps the full block gap on both
+   sides while the scaffolding around it stays tight. `data-file-edit` is only
+   on the row while it's open, so a collapsed edit rejoins the run. Margins on
+   the block itself, not adjacency pairs: it needs the clearance whatever sits
+   next to it, and adjacent margins collapse rather than stacking. */
+[data-slot='aui_assistant-message-content'] > [data-tool-row][data-file-edit] {
+  margin-block: var(--turn-block-gap);
+}
+
+/* Thinking headers carry a faint resting caret. A run of them is the one place
+   the affordance isn't otherwise discoverable — every other disclosure sits in
+   a row you're already reaching for. The scaffold fade multiplies this, so the
+   painted value lands well under the number here. */
+[data-slot='aui_thinking-disclosure'] {
+  --disclosure-caret-rest: 0.4;
+}
+
+/* A streaming turn is sealed into several assistant bubbles as it goes
+   (`message.interim`) and rehydrates into fewer, so the same two blocks are
+   sometimes siblings inside one bubble and sometimes split across two. The
+   flex gap between bubbles is the turn gap — half the block gap — which made
+   the rhythm visibly tighten and then relax as a turn settled. Top it up so
+   the column ticks at one interval either way. */
+[data-slot='aui_turn-pair'] > [data-slot='aui_assistant-message-root'] + [data-slot='aui_assistant-message-root'] {
+  margin-top: calc(var(--turn-block-gap) - var(--conversation-turn-gap));
+}
+
+/* Unless the blocks either side of that seal are both scaffolding, in which
+   case the scaffold gap is the target and the flex gap already overshoots it.
+   Topping up to the full block gap here is what made a live run relax between
+   rows and then tighten once it rehydrated into one bubble. A bubble carrying
+   an open diff is excluded — it keeps the full gap, same as in-flow. */
+[data-slot='aui_turn-pair']
+  > [data-slot='aui_assistant-message-root']:has(
+      > [data-slot='aui_assistant-message-content']
+        > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):last-child
+    ):not(:has([data-file-edit]))
+  + [data-slot='aui_assistant-message-root']:has(
+      > [data-slot='aui_assistant-message-content']
+        > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):first-child
+    ):not(:has([data-file-edit])) {
+  margin-top: calc(var(--scaffold-block-gap) - var(--conversation-turn-gap));
 }
 
 /* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */
@@ -1443,40 +1659,43 @@ text-* variant utilities. */ .btn-arc {
   height: 0.875rem;
 }
 
-/* Live thinking preview window. Pairs with the ResizeObserver in
-   ThinkingDisclosure that pins scrollTop to the bottom — older lines fade
-   into the top mask while the latest tokens settle in below. */
-.thinking-preview {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
+/* Re-declare the clearance calc on every chat surface. `:root` computes it
+   once against the ROOT measurements, so scoping only the inputs would leave
+   every thread reading the same substituted value. Redeclaring here makes each
+   surface resolve the calc against its own composer + status-stack heights,
+   falling back to the root defaults until this surface publishes its first
+   measurement. See surface-vars.ts. */
+[data-chat-surface] {
+  --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 }
 
-/* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.
-   ToolGroupSlot pins the newest call to the bottom (unless the user scrolls
-   up), so a back-to-back run stays compact instead of pushing the reply off
-   screen. A thin scrollbar keeps the affordance discoverable. */
-.tool-group-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--ui-stroke-tertiary) transparent;
+/* A live tool run, shown as one line. `ToolRunTicker` stacks the run's rows
+   into a reel and offsets it by the newest row's index, so each new action
+   slides the one before it up and out of a single-line window — the run reads
+   as one line ticking over in place rather than a list growing down the page.
+   Rows are clipped to a uniform line box so the offset stays exact whatever a
+   row contains. */
+.tool-ticker {
+  height: var(--conversation-line-height);
+  overflow: hidden;
 }
 
-/* Break out of the fixed window the moment any row inside is expanded: the
-   user is now reading a diff/output, so let it grow to full height instead of
-   peering at it through a ~2-row viewport. Collapsing the row drops it back
-   into the compact, auto-scrolling window. Beats a larger fixed cap since an
-   open row already bounds its own payload with an inner scroll. */
-.tool-group-scroll:has([data-tool-row][data-tool-open]) {
-  max-height: none;
-  -webkit-mask-image: none;
-  mask-image: none;
+.tool-ticker__reel {
+  transform: translateY(calc(var(--tool-ticker-index, 0) * var(--conversation-line-height) * -1));
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Top gradient — only applied once the user is scrolled down off the top, so
-   the oldest visible call fades up under the fade while the first row stays
-   fully legible when scrolled all the way up. */
-.tool-group-scroll--faded {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
+.tool-ticker__row {
+  display: flex;
+  height: var(--conversation-line-height);
+  align-items: center;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-ticker__reel {
+    transition: none;
+  }
 }
 
 @keyframes code-card-stream-enter {
@@ -1549,14 +1768,12 @@ text-* variant utilities. */ .btn-arc {
 
 @keyframes code-card-stream-glow {
   from {
-    border-color: color-mix(in srgb, var(--dt-ring) 18%, var(--ui-stroke-tertiary));
     box-shadow:
       0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 6%, transparent),
       0 0.5rem 1.5rem color-mix(in srgb, var(--dt-ring) 5%, transparent);
   }
 
   to {
-    border-color: color-mix(in srgb, var(--dt-ring) 32%, var(--ui-stroke-tertiary));
     box-shadow:
       0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent),
       0 0.75rem 2rem color-mix(in srgb, var(--dt-ring) 10%, transparent);
@@ -1782,35 +1999,14 @@ text-* variant utilities. */ .btn-arc {
 
 /* Pet generation progress bar — determinate (hatch rows: done/total) or         */
 /* indeterminate (drafts, which return together so a % would just snap).         */
-.pet-progress {
-  position: relative;
-  height: 0.25rem;
-  width: 100%;
-  overflow: hidden;
-  border-radius: 9999px;
-  background: color-mix(in srgb, var(--ui-accent) 15%, transparent);
-}
-
-.pet-progress__fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  height: 100%;
-  border-radius: 9999px;
-  background: var(--ui-accent);
-  transition: width 320ms ease;
-}
-
-.pet-progress__indeterminate {
-  position: absolute;
-  top: 0;
-  bottom: 0;
+/* Sliding indeterminate block for the `accent` Progress variant (pet hatch
+   flow). Color/positioning come from the primitive; this owns the animation. */
+.progress-slide {
   width: 40%;
-  border-radius: 9999px;
-  background: var(--ui-accent);
-  animation: pet-progress-slide 1.15s ease-in-out infinite;
+  animation: progress-slide 1.15s ease-in-out infinite;
 }
 
-@keyframes pet-progress-slide {
+@keyframes progress-slide {
   0% {
     left: -42%;
   }
@@ -1820,7 +2016,7 @@ text-* variant utilities. */ .btn-arc {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pet-progress__indeterminate {
+  .progress-slide {
     animation: none;
     left: 0;
     width: 100%;

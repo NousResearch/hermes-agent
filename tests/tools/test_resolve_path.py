@@ -52,33 +52,23 @@ class TestResolvePath:
         assert ".." not in str(result)
         assert result == (tmp_path / "b" / "file.txt")
 
-    def test_relative_path_prefers_live_file_ops_cwd(self, monkeypatch, tmp_path):
-        """Live env.cwd must win after the terminal session changes directory."""
+    def test_relative_path_prefers_recorded_session_cwd(self, monkeypatch, tmp_path):
+        """The session's recorded cwd must win after the terminal changes directory."""
         start_dir = tmp_path / "start"
         live_dir = tmp_path / "worktree"
         start_dir.mkdir()
         live_dir.mkdir()
         monkeypatch.setenv("TERMINAL_CWD", str(start_dir))
 
-        from tools import file_tools
+        from tools import file_tools, terminal_tool
 
         task_id = "live-cwd"
-        fake_ops = SimpleNamespace(
-            env=SimpleNamespace(cwd=str(live_dir)),
-            cwd=str(start_dir),
-        )
-
-        with file_tools._file_ops_lock:
-            previous = file_tools._file_ops_cache.get(task_id)
-            file_tools._file_ops_cache[task_id] = fake_ops
+        # The session's completed `cd` recorded the new directory.
+        terminal_tool.record_session_cwd(task_id, str(live_dir))
 
         try:
             result = file_tools._resolve_path("nested/file.txt", task_id=task_id)
         finally:
-            with file_tools._file_ops_lock:
-                if previous is None:
-                    file_tools._file_ops_cache.pop(task_id, None)
-                else:
-                    file_tools._file_ops_cache[task_id] = previous
+            terminal_tool.clear_session_cwd(task_id)
 
         assert result == live_dir / "nested" / "file.txt"

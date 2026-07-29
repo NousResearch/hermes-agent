@@ -25,7 +25,7 @@ def test_copy_copies_latest_assistant_message():
         {"role": "assistant", "content": "latest"},
     ]
 
-    with patch.object(cli_obj, "_write_osc52_clipboard") as mock_copy:
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
         result = cli_obj.process_command("/copy")
 
     assert result is True
@@ -39,7 +39,7 @@ def test_copy_with_index_uses_requested_assistant_message():
         {"role": "assistant", "content": "two"},
     ]
 
-    with patch.object(cli_obj, "_write_osc52_clipboard") as mock_copy:
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
         cli_obj.process_command("/copy 1")
 
     mock_copy.assert_called_once_with("one")
@@ -54,18 +54,32 @@ def test_copy_strips_reasoning_blocks_before_copy():
         }
     ]
 
-    with patch.object(cli_obj, "_write_osc52_clipboard") as mock_copy:
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
         cli_obj.process_command("/copy")
 
     mock_copy.assert_called_once_with("Visible answer")
+
+
+def test_copy_falls_back_to_osc52_when_native_tools_fail():
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "hello"}]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=False), \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/copy")
+
+    mock_osc52.assert_called_once_with("hello")
 
 
 def test_copy_invalid_index_does_not_copy():
     cli_obj = _make_cli()
     cli_obj.conversation_history = [{"role": "assistant", "content": "only"}]
 
-    with patch.object(cli_obj, "_write_osc52_clipboard") as mock_copy, patch("cli._cprint") as mock_print:
+    with patch("hermes_cli.clipboard.write_clipboard_text") as mock_copy, \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52, \
+         patch("cli._cprint") as mock_print:
         cli_obj.process_command("/copy 99")
 
     mock_copy.assert_not_called()
+    mock_osc52.assert_not_called()
     assert any("Invalid response number" in str(call) for call in mock_print.call_args_list)

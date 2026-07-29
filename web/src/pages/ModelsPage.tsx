@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Brain,
   ChevronDown,
@@ -22,12 +23,18 @@ import type {
   ModelsAnalyticsResponse,
 } from "@/lib/api";
 import { timeAgo, cn, themedBody } from "@/lib/utils";
+import {
+  DASHBOARD_MODAL_BACKDROP,
+  DASHBOARD_MODAL_PANEL,
+  shouldCloseOuterModalOnEscape,
+} from "@/lib/dashboard-modal-shell";
 import { formatTokenCount } from "@/lib/format";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Switch } from "@nous-research/ui/ui/components/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -711,6 +718,17 @@ function MoaModelsModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Nested ModelPickerDialog owns Escape while open — don't dismiss MoA too.
+  const closeMoaUnlessPickerOpen = useCallback(() => {
+    if (!shouldCloseOuterModalOnEscape(picker !== null)) return;
+    onClose();
+  }, [picker, onClose]);
+
+  const modalRef = useModalBehavior({
+    open: true,
+    onClose: closeMoaUnlessPickerOpen,
+  });
+
   const presetNames = Object.keys(draft.presets || {});
   const preset = draft.presets[selected] || draft.presets[presetNames[0]];
   const slotLabel = (slot: MoaModelSlot) => `${slot.provider || "(provider)"} · ${slot.model || "(model)"}`;
@@ -747,6 +765,8 @@ function MoaModelsModal({
       aggregator: draft.aggregator,
       reference_temperature: draft.reference_temperature,
       aggregator_temperature: draft.aggregator_temperature,
+      reference_timeout: draft.reference_timeout,
+      degraded_reference_policy: draft.degraded_reference_policy,
       max_tokens: draft.max_tokens,
       enabled: draft.enabled,
     };
@@ -778,13 +798,36 @@ function MoaModelsModal({
 
   if (!preset) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4">
-      <Card className="max-h-[85vh] w-full max-w-2xl overflow-auto">
-        <CardHeader>
-          <CardTitle className="text-sm">Configure Mixture of Agents presets</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+  // Portal to document.body: the main dashboard column is `relative z-2`,
+  // which traps fixed descendants below the sidebar (same as ModelPickerDialog).
+  return createPortal(
+    <div
+      ref={modalRef}
+      className={DASHBOARD_MODAL_BACKDROP}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) closeMoaUnlessPickerOpen();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="moa-modal-title"
+    >
+      {/* Opaque panel — do not use <Card> here; Card defaults to bg-background-base/80. */}
+      <div
+        className={cn(
+          themedBody,
+          DASHBOARD_MODAL_PANEL,
+          "max-h-[85vh] max-w-2xl overflow-auto flex flex-col",
+        )}
+      >
+        <header className="p-5 pb-3 border-b border-border">
+          <h2
+            id="moa-modal-title"
+            className="font-mondwest text-display text-base tracking-wider"
+          >
+            Configure Mixture of Agents presets
+          </h2>
+        </header>
+        <div className="space-y-4 p-5">
           <p className="text-xs text-text-secondary">
             Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.
           </p>
@@ -815,13 +858,30 @@ function MoaModelsModal({
           <div className="space-y-2">
             <div className="text-display text-xs font-medium tracking-wider">Reference models</div>
             {preset.reference_models.map((slot, index) => (
-              <div key={`${selected}-${slot.provider}-${slot.model}-${index}`} className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
+              <div
+                key={`${selected}-${slot.provider}-${slot.model}-${index}`}
+                className={cn(
+                  "flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2",
+                  slot.enabled === false && "opacity-60"
+                )}
+              >
+                <Switch
+                  checked={slot.enabled !== false}
+                  onCheckedChange={(checked) =>
+                    updateSelectedPreset((prev) => ({
+                      ...prev,
+                      reference_models: prev.reference_models.map((s, i) =>
+                        i === index ? { ...s, enabled: checked === true } : s
+                      ),
+                    }))
+                  }
+                />
                 <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(slot)}</div>
                 <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>Change</Button>
                 <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>Remove</Button>
               </div>
             ))}
-            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))}>Add reference model</Button>
+            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }] }))}>Add reference model</Button>
           </div>
 
           <div className="space-y-2">
@@ -835,10 +895,10 @@ function MoaModelsModal({
           {error && <div className="text-xs text-destructive">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
             <Button ghost onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
+            <Button onClick={() => void save()} disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
       {picker && (
         <ModelPickerDialog
           key={`moa-picker-${refreshKey}-${selected}-${picker.kind}-${picker.kind === "reference" ? picker.index : "agg"}`}
@@ -855,14 +915,15 @@ function MoaModelsModal({
               if (picker.kind === "aggregator") return { ...prev, aggregator: { provider, model } };
               return {
                 ...prev,
-                reference_models: prev.reference_models.map((slot, i) => i === picker.index ? { provider, model } : slot),
+                reference_models: prev.reference_models.map((slot, i) => i === picker.index ? { ...slot, provider, model } : slot),
               };
             });
           }}
           onClose={() => setPicker(null)}
         />
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
 

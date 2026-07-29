@@ -1,37 +1,35 @@
-import { normalize } from '@/lib/text'
+import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 
-const REASONING_LABELS: Record<string, string> = {
-  none: 'Off',
-  minimal: 'Min',
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'Max'
-}
-
-export function reasoningEffortLabel(effort: string): string {
-  const key = normalize(effort)
-
-  if (!key) {
-    return ''
-  }
-
-  return REASONING_LABELS[key] ?? effort
-}
-
-/** Which model/provider a picker should mark "current". With a live session the
- *  gateway's `model.options` is authoritative; pre-session there is no server
- *  "current", so the sticky composer pick wins over the profile default the
- *  global options query returns — else the checkmark snaps back to the default
- *  and the pick looks ignored. */
+/** Which model/provider pair a picker should mark "current". SessionView state
+ *  also drives the composer label, so a complete pair there wins over an older
+ *  `model.options` response. During initial hydration (or pre-session startup),
+ *  options remain the fallback. Pick one complete pair before mixing fields so
+ *  a model is never shown under a different provider. */
 export function currentPickerSelection(
-  hasSession: boolean,
   store: { model: string; provider: string },
   options?: { model?: string; provider?: string }
 ): { model: string; provider: string } {
+  const storeSelection = {
+    model: String(store.model || ''),
+    provider: String(store.provider || '')
+  }
+
+  const optionsSelection = {
+    model: String(options?.model || ''),
+    provider: String(options?.provider || '')
+  }
+
+  if (storeSelection.model && storeSelection.provider) {
+    return storeSelection
+  }
+
+  if (optionsSelection.model && optionsSelection.provider) {
+    return optionsSelection
+  }
+
   return {
-    model: String((hasSession && options?.model) || store.model || options?.model || ''),
-    provider: String((hasSession && options?.provider) || store.provider || options?.provider || '')
+    model: storeSelection.model || optionsSelection.model,
+    provider: storeSelection.provider || optionsSelection.provider
   }
 }
 
@@ -97,10 +95,12 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast). */
+/** Status bar trigger label — model name plus the live session state (effort/fast).
+ *  `defaultEffort` is the profile's configured level, used when the surface has
+ *  no explicit effort so the label never advertises a default the agent won't use. */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
   const name = displayModelName(model)
 
@@ -116,9 +116,9 @@ export function formatModelStatusLabel(
     parts.push('Fast')
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  // Always surface the effort so the current reasoning level is visible at a
+  // glance, not just when non-default.
+  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
 
   return `${name} · ${parts.join(' ')}`
 }

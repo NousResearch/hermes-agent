@@ -1,12 +1,17 @@
 import { useAuiState } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
+import {
+  chatSurfaceRoot,
+  clearSurfaceVar,
+  COMPOSER_HEIGHT_VAR,
+  COMPOSER_SURFACE_HEIGHT_VAR,
+  setSurfaceVar
+} from '@/app/chat/surface-vars'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { $composerPoppedOut } from '@/store/composer-popout'
-import { isSecondaryWindow } from '@/store/windows'
 
-import { COMPOSER_SINGLE_LINE_MAX_PX, COMPOSER_STACK_BREAKPOINT_PX } from '../composer-utils'
+import { COMPOSER_COMPACT_PILL_PX, COMPOSER_SINGLE_LINE_MAX_PX, COMPOSER_STACK_BREAKPOINT_PX } from '../composer-utils'
 
 interface UseComposerMetricsArgs {
   composerRef: RefObject<HTMLFormElement | null>
@@ -24,10 +29,13 @@ interface UseComposerMetricsArgs {
  * Returns `stacked` (the only value the render needs).
  */
 export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut }: UseComposerMetricsArgs): {
+  compactPill: boolean
   stacked: boolean
 } {
   const [expanded, setExpanded] = useState(false)
   const [tight, setTight] = useState(false)
+  // Wider than `tight`: the pill goes icon-only before the row has to stack.
+  const [compactPill, setCompactPill] = useState(false)
   const narrow = useMediaQuery('(max-width: 30rem)')
 
   // Edge signals, not the live text: these only re-render when emptiness / the
@@ -72,6 +80,12 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
   const lastBucketedHeightRef = useRef(0)
   const lastBucketedSurfaceHeightRef = useRef(0)
   const lastTightRef = useRef<boolean | null>(null)
+  const lastCompactPillRef = useRef<boolean | null>(null)
+  // Mirrored into a ref so `syncComposerMetrics` stays referentially stable —
+  // it's the shared ResizeObserver's handler, and a new identity every render
+  // would re-register the observation.
+  const poppedOutRef = useRef(poppedOut)
+  poppedOutRef.current = poppedOut
 
   const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
@@ -82,21 +96,20 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
     // Floating composer is out of the thread's flow — it must not reserve any
     // bottom clearance. Zero the measured vars so the thread reclaims the space.
-    // (Read globals here so the callback stays stable; mirror the popoutAllowed
-    // gate since secondary windows are forced docked.)
-    if ($composerPoppedOut.get() && !isSecondaryWindow()) {
-      const root = document.documentElement
+    // Read through a ref so the callback stays stable, and read THIS surface's
+    // own state: pop-out is per layout zone, so a float in the left split must
+    // not zero the right split's clearance.
+    if (poppedOutRef.current) {
       lastBucketedHeightRef.current = 0
       lastBucketedSurfaceHeightRef.current = 0
-      root.style.setProperty('--composer-measured-height', '0px')
-      root.style.setProperty('--composer-surface-measured-height', '0px')
+      setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, '0px')
+      setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, '0px')
 
       return
     }
 
     const { height, width } = composer.getBoundingClientRect()
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
-    const root = document.documentElement
 
     if (width > 0) {
       const nextTight = width < COMPOSER_STACK_BREAKPOINT_PX
@@ -104,6 +117,13 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
       if (nextTight !== lastTightRef.current) {
         lastTightRef.current = nextTight
         setTight(nextTight)
+      }
+
+      const nextCompactPill = width < COMPOSER_COMPACT_PILL_PX
+
+      if (nextCompactPill !== lastCompactPillRef.current) {
+        lastCompactPillRef.current = nextCompactPill
+        setCompactPill(nextCompactPill)
       }
     }
 
@@ -124,7 +144,7 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
       if (bucket !== lastBucketedHeightRef.current) {
         lastBucketedHeightRef.current = bucket
-        root.style.setProperty('--composer-measured-height', `${bucket}px`)
+        setSurfaceVar(composer, COMPOSER_HEIGHT_VAR, `${bucket}px`)
       }
     }
 
@@ -133,7 +153,7 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
 
       if (bucket !== lastBucketedSurfaceHeightRef.current) {
         lastBucketedSurfaceHeightRef.current = bucket
-        root.style.setProperty('--composer-surface-measured-height', `${bucket}px`)
+        setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, `${bucket}px`)
       }
     }
   }, [composerRef, composerSurfaceRef, editorRef])
@@ -149,12 +169,20 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
   }, [poppedOut, syncComposerMetrics])
 
   useEffect(() => {
-    return () => {
-      const root = document.documentElement
-      root.style.removeProperty('--composer-measured-height')
-      root.style.removeProperty('--composer-surface-measured-height')
-    }
-  }, [])
+    // Resolve the owning surface while the composer is still attached; the
+    // unmount cleanup runs after React detached the node, where closest()
+    // can no longer find [data-chat-surface] and would clear the document
+    // root instead of this surface (same class of bug as the status stack's
+    // stale-clearance leak).
+    const root = chatSurfaceRoot(composerRef.current)
 
-  return { stacked: expanded || narrow || tight }
+    return () => {
+      clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
+      clearSurfaceVar(root, COMPOSER_SURFACE_HEIGHT_VAR)
+    }
+  }, [composerRef])
+
+  // Pill compacts on real width (tile/pane), OR when stacked for any reason
+  // (viewport-narrow / wrapped) so the controls row never over-runs.
+  return { compactPill: compactPill || narrow || tight, stacked: expanded || narrow || tight }
 }

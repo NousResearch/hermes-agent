@@ -54,3 +54,77 @@ class TestMediaDirectiveStripping:
         result = compressor._serialize_for_summary(turns)
         assert "MEDIA:" not in result
         assert result.count("[media attachment]") == 2
+
+    def test_multimodal_list_content_does_not_crash(self, compressor):
+        """content as a list (multimodal) must be flattened to clean text.
+
+        Without flattening, str() coercion in redact_sensitive_text dumps
+        the raw part-dict repr — including base64 image data — into the
+        summarizer input, burning summary budget on noise.
+        """
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is in this image?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                ],
+            },
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "What is in this image?" in result
+        assert "[image]" in result
+        assert "base64" not in result
+
+    def test_multimodal_remote_image_keeps_url(self, compressor):
+        """http(s) image parts keep their URL as a referenceable handle."""
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                ],
+            },
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "[image: https://example.com/a.png]" in result
+
+    def test_multimodal_unknown_part_type_keeps_marker(self, compressor):
+        """Unknown part types are not silently dropped."""
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "see attachment"},
+                    {"type": "document", "title": "spec.pdf"},
+                ],
+            },
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "see attachment" in result
+        assert "[document]" in result
+
+    def test_multimodal_list_text_parts_extracted(self, compressor):
+        """Text parts from multimodal list content are preserved in output."""
+        turns = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "first part"},
+                    {"type": "text", "text": "second part"},
+                ],
+            },
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "first part" in result
+        assert "second part" in result
+
+    def test_multimodal_list_bare_strings_handled(self, compressor):
+        """Bare strings inside a content list are joined."""
+        turns = [
+            {"role": "user", "content": ["hello", "world"]},
+        ]
+        result = compressor._serialize_for_summary(turns)
+        assert "hello" in result
+        assert "world" in result

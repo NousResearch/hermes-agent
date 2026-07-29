@@ -105,6 +105,12 @@ _DEFAULT_PORT = 3978
 # Bot Framework activities are JSON payloads well under 1 MiB; an explicit
 # aiohttp client_max_size keeps oversized/chunked request bodies bounded.
 _MAX_BODY_BYTES = 1_048_576
+# ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
+# address family (IPv4 + IPv6). The old hardcoded "0.0.0.0" bound IPv4 ONLY
+# and was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) —
+# same bug as the LINE adapter (NS-603) and gateway/platforms/webhook.py
+# (d542894ad). Pin a host via TEAMS_HOST or extra.host.
+_DEFAULT_HOST = None
 _WEBHOOK_PATH = "/api/messages"
 
 
@@ -705,6 +711,9 @@ class TeamsAdapter(BasePlatformAdapter):
         self._port = _coerce_port(
             extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
         )
+        # Falsy host (unset/"") collapses to the dual-stack default (None).
+        _raw_host = extra.get("host") or os.getenv("TEAMS_HOST", "") or _DEFAULT_HOST
+        self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._dedup = MessageDeduplicator(max_size=1000)
@@ -774,13 +783,14 @@ class TeamsAdapter(BasePlatformAdapter):
 
             self._runner = web.AppRunner(aiohttp_app)
             await self._runner.setup()
-            site = web.TCPSite(self._runner, "0.0.0.0", self._port)
+            site = web.TCPSite(self._runner, self._host, self._port)
             await site.start()
 
             self._running = True
             self._mark_connected()
             logger.info(
-                "[teams] Webhook server listening on 0.0.0.0:%d%s",
+                "[teams] Webhook server listening on %s:%d%s",
+                self._host or "* (all interfaces, IPv4+IPv6)",
                 self._port,
                 _WEBHOOK_PATH,
             )
@@ -812,15 +822,13 @@ class TeamsAdapter(BasePlatformAdapter):
         SSRF guard and follows redirects through the shared redirect guard,
         matching the cache_*_from_url helpers in gateway.platforms.base.
         """
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard
 
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
 
-        import httpx
-
-        async with httpx.AsyncClient(
+        async with create_ssrf_safe_async_client(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1098,6 +1106,9 @@ class TeamsAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
         if not self._app:
@@ -1111,39 +1122,34 @@ class TeamsAdapter(BasePlatformAdapter):
             "desc": description,
         }
 
-        card = (
-            AdaptiveCard()
-            .with_version("1.4")
-            .with_body([
-                TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
-                TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
-                TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
-            ])
-            .with_actions([
-                ExecuteAction(
-                    title="Allow Once",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_once"},
-                    style="positive",
-                ),
-                ExecuteAction(
-                    title="Allow Session",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_session"},
-                ),
-                ExecuteAction(
-                    title="Always Allow",
-                    verb="hermes_approve",
+        actions = [ExecuteAction(
+            title="Allow Once", verb="hermes_approve",
+            data={**btn_data_base, "hermes_action": "approve_once"}, style="positive",
+        )]
+        if not smart_denied and allow_session:
+            actions.append(ExecuteAction(
+                title="Allow Session", verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": "approve_session"},
+            ))
+            if allow_permanent:
+                actions.append(ExecuteAction(
+                    title="Always Allow", verb="hermes_approve",
                     data={**btn_data_base, "hermes_action": "approve_always"},
-                ),
-                ExecuteAction(
-                    title="Deny",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "deny"},
-                    style="destructive",
-                ),
-            ])
-        )
+                ))
+        actions.append(ExecuteAction(
+            title="Deny", verb="hermes_approve",
+            data={**btn_data_base, "hermes_action": "deny"}, style="destructive",
+        ))
+        body = [
+            TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
+            TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
+            TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
+        ]
+        if smart_denied:
+            body.append(TextBlock(
+                text="Smart DENY: owner override applies to this one operation only.", wrap=True
+            ))
+        card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)
 
         try:
             result = await self._send_card(chat_id, card)

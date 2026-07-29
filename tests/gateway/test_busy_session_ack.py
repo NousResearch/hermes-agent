@@ -212,6 +212,54 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
+    async def test_interrupt_mode_redirects_capable_core_agent(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="No, use Postgres")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent.redirect.return_value = True
+        agent._active_children = []
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        agent.redirect.assert_called_once_with("No, use Postgres")
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Redirected current run" in content
+
+    @pytest.mark.asyncio
+    async def test_text_event_with_attachment_is_queued_not_redirected(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="use this attachment")
+        # QQBot and other adapters may retain unknown attachment MIME types on
+        # a TEXT event, so message_type alone is not a safe redirect gate.
+        event.media_urls = ["https://example.invalid/attachment.bin"]
+        event.media_types = ["application/octet-stream"]
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+        agent.redirect.assert_not_called()
+        assert adapter._pending_messages[sk] is event
+        assert adapter._pending_messages[sk].media_urls == event.media_urls
+
+    @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()
@@ -300,6 +348,44 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Steered" in content or "steer" in content.lower()
         assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
+        """A busy voice follow-up is transcribed and steered, never queued."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        runner._should_echo_stt_transcripts = MagicMock(return_value=False)
+        runner._enrich_message_with_transcription = AsyncMock(
+            return_value=('"yönü teknik mimariye çevir"', ["yönü teknik mimariye çevir"])
+        )
+        adapter = _make_adapter()
+
+        event = _make_event(text="")
+        event.message_type = MessageType.VOICE
+        event.media_urls = ["/tmp/follow-up.ogg"]
+        event.media_types = ["audio/ogg"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        runner._enrich_message_with_transcription.assert_awaited_once_with(
+            "", ["/tmp/follow-up.ogg"]
+        )
+        agent.steer.assert_called_once_with('"yönü teknik mimariye çevir"')
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+        content = adapter._send_with_retry.call_args.kwargs["content"]
+        assert "Steered" in content
+        assert "Queued" not in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_can_suppress_visible_ack_without_disabling_steer(self, monkeypatch):

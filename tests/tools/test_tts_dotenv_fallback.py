@@ -269,6 +269,8 @@ class TestRegressionGuard:
         with patch(
             "hermes_cli.config.load_env",
             return_value={"MINIMAX_API_KEY": "dotenv-secret"},
+        ), patch.object(
+            tts_tool, "_load_tts_config", return_value={"provider": "minimax"}
         ), patch.object(tts_tool, "_import_edge_tts", side_effect=ImportError), \
              patch.object(tts_tool, "_import_elevenlabs", side_effect=ImportError), \
              patch.object(tts_tool, "_import_openai_client", side_effect=ImportError), \

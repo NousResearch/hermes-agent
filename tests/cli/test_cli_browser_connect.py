@@ -342,7 +342,15 @@ class TestChromeDebugLaunch:
         cli._pending_input = Queue()
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
 
-        with patch("hermes_cli.cli_commands_mixin.is_browser_debug_ready", return_value=True), \
+        # The default-local path now resolves the endpoint via
+        # discover_local_cdp_url (dual-stack probe); patch it at the
+        # mixin's import site so no real network probe or browser
+        # launch happens on the test runner.
+        with patch(
+                 "hermes_cli.cli_commands_mixin.discover_local_cdp_url",
+                 return_value="http://127.0.0.1:9222",
+             ), \
+             patch("hermes_cli.cli_commands_mixin.is_browser_debug_ready", return_value=True), \
              patch("tools.browser_tool.cleanup_all_browsers"), \
              patch("tools.browser_tool._ensure_cdp_supervisor"), \
              redirect_stdout(StringIO()):

@@ -75,13 +75,15 @@ class TestCommandRegistry:
 
     def test_reasoning_subcommands_are_in_logical_order(self):
         reasoning = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "reasoning")
-        assert reasoning.subcommands[:6] == (
+        assert reasoning.subcommands[:8] == (
             "none",
             "minimal",
             "low",
             "medium",
             "high",
             "xhigh",
+            "max",
+            "ultra",
         )
 
     def test_cli_only_and_gateway_only_are_mutually_exclusive(self):
@@ -117,6 +119,16 @@ class TestResolveCommand:
         assert topic is not None
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
+
+    def test_context_command_registered_with_ctx_alias(self):
+        ctx = resolve_command("context")
+        assert ctx is not None
+        assert ctx.name == "context"
+        assert resolve_command("ctx").name == "context"
+        assert "all" in (ctx.subcommands or ())
+        # Available on both CLI and gateway surfaces
+        assert not ctx.cli_only and not ctx.gateway_only
+        assert "context" in GATEWAY_KNOWN_COMMANDS
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
@@ -1233,6 +1245,7 @@ class TestTelegramMenuCommands:
         assert len(names) == 30
         assert hidden > 0
         for name in (
+            "egress",
             "debug",
             "restart",
             "update",

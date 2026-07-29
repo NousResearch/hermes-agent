@@ -1,21 +1,26 @@
-import { type MutableRefObject, useCallback } from 'react'
+import { skillInvocationText } from '@hermes/shared'
+import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
-import { type ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,
+  type DesktopCommandSurface,
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
-import { type ComposerAttachment, setComposerDraft } from '@/store/composer'
-import { notify, notifyError } from '@/store/notifications'
+import { setComposerDraft } from '@/store/composer'
+import { enqueueQueuedPrompt } from '@/store/composer-queue'
+import { applyGoalStatusText } from '@/store/goals'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -23,15 +28,38 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  resolveComposerSessionKey,
+  setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
-import type { BrowserManageResponse, SessionTitleResponse, SlashExecResponse } from '../../../types'
+import type {
+  BrowserManageResponse,
+  ClientSessionState,
+  SessionCompressResponse,
+  SessionTitleResponse,
+  SlashExecResponse
+} from '../../../types'
 
-import { type GatewayRequest, isSessionIdCandidate, renderCommandsCatalog, slashStatusText } from './utils'
+import { resolveTargetSessionId } from './resolve-target-session'
+import {
+  type GatewayRequest,
+  isSessionIdCandidate,
+  isTargetSessionBusy,
+  renderCommandsCatalog,
+  renderRpcResult,
+  slashStatusText,
+  type SubmitTextOptions
+} from './utils'
+
+// Manual compression is LLM-bound and routinely outlives the desktop's 30s
+// default WS request timeout on large sessions — give it the TUI client's
+// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
+const SESSION_COMPRESS_TIMEOUT_MS = 120_000
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
@@ -44,11 +72,18 @@ interface SlashActionCtx {
 
 interface SlashCommandDeps {
   activeSessionIdRef: MutableRefObject<string | null>
-  appendSessionTextMessage: (sessionId: string, role: ChatMessage['role'], text: string) => void
+  appendSessionTextMessage: (
+    sessionId: string,
+    role: ChatMessage['role'],
+    text: string,
+    storedSessionId?: string | null
+  ) => void
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  getRoutedStoredSessionId: () => null | string
+  getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   handleSkinCommand: (arg: string) => string
   handoffSession: (
     platform: string,
@@ -58,11 +93,14 @@ interface SlashCommandDeps {
   refreshSessions: () => Promise<void>
   requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
-  submitPromptText: (
-    rawText: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
-  ) => Promise<boolean>
+  submitPromptText: (rawText: string, options?: SubmitTextOptions) => Promise<boolean>
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
 }
 
 /** The /slash command dispatcher, extracted from usePromptActions. */
@@ -74,28 +112,55 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     busyRef,
     copy,
     createBackendSessionForSend,
+    getRoutedStoredSessionId,
+    getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,
     openMemoryGraph,
     refreshSessions,
     requestGateway,
     resumeStoredSession,
+    selectedStoredSessionIdRef,
     startFreshSessionDraft,
-    submitPromptText
+    submitPromptText,
+    updateSessionState
   } = deps
+
+  const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
-      const ensureSessionId = async (sessionHint?: string) =>
-        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+      // Resolve the session this command targets through the SHARED ladder that
+      // submit.ts uses. A slash command runs backend commands against a runtime
+      // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
+      // that id — so resolving it differently than submit would run the command
+      // against a different session than the user's chat. The old bare
+      // `hint || activeRef || createSession()` did exactly that: with the runtime
+      // binding momentarily absent (profile swap, reconnect, orphan-reap,
+      // timeout) it minted a NEW session, so `/goal status` reported "No active
+      // goal" for a goal that was live on the real chat.
+      const ensureSessionId = async (sessionHint?: string, preview?: null | string) =>
+        resolveTargetSessionId({
+          activeRuntimeId: activeSessionIdRef.current,
+          createSession: () => createBackendSessionForSend(preview),
+          explicitRuntimeId: sessionHint,
+          getRuntimeIdForStoredSession,
+          requestGateway,
+          routedStoredSessionId: getRoutedStoredSessionId(),
+          selectedStoredSessionId: selectedStoredSessionIdRef.current
+        })
 
       // Resolve the target session plus a writer for inline slash output, or
       // notify + return null when none can be created. Folds the ensure / bail /
       // build-renderSlashOutput boilerplate every exec-style handler repeats.
       const withSlashOutput = async (
         ctx: SlashActionCtx
-      ): Promise<{ render: (text: string) => void; sessionId: string } | null> => {
-        const sessionId = await ensureSessionId(ctx.sessionHint)
+      ): Promise<{ render: (text: string) => void; sessionId: string; storedSessionId: string | null } | null> => {
+        // A slash on a fresh draft creates the backend session; seed the
+        // sidebar preview with the typed command so the row doesn't sit as
+        // "Untitled session" (auto-title only fires after a full exchange,
+        // which a bare exec command never produces).
+        const sessionId = await ensureSessionId(ctx.sessionHint, ctx.command)
 
         if (!sessionId) {
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
@@ -103,10 +168,28 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return null
         }
 
-        const render = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
+        // Bind output to the TARGET session's own stored id, snapshotted now so
+        // a command that outlives a session switch still lands on the right
+        // chat. NOT the foreground selection: a tile (⌘T tab, split) runs its
+        // slash commands through this hook with an explicit runtime id while
+        // the selection names a different conversation, and passing that down
+        // to updateSessionState re-keyed the tile's cache entry onto the
+        // primary's stored session. Fall back to the selection only for a
+        // session with no published state yet (a draft this call just created).
+        const storedSessionId = $sessionStates.get()[sessionId]?.storedSessionId ?? selectedStoredSessionIdRef.current
 
-        return { render, sessionId }
+        // Header carries the command token only. The full invocation would
+        // duplicate long args — `/goal <prose>` echoed the whole goal in the
+        // mono header, then again in the backend notice right under it.
+        const render = (text: string) =>
+          appendSessionTextMessage(
+            sessionId,
+            'system',
+            ctx.recordInput ? slashStatusText(`/${ctx.name}`, text) : text,
+            storedSessionId
+          )
+
+        return { render, sessionId, storedSessionId }
       }
 
       // `exec` commands (and unknown skill / quick commands the backend owns)
@@ -120,13 +203,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
-        const { render: renderSlashOutput, sessionId } = resolved
+        const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
         if (!isDesktopSlashCommand(name)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 
           return
         }
+
+        let slashExecError: unknown = null
 
         const handleDispatch = async (
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
@@ -149,6 +234,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // `/goal <text>` looked like it did nothing.
           if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
             renderSlashOutput(dispatch.notice.trim())
+
+            // `/goal <text>` returns its "⊙ Goal set …" notice here and kicks
+            // off the first turn immediately; the backend only emits a
+            // `status.update kind:"goal"` after that turn's post-turn judge
+            // runs. Seed the goal store from the notice so the indicator shows
+            // the active goal right away instead of after the first turn.
+            if (name === 'goal') {
+              applyGoalStatusText(sessionId, dispatch.notice.trim())
+            }
           }
 
           const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
@@ -171,17 +265,49 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          if (dispatch.type === 'skill') {
-            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
-          }
+          // A skill/bundle dispatch's `message` is the expanded skill body —
+          // model-facing scaffolding. Never render it; the bubble shows the
+          // invocation the gateway projected, or one read from the payload
+          // when the backend is older than this app.
+          const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
+          const displayText = projected || skillInvocationText(message) || undefined
 
-          if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+          // Gate on the TARGET session's own busy state, not the foreground
+          // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
+          // is on screen, while this command runs against the session
+          // resolveTargetSessionId picked, routinely a different one.
+          if (isTargetSessionBusy($sessionStates.get(), sessionId, busyRef.current)) {
+            // The backend already executed the command — for `/goal <text>`
+            // the goal is set and `message` is its kickoff prompt. Dropping
+            // it here loses the kickoff silently (the goal exists but the
+            // agent never hears about it, #63352). Queue it on the composer
+            // queue instead: it fires when the running turn settles, and the
+            // queue panel above the composer shows it in the meantime.
+            //
+            // Park it on the same stored session the output writer is bound to
+            // rather than re-reading the globals here — a session switch between
+            // dispatch and this branch would otherwise queue the kickoff on
+            // whichever chat is now in front.
+            const queueKey = resolveComposerSessionKey(storedSessionId, $sessions.get()) || storedSessionId || sessionId
+
+            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message, displayText })) {
+              renderSlashOutput('session busy — message queued to send when the current turn finishes')
+            } else {
+              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            }
 
             return
           }
 
-          await submitPromptText(message)
+          // Submit into the session this command was resolved against — the
+          // same pair the output writer and the busy gate above already use.
+          // Bare `submitPromptText(message)` let submit re-resolve from
+          // `activeSessionIdRef`, which names the FOREGROUND chat: a `/work`
+          // typed into a fresh ⌘T tab loaded the skill in that tab, then fired
+          // its kickoff as a user message into whatever conversation was on
+          // screen. Every other target the dispatcher serves (tile, background
+          // queue drain, a session created by this very call) had the same leak.
+          await submitPromptText(message, { sessionId, storedSessionId, displayText })
         }
 
         try {
@@ -200,11 +326,23 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
           const body = output?.output || `/${name}: no output`
+
+          // `/goal status|pause|resume|clear` come back as plain exec output
+          // ("⊙ Goal (active, 3/20 turns): …", "⏸ Goal paused: …", "✓ Goal
+          // cleared." …). Mirror it into the goal store so the composer
+          // indicator tracks pause/resume/clear immediately.
+          if (name === 'goal' && output?.output) {
+            applyGoalStatusText(sessionId, output.output)
+          }
+
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
           return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
+        } catch (error) {
+          // Fall back to command.dispatch for skill/send/alias directives, but
+          // keep the worker error: a slash.exec worker timeout/crash is the real
+          // failure, not the "not a quick/plugin/skill command" routing noise.
+          slashExecError = error
         }
 
         try {
@@ -220,6 +358,66 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
+          // "not a quick/plugin/skill command" just means the fallback had
+          // nothing to add — the slash.exec failure (worker timeout, crash) is
+          // the real error, so don't bury it under the routing noise.
+          const dispatchMessage = err instanceof Error ? err.message : String(err)
+
+          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+            const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
+            renderSlashOutput(`error: /${name} failed: ${original}`)
+
+            return
+          }
+
+          renderSlashOutput(`error: ${dispatchMessage}`)
+        }
+      }
+
+      // `rpc` commands have a dedicated gateway handler — skip slash.exec /
+      // command.dispatch entirely. The response is structured (a JSON RPC
+      // reply, not an inline text stream) so we render it via the generic
+      // `renderRpcResult` shaper that knows the field conventions shared by
+      // session.save / session.status / session.usage / session.steer /
+      // process.stop / agents.list.
+      async function runRpc(
+        surface: Extract<DesktopCommandSurface, { kind: 'rpc' }>,
+        ctx: SlashActionCtx
+      ): Promise<void> {
+        const resolved = await withSlashOutput(ctx)
+
+        if (!resolved) {
+          return
+        }
+
+        const { render: renderSlashOutput, sessionId } = resolved
+
+        try {
+          const params = surface.buildParams({
+            arg: ctx.arg,
+            command: ctx.command,
+            name: ctx.name,
+            sessionId
+          })
+
+          // Forward the surface's declared timeout when present; the default
+          // requestGateway layer keeps (30s) is too tight for RPCs that do
+          // real work.
+          const result = await requestGateway<unknown>(surface.rpc, params, surface.timeoutMs)
+          const body = renderRpcResult(result, ctx.name)
+
+          renderSlashOutput(body || `/${ctx.name}: no output`)
+        } catch (err) {
+          // TODO: remove this compatibility fallback once every supported
+          // managed runtime exposes the dedicated RPC surface. Desktop and its
+          // gateway update independently; older gateways still support the
+          // slash-worker route.
+          if (isMissingRpcMethod(err)) {
+            await runExec(ctx)
+
+            return
+          }
+
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
@@ -233,6 +431,145 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        // /compress (alias /compact) runs the gateway's dedicated
+        // session.compress RPC — the TUI's path
+        // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
+        // runExec: compressing a large session outlives the slash worker's pipe
+        // timeout (45s) and the desktop's 30s WS default, and the resulting
+        // slash.exec error cascaded into command.dispatch's misleading "not a
+        // quick/plugin/skill command: compress" (#44456).
+        //
+        // The RPC returns the post-compress `messages` array (same shape
+        // session.resume returns), so we replace the transcript from it —
+        // otherwise the summarized bubbles stay on screen forever (#44462
+        // review). `updateSessionState` only publishes for the active runtime,
+        // so a late result after a session switch refreshes its own cache
+        // without clobbering the foreground transcript (#53755 review).
+        compress: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+          const focusTopic = ctx.arg.trim()
+          const noticeId = `session-compress:${sessionId}`
+
+          // Coalesce concurrent compress requests for the same session so a
+          // double-enter doesn't fire two LLM summarise calls.
+          if (compressInFlightRef.current.has(sessionId)) {
+            return
+          }
+
+          compressInFlightRef.current.add(sessionId)
+          notify({
+            durationMs: 0,
+            id: noticeId,
+            kind: 'info',
+            message: focusTopic ? `compressing context for: ${focusTopic}` : 'compressing context...'
+          })
+
+          try {
+            const result = await requestGateway<SessionCompressResponse>(
+              'session.compress',
+              {
+                session_id: sessionId,
+                ...(focusTopic ? { focus_topic: focusTopic } : {})
+              },
+              SESSION_COMPRESS_TIMEOUT_MS
+            )
+
+            // Replace the transcript with the post-compress history so the
+            // summarized bubbles actually disappear. `messages` is the same
+            // shape session.resume returns (_history_to_messages), so
+            // toChatMessages handles it directly. updateSessionState only
+            // publishes for the active runtime, guarding against a late result
+            // clobbering the foreground after a session switch.
+            if (Array.isArray(result?.messages)) {
+              updateSessionState(
+                sessionId,
+                state => ({ ...state, messages: toChatMessages(result.messages!) }),
+                storedSessionId
+              )
+            }
+
+            const usage = { ...result?.usage, ...result?.info?.usage }
+
+            if (Object.keys(usage).length && activeSessionIdRef.current === sessionId) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+
+            if (result?.info?.title !== undefined) {
+              setSessions(prev =>
+                prev.map(session =>
+                  session.id === sessionId ? { ...session, title: result.info!.title || null } : session
+                )
+              )
+            }
+
+            if (result?.summary?.headline) {
+              const lines = [result.summary.headline, result.summary.token_line, result.summary.note].filter(
+                (line): line is string => Boolean(line)
+              )
+
+              const aborted = result.status === 'aborted' || result.summary.aborted === true
+
+              if (!aborted) {
+                // Keep a durable record of a successful manual compression in
+                // the chat after replacing it with the authoritative backend
+                // transcript. Errors remain transient: appending an error as a
+                // system message would look like a successful state change.
+                renderSlashOutput(lines.join('\n'))
+              }
+
+              notify({
+                durationMs: 5_000,
+                id: noticeId,
+                kind: aborted ? 'error' : 'success',
+                message: lines.join('\n')
+              })
+
+              return
+            }
+
+            const hostOutput = result?.host_ack?.output?.trim()
+
+            if (hostOutput) {
+              renderSlashOutput(hostOutput)
+              notify({ durationMs: 5_000, id: noticeId, kind: 'success', message: hostOutput })
+
+              return
+            }
+
+            const removed = result?.removed ?? 0
+            const message = removed > 0 ? `compressed ${removed} messages` : 'nothing to compress'
+            renderSlashOutput(message)
+            notify({
+              durationMs: 5_000,
+              id: noticeId,
+              kind: 'success',
+              message
+            })
+          } catch (err) {
+            dismissNotification(noticeId)
+
+            // Desktop and gateway runtimes update independently. Preserve the
+            // historical slash-worker path for an older gateway that has not
+            // shipped session.compress yet; it cannot offer the longer RPC
+            // timeout, but it must not turn a once-working command into an
+            // immediate "method not found" error.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          } finally {
+            compressInFlightRef.current.delete(sessionId)
+          }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
@@ -604,6 +941,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           case 'action':
             return actionHandlers[surface.action](ctx)
 
+          case 'rpc':
+            return runRpc(surface, ctx)
+
           default:
             // exec spec, or an unknown skill / quick command the backend owns.
             return runExec(ctx)
@@ -619,14 +959,18 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       busyRef,
       copy,
       createBackendSessionForSend,
+      getRoutedStoredSessionId,
+      getRuntimeIdForStoredSession,
       handleSkinCommand,
       handoffSession,
       openMemoryGraph,
       refreshSessions,
       requestGateway,
       resumeStoredSession,
+      selectedStoredSessionIdRef,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      updateSessionState
     ]
   )
 }

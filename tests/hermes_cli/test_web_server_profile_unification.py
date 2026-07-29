@@ -161,6 +161,30 @@ class TestProfileScopedMcp:
         listing = client.get("/api/mcp/servers").json()
         assert not any(s["name"] == "scoped-srv" for s in listing["servers"])
 
+    def test_mcp_bearer_secret_is_profile_scoped(self, client, isolated_profiles):
+        secret = "worker-only-secret"
+        response = client.post(
+            "/api/mcp/servers",
+            params={"profile": "worker_beta"},
+            json={
+                "name": "profile-bearer",
+                "url": "https://example.com/mcp",
+                "auth": "header",
+                "bearer_token": secret,
+            },
+        )
+
+        assert response.status_code == 200
+        worker_cfg = _cfg(isolated_profiles["worker_beta"])
+        assert worker_cfg["mcp_servers"]["profile-bearer"]["headers"] == {
+            "Authorization": "Bearer ${MCP_PROFILE_BEARER_API_KEY}",
+        }
+        assert secret in (isolated_profiles["worker_beta"] / ".env").read_text()
+        assert not (isolated_profiles["default"] / ".env").exists()
+        assert "profile-bearer" not in _cfg(isolated_profiles["default"]).get(
+            "mcp_servers", {}
+        )
+
     def test_mcp_enabled_toggle_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  srv1:\n    url: http://x/sse\n", encoding="utf-8"
@@ -316,6 +340,54 @@ class TestProfileScopedModel:
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404
 
+    def test_model_options_offloads_payload_build_to_threadpool(self, client, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        calls = []
+
+        async def _fake_run_in_threadpool(func, *args, **kwargs):
+            calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(
+            web_server,
+            "run_in_threadpool",
+            _fake_run_in_threadpool,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert len(calls) == 1
+
+    def test_model_options_matches_tui_safe_probe_flags(self, client, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context",
+            lambda: object(),
+        )
+
+        def _fake_build_models_payload(_ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_models_payload",
+            _fake_build_models_payload,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert calls[-1]["refresh"] is False
+        assert calls[-1]["probe_custom_providers"] is False
+        assert calls[-1]["probe_current_custom_provider"] is True
+
+        resp = client.get("/api/model/options", params={"refresh": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["refresh"] is True
+        assert calls[-1]["probe_custom_providers"] is True
+        assert calls[-1]["probe_current_custom_provider"] is False
+
     def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
         calls = []
 
@@ -453,7 +525,9 @@ class TestProfileScopedGateway:
 
         seen_homes = []
 
-        def fake_get_running_pid():
+        def fake_get_running_pid(*args, **kwargs):
+            # /api/status?profile= now passes pid_path= explicitly (the TTL
+            # cache would otherwise serve another profile's PID) — accept it.
             seen_homes.append(str(get_hermes_home()))
             return None
 
@@ -464,7 +538,7 @@ class TestProfileScopedGateway:
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
-            lambda: {"gateway_state": "startup_failed", "platforms": {}},
+            lambda *a, **k: {"gateway_state": "startup_failed", "platforms": {}},
         )
         monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
 
@@ -495,10 +569,14 @@ class TestProfileScopedGateway:
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: None)
-        monkeypatch.setattr(web_server, "read_runtime_status", lambda: runtime)
         monkeypatch.setattr(
-            web_server, "get_runtime_status_running_pid", lambda payload: 4242
+            web_server, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(
+            web_server,
+            "get_runtime_status_running_pid",
+            lambda payload, **k: 4242,
         )
         monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
         from gateway.config import Platform
@@ -619,3 +697,79 @@ class TestProfileScopedChatPty:
         with pytest.raises(web_server.HTTPException) as exc:
             web_server._resolve_chat_argv(profile="ghost")
         assert exc.value.status_code == 404
+
+class TestProfileScopedAudio:
+    """Audio endpoints must honor ``profile`` like the rest of the dashboard.
+
+    Historically /api/audio/transcribe|speak|elevenlabs/voices took no profile
+    and always resolved the dashboard's own config/.env, so a non-default
+    profile's TTS/STT settings were silently ignored (#53441 #45506 #66012
+    #64057).
+    """
+
+    def test_elevenlabs_voices_reads_target_profile_env(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        # Key only in the DEFAULT profile's .env; worker_beta has none.
+        (isolated_profiles["default"] / ".env").write_text(
+            "ELEVENLABS_API_KEY=sk-default-profile\n", encoding="utf-8"
+        )
+        resp = client.get("/api/audio/elevenlabs/voices?profile=worker_beta")
+        assert resp.status_code == 200
+        # Scoped to worker_beta → no key found → unavailable, no network call.
+        assert resp.json() == {"available": False, "voices": []}
+
+    def test_speak_synthesizes_inside_target_profile_home(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import tools.tts_tool as tts_tool
+
+        seen = {}
+
+        def _fake_tts(text):
+            from hermes_constants import get_hermes_home
+
+            seen["home"] = str(get_hermes_home())
+            out = isolated_profiles["worker_beta"] / "speech.mp3"
+            out.write_bytes(b"ID3fake")
+            return {"success": True, "file_path": str(out), "provider": "fake"}
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", _fake_tts)
+        resp = client.post(
+            "/api/audio/speak?profile=worker_beta", json={"text": "hello"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert seen["home"] == str(isolated_profiles["worker_beta"])
+
+    def test_transcribe_runs_inside_target_profile_home(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import base64
+
+        import tools.voice_mode as voice_mode
+
+        seen = {}
+
+        def _fake_transcribe(path):
+            from hermes_constants import get_hermes_home
+
+            seen["home"] = str(get_hermes_home())
+            return {"success": True, "transcript": "hi", "provider": "fake"}
+
+        monkeypatch.setattr(voice_mode, "transcribe_recording", _fake_transcribe)
+        payload = base64.b64encode(b"\x00fakeaudio").decode("ascii")
+        resp = client.post(
+            "/api/audio/transcribe?profile=worker_beta",
+            json={"data_url": f"data:audio/webm;base64,{payload}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["transcript"] == "hi"
+        assert seen["home"] == str(isolated_profiles["worker_beta"])
+
+    def test_audio_endpoints_unknown_profile_404(self, client, isolated_profiles):
+        resp = client.get("/api/audio/elevenlabs/voices?profile=ghost")
+        assert resp.status_code == 404
+        resp = client.post("/api/audio/speak?profile=ghost", json={"text": "x"})
+        assert resp.status_code == 404

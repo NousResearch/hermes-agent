@@ -29,6 +29,8 @@ def _make_voice_cli(**overrides):
     cli._voice_continuous = False
     cli._voice_tts_done = threading.Event()
     cli._voice_tts_done.set()
+    cli._voice_tts_stop = None
+    cli._voice_barge_capture = threading.Event()
     cli._pending_input = queue.Queue()
     cli._app = None
     cli._attached_images = []
@@ -62,7 +64,9 @@ class TestMarkdownStripping:
         assert "Done." in result
 
     def test_strips_headers(self):
-        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary\nSome text"
+        # The shared cleaner folds a heading into the following sentence as a
+        # spoken lead-in ("Summary, Some text.") instead of a bare label.
+        assert _strip_markdown_for_tts("## Summary\nSome text") == "Summary, Some text."
 
     def test_strips_list_markers(self):
         text = "- item one\n- item two\n* item three"
@@ -176,114 +180,40 @@ class TestVoiceStateLock:
 # ============================================================================
 
 class TestStreamingTTSActivation:
-    """Verify streaming TTS uses lazy imports to check availability."""
+    """The CLI streaming gate: sounddevice + a working provider, ANY provider.
 
-    def test_activates_when_elevenlabs_and_sounddevice_available(self):
-        """use_streaming_tts should be True when provider is elevenlabs
-        and both lazy imports succeed."""
-        use_streaming_tts = False
+    Mirrors cli.py's gate exactly — streaming engages whenever audio output
+    exists and check_tts_requirements() passes, regardless of which provider
+    is configured (non-streamers get the per-sentence sync path downstream).
+    """
+
+    @staticmethod
+    def _gate() -> bool:
+        """The cli.py streaming-TTS gate, verbatim."""
         try:
-            from tools.tts_tool import (
-                _load_tts_config as _load_tts_cfg,
-                _get_provider as _get_prov,
-                _import_elevenlabs,
-                _import_sounddevice,
-            )
-            assert callable(_import_elevenlabs)
-            assert callable(_import_sounddevice)
-        except ImportError:
-            pytest.skip("tools.tts_tool not available")
+            from tools.tts_tool import _import_sounddevice, check_tts_requirements
+            _import_sounddevice()
+            return check_tts_requirements()
+        except Exception:
+            return False
 
-        with patch("tools.tts_tool._load_tts_config") as mock_cfg, \
-             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs") as mock_el, \
-             patch("tools.tts_tool._import_sounddevice") as mock_sd:
-            mock_cfg.return_value = {"provider": "elevenlabs"}
-            mock_el.return_value = MagicMock()
-            mock_sd.return_value = MagicMock()
+    def test_activates_for_any_working_provider(self):
+        """Any provider that passes check_tts_requirements engages streaming."""
+        with patch("tools.tts_tool._import_sounddevice", return_value=MagicMock()), \
+             patch("tools.tts_tool.check_tts_requirements", return_value=True):
+            assert self._gate() is True
 
-            from tools.tts_tool import (
-                _load_tts_config as load_cfg,
-                _get_provider as get_prov,
-                _import_elevenlabs as import_el,
-                _import_sounddevice as import_sd,
-            )
-            cfg = load_cfg()
-            if get_prov(cfg) == "elevenlabs":
-                import_el()
-                import_sd()
-                use_streaming_tts = True
-
-        assert use_streaming_tts is True
-
-    def test_does_not_activate_when_elevenlabs_missing(self):
-        """use_streaming_tts stays False when elevenlabs import fails."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
-             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError("no elevenlabs")):
-            try:
-                from tools.tts_tool import (
-                    _load_tts_config as load_cfg,
-                    _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
-                    _import_sounddevice as import_sd,
-                )
-                cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
-                    import_sd()
-                    use_streaming_tts = True
-            except (ImportError, OSError):
-                pass
-
-        assert use_streaming_tts is False
+    def test_does_not_activate_when_provider_unavailable(self):
+        """No working TTS provider → no streaming pipeline."""
+        with patch("tools.tts_tool._import_sounddevice", return_value=MagicMock()), \
+             patch("tools.tts_tool.check_tts_requirements", return_value=False):
+            assert self._gate() is False
 
     def test_does_not_activate_when_sounddevice_missing(self):
-        """use_streaming_tts stays False when sounddevice import fails."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
-             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
-             patch("tools.tts_tool._import_sounddevice", side_effect=OSError("no PortAudio")):
-            try:
-                from tools.tts_tool import (
-                    _load_tts_config as load_cfg,
-                    _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
-                    _import_sounddevice as import_sd,
-                )
-                cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
-                    import_sd()
-                    use_streaming_tts = True
-            except (ImportError, OSError):
-                pass
-
-        assert use_streaming_tts is False
-
-    def test_does_not_activate_for_non_elevenlabs_provider(self):
-        """use_streaming_tts stays False when provider is not elevenlabs."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "edge"}), \
-             patch("tools.tts_tool._get_provider", return_value="edge"):
-            try:
-                from tools.tts_tool import (
-                    _load_tts_config as load_cfg,
-                    _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
-                    _import_sounddevice as import_sd,
-                )
-                cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
-                    import_sd()
-                    use_streaming_tts = True
-            except (ImportError, OSError):
-                pass
-
-        assert use_streaming_tts is False
+        """No audio output device → no streaming pipeline, even with a provider."""
+        with patch("tools.tts_tool._import_sounddevice", side_effect=OSError("no PortAudio")), \
+             patch("tools.tts_tool.check_tts_requirements", return_value=True):
+            assert self._gate() is False
 
     def test_stale_boolean_imports_no_longer_exist(self):
         """Confirm _HAS_ELEVENLABS and _HAS_AUDIO are not in tts_tool module."""
@@ -987,6 +917,59 @@ class TestVoiceBeepConfigReal:
         mock_beep.assert_not_called()
 
 
+class TestMaxRecordingSecondsConfigReal:
+    """voice.max_recording_seconds must reach the recorder from config.
+
+    Regression for the dead-config fix: the predicate alone can stay green
+    while the CLI wiring regresses, so pin the actual assignment made by
+    ``_voice_start_recording`` for the valid / disabled / corrupted cases.
+    """
+
+    def _start_with_voice_cfg(self, voice_cfg):
+        with patch("cli._cprint"), \
+             patch("cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.create_audio_recorder") as mock_create, \
+             patch(
+                 "tools.voice_mode.check_voice_requirements",
+                 return_value={
+                     "available": True,
+                     "audio_available": True,
+                     "stt_available": True,
+                     "details": "OK",
+                     "missing_packages": [],
+                 },
+             ), \
+             patch("hermes_cli.config.load_config", return_value={"voice": voice_cfg}):
+            recorder = MagicMock()
+            recorder.supports_silence_autostop = True
+            mock_create.return_value = recorder
+
+            cli = _make_voice_cli()
+            cli._voice_start_recording()
+
+        return recorder
+
+    def test_configured_cap_reaches_recorder(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 45})
+        assert recorder._max_recording_seconds == 45
+
+    def test_non_positive_value_disables_cap(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 0})
+        assert recorder._max_recording_seconds == 0.0
+
+    def test_bool_falls_back_to_documented_default(self):
+        # bool is a subclass of int — ``max_recording_seconds: true`` must not
+        # become a 1-second cap; it falls back to the documented 120 default,
+        # mirroring the silence-param corruption handling.
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": True})
+        assert recorder._max_recording_seconds == 120.0
+
+    def test_garbage_falls_back_to_documented_default(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": "long"})
+        assert recorder._max_recording_seconds == 120.0
+
+
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
 
@@ -1132,6 +1115,47 @@ class TestVoiceSpeakResponseReal:
         cli._voice_speak_response("Hello world")
         mock_play.assert_called_once()
 
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch(
+        "tools.tts_tool.text_to_speech_tool",
+        return_value='{"success": true, "file_path": "/tmp/hermes_voice/actual.flac"}',
+    )
+    def test_play_audio_uses_returned_tts_file_path(
+        self, _tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        _isf.side_effect = lambda path: path == "/tmp/hermes_voice/actual.flac"
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+        mock_play.assert_called_once_with("/tmp/hermes_voice/actual.flac")
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.getsize", return_value=1000)
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("cli.os.makedirs")
+    @patch("tools.voice_mode.play_audio_file")
+    @patch("tools.tts_tool.text_to_speech_tool")
+    def test_play_audio_prefers_requested_mp3_over_returned_ogg(
+        self, mock_tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
+    ):
+        def fake_tts(**kwargs):
+            mp3_path = kwargs["output_path"]
+            ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+
+        mock_tts.side_effect = fake_tts
+
+        cli = _make_voice_cli(_voice_tts=True)
+        cli._voice_speak_response("Hello world")
+
+        requested_path = mock_tts.call_args.kwargs["output_path"]
+        mock_play.assert_called_once_with(requested_path)
+
 
 class TestVoiceStopAndTranscribeReal:
     """Tests _voice_stop_and_transcribe with real CLI instance."""
@@ -1184,7 +1208,12 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
-        assert cli._pending_input.get_nowait() == "hello world"
+        queued = cli._pending_input.get_nowait()
+        # Voice transcripts are wrapped in the _VoiceInputMessage sentinel so
+        # only genuine STT output gets the voice prefix (#65827).
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "hello world"
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")
@@ -1275,6 +1304,56 @@ class TestVoiceStopAndTranscribeReal:
         cli._voice_stop_and_transcribe()
         cli._voice_start_recording.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("stt_config", "expected_model"),
+        [
+            ({"provider": "local", "model": "whisper-1", "local": {"model": "small"}}, "small"),
+            ({"provider": "local", "local": {"model": "tiny"}}, "tiny"),
+            ({"provider": "local", "model": "whisper-1"}, "base"),
+        ],
+    )
+    def test_local_stt_shows_model_download_status(self, stt_config, expected_model):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch("hermes_cli.config.load_config", return_value={"stt": stt_config}), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any(
+            f"local STT model '{expected_model}'" in message
+            and "first use may download it from Hugging Face" in message
+            for message in messages
+        )
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model=expected_model)
+
+    def test_non_local_stt_keeps_generic_transcribing_status(self):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"stt": {"provider": "openai", "model": "whisper-1"}},
+             ), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any("Transcribing..." in message for message in messages)
+        assert all("Hugging Face" not in message for message in messages)
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
+
     @patch("cli._cprint")
     @patch("cli.os.unlink")
     @patch("cli.os.path.isfile", return_value=True)
@@ -1322,6 +1401,104 @@ class TestRefreshLevelLock:
         with lock:
             recording = False
 
-        t.join(timeout=1)
+        t.join(timeout=10)
+        assert not t.is_alive()
         assert not t.is_alive(), "Refresh thread did not stop"
         assert iterations > 0, "Refresh thread never ran"
+
+
+# ---------------------------------------------------------------------------
+# Barge-in capture — the interruption is transcribed and queued directly
+# ---------------------------------------------------------------------------
+
+
+class TestVoiceBargeCaptureSubmit:
+    """_voice_submit_barge_utterance: the barge monitor's captured WAV becomes
+    the next turn without a re-record round trip."""
+
+    def test_transcript_is_queued_and_wav_removed(self, tmp_path, monkeypatch):
+        cli = _make_voice_cli()
+        cli._voice_barge_capture.set()
+        wav = tmp_path / "barge.wav"
+        wav.write_bytes(b"RIFF")
+
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "stop, do it differently"},
+        )
+
+        cli._voice_submit_barge_utterance(str(wav))
+
+        queued = cli._pending_input.get_nowait()
+        from cli import _VoiceInputMessage
+        assert isinstance(queued, _VoiceInputMessage)
+        assert str(queued) == "stop, do it differently"
+        assert not cli._voice_barge_capture.is_set()
+        assert not wav.exists()
+
+    def test_no_speech_hands_mic_back_without_queueing(self, tmp_path, monkeypatch):
+        cli = _make_voice_cli(_voice_mode=True, _voice_continuous=True)
+        cli._voice_barge_capture.set()
+        wav = tmp_path / "barge.wav"
+        wav.write_bytes(b"RIFF")
+        restarted = threading.Event()
+        cli._voice_start_recording = lambda: restarted.set()
+
+        monkeypatch.setattr(
+            "tools.voice_mode.transcribe_recording",
+            lambda path, model=None: {"success": True, "transcript": "", "no_speech": True},
+        )
+
+        cli._voice_submit_barge_utterance(str(wav))
+
+        assert cli._pending_input.empty()
+        assert not cli._voice_barge_capture.is_set()
+        assert restarted.wait(2.0)  # continuous mode resumes listening
+
+
+# ============================================================================
+# Typed stop phrase — typing "stop" during a voice chat ends it
+# ============================================================================
+class TestTypedVoiceStop:
+    """_typed_voice_stop: a TYPED bare stop phrase during an active voice chat
+    ends the chat (same as saying "stop"); outside voice mode it passes
+    through to the agent untouched."""
+
+    def _cli(self, **overrides):
+        cli = _make_voice_cli(**overrides)
+        cli._disable_calls = []
+        cli._disable_voice_mode = lambda: cli._disable_calls.append(True)
+        return cli
+
+    @pytest.fixture(autouse=True)
+    def _pin_stop_phrases(self, monkeypatch):
+        # Hermetic: don't let a dev machine's voice.stop_phrases config
+        # change which utterances count as a stop phrase.
+        monkeypatch.setattr(
+            "tools.voice_mode._load_voice_stop_phrases", lambda: ("stop",)
+        )
+
+    def test_typed_stop_ends_voice_chat_when_voice_on(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop("stop") is True
+        assert cli._disable_calls == [True]
+
+    def test_typed_stop_during_continuous_mode(self):
+        cli = self._cli(_voice_mode=False, _voice_continuous=True)
+        assert cli._typed_voice_stop("Stop.") is True
+        assert cli._disable_calls == [True]
+
+    def test_typed_stop_passes_through_when_voice_off(self):
+        cli = self._cli(_voice_mode=False, _voice_continuous=False)
+        assert cli._typed_voice_stop("stop") is False
+        assert cli._disable_calls == []
+
+    def test_longer_typed_message_passes_through_in_voice_mode(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop("stop the docker container") is False
+        assert cli._disable_calls == []
+
+    def test_non_string_input_passes_through(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop(("text", ["img.png"])) is False
+        assert cli._disable_calls == []

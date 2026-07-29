@@ -134,10 +134,27 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         pass
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
-    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
     monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
+    hidden_flags = 0x08000000
+    monkeypatch.setattr(
+        "hermes_cli._subprocess_compat.windows_hide_flags",
+        lambda: hidden_flags,
+    )
+
+    class _PatchResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd: List[str], **kwargs: Any) -> _PatchResult:
+        spawned["patch_cmd"] = cmd
+        spawned["patch_kwargs"] = kwargs
+        return _PatchResult()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
 
     class _FakeProc:
         pid = 999
@@ -169,3 +186,223 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
+    assert kwargs["creationflags"] == hidden_flags
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_cold_installs_missing_deps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Missing node_modules must trigger an install attempt, not a bare raise.
+
+    NS-606: on hosted images the user cannot shell in to run
+    `hermes photon setup`, so the connect path is the only chance to
+    bootstrap the sidecar deps (into the writable resolved dir).
+    """
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    installs: List[str] = []
+
+    def _fake_install() -> None:
+        installs.append("ran")
+        (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
+
+    monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", _fake_install)
+
+    async def _no_reap() -> None:
+        pass
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+
+    class _PatchResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "run", lambda *a, **k: _PatchResult()
+    )
+
+    class _FakeProc:
+        pid = 999
+        stdout = None
+        stdin = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "Popen", lambda *a, **k: _FakeProc()
+    )
+
+    class _HealthyClient(_ProbeClient):
+        async def post(self, *a: Any, **k: Any) -> Any:
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+
+    await adapter._start_sidecar()
+
+    assert installs == ["ran"]
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_reinstalls_empty_node_modules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A partial/aborted npm install leaves an empty node_modules/ behind.
+
+    _start_sidecar() must treat it as not-installed the same way
+    check_requirements() does (both go through sidecar_deps_installed())
+    instead of spawning a sidecar that immediately crashes on a missing
+    spectrum-ts module. With the NS-606 cold-install path, "treat as
+    not-installed" means: attempt a reinstall, and raise the actionable
+    error if that still doesn't produce spectrum-ts.
+    """
+    adapter = _make_adapter(monkeypatch)
+    (tmp_path / "node_modules").mkdir()  # empty — spectrum-ts absent
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    installs: List[str] = []
+    monkeypatch.setattr(
+        photon_adapter, "_reinstall_sidecar_deps", lambda: installs.append("ran")
+    )
+
+    with pytest.raises(RuntimeError, match="could not be installed"):
+        await adapter._start_sidecar()
+
+    assert installs == ["ran"]
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_raises_when_cold_install_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """If the bootstrap install can't produce node_modules, fail with the
+    actionable error (surfaced as SIDECAR_FAILED by connect())."""
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(photon_adapter, "_reinstall_sidecar_deps", lambda: None)
+
+    with pytest.raises(RuntimeError, match="could not be installed"):
+        await adapter._start_sidecar()
+
+
+@pytest.mark.asyncio
+async def test_reap_inspects_listeners_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Listener inspection must not block the shared gateway event loop.
+
+    ``_find_listener_pids`` shells out to ``lsof`` (timeout=5s) and
+    ``_pid_is_sidecar`` runs a ``ps`` per candidate pid (timeout=5s each), so
+    inline this holds the loop for 5 + 5·N seconds. ``_reap_stale_sidecar`` is
+    awaited from ``_start_sidecar``, which runs on every reconnect — exactly
+    when a crashed gateway left an orphan — so the stall lands on a live
+    gateway still serving every other platform.
+    """
+    import threading
+
+    adapter = _make_adapter(monkeypatch)
+    monkeypatch.setattr(photon_adapter.sys, "platform", "linux")
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _ProbeClient)
+
+    main_thread = threading.current_thread()
+    seen: Dict[str, Any] = {}
+
+    def _fake_find(port: int) -> List[int]:
+        seen["find"] = threading.current_thread()
+        return [4242]
+
+    def _fake_is_sidecar(pid: int) -> bool:
+        seen["ps"] = threading.current_thread()
+        return True
+
+    monkeypatch.setattr(adapter, "_find_listener_pids", _fake_find)
+    monkeypatch.setattr(adapter, "_pid_is_sidecar", _fake_is_sidecar)
+    monkeypatch.setattr(adapter, "_pid_alive", lambda pid: False)
+    _capture_kills(monkeypatch)
+
+    await adapter._reap_stale_sidecar()
+
+    assert seen.get("find") is not None, "lsof lookup never ran"
+    assert seen.get("ps") is not None, "ps check never ran"
+    for label in ("find", "ps"):
+        assert seen[label] is not main_thread, (
+            f"{label} ran on the event-loop thread; the listener inspection "
+            "must be dispatched via asyncio.to_thread so a 5s lsof/ps spawn "
+            "can't freeze every other platform on the gateway loop"
+        )
+
+
+@pytest.mark.asyncio
+async def test_spectrum_patch_runs_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The node patch run must not block the shared gateway event loop.
+
+    ``_start_sidecar`` spawns the Spectrum patch script and *waits* for it
+    (``timeout=10``). Run inline it holds the loop for that whole window, so
+    every other platform's traffic stalls — and ``_start_sidecar`` runs on
+    every reconnect (``connect(is_reconnect=True)``), not just startup, so the
+    stall recurs on a live gateway. The dep reinstall a few lines above already
+    hops to a thread for exactly this reason; the patch run must too.
+    """
+    import threading
+
+    adapter = _make_adapter(monkeypatch)
+    main_thread = threading.current_thread()
+    seen: Dict[str, Any] = {}
+
+    # node_modules present + deps fresh, so we reach the patch run.
+    monkeypatch.setattr(photon_adapter.Path, "exists", lambda self: True)
+    monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
+
+    async def _no_reap() -> None:
+        return None
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+
+    def _fake_run(*a: Any, **k: Any) -> Any:
+        seen["thread"] = threading.current_thread()
+
+        class _Done:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Done()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
+
+    class _FakeProc:
+        pid = 4242
+        stdin = None
+        stdout = None
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "Popen", lambda *a, **k: _FakeProc()
+    )
+
+    try:
+        await adapter._start_sidecar()
+    except Exception:
+        # Readiness/handshake past the patch run may fail under the fakes —
+        # irrelevant here; we only assert where the patch run executed.
+        pass
+
+    assert seen.get("thread") is not None, "patch run never executed"
+    assert seen["thread"] is not main_thread, (
+        "Spectrum patch subprocess ran on the event-loop thread; it must be "
+        "dispatched via asyncio.to_thread so a 10s node spawn can't freeze "
+        "every other platform on the gateway loop"
+    )

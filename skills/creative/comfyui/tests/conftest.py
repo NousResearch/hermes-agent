@@ -22,17 +22,17 @@ sys.path.insert(0, str(SCRIPTS))
 
 @pytest.fixture
 def sd15_workflow() -> dict:
-    return json.loads((WORKFLOWS / "sd15_txt2img.json").read_text())
+    return json.loads((WORKFLOWS / "sd15_txt2img.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
 def flux_workflow() -> dict:
-    return json.loads((WORKFLOWS / "flux_dev_txt2img.json").read_text())
+    return json.loads((WORKFLOWS / "flux_dev_txt2img.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture
 def video_workflow() -> dict:
-    return json.loads((WORKFLOWS / "wan_video_t2v.json").read_text())
+    return json.loads((WORKFLOWS / "wan_video_t2v.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture

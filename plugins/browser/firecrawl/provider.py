@@ -167,5 +167,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
                     "url": "https://firecrawl.dev",
                 },
             ],
-            "post_setup": "agent_browser",
+            # Cloud-scoped hook: installs the agent-browser CLI only (no
+            # local Chromium — Firecrawl hosts the browser).
+            "post_setup": "browserbase",
         }

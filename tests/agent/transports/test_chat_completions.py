@@ -21,6 +21,23 @@ class TestChatCompletionsBasic:
     def test_registered(self, transport):
         assert transport is not None
 
+    @pytest.mark.parametrize("provider", ["nous", "openrouter"])
+    def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        kw = transport.build_kwargs(
+            model="openai/gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            supports_reasoning=True,
+            provider_profile=profile,
+            provider_name=provider,
+            base_url=profile.base_url,
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
+
     def test_convert_tools_identity(self, transport):
         tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
         assert transport.convert_tools(tools) is tools
@@ -29,6 +46,19 @@ class TestChatCompletionsBasic:
         msgs = [{"role": "user", "content": "hi"}]
         result = transport.convert_messages(msgs)
         assert result is msgs  # no copy needed
+
+    def test_convert_messages_strips_internal_effect_disposition(self, transport):
+        msgs = [{
+            "role": "tool",
+            "content": "uncertain",
+            "tool_call_id": "c1",
+            "effect_disposition": "unknown",
+        }]
+
+        result = transport.convert_messages(msgs)
+
+        assert "effect_disposition" not in result[0]
+        assert msgs[0]["effect_disposition"] == "unknown"
 
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
@@ -717,6 +747,28 @@ class TestChatCompletionsKimi:
         )
         assert kw["tools"][0]["function"]["parameters"]["properties"]["q"]["type"] == "string"
 
+    def test_moonshot_outgoing_schema_carries_required_array(self, transport):
+        """Moonshot 400s on object schemas without an explicit `required` array
+        (#66835). Assert the wire-level tool schema — what actually leaves the
+        transport — carries `required: []` on a zero-required-param tool."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "browser_snapshot",
+                    "description": "Snapshot",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="moonshotai/kimi-k3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["tools"][0]["function"]["parameters"]["required"] == []
+
     def test_non_moonshot_tools_are_not_mutated(self, transport):
         """Other models don't go through the Moonshot sanitizer."""
         original_params = {
@@ -1084,6 +1136,33 @@ class TestChatCompletionsCacheStats:
         r = SimpleNamespace(usage=SimpleNamespace(prompt_tokens_details=details))
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 500, "creation_tokens": 100}
+
+    def test_deepseek_native_top_level_cache_hit_tokens(self, transport):
+        """DeepSeek's native API (api.deepseek.com) reports cache hits as
+        top-level prompt_cache_hit_tokens, not the OpenAI nested shape —
+        the extractor must read it or direct DeepSeek sessions show 0%
+        cache hit rate (#61871)."""
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens_details=None,
+                prompt_cache_hit_tokens=1500,
+                prompt_cache_miss_tokens=500,
+            )
+        )
+        result = transport.extract_cache_stats(r)
+        assert result == {"cached_tokens": 1500, "creation_tokens": 0}
+
+    def test_nested_details_win_over_deepseek_top_level(self, transport):
+        """When both shapes are present, the OpenAI nested value wins."""
+        details = SimpleNamespace(cached_tokens=800, cache_write_tokens=0)
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens_details=details,
+                prompt_cache_hit_tokens=1500,
+            )
+        )
+        result = transport.extract_cache_stats(r)
+        assert result == {"cached_tokens": 800, "creation_tokens": 0}
 
 
 class TestChatCompletionsGeminiNativeExtraBodyStrip:

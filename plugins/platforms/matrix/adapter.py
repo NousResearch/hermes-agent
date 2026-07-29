@@ -41,6 +41,7 @@ Environment variables:
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
     MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
     MATRIX_ALLOW_PUBLIC_ROOMS   Allow Matrix tools to create public rooms (default: false)
+    MATRIX_MAX_MESSAGE_LENGTH   Outbound message chunk size in characters (default: 16000)
     MATRIX_APPROVAL_REQUIRE_SENDER
                               Require reaction controls to come from the original requester
                               when requester metadata is available (default: true)
@@ -51,11 +52,15 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import array
 import inspect
 import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
@@ -133,6 +138,140 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
+
+_MATRIX_VOICE_WAVEFORM_BINS = 30
+
+
+def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
+    """Return best-effort Matrix voice metadata for an audio file.
+
+    Matrix clients such as Element render ``m.audio`` events with
+    ``org.matrix.msc3245.voice`` as voice bubbles. They are more reliable when
+    the event also includes duration and MSC1767 waveform metadata. Metadata
+    extraction is deliberately best-effort: media delivery must still work on
+    systems without ffprobe/ffmpeg.
+    """
+    metadata: Dict[str, Any] = {}
+
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                duration = float((result.stdout or "").strip() or 0)
+                if duration > 0:
+                    metadata["duration"] = int(duration * 1000)
+        except Exception:
+            logger.debug("Matrix: failed to probe voice duration for %s", path, exc_info=True)
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "8000",
+                    "-f",
+                    "s16le",
+                    "-",
+                ],
+                capture_output=True,
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0 and result.stdout:
+                samples = array.array("h")
+                samples.frombytes(result.stdout)
+                if sys.byteorder != "little":
+                    samples.byteswap()
+                if samples:
+                    count = len(samples)
+                    waveform = []
+                    for idx in range(_MATRIX_VOICE_WAVEFORM_BINS):
+                        start = idx * count // _MATRIX_VOICE_WAVEFORM_BINS
+                        end = max(start + 1, (idx + 1) * count // _MATRIX_VOICE_WAVEFORM_BINS)
+                        peak = max(abs(value) for value in samples[start:end])
+                        waveform.append(min(1024, int(peak / 32767 * 1024)))
+                    metadata["waveform"] = waveform
+        except Exception:
+            logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
+
+    return metadata
+
+def _matrix_transcode_voice_to_ogg(path: str) -> Optional[str]:
+    """Best-effort transcode of an audio file to Ogg/Opus for MSC3245 delivery.
+
+    Returns the path of a NEW temporary ``.ogg`` file (caller owns cleanup), or
+    ``None`` when ffmpeg is unavailable or fails — callers then send the
+    original file, matching the adapter's previous behaviour. Runs blocking
+    subprocess work; call via ``asyncio.to_thread`` from async code.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    import tempfile
+
+    fd, ogg_path = tempfile.mkstemp(prefix="matrix_voice_", suffix=".ogg")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(path),
+                "-acodec",
+                "libopus",
+                "-ac",
+                "1",
+                "-b:a",
+                "48k",
+                "-vbr",
+                "on",
+                "-application",
+                "voip",
+                "-compression_level",
+                "10",
+                ogg_path,
+            ],
+            capture_output=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
+            return ogg_path
+    except Exception:
+        logger.debug("Matrix: voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
+    try:
+        os.unlink(ogg_path)
+    except OSError:
+        pass
+    return None
+
 
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
@@ -337,9 +476,54 @@ class _MatrixModelPickerPrompt:
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
 
 
-# Matrix message size limit (4000 chars practical, spec has no hard limit
-# but clients render poorly above this).
-MAX_MESSAGE_LENGTH = 4000
+@dataclass
+class _MatrixChoicePickerPrompt:
+    """Tracks a pending Matrix reaction-based choice picker (/reasoning, /fast)."""
+
+    chat_id: str
+    message_id: str
+    session_key: str
+    choices: dict[str, str]  # emoji -> value
+    on_choice_selected: Any
+    requester_user_id: str | None = None
+    expires_at: float | None = None
+    resolved: bool = False
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
+
+
+# Matrix message size limit. The spec allows large events (~65 KB), but very
+# large bodies can render poorly in some clients. The previous 4,000-char
+# default was overly conservative and split Markdown tables mid-row (#53026).
+DEFAULT_MAX_MESSAGE_LENGTH = 16000
+MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
+
+
+def _resolve_max_message_length(config) -> int:
+    """Resolve outbound chunk size from config, env, or plugin registry."""
+    extra = getattr(config, "extra", {}) or {}
+    raw = extra.get("max_message_length")
+    if raw is None:
+        raw = os.getenv("MATRIX_MAX_MESSAGE_LENGTH")
+    if raw is None:
+        try:
+            from gateway.platform_registry import platform_registry
+
+            entry = platform_registry.get("matrix")
+            if entry and entry.max_message_length:
+                raw = entry.max_message_length
+        except Exception:
+            pass
+    if raw is None:
+        return DEFAULT_MAX_MESSAGE_LENGTH
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_MESSAGE_LENGTH
+    return max(500, min(value, MATRIX_MAX_MESSAGE_LENGTH_CEILING))
+
+
+# Back-compat alias for callers/tests that import the module constant.
+MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
 
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
@@ -384,6 +568,14 @@ _MATRIX_MODEL_PICKER_REACTIONS = (
     "8\ufe0f\u20e3",
     "9\ufe0f\u20e3",
     "\U0001f51f",
+)
+
+# Choice pickers (/reasoning, /fast) can need more than 10 slots
+# (8 effort levels + none + reset/show/hide = 12), so extend the keycap
+# set with lettered squares.
+_MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + (
+    "\U0001f170\ufe0f",  # 🅰️
+    "\U0001f171\ufe0f",  # 🅱️
 )
 
 _MATRIX_CAPABILITIES: Dict[str, str] = {
@@ -776,20 +968,27 @@ class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
-    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
 
     # Matrix clients commonly reserve typed "/" for client-local commands;
     # the adapter accepts "!command" as the alias that always reaches Hermes
     # (see _normalize_matrix_bang_command), so instruction text shows "!".
     typed_command_prefix = "!"
 
-    # Threshold for detecting Matrix client-side message splits.
-    # When a chunk is near the ~4000-char practical limit, a continuation
-    # is almost certain.
-    _SPLIT_THRESHOLD = 3900
+    # Class-level defaults so partially-constructed instances (tests build
+    # adapters via object.__new__ without __init__) keep working; __init__
+    # overrides both from _resolve_max_message_length().
+    max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
+    _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
+
+        self.max_message_length = _resolve_max_message_length(config)
+        # Mirror other platform adapters for tests/tooling that read MAX_MESSAGE_LENGTH.
+        self.MAX_MESSAGE_LENGTH = self.max_message_length
+        # When a chunk is near the outbound limit, a continuation is almost certain.
+        self._split_threshold = max(100, self.max_message_length - 100)
 
         self._homeserver: str = (
             config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")
@@ -935,6 +1134,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Matrix reaction-based dangerous command approvals.
         self._approval_reaction_map = {
             "✅": "once",
+            "🌀": "session",
             "♾️": "always",
             "♾": "always",
             "\u267e\ufe0f": "always",
@@ -954,6 +1154,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except ValueError:
             self._approval_timeout_seconds = 300
         self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerPrompt] = {}
+        self._choice_picker_prompts_by_event: Dict[str, _MatrixChoicePickerPrompt] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
@@ -1588,7 +1789,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=True)
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
+        chunks = self.truncate_message(formatted, self.max_message_length)
 
         last_event_id = None
         for i, chunk in enumerate(chunks):
@@ -1874,13 +2075,13 @@ class MatrixAdapter(BasePlatformAdapter):
                         return b"".join(parts), ct, fname
                 raise ValueError("too many redirects")
         except ImportError:
-            import httpx
+            from tools.url_safety import create_ssrf_safe_async_client
 
             _httpx_kw: dict = {}
             if self._proxy_url:
                 _httpx_kw["proxy"] = self._proxy_url
             _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
-            async with httpx.AsyncClient(**_httpx_kw) as http:
+            async with create_ssrf_safe_async_client(**_httpx_kw) as http:
                 async with http.stream(
                     "GET",
                     url,
@@ -1969,16 +2170,47 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload an audio file as a voice message (MSC3245 native voice)."""
-        return await self._send_local_file(
-            chat_id,
-            audio_path,
-            "m.audio",
-            caption,
-            reply_to,
-            metadata=metadata,
-            is_voice=True,
-        )
+        """Upload an audio file as a voice message (MSC3245 native voice).
+
+        Matrix voice bubbles require Opus in an Ogg container (MSC3245), but
+        callers can reach this with any audio format — e.g. a model-invoked
+        ``text_to_speech`` result routed through gateway media delivery, not
+        just ``_send_voice_reply``. Enforce the codec at this boundary:
+        transcode non-Ogg input to Ogg/Opus (best-effort — if ffmpeg is
+        unavailable the original file is sent unchanged, preserving the
+        previous behaviour).
+        """
+        converted_path: Optional[str] = None
+        send_path = audio_path
+        if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
+            converted_path = await asyncio.to_thread(
+                _matrix_transcode_voice_to_ogg, audio_path
+            )
+            if converted_path:
+                send_path = converted_path
+        try:
+            return await self._send_local_file(
+                chat_id,
+                send_path,
+                "m.audio",
+                caption,
+                reply_to,
+                # keep the caller's basename (the temp transcode file has a
+                # generated name) so the event body stays meaningful
+                file_name=(
+                    Path(audio_path).with_suffix(".ogg").name
+                    if converted_path
+                    else None
+                ),
+                metadata=metadata,
+                is_voice=True,
+            )
+        finally:
+            if converted_path:
+                try:
+                    os.unlink(converted_path)
+                except OSError:
+                    pass
 
     async def send_video(
         self,
@@ -2000,6 +2232,9 @@ class MatrixAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
         if not self._client:
@@ -2007,15 +2242,28 @@ class MatrixAdapter(BasePlatformAdapter):
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        scope_choices = ""
+        if smart_denied:
+            scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
+        else:
+            scope_choices = ""
+            if allow_session:
+                scope_choices += "Reply `!approve session` to approve this pattern for the session, "
+            if allow_permanent:
+                scope_choices += "`!approve always` to approve permanently, "
+        reaction_legend_parts = ["✅ = approve once"]
+        if allow_session:
+            reaction_legend_parts.append("🌀 = approve for this session")
+            if allow_permanent:
+                reaction_legend_parts.append("♾️ = approve always")
+        reaction_legend_parts.append("❎ = deny")
         text = (
             "⚠️ **Dangerous command requires approval**\n"
             f"```\n{cmd_preview}\n```\n"
             f"Reason: {description}\n\n"
-            "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, "
-            "`!approve always` to approve permanently, or `!deny` to cancel.\n\n"
+            f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
-            "✅ = approve\n"
-            "❎ = deny"
+            + "\n".join(reaction_legend_parts)
         )
 
         result = await self.send(chat_id, text, metadata=metadata)
@@ -2035,7 +2283,13 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
-        for emoji in ("✅", "♾️", "❌"):
+        if not allow_session:
+            reactions = ("✅", "❌")
+        elif not allow_permanent:
+            reactions = ("✅", "🌀", "❌")
+        else:
+            reactions = ("✅", "🌀", "♾️", "❌")
+        for emoji in reactions:
             try:
                 reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)
                 # Save the bot's reaction event_id for later cleanup
@@ -2127,6 +2381,66 @@ class MatrixAdapter(BasePlatformAdapter):
 
         return result
 
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Matrix reaction-based choice picker (/reasoning, /fast).
+
+        Generic single-level companion to ``send_model_picker``. Each choice
+        dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        emoji_choices: dict[str, str] = {}
+        lines = [title, ""]
+        for i, choice in enumerate(choices):
+            if i >= len(_MATRIX_CHOICE_PICKER_REACTIONS):
+                break
+            emoji = _MATRIX_CHOICE_PICKER_REACTIONS[i]
+            value = str(choice.get("value") or "")
+            label = str(choice.get("label") or value)
+            if choice.get("is_current"):
+                label = f"{label} ← current"
+            emoji_choices[emoji] = value
+            lines.append(f"{emoji} {label}")
+
+        if not emoji_choices:
+            return SendResult(success=False, error="No choices")
+
+        lines.append("")
+        lines.append("React to choose.")
+        result = await self.send(chat_id, "\n".join(lines), metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        prompt = _MatrixChoicePickerPrompt(
+            chat_id=chat_id,
+            message_id=result.message_id,
+            session_key=session_key,
+            choices=emoji_choices,
+            on_choice_selected=on_choice_selected,
+            requester_user_id=str((metadata or {}).get("requester_user_id") or "") or None,
+            expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+        )
+        self._choice_picker_prompts_by_event[result.message_id] = prompt
+
+        for emoji in emoji_choices:
+            try:
+                reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
+                if reaction_event_id:
+                    prompt.bot_reaction_events[emoji] = str(reaction_event_id)
+            except Exception as exc:
+                logger.debug("Matrix: failed to add choice picker reaction %s: %s", emoji, exc)
+
+        return result
+
     def format_message(self, content: str) -> str:
         """Pass-through — Matrix supports standard Markdown natively."""
         # Strip image markdown; media is uploaded separately.
@@ -2148,6 +2462,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         is_voice: bool = False,
+        voice_metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
         if len(data) > self._max_media_bytes:
@@ -2204,6 +2519,17 @@ class MatrixAdapter(BasePlatformAdapter):
         # Add MSC3245 voice flag for native voice messages.
         if is_voice:
             msg_content["org.matrix.msc3245.voice"] = {}
+            duration = (voice_metadata or {}).get("duration")
+            waveform = (voice_metadata or {}).get("waveform")
+            if duration is not None:
+                msg_content["info"]["duration"] = duration
+            if duration is not None or waveform is not None:
+                audio_metadata: Dict[str, Any] = {}
+                if duration is not None:
+                    audio_metadata["duration"] = duration
+                if waveform is not None:
+                    audio_metadata["waveform"] = waveform
+                msg_content["org.matrix.msc1767.audio"] = audio_metadata
 
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
@@ -2252,9 +2578,25 @@ class MatrixAdapter(BasePlatformAdapter):
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         data = p.read_bytes()
+        # ffprobe/ffmpeg probing is blocking (subprocess timeouts up to 15s) —
+        # run it off the event loop so voice uploads never stall the adapter.
+        voice_metadata = (
+            await asyncio.to_thread(_matrix_voice_metadata_for_file, p)
+            if is_voice
+            else None
+        )
 
         return await self._upload_and_send(
-            room_id, data, fname, ct, msgtype, caption, reply_to, metadata, is_voice
+            room_id,
+            data,
+            fname,
+            ct,
+            msgtype,
+            caption,
+            reply_to,
+            metadata,
+            is_voice,
+            voice_metadata,
         )
 
     # ------------------------------------------------------------------
@@ -3319,6 +3661,40 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                 return
 
+            choice_prompt = self._choice_picker_prompts_by_event.get(reacts_to)
+            if choice_prompt and not choice_prompt.resolved:
+                if room_id != choice_prompt.chat_id:
+                    return
+                if self._matrix_prompt_expired(choice_prompt):
+                    self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                    return
+                if not await self._validate_matrix_prompt_reactor(
+                    room_id, reacts_to, sender, choice_prompt, "choice picker"
+                ):
+                    return
+                value = choice_prompt.choices.get(key)
+                if value is None:
+                    await self._send_invalid_reaction_feedback(
+                        room_id,
+                        reacts_to,
+                        "That reaction is not one of the available choices.",
+                    )
+                    return
+                choice_prompt.resolved = True
+                self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                try:
+                    confirmation = await choice_prompt.on_choice_selected(room_id, value)
+                    if confirmation:
+                        await self.send(room_id, confirmation, reply_to=reacts_to)
+                except Exception as exc:
+                    logger.error("Failed to apply choice from Matrix reaction: %s", exc)
+                    await self.send(
+                        room_id,
+                        f"Failed to apply selection: {exc}",
+                        reply_to=reacts_to,
+                    )
+                return
+
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
@@ -3446,6 +3822,7 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get(
                 "thread_sessions_per_user", False
             ),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -3479,7 +3856,7 @@ class MatrixAdapter(BasePlatformAdapter):
         try:
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
+            if last_len >= self._split_threshold:
                 delay = self._text_batch_split_delay_seconds
             else:
                 delay = self._text_batch_delay_seconds
@@ -4430,7 +4807,7 @@ def interactive_setup() -> None:
     and the static _PLATFORMS["matrix"] dict. CLI helpers are lazy-imported."""
     import shutil
     import sys as _sys
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -4520,9 +4897,13 @@ def interactive_setup() -> None:
         print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
         print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
         print_info("   You can also set this later by typing /set-home in a Matrix room.")
-        home_room = prompt("Home room ID (leave empty to set later with /set-home)")
+        print_info("Leave blank to clear a previously saved home room (cron / notifications).")
+        home_room = prompt("Home room ID (leave empty to set later with /set-home)").strip()
         if home_room:
             save_env_value("MATRIX_HOME_ROOM", home_room)
+        else:
+            if remove_env_value("MATRIX_HOME_ROOM"):
+                print_info("Home room cleared.")
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
@@ -4562,6 +4943,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
     if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+    if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
+        os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
     return None
 
 
@@ -4607,7 +4990,7 @@ def register(ctx) -> None:
         allow_all_env="MATRIX_ALLOW_ALL_USERS",
         cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send,
-        max_message_length=4000,
+        max_message_length=DEFAULT_MAX_MESSAGE_LENGTH,
         emoji="🔐",
         allow_update_command=True,
     )

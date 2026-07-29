@@ -42,7 +42,16 @@ export function markSubmitting(): void {
 // Submit a ready prompt (already resolved to be neither a slash command nor a
 // shell escape, with a live session). Pulled out of useSubmission so the
 // synchronous-busy invariant above is unit-testable without React test infra.
-export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessage = true): void {
+//
+// `displayOverride` is what the transcript shows when it differs from what the
+// agent receives — a `/skill` invocation expands into the whole skill body, and
+// that scaffolding is model-facing only.
+export function submitPrompt(
+  text: string,
+  deps: SubmitPromptDeps,
+  showUserMessage = true,
+  displayOverride?: string
+): void {
   const sid = getUiState().sid
 
   if (!sid) {
@@ -63,28 +72,38 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
     deps.setLastUserMsg(text)
 
     if (show) {
-      deps.appendMessage({ role: 'user', text: displayText })
+      deps.appendMessage({ role: 'user', text: displayOverride || displayText })
     }
 
     patchUiState({ busy: true, status: 'running…' })
     turnController.bufRef = ''
     turnController.interrupted = false
 
-    deps.gw.request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText }).catch((e: Error) => {
-      // Defensive: prompt.submit no longer rejects a mid-turn send with
-      // "session busy" (the gateway queues it and returns success), but keep
-      // the re-queue path as a safety net for any future/legacy gateway that
-      // still errors, so a message is never silently dropped.
-      if (isSessionBusyError(e)) {
-        deps.enqueue(submitText)
-        patchUiState({ busy: true, status: 'queued for next turn' })
+    deps.gw
+      .request<PromptSubmitResponse>('prompt.submit', { session_id: liveSid, text: submitText })
+      .then(r => {
+        // The gateway consumed a typed voice stop phrase server-side (voice
+        // chat ended, no turn started) — release the busy latch; the
+        // voice.transcript {stop_phrase} event handles the mode flags + notice.
+        if (r?.voice_stopped) {
+          patchUiState({ busy: false, status: 'ready' })
+        }
+      })
+      .catch((e: Error) => {
+        // Defensive: prompt.submit no longer rejects a mid-turn send with
+        // "session busy" (the gateway queues it and returns success), but keep
+        // the re-queue path as a safety net for any future/legacy gateway that
+        // still errors, so a message is never silently dropped.
+        if (isSessionBusyError(e)) {
+          deps.enqueue(submitText)
+          patchUiState({ busy: true, status: 'queued for next turn' })
 
-        return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
-      }
+          return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+        }
 
-      deps.sys(`error: ${e.message}`)
-      patchUiState({ busy: false, status: 'ready' })
-    })
+        deps.sys(`error: ${e.message}`)
+        patchUiState({ busy: false, status: 'ready' })
+      })
   }
 
   // Always ask the backend whether this looks like a file drop. The backend's

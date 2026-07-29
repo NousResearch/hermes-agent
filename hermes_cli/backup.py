@@ -257,23 +257,235 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
-    the DB is being written to.  Falls back to raw copy on failure.
+    the DB is being written to. Fail closed if a consistent snapshot cannot
+    be created: copying only the live main file can omit committed WAL data.
     """
+    conn = None
+    backup_conn = None
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))
         conn.backup(backup_conn)
-        backup_conn.close()
-        conn.close()
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
         try:
-            shutil.copy2(src, dst)
-            return True
-        except Exception as exc2:
-            logger.error("Raw copy also failed for %s: %s", src, exc2)
-            return False
+            dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    finally:
+        for connection in (backup_conn, conn):
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+
+def is_zeroed_sqlite_file(
+    path: Path, *, probe_bytes: int = 100, force: bool = False
+) -> bool:
+    """True when *path* looks like the #68474 zeroed-state.db signature.
+
+    Signature: size > 0, first *probe_bytes* are all NUL (no ``SQLite format 3``
+    header). Used at SessionDB open and for snapshot diagnostics so a silent
+    all-zero file becomes a guided recovery instead of a generic failure.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size <= 0:
+        return False
+    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+
+    head = read_header_bytes_preopen(
+        path, length=max(16, probe_bytes), force=force
+    )
+    if not head:
+        return False
+    if head.startswith(b"SQLite format 3"):
+        return False
+    return all(byte == 0 for byte in head)
+
+
+
+# ---------------------------------------------------------------------------
+# SQLite integrity verification
+# ---------------------------------------------------------------------------
+
+_SQLITE_HEADER = b"SQLite format 3\0"
+
+# Default ceiling above which ``PRAGMA integrity_check`` is skipped in favour
+# of the (O(1)) header + structural probe. ``integrity_check`` walks every
+# b-tree page in the file, so its cost scales with database size: on a 30 GB
+# state.db it runs for many minutes of pegged CPU with no output, which reads
+# to the user as a hung `hermes update` (#70553 follow-up). Sessions databases
+# in the tens of GB are normal for heavy users, so the size-unbounded check is
+# never an acceptable default on the update path.
+DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
+
+
+def verify_sqlite_integrity(
+    path: Path,
+    *,
+    check_header: bool = True,
+    run_pragma: bool = True,
+    max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES,
+) -> dict:
+    """Verify that a SQLite database at *path* is intact.
+
+    Checks, in order:
+      1. File exists and has an expected minimum size.
+      2. SQLite header magic bytes are present.
+      3. For files at or under ``max_bytes``, a read-only
+         ``PRAGMA integrity_check``. For larger files, a cheap structural
+         probe (schema read) instead — see ``max_bytes``.
+
+    Args:
+        path: Path to the database file.
+        check_header: When true (default), verify the SQLite header magic.
+        run_pragma: When true (default), run ``PRAGMA integrity_check`` via
+            a read-only connection and verify the result is ``"ok"``.
+        max_bytes: Size ceiling for the full ``PRAGMA integrity_check``.
+            Files larger than this fall back to the header check plus a
+            cheap structural probe, because ``integrity_check`` pages
+            through the ENTIRE file — minutes of silent pegged CPU on a
+            multi-GB database. Defaults to
+            :data:`DEFAULT_INTEGRITY_CHECK_MAX_BYTES` (2 GiB); pass ``0``
+            to force the full check regardless of size.
+
+    Returns:
+        A dict with keys:
+          - ``valid`` (bool): true when all requested checks passed.
+          - ``message`` (str): human-readable outcome or error detail.
+          - ``size`` (int | None): file size in bytes, or None if stat failed.
+    """
+    result: dict = {"valid": False, "message": "", "size": None}
+
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        result["message"] = f"not found: {path}"
+        return result
+    except OSError as exc:
+        result["message"] = f"cannot stat: {exc}"
+        return result
+
+    result["size"] = st.st_size
+
+    if st.st_size < 100:  # SQLite minimum viable size (header + 1 page)
+        result["message"] = f"too small ({st.st_size} bytes) to be a valid SQLite database"
+        return result
+
+    oversized = max_bytes > 0 and st.st_size > max_bytes
+
+    if check_header:
+        # Byte-level read: refused when a live connection exists, because
+        # close() would cancel this process's POSIX locks on the file (see
+        # hermes_cli.sqlite_safe_read). Verification targets snapshots and
+        # backup artifacts, which are offline by construction.
+        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+
+        head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
+        if head is None:
+            result["valid"] = False
+            result["message"] = "cannot read header"
+            return result
+        if head != _SQLITE_HEADER:
+            result["valid"] = False
+            result["message"] = (
+                f"missing SQLite header magic (got {head[:16].hex()!r})"
+            )
+            return result
+
+    if oversized:
+        # Too large to page through PRAGMA integrity_check (which is O(file
+        # size) and would peg a CPU for minutes on a multi-GB state.db).
+        # Fall back to a cheap O(1) structural probe: the header check above
+        # catches the #68474 zeroed signature, and opening the DB read-only
+        # plus reading sqlite_master + the page geometry catches the
+        # malformed-schema and truncated-header-page classes. Both are
+        # constant-time — they parse the schema, they do not walk the data.
+        run_pragma = False
+        probe = None
+        try:
+            probe = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+            probe.execute("PRAGMA schema_version").fetchone()
+            probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            result["valid"] = True
+            result["message"] = (
+                f"size {st.st_size:,} bytes exceeds max_bytes {max_bytes:,}; "
+                "skipped PRAGMA integrity_check (header + schema probe passed)"
+            )
+        except sqlite3.DatabaseError as exc:
+            result["valid"] = False
+            result["message"] = f"schema probe failed: {exc}"
+            return result
+        except Exception as exc:
+            result["valid"] = False
+            result["message"] = f"schema probe error: {exc}"
+            return result
+        finally:
+            if probe is not None:
+                try:
+                    probe.close()
+                except Exception:
+                    pass
+
+    if run_pragma:
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+            cursor = conn.execute("PRAGMA integrity_check")
+            rows = cursor.fetchall()
+            if len(rows) == 1 and rows[0][0] == "ok":
+                result["valid"] = True
+                result["message"] = "integrity check passed"
+                return result
+            errors = [str(r[0]) for r in rows]
+            result["message"] = f"integrity check failed: {'; '.join(errors[:5])}"
+            return result
+        except sqlite3.DatabaseError as exc:
+            result["message"] = f"cannot open database: {exc}"
+            return result
+        except Exception as exc:
+            result["message"] = f"integrity check error: {exc}"
+            return result
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    result["valid"] = True
+    if not result["message"]:
+        result["message"] = "header check passed"
+    return result
+
+
+def copy_db_and_verify(src: Path, dst: Path) -> bool:
+    """Like :func:`_safe_copy_db` but verifies the destination after copy.
+
+    Returns True only when the copy succeeded AND the destination is valid
+    SQLite (header + integrity check). Verification honours the default
+    size ceiling — a multi-GB destination gets the header + schema probe
+    rather than a full ``PRAGMA integrity_check`` that would page through
+    the whole file.
+    """
+    if not _safe_copy_db(src, dst):
+        return False
+    integrity = verify_sqlite_integrity(dst, run_pragma=True)
+    if not integrity.get("valid"):
+        try:
+            dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        logger.warning("Backup of %s failed integrity verification: %s", src, integrity.get("message"))
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +641,10 @@ def run_backup(args) -> None:
 
     # Summary
     print()
-    print(f"Backup complete: {out_path}")
+    if errors:
+        print(f"Backup incomplete: {out_path}")
+    else:
+        print(f"Backup complete: {out_path}")
     print(f"  Files:       {file_count}")
     print(f"  Original:    {_format_size(total_bytes)}")
     print(f"  Compressed:  {_format_size(zip_size)}")
@@ -461,7 +676,8 @@ def run_backup(args) -> None:
         if len(errors) > 10:
             print(f"  ... and {len(errors) - 10} more")
 
-    print(f"\nRestore with: hermes import {out_path.name}")
+    if not errors:
+        print(f"\nRestore with: hermes import {out_path.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -758,10 +974,12 @@ _QUICK_STATE_FILES = (
     ".env",
     "auth.json",
     "cron/jobs.json",
+    "cron/executions.db",
     "gateway_state.json",
     "channel_directory.json",
     "channel_aliases.json",
     "processes.json",
+    "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user-created stores that live outside the git checkout and
     # are therefore destroyed if the update flow removes/replaces the file and
     # the post-update schema-init re-creates an empty one (issue #52889). All
@@ -794,11 +1012,22 @@ def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
     keep: Optional[int] = None,
+    max_file_size: Optional[int] = None,
 ) -> Optional[str]:
     """Create a quick state snapshot of critical files.
 
     Copies STATE_FILES to a timestamped directory under state-snapshots/.
     Auto-prunes old snapshots beyond the keep limit.
+
+    Args:
+        max_file_size: When set, individual files larger than this many bytes
+            are skipped (with a printed warning) instead of copied. Used by
+            the pre-update safety snapshot so a multi-GB ``state.db`` can
+            never stall ``hermes update`` or silently eat disk — the small
+            pairing/cron/config files the snapshot exists to protect are
+            always captured. ``None`` (default) copies everything, which
+            preserves manual ``/snapshot`` and ``hermes backup --quick``
+            behavior.
 
     Returns:
         Snapshot ID (timestamp-based), or None if no files found.
@@ -806,12 +1035,40 @@ def create_quick_snapshot(
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
 
+    def _too_large(path: Path, rel_name: str) -> bool:
+        """True (and warn) when ``path`` exceeds the max_file_size cap."""
+        if max_file_size is None:
+            return False
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if size <= max_file_size:
+            return False
+        print(
+            f"  ⚠ Snapshot: skipping {rel_name} "
+            f"({_format_size(size)} exceeds {_format_size(max_file_size)} limit)"
+        )
+        logger.warning(
+            "Quick snapshot skipped %s: %d bytes exceeds %d byte limit",
+            rel_name,
+            size,
+            max_file_size,
+        )
+        return True
+
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     snap_id = f"{ts}-{label}" if label else ts
     snap_dir = root / snap_id
     snap_dir.mkdir(parents=True, exist_ok=True)
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
+    failed_dbs: list[str] = []  # present *.db that could not be snapshotted
+    # #68805: track protected DB files skipped for size — they are snapshot
+    # incompleteness just like a failed copy, so pruning must be suppressed
+    # to preserve the older complete snapshot that may contain the only
+    # recoverable database.
+    oversized_skipped: list[str] = []
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
@@ -831,6 +1088,10 @@ def create_quick_snapshot(
                 # the board databases + their metadata to restore a board.
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
+                if _too_large(sub, sub_rel):
+                    if sub.suffix == ".db":
+                        oversized_skipped.append(sub_rel)
+                    continue
                 dst = snap_dir / sub_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 try:
@@ -839,6 +1100,16 @@ def create_quick_snapshot(
                     # snapshot time) is captured consistently.
                     if sub.suffix == ".db":
                         if not _safe_copy_db(sub, dst):
+                            failed_dbs.append(sub_rel)
+                            print(
+                                f"  ⚠ Snapshot: SQLite safe copy FAILED for {sub_rel} "
+                                f"— file may be locked or corrupted"
+                            )
+                            if is_zeroed_sqlite_file(sub):
+                                print(
+                                    f"  ⚠ Snapshot: {sub_rel} looks ZEROED "
+                                    f"(no SQLite header; {sub.stat().st_size} bytes of NULs?)"
+                                )
                             continue
                     else:
                         shutil.copy2(sub, dst)
@@ -850,12 +1121,27 @@ def create_quick_snapshot(
         if not src.is_file():
             continue
 
+        if _too_large(src, rel):
+            if src.suffix == ".db":
+                oversized_skipped.append(rel)
+            continue
+
         dst = snap_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             if src.suffix == ".db":
                 if not _safe_copy_db(src, dst):
+                    failed_dbs.append(rel)
+                    print(
+                        f"  ⚠ Snapshot: SQLite safe copy FAILED for {rel} "
+                        f"— file may be locked or corrupted"
+                    )
+                    if is_zeroed_sqlite_file(src):
+                        print(
+                            f"  ⚠ Snapshot: {rel} looks ZEROED "
+                            f"(no SQLite header; {src.stat().st_size} bytes)"
+                        )
                     continue
             else:
                 shutil.copy2(src, dst)
@@ -863,8 +1149,31 @@ def create_quick_snapshot(
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
 
+    if failed_dbs:
+        # Critical: update path used to log-and-continue with exit 0, so a
+        # missing state.db backup looked like a successful pre-update snapshot
+        # (#68474). Surface this on stdout where operators actually look.
+        print(
+            "  ⚠ CRITICAL: could not snapshot DB file(s): "
+            + ", ".join(failed_dbs)
+        )
+        print(
+            "  ⚠ If sessions disappear after update, check "
+            f"{root} and run: hermes snapshot list"
+        )
+        logger.error(
+            "Quick snapshot failed to capture DB file(s): %s",
+            ", ".join(failed_dbs),
+        )
+
     if not manifest:
         shutil.rmtree(snap_dir, ignore_errors=True)
+        if failed_dbs:
+            # Distinguish "nothing to snapshot" from "state.db present but unreadable"
+            print(
+                "  ⚠ Snapshot aborted: no files captured "
+                f"(failed DBs: {', '.join(failed_dbs)})"
+            )
         return None
 
     # Write manifest
@@ -875,6 +1184,8 @@ def create_quick_snapshot(
         "file_count": len(manifest),
         "total_size": sum(manifest.values()),
         "files": manifest,
+        "failed_dbs": failed_dbs,
+        "oversized_skipped": oversized_skipped,
     }
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -882,7 +1193,28 @@ def create_quick_snapshot(
     # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
     # with known high-churn safety snapshots (for example pre-update) can pass a
     # smaller keep value so large state.db copies do not accumulate indefinitely.
-    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    # #68805 review: skip pruning when a present DB failed to capture OR was
+    # skipped for size — either way the snapshot is incomplete and the older
+    # snapshot may contain the only recoverable database.
+    incomplete = failed_dbs or oversized_skipped
+    if not incomplete:
+        _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
+    else:
+        if oversized_skipped:
+            print(
+                "  ⚠ Skipping snapshot prune: DB file(s) skipped for size: "
+                + ", ".join(oversized_skipped)
+            )
+            logger.warning(
+                "Quick snapshot skipped oversized DB file(s): %s",
+                ", ".join(oversized_skipped),
+            )
+        logger.warning(
+            "Skipping snapshot prune because %d DB(s) failed to capture "
+            "and/or %d were oversized — preserving older snapshots as "
+            "recovery source",
+            len(failed_dbs), len(oversized_skipped),
+        )
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id
@@ -1010,7 +1342,11 @@ def _count_cron_jobs(path: Path) -> Optional[int]:
     if not path.is_file():
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
+        # may leave a UTF-8 BOM that plain utf-8 json.load rejects. Without
+        # it a BOM'd jobs.json counts as "unreadable" (None) and the
+        # post-update cron-loss auto-restore safety net silently disables.
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
@@ -1177,6 +1513,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     if not files_to_add:
         return None
 
+    sqlite_snapshot_failed = False
     try:
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for abs_path, rel_path in files_to_add:
@@ -1191,8 +1528,14 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                         ) as tmp:
                             tmp_db = Path(tmp.name)
                         try:
-                            if _safe_copy_db(abs_path, tmp_db):
-                                zf.write(tmp_db, arcname=str(rel_path))
+                            if not _safe_copy_db(abs_path, tmp_db):
+                                logger.warning(
+                                    "Full-zip backup aborted: SQLite snapshot failed for %s",
+                                    rel_path,
+                                )
+                                sqlite_snapshot_failed = True
+                                break
+                            zf.write(tmp_db, arcname=str(rel_path))
                         finally:
                             tmp_db.unlink(missing_ok=True)
                     else:
@@ -1203,6 +1546,13 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     except OSError as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         # Best-effort cleanup of partial file
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    if sqlite_snapshot_failed:
         try:
             out_path.unlink(missing_ok=True)
         except OSError:
@@ -1239,7 +1589,7 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     than no backup at all (and the wrapper in ``main.py`` would still print
     a misleading ``Saved: <path>`` line for a file that no longer exists).
     Operators who genuinely don't want a backup should set
-    ``updates.pre_update_backup: false`` in config — that gates creation.
+    ``updates.pre_update_backup: off`` in config — that gates creation.
     """
     keep = max(keep, 1)
     if not backup_dir.exists():

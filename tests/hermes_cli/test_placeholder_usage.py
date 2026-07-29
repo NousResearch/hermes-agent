@@ -18,7 +18,15 @@ def test_config_set_usage_marks_placeholders(capsys):
 
     assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "Usage: hermes config set <key> <value>" in out
+    # The usage line documents the optional --force flag added in #34067
+    # (schema validation for unknown keys). Placeholder convention is preserved:
+    # the literal ``<key>`` and ``<value>`` markers must still be present so
+    # downstream tooling can detect placeholder syntax.
+    assert "Usage: hermes config set" in out
+    assert "<key>" in out
+    assert "<value>" in out
+    # --force escape hatch must be documented in the usage line.
+    assert "--force" in out
 
 
 def test_config_unknown_command_help_marks_placeholders(capsys):

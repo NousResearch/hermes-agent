@@ -1,6 +1,7 @@
 """Tests for browser_tool.py hardening: caching, security, thread safety, truncation."""
 
 import inspect
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -224,14 +225,13 @@ class TestTruncateSnapshot:
         assert _truncate_snapshot(short) == short
 
     def test_long_snapshot_truncated_at_line_boundary(self):
-        from tools.browser_tool import _truncate_snapshot
-        # Create a snapshot that exceeds 8000 chars
-        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(500)]
+        from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD, _truncate_snapshot
+        # Create a snapshot that exceeds the summarize threshold
+        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(1000)]
         snapshot = "\n".join(lines)
-        assert len(snapshot) > 8000
+        assert len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD
 
         result = _truncate_snapshot(snapshot, max_chars=200)
-        assert len(result) <= 300  # some margin for the truncation note
         assert "truncated" in result.lower()
         # Every line in the result should be complete (not cut mid-element)
         for line in result.split("\n"):
@@ -245,6 +245,73 @@ class TestTruncateSnapshot:
         result = _truncate_snapshot(snapshot, max_chars=200)
         # Should mention how many lines were truncated
         assert "more line" in result.lower()
+
+    def test_threshold_aligned_with_web_extract_budget(self):
+        """Snapshot and web_extract share the truncate-and-store pattern —
+        the per-page budget the model sees must stay aligned between them."""
+        from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD
+        from tools.web_tools import DEFAULT_EXTRACT_CHAR_LIMIT
+        assert SNAPSHOT_SUMMARIZE_THRESHOLD == DEFAULT_EXTRACT_CHAR_LIMIT
+
+    def test_truncation_stores_full_snapshot_and_points_to_it(self):
+        """Truncated snapshots save the complete text to cache/web (like web_extract)."""
+        from pathlib import Path
+        from tools.browser_tool import _truncate_snapshot
+
+        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(500)]
+        snapshot = "\n".join(lines)
+        result = _truncate_snapshot(snapshot, max_chars=2000)
+
+        assert "read_file" in result
+        m = re.search(r'read_file path="([^"]+)"', result)
+        assert m, f"no stored-path pointer in truncation note: {result[-300:]}"
+        stored = Path(m.group(1))
+        assert stored.exists()
+        content = stored.read_text(encoding="utf-8")
+        # The full snapshot is in the file — including refs beyond the cut.
+        assert '[ref=e499]' in content
+
+    def test_truncation_survives_storage_failure(self):
+        """Storage is best-effort; the truncated view still returns."""
+        from tools.browser_tool import _truncate_snapshot
+
+        lines = [f"- line {i}" for i in range(100)]
+        snapshot = "\n".join(lines)
+        with patch("tools.browser_tool._store_full_snapshot", return_value=None):
+            result = _truncate_snapshot(snapshot, max_chars=200)
+        assert "truncated" in result.lower()
+        assert "read_file" not in result
+
+    def test_stored_snapshot_is_secret_redacted(self):
+        """Page-rendered secrets must not land unmasked on disk."""
+        from pathlib import Path
+        from tools.browser_tool import _store_full_snapshot
+
+        fake_key = "sk-" + "STOREDSNAPSHOTSECRET1234567890"
+        snapshot = f'- text "API key: {fake_key}"\n' + "\n".join(
+            f"- line {i}" for i in range(50)
+        )
+        stored = _store_full_snapshot(snapshot)
+        assert stored is not None
+        content = Path(stored).read_text(encoding="utf-8")
+        assert "STOREDSNAPSHOTSECRET" not in content
+
+    def test_extract_relevant_content_appends_stored_pointer(self):
+        """LLM-summarized snapshots also point at the stored full text."""
+        from unittest.mock import MagicMock
+        from tools.browser_tool import _extract_relevant_content
+
+        snapshot = "\n".join(f'- item "Element {i}" [ref=e{i}]' for i in range(400))
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = "Summary with button [ref=e5]"
+
+        with patch("tools.browser_tool.call_llm", return_value=mock_resp):
+            result = _extract_relevant_content(snapshot, "find the button")
+
+        assert result.startswith("Summary with button")
+        assert "Full snapshot" in result
+        assert "read_file" in result
 
 
 # ---------------------------------------------------------------------------

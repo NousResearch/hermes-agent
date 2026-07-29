@@ -44,12 +44,14 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
     if (!entry) {
       continue
     }
+
     const parts = Array.isArray(entry) ? entry : String(entry).split(delimiter)
 
     for (const part of parts) {
       if (!part || seen.has(part)) {
         continue
       }
+
       seen.add(part)
       ordered.push(part)
     }
@@ -77,6 +79,7 @@ function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatfor
   if (!hermesHome) {
     return hermesHome
   }
+
   const resolved = pathModule.resolve(String(hermesHome))
   const parent = pathModule.dirname(resolved)
 
@@ -101,6 +104,13 @@ function buildDesktopBackendEnv({
 
   return {
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
+    // Force PEP 540 UTF-8 mode in the spawned Python backend so its stdio and
+    // subprocess defaults are UTF-8 even on non-UTF-8 Windows locales (GBK,
+    // cp1252, ...). hermes_bootstrap sets this inside the child too, but only
+    // after import — anything emitted earlier (interpreter startup errors,
+    // pre-bootstrap tracebacks) still decodes with the locale default without
+    // this. User's explicit setting wins. Re-port of PR #56499 (echoriver89).
+    PYTHONUTF8: currentEnv?.PYTHONUTF8 ?? '1',
     [key]: buildDesktopBackendPath({
       hermesHome,
       venvRoot,

@@ -101,6 +101,20 @@ def test_get_custom_provider_extra_headers_no_match_returns_empty():
     ) == {}
 
 
+def test_get_custom_provider_extra_headers_preserves_extra_path_segment():
+    providers = [
+        {
+            "base_url": "https://llm.internal.example.com/v1//",
+            "extra_headers": {"Authorization": "secret"},
+        }
+    ]
+
+    assert get_custom_provider_extra_headers(
+        "https://llm.internal.example.com/v1",
+        custom_providers=providers,
+    ) == {}
+
+
 def test_apply_extra_headers_merges_onto_existing_defaults():
     client_kwargs = {
         "api_key": "x",
@@ -165,7 +179,7 @@ def test_fetch_api_models_sends_extra_headers_to_models_probe(monkeypatch):
         }
         return FakeResponse()
 
-    monkeypatch.setattr(models_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", fake_urlopen)
 
     models = models_mod.fetch_api_models(
         "proxy-key",

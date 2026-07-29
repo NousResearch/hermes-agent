@@ -121,6 +121,83 @@ class TestXiaomiCredentials:
         creds = resolve_api_key_provider_credentials("xiaomi")
         assert creds["base_url"] == "https://custom.xiaomi.example/v1"
 
+    def test_resolve_credentials_reads_home_external_secret_scope(
+        self, tmp_path, monkeypatch
+    ):
+        """BWS-injected keys belong in the profile scope that loaded them."""
+        from agent import secret_scope as ss
+        from hermes_cli import config as config_module
+        from hermes_cli import env_loader
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setattr(config_module, "get_env_path", lambda: home / ".env")
+        config_module.invalidate_env_cache()
+
+        monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            str(home.resolve()),
+            {"XIAOMI_API_KEY": "sk-bws-xiaomi-12345678"},
+        )
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(ss.build_profile_secret_scope(home))
+        try:
+            creds = resolve_api_key_provider_credentials("xiaomi")
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert creds["api_key"] == "sk-bws-xiaomi-12345678"
+        assert creds["source"] == "XIAOMI_API_KEY"
+
+    def test_scoped_missing_key_does_not_fall_through_to_raw_env(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import secret_scope as ss
+        from hermes_cli import config as config_module
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setattr(config_module, "get_env_path", lambda: home / ".env")
+        config_module.invalidate_env_cache()
+
+        monkeypatch.setenv("XIAOMI_API_KEY", "sk-other-profile-12345678")
+        monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            creds = resolve_api_key_provider_credentials("xiaomi")
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert creds["api_key"] == ""
+
+    def test_unscoped_multiplex_read_fails_closed(self, tmp_path, monkeypatch):
+        from agent import secret_scope as ss
+        from hermes_cli import config as config_module
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setattr(config_module, "get_env_path", lambda: home / ".env")
+        config_module.invalidate_env_cache()
+
+        monkeypatch.setenv("XIAOMI_API_KEY", "sk-global-leak-12345678")
+        monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
+
+        ss.set_multiplex_active(True)
+        try:
+            with pytest.raises(ss.UnscopedSecretError):
+                resolve_api_key_provider_credentials("xiaomi")
+        finally:
+            ss.set_multiplex_active(False)
+
 
 # =============================================================================
 # Model catalog (dynamic — no static list)

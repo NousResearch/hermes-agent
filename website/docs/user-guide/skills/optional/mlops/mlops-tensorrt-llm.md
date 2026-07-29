@@ -1,14 +1,14 @@
 ---
-title: "Tensorrt Llm — Optimizes LLM inference with NVIDIA TensorRT for maximum throughput and lowest latency"
+title: "Tensorrt Llm — High-throughput LLM inference on NVIDIA GPUs"
 sidebar_label: "Tensorrt Llm"
-description: "Optimizes LLM inference with NVIDIA TensorRT for maximum throughput and lowest latency"
+description: "High-throughput LLM inference on NVIDIA GPUs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Tensorrt Llm
 
-Optimizes LLM inference with NVIDIA TensorRT for maximum throughput and lowest latency. Use for production deployment on NVIDIA GPUs (A100/H100), when you need 10-100x faster inference than PyTorch, or for serving models with quantization (FP8/INT4), in-flight batching, and multi-GPU scaling.
+High-throughput LLM inference on NVIDIA GPUs.
 
 ## Skill metadata
 

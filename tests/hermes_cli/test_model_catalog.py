@@ -288,6 +288,68 @@ class TestCuratedAccessors:
             assert model_catalog.get_curated_nous_models() is None
 
 
+class TestDefaultModelFromCache:
+    """get_default_model_from_cache reads the '"default": true' label without
+    ever hitting the network."""
+
+    def _manifest_with_default(self) -> dict:
+        m = _valid_manifest()
+        m["providers"]["openrouter"]["models"][1]["default"] = True  # gpt-5.4
+        m["providers"]["nous"]["models"][1]["default"] = True  # kimi-k2.6
+        return m
+
+    def test_reads_label_from_disk_cache(self, isolated_home):
+        from hermes_cli import model_catalog
+        cache = isolated_home / "cache"
+        cache.mkdir()
+        (cache / "model_catalog.json").write_text(
+            json.dumps(self._manifest_with_default())
+        )
+        with patch.object(model_catalog, "_fetch_manifest") as fetch:
+            assert (
+                model_catalog.get_default_model_from_cache("openrouter")
+                == "openai/gpt-5.4"
+            )
+            assert (
+                model_catalog.get_default_model_from_cache("nous")
+                == "moonshotai/kimi-k2.6"
+            )
+            fetch.assert_not_called()
+
+    def test_no_label_returns_none(self, isolated_home):
+        from hermes_cli import model_catalog
+        cache = isolated_home / "cache"
+        cache.mkdir()
+        (cache / "model_catalog.json").write_text(json.dumps(_valid_manifest()))
+        with patch.object(model_catalog, "_fetch_manifest") as fetch:
+            assert model_catalog.get_default_model_from_cache("openrouter") is None
+            fetch.assert_not_called()
+
+    def test_no_cache_returns_none_without_network(self, isolated_home):
+        from hermes_cli import model_catalog
+        with patch.object(model_catalog, "_fetch_manifest") as fetch:
+            assert model_catalog.get_default_model_from_cache("openrouter") is None
+            fetch.assert_not_called()
+
+    def test_shipped_manifest_labels_glm52_default(self, isolated_home):
+        """Contract with the in-repo manifest: both provider blocks label the
+        same default entry the code constant points at."""
+        import hermes_cli.model_catalog as model_catalog
+        from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
+
+        repo_root = Path(model_catalog.__file__).resolve().parent.parent
+        manifest = json.loads(
+            (repo_root / "website" / "static" / "api" / "model-catalog.json").read_text()
+        )
+        for provider in ("openrouter", "nous"):
+            block = manifest["providers"][provider]
+            labeled = [m["id"] for m in block["models"] if m.get("default")]
+            assert labeled == [PREFERRED_SILENT_DEFAULT_MODEL], (
+                f"{provider}: exactly one entry must be labeled default and it "
+                f"must match PREFERRED_SILENT_DEFAULT_MODEL"
+            )
+
+
 class TestDisabled:
     def test_disabled_config_short_circuits(self, isolated_home):
         from hermes_cli import model_catalog

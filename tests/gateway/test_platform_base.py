@@ -18,7 +18,24 @@ from gateway.platforms.base import (
     validate_inbound_media_size,
     _log_safe_path,
     _prefix_within_utf16_limit,
+    cache_audio_from_bytes,
 )
+
+
+def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
+    """Encrypted Bitwarden cache is covered by the media credential guard."""
+    import gateway.platforms.base as base
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setattr(base, "_HERMES_HOME", hermes_home)
+    monkeypatch.setattr(base, "_HERMES_ROOT", hermes_home)
+    path = hermes_home / "cache" / "bws_cache.enc.json"
+    path.parent.mkdir()
+    path.write_text("encrypted-secret-cache")
+
+    assert path in base._media_delivery_denied_paths()
+    assert base.validate_media_delivery_path(str(path)) is None
 
 
 class TestInboundMediaSizeCap:
@@ -102,6 +119,26 @@ class TestSafeUrlForLog:
         assert safe_url_for_log(url, max_len=3) == "..."
         assert safe_url_for_log(url, max_len=2) == ".."
         assert safe_url_for_log(url, max_len=0) == ""
+
+
+class TestCacheAudioFromBytes:
+    def test_sniffs_mp4_quicktime_audio_even_when_ext_is_ogg(self, tmp_path):
+        payload = b"\x00\x00\x00\x14ftypqt  " + b"\x00" * 32
+        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+            result = cache_audio_from_bytes(payload, ext=".ogg")
+
+        saved = tmp_path / os.path.basename(result)
+        assert saved.suffix == ".m4a"
+        assert saved.read_bytes() == payload
+
+    def test_preserves_fallback_ext_when_audio_header_is_unknown(self, tmp_path):
+        payload = b"not-a-known-audio-header"
+        with patch("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path):
+            result = cache_audio_from_bytes(payload, ext=".aac")
+
+        saved = tmp_path / os.path.basename(result)
+        assert saved.suffix == ".aac"
+        assert saved.read_bytes() == payload
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +370,29 @@ class TestExtractMedia:
         assert media[0][0] == "/path/to/voice.ogg"
         assert media[0][1] is True  # voice tag present
 
+    def test_voice_directive_only_taints_audio_files(self):
+        """[[audio_as_voice]] is message-global but must only flag audio files.
+
+        A non-audio file marked is_voice is excluded from the embedded-photo
+        batch and falls through to send_document, so an image sharing a
+        message with a voice note used to arrive as a file attachment
+        (#44826).
+        """
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/pic.png\nMEDIA:/tmp/voice.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        flags = dict(media)
+        assert flags["/tmp/pic.png"] is False
+        assert flags["/tmp/voice.ogg"] is True
+        assert "[[audio_as_voice]]" not in cleaned
+
+    def test_voice_directive_skips_video_and_documents(self):
+        content = "[[audio_as_voice]]\nMEDIA:/tmp/clip.mp4\nMEDIA:/tmp/report.pdf\nMEDIA:/tmp/note.opus"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        flags = dict(media)
+        assert flags["/tmp/clip.mp4"] is False
+        assert flags["/tmp/report.pdf"] is False
+        assert flags["/tmp/note.opus"] is True
+
     def test_multiple_media_tags(self):
         content = "MEDIA:/a.ogg\nMEDIA:/b.ogg"
         media, _ = BasePlatformAdapter.extract_media(content)
@@ -384,6 +444,31 @@ class TestExtractMedia:
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
+
+    def test_duplicate_media_tags_are_deduplicated(self):
+        content = "MEDIA:/tmp/test.png\nMEDIA:/tmp/test.png\nMEDIA:/tmp/other.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/test.png", False),
+            ("/tmp/other.png", False),
+        ]
+        assert cleaned == ""
+
+    def test_duplicate_media_tags_dedup_preserves_first_occurrence_order(self):
+        content = "MEDIA:/tmp/a.png\nMEDIA:/tmp/b.png\nMEDIA:/tmp/a.png\nMEDIA:/tmp/c.png"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/a.png", False),
+            ("/tmp/b.png", False),
+            ("/tmp/c.png", False),
+        ]
+
+    def test_dedup_uses_expanded_path_so_tilde_and_absolute_collapse(self):
+        import os
+        home = os.path.expanduser("~")
+        content = f"MEDIA:~/foo.png\nMEDIA:{home}/foo.png"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [(f"{home}/foo.png", False)]
 
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
@@ -513,6 +598,51 @@ class TestExtractMedia:
         assert [p for p, _ in media] == ["/r/a.png"]
         assert "`MEDIA:/ex/b.png`" in cleaned
 
+    # --- Markdown emphasis wrapping tolerance ---
+    # Models routinely present a file as **MEDIA:/path** / *MEDIA:/path* /
+    # _MEDIA:/path_. The old pattern only tolerated a single quote/backtick, so
+    # the emphasis prevented the match and the file was silently never
+    # delivered (the literal MEDIA: text leaked into the chat instead).
+
+    def test_media_bold_wrapped_extracted(self):
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "**MEDIA:/home/u/report.pptx**"
+        )
+        assert media == [("/home/u/report.pptx", False)]
+        assert "MEDIA:" not in cleaned
+
+    def test_media_italic_asterisk_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("*MEDIA:/home/u/report.pdf*")
+        assert media == [("/home/u/report.pdf", False)]
+
+    def test_media_italic_underscore_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("_MEDIA:/home/u/report.pdf_")
+        assert media == [("/home/u/report.pdf", False)]
+
+    def test_media_bold_mid_prose_extracted_and_stripped(self):
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "Voici votre fichier **MEDIA:/tmp/r.pdf** bonne lecture"
+        )
+        assert media == [("/tmp/r.pdf", False)]
+        assert "MEDIA:" not in cleaned
+        assert "bonne lecture" in cleaned
+
+    def test_media_bold_wrapped_html_extracted(self):
+        # .html is a recognised extension; emphasis was the only blocker.
+        media, _ = BasePlatformAdapter.extract_media("**MEDIA:/srv/page.html**")
+        assert media == [("/srv/page.html", False)]
+
+    def test_media_underscore_in_filename_unaffected(self):
+        # Emphasis tolerance must not eat a legitimate '_' inside the path.
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/tmp/my_report_v2.pptx")
+        assert media == [("/tmp/my_report_v2.pptx", False)]
+
+    def test_media_bold_relative_path_still_ignored(self):
+        # The absolute-path anchor must still reject relative paths even when
+        # wrapped in emphasis.
+        media, _ = BasePlatformAdapter.extract_media("**MEDIA:report.html**")
+        assert media == []
+
 
 class TestMediaInsideSerializedJson:
     """Regression coverage for #34375 — MEDIA: embedded in serialized JSON
@@ -631,12 +761,15 @@ class TestMediaExtensionAllowlistParity:
 
     def test_unknown_extension_not_black_holed_by_cleanup(self):
         """A MEDIA: tag with an unknown extension is NOT stripped from the
-        body — it survives so extract_local_files can still see the bare path,
-        rather than vanishing entirely (the core of issue #34517)."""
+        body by the extension-anchored cleanup — and when the path does not
+        validate (nonexistent file here), it is not delivered either, so the
+        tag survives visibly instead of vanishing (the core of issue #34517).
+        Validated unknown-extension paths DO deliver — see
+        TestUniversalMediaEgress (#36060)."""
         from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
         text = "Saved to MEDIA:/tmp/data.weirdext done"
         media, _ = BasePlatformAdapter.extract_media(text)
-        assert media == []  # unknown extension is not a deliverable MEDIA tag
+        assert media == []  # nonexistent path fails validation, not delivered
         stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
         assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
 
@@ -712,6 +845,104 @@ class TestExtensionlessMediaDelivery:
         )
 
 
+class TestUniversalMediaEgress:
+    """#36060: every MEDIA: path is deliverable regardless of file type.
+
+    Known extensions extract unconditionally (MEDIA_TAG_CLEANUP_RE); unknown
+    extensions and extension-less files extract via the validated pass —
+    delivered when validate_media_delivery_path accepts them, left visible
+    when it does not (nonexistent, denylisted).
+    """
+
+    def _patch_allow_root(self, monkeypatch, root):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(root),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+    @pytest.mark.parametrize("name", [
+        "script.py", "server.log", "notes.weirdext", "app.ts", "run.sh",
+        "config.toml", "styles.css", "contract.sol",
+    ])
+    def test_unknown_extension_delivered_when_file_validates(
+        self, tmp_path, monkeypatch, name,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        f = root / name
+        f.write_text("content", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        content = f"Here you go:\nMEDIA:{f}\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(f.resolve())
+        assert "MEDIA:" not in cleaned
+        assert "Done." in cleaned
+
+    def test_unknown_extension_left_visible_when_not_on_disk(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        self._patch_allow_root(monkeypatch, root)
+
+        content = "MEDIA:/nonexistent/script.py"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/nonexistent/script.py" in cleaned
+
+    def test_denylisted_paths_still_rejected_regardless_of_extension(
+        self, tmp_path, monkeypatch,
+    ):
+        # A denylisted path must not deliver even though .py/.log/etc now
+        # route through the validated pass. _media_delivery_denied_paths()
+        # reads _MEDIA_DELIVERY_DENIED_PREFIXES at call time, so patching the
+        # tuple exercises the real denylist logic.
+        secret_dir = tmp_path / "secrets"
+        secret_dir.mkdir()
+        f = secret_dir / "creds.py"
+        f.write_text("TOKEN = 'x'", encoding="utf-8")
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(secret_dir),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+        content = f"MEDIA:{f}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" in cleaned  # rejected tag stays visible
+
+    def test_strip_for_display_strips_validated_unknown_extension(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        f = root / "server.log"
+        f.write_text("x", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        text = f"MEDIA:{f}"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+
+    def test_strip_for_display_keeps_unvalidated_unknown_extension(self):
+        text = "MEDIA:/nonexistent/server.log"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:/nonexistent/server.log" in stripped
+
+    def test_known_extension_still_unconditional(self):
+        # Known extensions keep the pre-#36060 behavior: extracted (and the
+        # tag stripped) even when the file does not exist — downstream
+        # delivery surfaces the failure.
+        content = "MEDIA:/nonexistent/report.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/nonexistent/report.pdf", False)]
+        assert "MEDIA:" not in cleaned
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(
@@ -785,6 +1016,28 @@ class TestMediaDeliveryPathValidation:
         monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(extra_root))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
+        self, tmp_path, monkeypatch,
+    ):
+        """Strict mode trusts durable attachments without trusting scratch."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        board_root = tmp_path / "hermes" / "kanban" / "boards" / "research"
+        board_root.mkdir(parents=True)
+        (board_root / "kanban.db").touch()
+        attachment = board_root / "attachments" / "t_12345678" / "report.pdf"
+        scratch = board_root / "workspaces" / "t_12345678" / "notes.txt"
+        attachment.parent.mkdir(parents=True)
+        scratch.parent.mkdir(parents=True)
+        attachment.write_bytes(b"%PDF")
+        scratch.write_text("private", encoding="utf-8")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(attachment)) == str(
+            attachment.resolve()
+        )
+        assert BasePlatformAdapter.validate_media_delivery_path(str(scratch)) is None
 
     def test_recency_trust_allows_freshly_produced_file(self, tmp_path, monkeypatch):
         """A PDF the agent just wrote to /tmp should be deliverable.
@@ -1395,7 +1648,7 @@ class TestShouldSendMediaAsAudio:
 
     def test_non_telegram_platforms_route_all_audio(self):
         from gateway.platforms.base import should_send_media_as_audio
-        for ext in (".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus"):
+        for ext in (".mp3", ".m2a", ".m4a", ".wav", ".flac", ".ogg", ".opus"):
             assert should_send_media_as_audio("discord", ext) is True
             assert should_send_media_as_audio("slack", ext) is True
 
@@ -1408,6 +1661,11 @@ class TestShouldSendMediaAsAudio:
         from gateway.platforms.base import should_send_media_as_audio
         assert should_send_media_as_audio("telegram", ".wav") is False
         assert should_send_media_as_audio("telegram", ".flac") is False
+
+    def test_telegram_m2a_falls_through_to_document(self):
+        from gateway.platforms.base import should_send_media_as_audio
+
+        assert should_send_media_as_audio("telegram", ".m2a") is False
 
     def test_telegram_ogg_opus_only_when_voice_flagged(self):
         from gateway.platforms.base import should_send_media_as_audio
@@ -1479,6 +1737,76 @@ class TestTruncateMessage:
         chunks = adapter.truncate_message(msg, max_length=200)
         assert "(1/" in chunks[0]
         assert f"({len(chunks)}/{len(chunks)})" in chunks[-1]
+
+    @staticmethod
+    def _truncate_with_timeout(content, max_length, *, len_fn=None, timeout=3.0):
+        """Run truncate_message on a worker thread; fail if it doesn't return.
+
+        Guards against the regression where a pathologically small max_length
+        made the split loop never consume any input and spin forever.
+        """
+        import threading
+
+        box: dict = {}
+
+        def _run():
+            box["result"] = BasePlatformAdapter.truncate_message(
+                content, max_length, len_fn=len_fn
+            )
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        assert not t.is_alive(), (
+            f"truncate_message hung (infinite loop) for max_length={max_length}"
+        )
+        return box["result"]
+
+    def test_pathological_small_max_length_terminates(self):
+        # max_length 0 and 1 previously drove the split loop into an unbounded
+        # hang (headroom -> 0, split_at -> 0, remaining never shrinks). It must
+        # terminate and preserve every character across the chunks.
+        import re
+
+        for max_length in (0, 1, 2):
+            chunks = self._truncate_with_timeout("abcdefghij", max_length)
+            assert chunks, f"no chunks for max_length={max_length}"
+            reassembled = "".join(
+                re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks
+            )
+            for ch in "abcdefghij":
+                assert ch in reassembled, f"char {ch!r} lost at max_length={max_length}"
+
+    def test_pathological_small_max_length_utf16_terminates(self):
+        # Under utf16_len (Telegram), a surrogate-pair emoji is 2 units wide, so
+        # a budget below that maps to zero codepoints — the same stall vector.
+        from gateway.platforms.base import utf16_len
+
+        chunks = self._truncate_with_timeout("😀😀😀😀😀", 1, len_fn=utf16_len)
+        assert chunks
+        assert "😀" in "".join(chunks)
+
+    def test_sub_codepoint_budget_emits_whole_codepoints_without_data_loss(self):
+        """Length contract for a budget too small to fit one codepoint.
+
+        A codepoint is indivisible, so with max_length=1 and utf16_len a 2-unit
+        emoji cannot fit — the loop emits it whole rather than dropping it or
+        spinning. The documented, intentional consequence is that such a chunk
+        EXCEEDS max_length by that one codepoint; in return every codepoint is
+        preserved (no data loss) and the call terminates.
+        """
+        import re
+
+        from gateway.platforms.base import utf16_len
+
+        chunks = self._truncate_with_timeout("😀😀😀", 1, len_fn=utf16_len)
+        assert chunks
+        bodies = [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
+        # No data loss: all three emojis survive across the chunks.
+        assert "".join(bodies).count("😀") == 3
+        # Contract: a chunk carrying a 2-unit emoji necessarily exceeds the
+        # 1-unit budget — assert that explicitly so the behavior is pinned.
+        assert any(utf16_len(b) > 1 for b in bodies)
 
     def test_code_block_first_chunk_closed(self):
         adapter = self._adapter()

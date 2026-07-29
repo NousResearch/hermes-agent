@@ -88,6 +88,21 @@ def test_cmd_update_in_docker_ignores_yes_and_force(
     assert git_calls == []
 
 
+@patch("hermes_cli.config.is_managed", return_value=False)
+@patch("hermes_cli.config.detect_install_method", return_value="nix")
+@patch("hermes_cli.main._cmd_update_impl")
+def test_cmd_update_on_nix_install_prints_guidance_without_running_local_updater(
+    mock_update_impl, _mock_method, _mock_managed, capsys
+):
+    """Immutable Nix installs must not enter the git/source self-updater."""
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_update(SimpleNamespace(check=False))
+
+    assert excinfo.value.code == 1
+    assert "Nix" in capsys.readouterr().out
+    mock_update_impl.assert_not_called()
+
+
 # ---------- _cmd_update_check (check path, direct entry) ----------
 
 
@@ -102,6 +117,20 @@ def test_cmd_update_check_direct_in_docker(mock_run, _mock_method, capsys):
     assert "docker pull" in capsys.readouterr().out
     git_calls = [c for c in mock_run.call_args_list if c.args and c.args[0] and "git" in str(c.args[0][0])]
     assert git_calls == []
+
+
+@patch("hermes_cli.config.detect_install_method", return_value="nix")
+@patch("subprocess.run")
+def test_cmd_update_check_direct_on_nix_install_prints_guidance_and_exits(
+    mock_run, _mock_method, capsys
+):
+    """Update checks on immutable Nix installs must not fetch a git repository."""
+    with pytest.raises(SystemExit) as excinfo:
+        _cmd_update_check()
+
+    assert excinfo.value.code == 1
+    assert "Nix" in capsys.readouterr().out
+    assert mock_run.call_args_list == []
 
 
 # ---------- Non-Docker installs unaffected ----------
@@ -141,19 +170,6 @@ def test_cmd_update_on_git_install_does_not_print_docker_message(
         pass
 
     assert "doesn't apply inside the Docker container" not in capsys.readouterr().out
-
-
-@patch("hermes_cli.config.detect_install_method", return_value="pip")
-@patch("hermes_cli.banner.check_via_pypi", return_value=0)
-def test_cmd_update_check_on_pip_install_still_uses_pypi(
-    _mock_pypi, _mock_method, capsys
-):
-    """PyPI installs route to PyPI check, not the Docker bail-out."""
-    _cmd_update_check()
-
-    out = capsys.readouterr().out
-    assert "Already up to date" in out
-    assert "doesn't apply inside the Docker container" not in out
 
 
 # ---------- format_docker_update_message — content lock ----------

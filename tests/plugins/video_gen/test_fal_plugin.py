@@ -322,6 +322,29 @@ class TestPayloadBuilder:
         assert p["generate_audio"] is True
         assert p["negative_prompt"] == "ugly"
 
+    def test_range_families_omit_duration_when_unspecified(self):
+        """Range-based families must omit `duration` when the caller doesn't
+        specify one so FAL applies its endpoint default, not the minimum."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        for family_id in ("pixverse-v6", "seedance-2.0", "kling-v3-4k"):
+            meta = FAL_FAMILIES[family_id]
+            p = _build_payload(
+                meta,
+                prompt="x",
+                image_url=None,
+                duration=None,
+                aspect_ratio="16:9",
+                resolution="720p",
+                negative_prompt=None,
+                audio=None,
+                seed=None,
+            )
+            assert "duration" not in p, (
+                f"{family_id}: duration=None should omit the field, "
+                f"got {p.get('duration')!r}"
+            )
+
     def test_happy_horse_minimal_payload(self):
         """Happy Horse has sparse docs — payload should be minimal."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload

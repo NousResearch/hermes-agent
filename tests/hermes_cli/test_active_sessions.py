@@ -57,10 +57,10 @@ def test_active_session_lease_blocks_until_release(tmp_path, monkeypatch):
     )
 
     assert blocked_lease is None
-    assert blocked_message == (
-        "Hermes is at the active session limit (1/1). "
-        "Try again when another session finishes."
-    )
+    assert "active session limit (1/1)" in blocked_message
+    # The rejected surface is rarely the one holding the slots, so the message
+    # must name the holder — here the "cli" lease, not the blocked "tui" one.
+    assert "Held by: cli" in blocked_message
 
     lease.release()
 
@@ -354,3 +354,33 @@ def test_pid_start_time_mismatch_prunes_reused_pid(tmp_path, monkeypatch):
         "new-session"
     ]
     lease.release()
+
+
+def test_release_orphaned_leases_reclaims_only_unowned_own_pid_entries(tmp_path, monkeypatch):
+    """A long-lived server must reclaim leases whose session skipped teardown.
+
+    ``_prune_dead`` only fires when the owning pid dies, so a ``hermes
+    dashboard`` running for days holds a leaked lease until restart. The
+    process reconciles against the leases it still owns instead.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    cfg = {"max_concurrent_sessions": 5}
+    kept, orphan = (
+        active_sessions.try_acquire_active_session(
+            session_id=sid, surface="desktop", config=cfg
+        )[0]
+        for sid in ("kept", "orphaned")
+    )
+    # Another live process's lease is not ours to reclaim.
+    active_sessions._write_entries(
+        active_sessions._state_path(),
+        active_sessions._read_entries(active_sessions._state_path())
+        + [{"lease_id": "elsewhere", "session_id": "other", "surface": "cli", "pid": os.getpid() }],
+    )
+
+    assert active_sessions.release_orphaned_leases({kept.lease_id, "elsewhere"}) == 1
+    assert sorted(
+        entry["session_id"]
+        for entry in active_sessions.active_session_registry_snapshot()
+    ) == ["kept", "other"]
+    assert orphan is not None

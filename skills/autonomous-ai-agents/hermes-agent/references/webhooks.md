@@ -24,10 +24,12 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: "0.0.0.0"
       port: 8644
       secret: "generate-a-strong-secret-here"
 ```
+
+Omitting `host` uses the dual-stack default and listens on both IPv4 and IPv6.
+Set a specific address only when you intentionally want to restrict the bind.
 
 ### Option 3: Environment variables
 Add to `${HERMES_HOME:-~/.hermes}/.env`:

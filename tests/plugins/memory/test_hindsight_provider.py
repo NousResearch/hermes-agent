@@ -22,6 +22,7 @@ from plugins.memory.hindsight import (
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
     _load_config,
+    _load_simple_env,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
@@ -1819,3 +1820,128 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestLoadSimpleEnv:
+    def test_bom_first_key_is_recognized(self, tmp_path):
+        """A Notepad-edited .env carries a BOM; the first key must still parse
+        instead of becoming '\ufeffHINDSIGHT_LLM_API_KEY'."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿HINDSIGHT_LLM_API_KEY=sk-test\n".encode("utf-8"))
+        values = _load_simple_env(env_path)
+        assert values.get("HINDSIGHT_LLM_API_KEY") == "sk-test"
+
+    def test_non_ascii_values_read_intact(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("PROXY_NOTE=café-zürich-完了\n".encode("utf-8"))
+        values = _load_simple_env(env_path)
+        assert values["PROXY_NOTE"] == "café-zürich-完了"
+
+
+class TestPostSetupEnvEncoding:
+    def _run_cloud_post_setup(self, tmp_path, monkeypatch):
+        """Drive post_setup through the cloud path with piped stdin."""
+        import io
+
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select",
+                            lambda *a, **kw: 0)  # cloud mode
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda c: None)
+        # Skip the dependency install (now routed through lazy_deps, NS-605).
+        import tools.lazy_deps as lazy_deps_mod
+        monkeypatch.setattr(
+            lazy_deps_mod, "install_specs",
+            lambda *a, **kw: lazy_deps_mod.InstallSpecsResult(ok=True),
+        )
+        # First line: API key prompt (readline). Second line: API URL (input).
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-new\n\n"))
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(tmp_path), {"memory": {}})
+
+    def test_bom_first_key_updated_in_place(self, tmp_path, monkeypatch):
+        """The setup writer reads the existing .env BOM-tolerantly, so a
+        BOM'd first key is matched and rewritten, not duplicated."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿HINDSIGHT_API_KEY=old\n".encode("utf-8"))
+
+        self._run_cloud_post_setup(tmp_path, monkeypatch)
+
+        content = env_path.read_text(encoding="utf-8")
+        assert content.count("HINDSIGHT_API_KEY=") == 1
+        assert "HINDSIGHT_API_KEY=sk-new" in content
+        assert "old" not in content
+        assert "﻿" not in content
+
+    def test_non_ascii_lines_survive_round_trip(self, tmp_path, monkeypatch):
+        """Unrelated non-ASCII .env content must be copied through as UTF-8
+        (the locale codec would crash or mangle it on Windows)."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("PROXY_NOTE=café-zürich-完了\n".encode("utf-8"))
+
+        self._run_cloud_post_setup(tmp_path, monkeypatch)
+
+        content = env_path.read_text(encoding="utf-8")
+        assert "PROXY_NOTE=café-zürich-完了" in content
+        assert "HINDSIGHT_API_KEY=sk-new" in content
+
+
+class TestClientAutoUpgradeRoutesThroughLazyDeps:
+    """The initialize()-time hindsight-client auto-upgrade must go through
+    lazy_deps.install_specs() (environment-aware, durable-target on sealed
+    hosted venvs) — never a direct `uv pip install --python sys.executable`
+    subprocess, which fails with EROFS/EACCES on immutable images (NS-605)."""
+
+    def _init_with_outdated_client(self, tmp_path, monkeypatch, outcome):
+        import importlib.metadata as md
+        import subprocess as subprocess_mod
+        import tools.lazy_deps as lazy_deps_mod
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "cloud"}))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        # Simulate an installed-but-outdated client.
+        monkeypatch.setattr(md, "version", lambda name: "0.0.1")
+
+        calls = []
+        monkeypatch.setattr(
+            lazy_deps_mod, "install_specs",
+            lambda specs, **kw: calls.append(tuple(specs)) or outcome,
+        )
+
+        # Regression guard: no direct pip subprocess may run.
+        def _no_subprocess(*a, **kw):  # pragma: no cover - fails loudly
+            raise AssertionError(f"unexpected subprocess.run during auto-upgrade: {a}")
+        monkeypatch.setattr(subprocess_mod, "run", _no_subprocess)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+        return calls
+
+    def test_upgrade_uses_install_specs_not_subprocess(self, tmp_path, monkeypatch):
+        from plugins.memory.hindsight import _MIN_CLIENT_VERSION
+        from tools.lazy_deps import InstallSpecsResult
+
+        calls = self._init_with_outdated_client(
+            tmp_path, monkeypatch, InstallSpecsResult(ok=True)
+        )
+        assert calls == [(f"hindsight-client>={_MIN_CLIENT_VERSION}",)]
+
+    def test_blocked_upgrade_is_nonfatal_and_surfaces_reason(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        from tools.lazy_deps import InstallSpecsResult
+
+        with caplog.at_level(logging.WARNING):
+            calls = self._init_with_outdated_client(
+                tmp_path, monkeypatch,
+                InstallSpecsResult(ok=False, blocked=True,
+                                   reason="runtime installs are disabled on this deployment"),
+            )
+        assert len(calls) == 1  # attempted exactly once, init still completed
+        assert any("runtime installs are disabled" in r.getMessage()
+                   for r in caplog.records)

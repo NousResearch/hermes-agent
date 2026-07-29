@@ -1,6 +1,6 @@
 ---
 name: 1password
-description: Set up and use 1Password CLI (op). Use when installing the CLI, enabling desktop app integration, signing in, and reading/injecting secrets for commands.
+description: Set up op CLI, sign in, and read or inject secrets.
 version: 1.0.0
 author: arceus77-7, enhanced by Hermes Agent
 license: MIT

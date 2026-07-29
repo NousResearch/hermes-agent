@@ -123,6 +123,25 @@ _BILLING_PATTERNS = [
     "not available on the free tier",
 ]
 
+# xAI's explicit Grok credit-exhaustion code. Keep the HTTP 403 special case
+# provider-scoped: other providers' generic billing codes historically remain
+# auth failures when they arrive as 403.
+_XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
+
+# Structured provider codes that mean the account cannot serve paid traffic
+# until credits/subscription capacity is restored. xAI returns its explicit
+# Grok spending-limit signal as HTTP 403 rather than 402.
+_BILLING_ERROR_CODES = frozenset({
+    "insufficient_quota",
+    "billing_not_active",
+    "payment_required",
+    "insufficient_credits",
+    "no_usable_credits",
+    "balance_depleted",
+    "model_not_supported_on_free_tier",
+    _XAI_SPENDING_LIMIT_ERROR_CODE,
+})
+
 # Patterns that indicate rate limiting (transient, will resolve)
 _RATE_LIMIT_PATTERNS = [
     "rate limit",
@@ -140,6 +159,14 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # Generic throttle prefix — Bedrock (and some proxies) surface throttling
+    # as "Throttling error: Too many tokens, please wait before trying
+    # again."  Without this entry the message falls through to the
+    # context-overflow list (which contains "too many tokens") and the retry
+    # loop compresses a healthy session instead of backing off.  Matched
+    # BEFORE _CONTEXT_OVERFLOW_PATTERNS in the message-only path, so the
+    # throttle wins.  (port of anomalyco/opencode#37848's exclusion guard)
+    "throttling",
 ]
 
 # Patterns that indicate provider-side overload, NOT a per-credential rate
@@ -193,6 +220,12 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request entity too large",
     "payload too large",
     "error code: 413",
+    # Anthropic's structured 413 error type.  Normally arrives with an HTTP
+    # 413 status (handled by the status path), but aggregators/proxies can
+    # re-wrap it into a plain message with no status attribute — route it to
+    # the same compression recovery.  (port of anomalyco/opencode#37848)
+    "request_too_large",
+    "request exceeds the maximum size",
 ]
 
 # Image-size patterns.  Matched against 400 bodies (not 413) because most
@@ -250,6 +283,11 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "context window",
     "prompt is too long",
     "prompt exceeds max length",
+    # NOTE: bare "max_tokens" is load-bearing — the output-cap-retry path keys
+    # off it (e.g. "max_tokens: 65536 > context_window: 200000 ..."). Do NOT
+    # remove it. Provider empty-response advisories also contain "very low
+    # max_tokens", but those are intercepted by _EMPTY_PROVIDER_RESPONSE_PATTERNS
+    # BEFORE this list is consulted, so they never mis-route into compression.
     "max_tokens",
     "maximum number of tokens",
     # vLLM / local inference server patterns
@@ -267,11 +305,17 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     # Chinese error messages (some providers return these)
     "超过最大长度",
     "上下文长度",
+    # Z.AI / Zhipu GLM pattern (English form; error code 1210)
+    "tokens in request more than max tokens allowed",
     # AWS Bedrock Converse API error patterns
     "input is too long",
     "max input token",
     "input token",
     "exceeds the maximum number of input tokens",
+    # Together/Fireworks-style: "Input length 131393 exceeds the maximum
+    # allowed input length of 131040 tokens."  No other pattern in this list
+    # matches that wording.  (port of anomalyco/opencode#37848)
+    "maximum allowed input length",
 ]
 
 # Model not found patterns
@@ -293,6 +337,30 @@ _MODEL_NOT_FOUND_PATTERNS = [
     # and the error surfaces as a confusing "model not found" message
     # instead of automatically failing over.  See PR #58446.
     "no endpoints found that support tool use",
+]
+
+# Malformed-message-array 400s.  Deterministic request-shape rejections that
+# describe the *transcript* being invalid, not a parameter.  The canonical
+# case: a stream dies mid-response and Hermes persists a content-less
+# assistant stub; on the next turn the Anthropic message schema (and the
+# litellm/Bedrock proxies in front of it) reject the whole request with
+#   "all messages must have non-empty content except for the optional final
+#    assistant message"  /  errorCode INVALID_REQUEST_BODY
+# These are NOT context overflow — the input may be tiny — but a large
+# session used to mis-route them into the compression loop via the generic
+# "400 + large session" heuristic below, ending in "Cannot compress further"
+# every retry (the input is unchanged, so compression cannot help).  Match
+# the message-shape signals explicitly and fail fast as a format_error so the
+# loop stops looping.  The empty-stub creation is the root cause (fixed in
+# chat_completion_helpers); this pattern stops the misclassification symptom
+# for transcripts that already contain a poisoned stub.
+_INVALID_MESSAGE_BODY_PATTERNS = [
+    "must have non-empty content",
+    "messages must have non-empty",
+    "invalid_request_body",
+    "text content blocks must be non-empty",
+    "content field is required",
+    "messages: at least one message is required",
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -387,6 +455,7 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
 _AUTH_PATTERNS = [
     "invalid api key",
     "invalid_api_key",
+    "gateway_auth_failed",
     "authentication",
     "unauthorized",
     "forbidden",
@@ -405,6 +474,19 @@ _THINKING_SIG_PATTERNS = [
 # the exception type is generic (e.g. RuntimeError from a local shim that
 # wraps a subprocess timeout).  Checked before the type-based transport
 # heuristics so custom-provider "timed out" errors don't fall through to
+# Provider empty-response advisories (OpenRouter / nano-gpt / similar).
+# Checked before context-overflow matching because the advisory text often
+# mentions "max_tokens" as a possible cause, which historically sat in
+# _CONTEXT_OVERFLOW_PATTERNS and sent healthy sessions into a compression
+# death spiral ending in "Cannot compress further".
+_EMPTY_PROVIDER_RESPONSE_PATTERNS = [
+    "returned an empty response",
+    "empty response despite retries",
+    "provider returned an empty response",
+    "model returning empty responses",
+    "empty response stream",
+]
+
 # the unknown bucket and get misreported as empty responses.
 _TIMEOUT_MESSAGE_PATTERNS = [
     "timed out",
@@ -754,6 +836,14 @@ def classify_api_error(
         if classified is not None:
             return classified
 
+    # Local MoA config drift is deterministic: a persisted session can retain
+    # a preset name that was later renamed/deleted. Retrying the same lookup
+    # cannot recover and makes a clear config error look like an API outage.
+    from agent.errors import MoAPresetNotFoundError
+
+    if isinstance(error, MoAPresetNotFoundError):
+        return _result(FailoverReason.model_not_found, retryable=False)
+
     # ── 3. Error code classification ────────────────────────────────
 
     if error_code:
@@ -840,12 +930,34 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 7. Transport / timeout heuristics ───────────────────────────
+    # ── 7b. Stale-call circuit breaker → failover immediately ──────
+    # _check_stale_giveup() in agent/chat_completion_helpers.py raises a
+    # RuntimeError when the provider has been unresponsive for N
+    # consecutive stale attempts (default 5).  The error is NOT a transport
+    # timeout — the circuit breaker fires *before* any network call to avoid
+    # an indefinite stall.  Without this classification the RuntimeError
+    # falls through to FailoverReason.unknown (retryable=True), which burns
+    # all max_retries against the same dead provider (each retry hitting the
+    # circuit breaker instantly with zero network overhead) before fallback
+    # is attempted.  Classify as non-retryable + should_fallback so the
+    # retry loop activates the next fallback provider on the first hit.
+    if (
+        error_type == "RuntimeError"
+        and "consecutive stale attempts" in error_msg
+        and "aborting this call" in error_msg
+    ):
+        return _result(
+            FailoverReason.timeout,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # ── 8. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 8. Fallback: unknown ────────────────────────────────────────
+    # ── 9. Fallback: unknown ────────────────────────────────────────
 
     return _result(FailoverReason.unknown, retryable=True)
 
@@ -884,7 +996,11 @@ def _classify_by_status(
         # OpenRouter 403 "key limit exceeded" is actually billing. Other
         # providers also use 403 for account-plan or credit exhaustion.
         if (
-            "key limit exceeded" in error_msg
+            (
+                provider == "xai-oauth"
+                and error_code.lower() == _XAI_SPENDING_LIMIT_ERROR_CODE
+            )
+            or "key limit exceeded" in error_msg
             or "spending limit" in error_msg
             or any(p in error_msg for p in _BILLING_PATTERNS)
         ):
@@ -1022,6 +1138,14 @@ def _classify_by_status(
         # remaining explicit context-overflow signal routes into the
         # compression-and-retry path (mirroring _classify_400) instead of
         # blind server_error retries that exhaust and drop the turn.
+        # Empty-response advisories that mention "max_tokens" must not enter
+        # that compression path.
+        if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+            return result_fn(
+                FailoverReason.server_error,
+                retryable=True,
+                should_compress=False,
+            )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
@@ -1035,6 +1159,12 @@ def _classify_by_status(
         # Cloudflare/Tailscale hop relabeling the status). Route explicit
         # overflow bodies into compression; otherwise treat as transient
         # overload and retry.
+        if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+            return result_fn(
+                FailoverReason.server_error,
+                retryable=True,
+                should_compress=False,
+            )
         if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
             return result_fn(
                 FailoverReason.context_overflow,
@@ -1147,6 +1277,7 @@ def _classify_400(
             "encrypted content for item" in error_msg
             and "could not be verified" in error_msg
         )
+        or "could not decrypt the provided encrypted_content" in error_msg
     ):
         return result_fn(
             FailoverReason.invalid_encrypted_content,
@@ -1159,8 +1290,8 @@ def _classify_400(
     # returns:
     #   "Unsupported parameter: 'max_tokens' is not supported with this model.
     #    Use 'max_completion_tokens' instead."
-    # That string contains the literal substring "max_tokens", which is one of
-    # the _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
+    # That string contains the literal substring "max_tokens", which historically
+    # sat in _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
     # misclassified as context_overflow, routed into the compression loop,
     # re-sent with the same bad parameter, and ends in "Cannot compress
     # further".  These errors are deterministic (every retry gets the identical
@@ -1180,6 +1311,44 @@ def _classify_400(
             FailoverReason.format_error,
             retryable=False,
             should_fallback=True,
+        )
+
+    # Malformed message array (empty-content assistant stub, etc.). Must be
+    # checked BEFORE context_overflow: the input can be tiny, so the generic
+    # "400 + large session" heuristic would otherwise mis-route it into the
+    # compression loop and thrash until "Cannot compress further" on every
+    # retry (the request is unchanged, so compression cannot fix it). This is
+    # a deterministic request-shape rejection — fail fast as a non-retryable
+    # format_error and fall back. Checked against the message text AND the
+    # structured error code, since proxies (litellm/Bedrock) surface the
+    # signal in errorCode=INVALID_REQUEST_BODY.
+    if (
+        any(p in error_msg for p in _INVALID_MESSAGE_BODY_PATTERNS)
+        or error_code_lower == "invalid_request_body"
+    ):
+        logger.warning(
+            "Malformed message array 400 (invalid request body) classified as "
+            "format_error, NOT context overflow — failing fast + falling back "
+            "instead of entering the compression loop. This usually means an "
+            "empty-content assistant stub is in the transcript; num_messages=%s "
+            "approx_tokens=%s. error=%.200s",
+            num_messages, approx_tokens, error_msg,
+        )
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # Empty-provider-response advisories must not enter compression. They
+    # often mention "max_tokens" as a possible cause and used to match the
+    # bare overflow pattern, then thrash compress until "Cannot compress
+    # further" on an otherwise healthy session (custom endpoints / nano-gpt).
+    if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=False,
         )
 
     # Context overflow from 400
@@ -1231,6 +1400,18 @@ def _classify_400(
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
+        # litellm / Bedrock proxies use a custom shape: {"errorMessage": "...",
+        # "errorCode": "...", "errorArgs": {"reason": "..."}}.  Without these
+        # keys err_body_msg stays "" and a long, descriptive rejection is
+        # wrongly treated as a "generic" (bare) error below, which — on a
+        # large session — mis-routes into the compression loop.  Recognize
+        # them so the is_generic heuristic sees the real message length.
+        if not err_body_msg:
+            err_body_msg = str(body.get("errorMessage") or "").strip().lower()
+        if not err_body_msg:
+            _args = body.get("errorArgs")
+            if isinstance(_args, dict):
+                err_body_msg = str(_args.get("reason") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while
@@ -1269,15 +1450,7 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
-    if code_lower in {
-        "insufficient_quota",
-        "billing_not_active",
-        "payment_required",
-        "insufficient_credits",
-        "no_usable_credits",
-        "balance_depleted",
-        "model_not_supported_on_free_tier",
-    }:
+    if code_lower in _BILLING_ERROR_CODES:
         return result_fn(
             FailoverReason.billing,
             retryable=False,
@@ -1391,6 +1564,15 @@ def _classify_by_message(
             retryable=True,
             should_rotate_credential=True,
             should_fallback=True,
+        )
+
+    # Empty-provider-response advisories (often mention "max_tokens") must
+    # retry without compression — see the matching 400-path guard above.
+    if any(p in error_msg for p in _EMPTY_PROVIDER_RESPONSE_PATTERNS):
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=False,
         )
 
     # Context overflow patterns
@@ -1528,7 +1710,7 @@ def _extract_error_code(body: dict) -> str:
                 return nested_code
 
     # Top-level code
-    code = body.get("code") or body.get("error_code") or ""
+    code = body.get("code") or body.get("error_code") or body.get("errorCode") or ""
     if isinstance(code, (str, int)):
         text = str(code).strip()
         if text and text != "400":
@@ -1548,6 +1730,16 @@ def _extract_message(error: Exception, body: dict) -> str:
         msg = body.get("message", "")
         if isinstance(msg, str) and msg.strip():
             return msg.strip()[:500]
+        # litellm / Bedrock proxy shape: {"errorMessage": "...",
+        # "errorArgs": {"reason": "..."}}.
+        msg = body.get("errorMessage", "")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()[:500]
+        args = body.get("errorArgs")
+        if isinstance(args, dict):
+            reason = args.get("reason", "")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()[:500]
     # Fallback to str(error)
     return str(error)[:500]
 

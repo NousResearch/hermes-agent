@@ -126,3 +126,63 @@ class TestApprovalCommandWiring:
         from gateway.platforms import api_server
 
         self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
+
+    def test_chat_platform_threads_approval_capabilities_to_adapter(self):
+        """The gateway must not drop the backend's one-operation UI contract."""
+        import ast
+        import inspect
+        import gateway.run as run
+
+        tree = ast.parse(inspect.getsource(run))
+        notify = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_approval_notify_sync"
+        )
+        call = next(
+            node for node in ast.walk(notify)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "send_exec_approval"
+        )
+        keywords = {kw.arg: kw.value for kw in call.keywords}
+        for name, default in (("allow_permanent", True), ("smart_denied", False)):
+            value = keywords[name]
+            assert isinstance(value, ast.Call)
+            assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
+            assert isinstance(value.args[0], ast.Constant) and value.args[0].value == name
+            assert isinstance(value.args[1], ast.Constant) and value.args[1].value is default
+
+
+class TestApprovalTextFallbackContract:
+    def test_smart_deny_only_advertises_one_operation(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=False, smart_denied=True,
+        )
+        assert "owner override" in text.lower()
+        assert "one operation" in text.lower()
+        assert "`/approve`" in text
+        assert "approve session" not in text
+        assert "approve always" not in text
+
+    def test_non_smart_restriction_preserves_session_choice(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "curl https://example.test", "content warning", "!",
+            allow_permanent=False, smart_denied=False,
+        )
+        assert "`!approve session`" in text
+        assert "approve always" not in text
+
+    def test_manual_prompt_preserves_all_choices(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=True, smart_denied=False,
+        )
+        assert "`/approve session`" in text
+        assert "`/approve always`" in text

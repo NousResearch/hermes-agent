@@ -41,6 +41,9 @@ class DummyTelegramAdapter(BasePlatformAdapter):
         self.typing.append({"chat_id": chat_id, "metadata": metadata})
         return None
 
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        self.typing.append({"chat_id": chat_id, "stopped": True, "metadata": metadata})
+
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
 
@@ -143,6 +146,11 @@ class TestBasePlatformTopicSessions:
                 "metadata": {"thread_id": "17585"},
             }
         ]
+        assert {
+            "chat_id": "-1001",
+            "stopped": True,
+            "metadata": {"thread_id": "17585"},
+        } in adapter.typing
         assert adapter.processing_hooks == [
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.SUCCESS),
@@ -302,6 +310,46 @@ class TestTelegramAutoTtsCaptionDelivery:
         adapter._should_auto_tts_for_chat = lambda _chat_id: True
         adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
         long_reply = "x" * 1025
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result=long_reply))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = self._make_voice_event()
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"file_path": str(tts_path)}),
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["caption"] is None
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": long_reply,
+                "reply_to": None,
+                "metadata": {"thread_id": "17585", "notify": True},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_long_original_with_short_spoken_script_still_sends_full_reply(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
+        # Markdown-heavy reply: over the 1024-char caption limit as written,
+        # but the normalized spoken script (markdown and URLs removed) is far
+        # below it. Caption eligibility must follow the ORIGINAL reply, so the
+        # full formatted text is still delivered as its own message instead of
+        # being swallowed into a lossy caption.
+        long_reply = "\n".join(
+            f"- **item {i}** [details](https://example.com/some/very/long/path/{i:04d})"
+            for i in range(20)
+        )
+        assert len(long_reply) > 1024
+        assert len(adapter.prepare_tts_text(long_reply)) <= 1024
         adapter.set_message_handler(lambda _event: asyncio.sleep(0, result=long_reply))
 
         tts_path = tmp_path / "reply.ogg"

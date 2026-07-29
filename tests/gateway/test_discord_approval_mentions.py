@@ -83,5 +83,54 @@ def test_yaml_config_bridges_approval_mentions_to_env(monkeypatch):
         {"discord": {"approval_mentions": True}},
         {"approval_mentions": True},
     )
-
     assert os.environ["DISCORD_APPROVAL_MENTIONS"] == "true"
+
+
+def test_yaml_config_seeds_websocket_health_with_primary_precedence(monkeypatch):
+    for key in (
+        "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+        "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    seeded = _apply_yaml_config(
+        {},
+        {
+            "websocket_liveness_interval_seconds": 11,
+            "liveness_interval_seconds": 99,
+            "websocket_liveness_failure_threshold": 2,
+            "websocket_heartbeat_ack_max_age_seconds": 75,
+            "websocket_max_latency_seconds": 30,
+        },
+    )
+
+    assert os.environ["HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS"] == "11"
+    assert os.environ["HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"] == "2"
+    assert seeded == {
+        "websocket_liveness_interval_seconds": 11,
+        "websocket_liveness_failure_threshold": 2,
+        "websocket_heartbeat_ack_max_age_seconds": 75,
+        "websocket_max_latency_seconds": 30,
+    }
+
+
+def test_yaml_config_bridges_nested_discord_extra_websocket_health(monkeypatch):
+    for key in (
+        "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
+        "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    _apply_yaml_config(
+        {"platforms": {"discord": {"extra": {
+            "websocket_liveness_interval_seconds": 13,
+            "websocket_liveness_failure_threshold": 4,
+        }}}},
+        {"extra": {
+            "websocket_liveness_interval_seconds": 13,
+            "websocket_liveness_failure_threshold": 4,
+        }},
+    )
+
+    assert os.environ["HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS"] == "13"
+    assert os.environ["HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"] == "4"

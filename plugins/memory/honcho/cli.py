@@ -510,21 +510,26 @@ def _ensure_sdk_installed() -> bool:
         pass
 
     print("  honcho-ai is not installed.")
-    answer = _prompt("Install it now? (honcho-ai>=2.0.1)", default="y")
+    answer = _prompt("Install it now? (honcho-ai==2.2.0)", default="y")
     if answer.lower() not in {"y", "yes"}:
-        print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
+        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
         return False
 
     print("  Installing honcho-ai...", flush=True)
-    from hermes_cli.tools_config import _pip_install
+    # Environment-aware install: sealed hosted venvs redirect to the durable
+    # data-volume target instead of writing to /opt/hermes (NS-605).
+    from tools.lazy_deps import install_specs
 
-    result = _pip_install(["honcho-ai>=2.0.1"])
-    if result.returncode == 0:
+    result = install_specs(["honcho-ai==2.2.0"])
+    if result.ok:
         print("  Installed.\n")
         return True
+    elif result.blocked:
+        print(f"  Cannot install: {result.reason}\n")
+        return False
     else:
         print(f"  Install failed:\n{(result.stderr or '').strip()}")
-        print("  Run manually: uv pip install 'honcho-ai>=2.0.1'\n")
+        print("  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
         return False
 
 
@@ -620,7 +625,7 @@ def cmd_setup(args) -> None:
                 print("\n  No local JWT set. Local no-auth ready.")
     use_oauth = False
     if not is_local:
-        # --- Cloud: OAuth (browser) or API key ---
+        # --- Cloud: OAuth (browser), device code, or API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
 
         # Detect an existing OAuth grant so re-running setup reflects it instead
@@ -628,15 +633,88 @@ def cmd_setup(args) -> None:
         from plugins.memory.honcho.oauth import OAuthCredential
         existing_oauth = OAuthCredential.from_host_block(hermes_host)
 
+        device_available = _device_login_available()
+        is_remote, can_browse = _headless()
+
         print("\n  Auth method:")
         if existing_oauth is not None:
             print(f"    (currently connected via OAuth — client {existing_oauth.client_id})")
-        print("    oauth  -- sign in via browser (recommended)")
+        print("    oauth  -- sign in via browser on this machine (recommended)")
+        if device_available:
+            print("    device -- device code: approve from a browser on another machine (SSH / headless)")
         print("    apikey -- paste an API key from https://app.honcho.dev")
-        method = _prompt("OAuth or API key?", default="oauth").strip().lower()
-        use_oauth = method in {"oauth", "o"}
 
-        if use_oauth:
+        default_method = "oauth"
+        if is_remote or not can_browse:
+            if device_available:
+                print("  (no usable local browser detected — device code recommended)")
+                default_method = "device"
+            else:
+                print("  (no usable local browser detected — browser sign-in may need an SSH tunnel to 127.0.0.1:8765)")
+        prompt_label = "oauth, device, or apikey?" if device_available else "OAuth or API key?"
+        method = _prompt(prompt_label, default=default_method).strip().lower()
+        use_oauth = method in {"oauth", "o"}
+        use_device = device_available and method in {"device", "d"}
+
+        if use_device:
+            from plugins.memory.honcho.oauth_flow import (
+                AccessDenied,
+                AuthorizationTimeout,
+                DeviceCode,
+                DeviceCodeExpired,
+                DeviceFlowError,
+                authorize_via_device_code,
+            )
+
+            def _show(device: DeviceCode) -> None:
+                print("\n  To connect, on any device with a browser:")
+                print(f"\n    1. Open   {device.verification_uri}")
+                print(f"    2. Enter  {device.user_code}")
+                print(f"\n  Or open directly:\n\n    {device.verification_uri_complete}\n")
+                mins = max(1, device.expires_in // 60)
+                print(f"  Waiting for approval (expires in {mins} min, Ctrl-C to cancel) ", end="", flush=True)
+
+            def _open_local(url: str) -> None:
+                import webbrowser
+
+                webbrowser.open(url)
+
+            print("\n  Requesting device code…")
+            try:
+                cred = authorize_via_device_code(
+                    config_path=write_path,
+                    source="hermes-cli",
+                    apply_config=False,
+                    display=_show,
+                    open_url=_open_local if can_browse and not is_remote else None,
+                    on_poll=lambda: print(".", end="", flush=True),
+                )
+            except KeyboardInterrupt:
+                print("\n  Cancelled. Re-run 'hermes honcho setup' to try again.\n")
+                return
+            except (AuthorizationTimeout, DeviceCodeExpired):
+                print("\n  Device code expired before approval.")
+                print("  Re-run 'hermes honcho setup' to get a new code.\n")
+                return
+            except AccessDenied:
+                print("\n  Sign-in was denied on the approval page.")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            except DeviceFlowError as e:
+                if e.error == "http_429":
+                    print("\n  Too many device-code requests — wait a minute and re-run setup.\n")
+                else:
+                    print(f"\n  Device sign-in failed: {e}")
+                    print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            except Exception as e:
+                print(f"\n  Device sign-in failed: {e}")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            print(" approved")
+            _apply_grant_to_host(hermes_host, cred)
+            print("  Authorized — token saved. Let's finish configuring.\n")
+        elif use_oauth:
             # Sign in now, up front — the browser link is the whole point, so
             # don't bury it behind the identity prompts. The grant's tokens are
             # merged into the in-memory cfg so the wizard's final save preserves
@@ -661,11 +739,7 @@ def cmd_setup(args) -> None:
                 print(f"  OAuth sign-in failed: {e}")
                 print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
                 return
-            hermes_host["apiKey"] = cred.access_token
-            hermes_host["oauth"] = cred.oauth_block()
-            # Default the peer prompt to the name entered at consent.
-            if cred.consent_peer_name:
-                hermes_host["peerName"] = cred.consent_peer_name
+            _apply_grant_to_host(hermes_host, cred)
             print("  Authorized — token saved. Let's finish configuring.\n")
         else:
             current_key = cfg.get("apiKey", "")
@@ -974,6 +1048,35 @@ def cmd_setup(args) -> None:
     print("    hermes honcho map <name> -- map this directory to a session name\n")
 
 
+def _device_login_available() -> bool:
+    """Whether the resolved host offers the RFC 8628 device grant. Fails closed."""
+    try:
+        from plugins.memory.honcho.oauth_flow import resolve_endpoints, supports_device_login
+
+        return supports_device_login(resolve_endpoints())
+    except Exception:
+        return False
+
+
+def _headless() -> tuple[bool, bool]:
+    """(is_remote, can_open_browser) — degrades safely if hermes_cli internals move."""
+    try:
+        from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session
+
+        return _is_remote_session(), _can_open_graphical_browser()
+    except Exception:
+        return False, True
+
+
+def _apply_grant_to_host(hermes_host: dict, cred) -> None:
+    """Store an OAuth grant on the host block; the wizard's final save persists it."""
+    hermes_host["apiKey"] = cred.access_token
+    hermes_host["oauth"] = cred.oauth_block()
+    # Default the peer prompt to the name entered at consent.
+    if cred.consent_peer_name:
+        hermes_host["peerName"] = cred.consent_peer_name
+
+
 def _active_profile_name() -> str:
     """Return the active Hermes profile name (respects --target-profile override)."""
     if _profile_override:
@@ -1099,7 +1202,7 @@ def cmd_status(args) -> None:
     print(f"  Recall mode:    {hcfg.recall_mode}")
     print(f"  Context budget: {hcfg.context_tokens or '(uncapped)'} tokens")
     raw = getattr(hcfg, "raw", None) or {}
-    dialectic_cadence = raw.get("dialecticCadence") or 1
+    dialectic_cadence = getattr(hcfg, "dialectic_cadence", None) or raw.get("dialecticCadence") or 1
     print(f"  Dialectic cad:  every {dialectic_cadence} turn{'s' if dialectic_cadence != 1 else ''}")
     reasoning_cap = raw.get("reasoningLevelCap") or hcfg.reasoning_level_cap
     heuristic_on = "on" if hcfg.reasoning_heuristic else "off"

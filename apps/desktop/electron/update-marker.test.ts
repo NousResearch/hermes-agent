@@ -14,9 +14,10 @@
 
 import fs from 'fs'
 import assert from 'node:assert/strict'
-import test from 'node:test'
 import os from 'os'
 import path from 'path'
+
+import { test } from 'vitest'
 
 import {
   isPidAlive,
@@ -40,6 +41,7 @@ const ALIVE: typeof process.kill = () => true // injected kill that "succeeds" =
 
 const DEAD: typeof process.kill = () => {
   const err = new Error('no such process')
+
   ;(err as any).code = 'ESRCH'
   throw err
 }
@@ -93,6 +95,7 @@ test('isPidAlive: own pid is alive, impossible pid is dead', () => {
 test('isPidAlive: EPERM counts as alive (process owned by another user)', () => {
   const eperm = () => {
     const err = new Error('operation not permitted')
+
     ;(err as any).code = 'EPERM'
     throw err
   }

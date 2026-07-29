@@ -5,7 +5,8 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 ## Requirements
 
 - `pip install supermemory`
-- Supermemory API key from [app.supermemory.ai/integrations?connect=hermes](http://app.supermemory.ai/integrations?connect=hermes)
+- Hosted: API key from [app.supermemory.ai/integrations?connect=hermes](http://app.supermemory.ai/integrations?connect=hermes)
+- Self-hosted: a running [Supermemory local](https://supermemory.ai/docs/self-hosting/overview) server and the API key it prints on first boot
 
 ## Setup
 
@@ -20,12 +21,32 @@ hermes config set memory.provider supermemory
 echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 ```
 
+For a fully self-hosted setup, start Supermemory local and note the API key it
+prints on first boot:
+
+```bash
+npx supermemory local
+```
+
+Before running `hermes memory setup`, add the local endpoint to
+`$HERMES_HOME/supermemory.json`:
+
+```json
+{
+  "base_url": "http://localhost:6767"
+}
+```
+
+Then run `hermes memory setup` and enter the local server's API key. Configuring
+the endpoint first ensures the setup connection probe also stays local.
+
 ## Config
 
 Config file: `$HERMES_HOME/supermemory.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `base_url` | `https://api.supermemory.ai` | API endpoint for hosted or self-hosted Supermemory. Takes priority over `SUPERMEMORY_BASE_URL`. |
 | `container_tag` | `hermes` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags (e.g. `hermes-{identity}` → `hermes-coder`). |
 | `auto_recall` | `true` | Inject relevant memory context before turns |
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
@@ -41,7 +62,12 @@ Config file: `$HERMES_HOME/supermemory.json`
 | Variable | Description |
 |----------|-------------|
 | `SUPERMEMORY_API_KEY` | API key (required) |
+| `SUPERMEMORY_BASE_URL` | Compatibility fallback for the API endpoint when `base_url` is not configured |
 | `SUPERMEMORY_CONTAINER_TAG` | Override container tag (takes priority over config file) |
+
+Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` →
+`https://api.supermemory.ai`. Hermes resolves it once and uses the same endpoint
+for SDK operations, setup/status probes, and full-session conversation ingest.
 
 ## Tools
 
@@ -69,6 +95,7 @@ When enabled, Hermes can:
 - prefetch relevant memory context before each turn
 - buffer the full conversation and ingest it as **one session** at session end (or on `/reset`, branch, compression, or shutdown)
 - ingest the full session to the conversations endpoint for richer profile/graph updates
+- route every SDK, probe, and conversation-ingest request through the configured hosted or self-hosted endpoint
 - expose explicit tools for search, store, forget, and profile access
 
 The session is written once via the conversations endpoint, which drives Supermemory's entity extraction and profile building while keeping a clean, retrievable full transcript.

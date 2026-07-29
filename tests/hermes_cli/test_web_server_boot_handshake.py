@@ -3,13 +3,16 @@ Integration tests for the desktop boot handshake fix (PR #50231 / issue #50209).
 
 Simulates a slow hermes_cli.gateway import (15-30 s on a fresh Windows install
 with Defender scanning every new .pyc) by patching the two helpers that touch
-the blocking import and measuring event-loop freedom + response latency.
+the blocking import and measuring response latency.
 
 Three scenarios are covered:
 
-1. _lifespan fire-and-forget: patched _warm_gateway_module sleeps N seconds in
-   a thread; TestClient startup must complete in << N seconds (event loop not
-   blocked, HERMES_DASHBOARD_READY would fire immediately).
+1. _lifespan synchronous warmup: patched _warm_gateway_module sleeps N seconds;
+   TestClient startup blocks for >= N seconds (intentional — see #73083/#73291:
+   the import doesn't release the GIL on Windows + Python 3.11, so
+   run_in_executor still froze the event loop. Absorbing the cost before the
+   lifespan yield ensures the server socket doesn't accept probes until the
+   import is complete).
 
 2. get_status run_in_executor: patched _resolve_restart_drain_timeout sleeps N
    seconds in a thread; a concurrent fast endpoint (/api/version) must respond
@@ -53,15 +56,16 @@ def _make_slow_drain(seconds: float):
 
 
 # ---------------------------------------------------------------------------
-# Test 1 — _lifespan fire-and-forget does not block the event loop
+# Test 1 — _lifespan synchronous warmup blocks startup (intentional)
 # ---------------------------------------------------------------------------
 
-def test_lifespan_warmup_is_nonblocking():
+def test_lifespan_warmup_is_synchronous():
     """
-    _warm_gateway_module runs in an executor (fire-and-forget).
-    Even if it sleeps for SLOW_SECONDS, TestClient startup must complete
-    in well under that time — proving the event loop was never blocked and
-    HERMES_DASHBOARD_READY would have fired without delay.
+    _warm_gateway_module runs synchronously before the lifespan yield (#73083).
+    Startup blocks for at least SLOW_SECONDS — this is intentional: on Windows
+    + Python 3.11 the import doesn't release the GIL, so run_in_executor still
+    froze the event loop. Absorbing the cost before the yield ensures probes
+    arrive after the import is complete.
     """
     from fastapi.testclient import TestClient
 
@@ -70,13 +74,13 @@ def test_lifespan_warmup_is_nonblocking():
         with TestClient(web_server_mod.app, raise_server_exceptions=False) as _client:
             startup_ms = (time.perf_counter() - t0) * 1000
 
-    # Startup must complete in under half of SLOW_SECONDS (generous margin).
-    # If the import were synchronous, startup would block for >= SLOW_SECONDS.
-    threshold_ms = (SLOW_SECONDS * 1000) / 2
-    assert startup_ms < threshold_ms, (
-        f"_lifespan blocked the event loop: startup took {startup_ms:.0f} ms "
+    # Startup must block for at least SLOW_SECONDS (the import runs synchronously).
+    # If startup were faster, the import would still be fire-and-forget (old behavior).
+    threshold_ms = (SLOW_SECONDS * 1000) * 0.8
+    assert startup_ms >= threshold_ms, (
+        f"_lifespan did not block for the warmup import: startup took {startup_ms:.0f} ms "
         f"but slow import is {SLOW_SECONDS * 1000:.0f} ms — "
-        f"fire-and-forget is not working."
+        f"warmup is not synchronous."
     )
 
 

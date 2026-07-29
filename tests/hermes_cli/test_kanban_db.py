@@ -2363,6 +2363,175 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
     assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
 
 
+def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
+    """Completion artifacts from scratch workspaces survive workspace cleanup."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="render chart")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        artifact = ws / "chart.png"
+        artifact.write_bytes(b"png-bytes")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": [str(artifact)]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        persisted = Path(completed.payload["artifacts"][0])
+        run = kb.latest_run(conn, t)
+
+    assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert persisted.exists(), "artifact copy should survive scratch cleanup"
+    assert persisted.parent == kb.task_attachments_dir(t)
+    assert persisted.name == "chart.png"
+    assert persisted.read_bytes() == b"png-bytes"
+    assert str(persisted) != str(artifact)
+    assert run is not None
+    assert run.metadata["artifacts"] == [str(persisted)]
+    with kb.connect() as conn:
+        attachments = kb.list_attachments(conn, t)
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("chart.png", str(persisted.resolve()))
+    ]
+
+
+def test_complete_task_rejects_missing_declared_scratch_artifact(kanban_home):
+    """A declared scratch deliverable must not disappear behind a false Done."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="missing report")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        missing = ws / "report.md"
+
+        with pytest.raises(kb.ArtifactPreservationError, match="unavailable"):
+            kb.complete_task(
+                conn,
+                t,
+                result="report complete",
+                metadata={"artifacts": [str(missing)]},
+            )
+
+        assert kb.get_task(conn, t).status == "ready"
+        assert kb.list_attachments(conn, t) == []
+    assert ws.exists(), "failed completion must keep scratch available for retry"
+
+
+def test_complete_task_preserves_legacy_artifact_path_from_summary(kanban_home):
+    """Summary-only workers keep the file they tell the user was delivered."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="legacy report")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        report = ws / "report.md"
+        report.write_text("legacy deliverable", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            summary=f"Task complete — delivered {report}",
+        )
+        run = kb.latest_run(conn, t)
+
+    persisted = Path(run.metadata["artifacts"][0])
+    assert not ws.exists()
+    assert persisted.read_text(encoding="utf-8") == "legacy deliverable"
+    assert persisted.parent == kb.task_attachments_dir(t)
+
+
+def test_complete_task_leaves_non_scratch_artifact_paths_unchanged(
+    kanban_home,
+    tmp_path,
+):
+    """Only artifacts inside the managed scratch workspace are copied."""
+    external = tmp_path / "report.md"
+    external.write_text("keep me here", encoding="utf-8")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="external report")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": [str(external)]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        run = kb.latest_run(conn, t)
+
+    assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert external.exists()
+    assert completed.payload["artifacts"] == [str(external)]
+    assert run is not None
+    assert run.metadata["artifacts"] == [str(external)]
+
+
+def test_complete_task_persists_duplicate_scratch_artifact_names(kanban_home):
+    """Scratch artifact persistence does not overwrite duplicate basenames."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="render reports")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        first = ws / "a" / "report.txt"
+        second = ws / "b" / "report.txt"
+        first.parent.mkdir(parents=True)
+        second.parent.mkdir(parents=True)
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": [str(first), str(second)]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        persisted = [Path(p) for p in completed.payload["artifacts"]]
+
+    assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert [p.name for p in persisted] == ["report.txt", "report_1.txt"]
+    assert [p.read_text(encoding="utf-8") for p in persisted] == ["first", "second"]
+    assert all(p.parent == kb.task_attachments_dir(t) for p in persisted)
+
+
+def test_complete_task_persists_board_scratch_artifacts_to_board_attachments(kanban_home):
+    """Board scratch artifacts are copied under that board's attachment root."""
+    kb.create_board("work-proj")
+
+    with kb.connect(board="work-proj") as conn:
+        t = kb.create_task(conn, title="board chart", board="work-proj")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task, board="work-proj")
+        kb.set_workspace_path(conn, t, ws)
+        artifact = ws / "chart.png"
+        artifact.write_bytes(b"board-png")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": [str(artifact)]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        persisted = Path(completed.payload["artifacts"][0])
+
+    assert not ws.exists(), "board scratch workspace should still be cleaned up"
+    assert persisted.exists()
+    assert persisted.parent == kb.task_attachments_dir(t, board="work-proj")
+
+
 def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):
     """A scratch task with a user path outside the workspaces root must NOT be deleted (#28818).
 
@@ -2927,16 +3096,22 @@ class TestSharedBoardPaths:
         assert kb.kanban_db_path() == default_home / "kanban.db"
         assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
 
-    def test_dispatcher_spawn_injects_kanban_db_and_workspaces_root(
+    def test_dispatcher_spawn_injects_kanban_paths_without_stale_session(
         self, tmp_path, monkeypatch
     ):
-        # The dispatcher's `_default_spawn` must inject HERMES_KANBAN_DB
-        # and HERMES_KANBAN_WORKSPACES_ROOT into the worker env so the
-        # worker converges on the dispatcher's paths even when the
-        # `-p <profile>` flag rewrites HERMES_HOME.
+        # The dispatcher must pin board paths while stripping any unrelated
+        # HERMES_SESSION_* identity inherited from the long-lived gateway.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         self._set_home(monkeypatch, tmp_path, default_home)
+
+        from gateway import session_context as sc
+
+        # A dispatcher can launch before the gateway binds its first session.
+        monkeypatch.setattr(sc, "_session_context_engaged", False)
+        sc.reset_session_vars()
+        for key in sc._VAR_MAP:
+            monkeypatch.setenv(key, "stale-routing-value")
 
         captured = {}
 
@@ -2975,6 +3150,8 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        for key in sc._VAR_MAP:
+            assert key not in env
 
 
 # ---------------------------------------------------------------------------
@@ -3079,6 +3256,17 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
+    import hermes_state as _hs
+
+    # The fallback warning is deduped process-globally ("once per process per
+    # database" — _log_wal_fallback_once / _log_wal_reset_bug_once). Any earlier
+    # test in this file that opened a kanban.db already consumed the one-shot
+    # for that label, so without clearing it this test sees zero warnings and
+    # fails only when run as part of the file (it passes in isolation). Clear
+    # both dedup sets so the warning is emitted for this connect().
+    _hs._wal_fallback_warned_paths.clear()
+    _hs._wal_reset_bug_warned_paths.clear()
+
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -3096,6 +3284,9 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
+        # connect_tracked passes a tracking-augmented factory; drop it and
+        # substitute the double, which connect_tracked will re-augment.
+        kwargs.pop("factory", None)
         return real_connect(
             *args, factory=_WalBlockingConnection, **kwargs
         )
@@ -4489,11 +4680,19 @@ def test_write_txn_healthy_commit_no_exception(tmp_path):
 
 
 def test_write_txn_raises_on_truncated_file(tmp_path):
-    """A mocked smaller file size triggers the torn-extend check."""
+    """A mocked smaller file size triggers the torn-extend check.
+
+    The check now reads the header side via ``PRAGMA page_count`` over the
+    existing connection instead of ``open()``-ing the database file (an
+    open/close would cancel this process's POSIX locks). The on-disk side is
+    still ``stat()``, so that is what this test fakes. The invariant only
+    applies under a rollback journal — in WAL a committed page may still be
+    in the -wal file, so the main file legitimately lags.
+    """
     from hermes_cli.kanban_db import connect, write_txn
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
-    # Get actual page size so we can fake a smaller file
+    conn.execute("PRAGMA journal_mode=DELETE")
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     original_getsize = os.path.getsize
 
@@ -4503,7 +4702,9 @@ def test_write_txn_raises_on_truncated_file(tmp_path):
         return max(0, real_size - page_size)
 
     with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
-        with unittest.mock.patch("hermes_cli.kanban_db.os.path.getsize", side_effect=fake_getsize):
+        with unittest.mock.patch(
+            "hermes_cli.sqlite_safe_read.os.path.getsize", side_effect=fake_getsize
+        ):
             with write_txn(conn) as c:
                 c.execute(
                     "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
@@ -4548,31 +4749,39 @@ def test_connect_sets_wal_autocheckpoint_100(tmp_path):
 
 
 def test_write_txn_check_reads_correct_header_fields(tmp_path):
-    """Synthetic DB file with mismatched header page_count triggers the check."""
+    """A genuinely truncated DB is never reported as passing the invariant.
+
+    The check no longer opens the database file to read header bytes (that
+    open/close would cancel this process's POSIX advisory locks — the
+    corruption route in sqlite.org/howtocorrupt.html §2.2). It asks SQLite for
+    ``page_count`` instead. On a truncated file SQLite refuses that pragma, so
+    the helper reports "not healthy" rather than a page-count mismatch; either
+    way the file must never come back clean.
+    """
     import struct
-    from hermes_cli.kanban_db import connect, _check_file_length_invariant
+    from hermes_cli.kanban_db import connect
+    from hermes_cli.sqlite_safe_read import file_length_matches_header
+
     db = tmp_path / "synthetic.db"
     conn = connect(db_path=db)
+    conn.execute("PRAGMA journal_mode=DELETE")
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     conn.close()
-    # Now corrupt the file: claim N pages but truncate to N-1 pages
+
     with open(db, "rb") as f:
         data = bytearray(f.read())
-    # Read current page_count from header bytes 28-31
     real_page_count = struct.unpack(">I", data[28:32])[0]
     if real_page_count < 2:
-        # Need at least 2 pages to fake a truncation
         pytest.skip("DB too small for synthetic truncation test")
-    # Truncate to N-1 pages
     truncated = bytes(data[: (real_page_count - 1) * page_size])
     with open(db, "wb") as f:
         f.write(truncated)
-    # Now open and check — should raise
-    # We can't use connect() because _validate_sqlite_header may block; use a raw connection
+
     raw_conn = sqlite3.connect(str(db), isolation_level=None)
-    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
-        _check_file_length_invariant(raw_conn)
-    raw_conn.close()
+    try:
+        assert file_length_matches_header(raw_conn) is not True
+    finally:
+        raw_conn.close()
 
 
 # ---------------------------------------------------------------------------

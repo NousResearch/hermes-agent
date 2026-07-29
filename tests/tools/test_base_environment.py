@@ -6,7 +6,7 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
@@ -22,6 +22,41 @@ class _TestableEnv(BaseEnvironment):
         pass
 
 
+class TestBoundedOutputCollector:
+    def test_large_stream_retains_bounded_head_and_tail(self):
+        collector = _BoundedOutputCollector(1_000)
+        collector.append("HEAD-SENTINEL\n")
+        for _ in range(2_000):
+            collector.append("x" * 4_096)
+        collector.append("\nTAIL-SENTINEL")
+
+        rendered = collector.render()
+
+        assert collector.total_chars > 8_000_000
+        assert collector.buffered_chars <= 1_000
+        assert len(rendered) <= 1_000
+        assert rendered.startswith("HEAD-SENTINEL")
+        assert rendered.endswith("TAIL-SENTINEL")
+        assert "[OUTPUT TRUNCATED" in rendered
+
+    def test_small_stream_is_unchanged(self):
+        collector = _BoundedOutputCollector(100)
+        collector.append("hello ")
+        collector.append("world")
+
+        assert collector.render() == "hello world"
+
+    def test_required_status_suffix_stays_inside_limit(self):
+        collector = _BoundedOutputCollector(120)
+        collector.append("A" * 10_000)
+
+        rendered = collector.render(suffix="\n[Command timed out after 1s]")
+
+        assert len(rendered) <= 120
+        assert rendered.endswith("[Command timed out after 1s]")
+        assert "[OUTPUT TRUNCATED" in rendered
+
+
 class TestWrapCommand:
     def test_basic_shape(self):
         env = _TestableEnv()
@@ -32,8 +67,9 @@ class TestWrapCommand:
         assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
-        assert "export -p >" in wrapped
-        assert "pwd -P >" in wrapped
+        assert "export -p" in wrapped and "> " in wrapped
+        # cwd travels via the stdout marker only — no temp-file write.
+        assert "pwd -P >" not in wrapped
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped
 
@@ -105,14 +141,15 @@ class TestAtomicSnapshotWrite:
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
         # Env dump goes to a temp file, not directly over the live snapshot.
-        assert "export -p > " in wrapped
+        assert "export -p" in wrapped and "> " in wrapped
         assert ".tmp." in wrapped
         # Then an atomic rename onto the real snapshot path.
         assert "mv -f " in wrapped
         # The env-dump must NOT write the live snapshot in place (the bug).
         snap = env._snapshot_path
-        assert f"export -p > {snap} " not in wrapped
-        assert f"export -p > '{snap}'" not in wrapped
+        assert f"> {snap} " not in wrapped
+        assert f"> '{snap}'" not in wrapped
+        assert f"> {snap}\n" not in wrapped
 
     def test_temp_path_uses_bashpid_not_dollardollar(self):
         """The temp name MUST use ``$BASHPID`` (the real subshell PID), not
@@ -150,7 +187,7 @@ class TestAtomicSnapshotWrite:
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "export -p > " in wrapped and "&& mv -f " in wrapped
+        assert "export -p" in wrapped and "> " in wrapped and "&& mv -f " in wrapped
         assert "rm -f " in wrapped  # temp cleanup on failure
 
     def test_init_session_bootstrap_also_atomic_and_bashpid(self):
@@ -161,8 +198,8 @@ class TestAtomicSnapshotWrite:
         captured = {}
 
         def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["cmd"] = cmd_string
-            raise RuntimeError("stop after capture")  # we only need the script
+            captured.setdefault("cmd", cmd_string)  # only the bootstrap; ignore the failure-path probe
+            raise RuntimeError("stop after capture")
 
         env._run_bash = fake_run_bash  # type: ignore[assignment]
         try:
@@ -181,14 +218,14 @@ class TestAtomicSnapshotWrite:
 
         assert "umask 077" in wrapped
         assert wrapped.index("eval 'echo hi'") < wrapped.index("umask 077")
-        assert wrapped.index("umask 077") < wrapped.index("export -p >")
+        assert wrapped.index("umask 077") < wrapped.index("export -p")
 
     def test_init_session_bootstrap_uses_private_umask(self):
         env = _TestableEnv()
         captured = {}
 
         def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["cmd"] = cmd_string
+            captured.setdefault("cmd", cmd_string)  # only the bootstrap; ignore the failure-path probe
             raise RuntimeError("stop after capture")
 
         env._run_bash = fake_run_bash  # type: ignore[assignment]
@@ -198,7 +235,7 @@ class TestAtomicSnapshotWrite:
             pass
         boot = captured.get("cmd", "")
         assert "umask 077" in boot
-        assert boot.index("umask 077") < boot.index("export -p >")
+        assert boot.index("umask 077") < boot.index("export -p")
 
 
 class TestAtomicSnapshotConcurrencyBehavioral:
@@ -322,7 +359,9 @@ class TestSnapshotFileModes:
 
             assert stat.S_IMODE(user_file.stat().st_mode) == 0o644
             assert stat.S_IMODE(Path(env._snapshot_path).stat().st_mode) == 0o600
-            assert stat.S_IMODE(Path(env._cwd_file).stat().st_mode) == 0o600
+            # The cwd temp file is no longer written (cwd travels via the
+            # stdout marker for every backend) — nothing to leak on disk.
+            assert not Path(env._cwd_file).exists()
         finally:
             os.umask(old_umask)
 
@@ -436,6 +475,41 @@ class TestInitSessionFailure:
 
         assert len(calls) == 1
         assert calls[0]["login"] is True
+
+    def test_prefer_nonlogin_when_login_bash_is_dead(self):
+        """Login snapshot failure + working non-login probe → don't use bash -l."""
+        env = _TestableEnv()
+
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.stdout = iter([])
+            if login:
+                mock.returncode = 1
+            else:
+                mock.returncode = 0
+            return mock
+
+        env._run_bash = mock_run_bash
+        env.init_session()
+
+        assert env._snapshot_ready is False
+        assert env._prefer_nonlogin is True
+
+        calls = []
+
+        def track_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            calls.append({"login": login})
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            mock.stdout = iter([])
+            return mock
+
+        env._run_bash = track_run_bash
+        env.execute("echo test")
+
+        assert calls[0]["login"] is False
 
 
 class TestCwdMarker:

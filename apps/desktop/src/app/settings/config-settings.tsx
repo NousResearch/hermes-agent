@@ -1,30 +1,39 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import type { ChangeEvent, ReactNode } from 'react'
+import type { ChangeEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
 import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { cn } from '@/lib/utils'
+import { triggerHaptic } from '@/lib/haptics'
+import {
+  $dataUrlReadMaxMb,
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB,
+  refreshDataUrlReadMaxMb,
+  setDataUrlReadMaxMb
+} from '@/store/data-url-read-max'
+import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
+import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
-import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
-import { fieldCopyForSchemaKey } from './field-copy'
-import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
+import { ConfigField } from './config-field'
+import { enumOptionsFor, getNested, isExternalMemoryProvider, sectionFieldEntries, setNested } from './helpers'
 import { MemoryConnect } from './memory/connect'
+import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
-import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
-import { ProviderConfigPanel } from './provider-config-panel'
+import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { QuickEntrySettings } from './quick-entry-settings'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -46,172 +55,6 @@ export function voiceFieldVisible(key: string, config: HermesConfigRecord): bool
   return provider === String(getNested(config, `${domain}.provider`) ?? '')
 }
 
-function ConfigField({
-  schemaKey,
-  schema,
-  value,
-  enumOptions,
-  optionLabels,
-  onChange,
-  descriptionExtra
-}: {
-  schemaKey: string
-  schema: ConfigFieldSchema
-  value: unknown
-  enumOptions?: string[]
-  optionLabels?: Record<string, string>
-  onChange: (value: unknown) => void
-  descriptionExtra?: ReactNode
-}) {
-  const { t } = useI18n()
-  const c = t.settings.config
-
-  const label =
-    fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
-    fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
-    prettyName(schemaKey.split('.').pop() ?? schemaKey)
-
-  const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
-
-  const rawDescription = (
-    fieldCopyForSchemaKey(t.settings.fieldDescriptions, schemaKey) ??
-    fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, schemaKey) ??
-    schema.description ??
-    ''
-  ).trim()
-
-  const normalizedDesc = normalize(rawDescription)
-
-  const description =
-    rawDescription && normalizedDesc !== normalize(label) && normalizedDesc !== normalize(schemaKey)
-      ? rawDescription
-      : undefined
-
-  const descriptionNode: ReactNode = descriptionExtra ? (
-    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-      {description}
-      {descriptionExtra}
-    </span>
-  ) : (
-    description
-  )
-
-  const row = (action: ReactNode, wide = false) => (
-    <ListRow action={action} description={descriptionNode} title={label} wide={wide} />
-  )
-
-  if (schema.type === 'boolean') {
-    return row(
-      <div className="flex items-center justify-end">
-        <Switch checked={Boolean(value)} onCheckedChange={onChange} />
-      </div>
-    )
-  }
-
-  const selectOptions = enumOptions ?? (schema.type === 'select' ? (schema.options ?? []).map(String) : undefined)
-
-  if (selectOptions) {
-    return row(
-      <Select
-        onValueChange={next => onChange(next === EMPTY_SELECT_VALUE ? '' : next)}
-        value={String(value ?? '') || EMPTY_SELECT_VALUE}
-      >
-        <SelectTrigger className={CONTROL_TEXT}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {selectOptions.map(option => (
-            <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
-              {option
-                ? (optionLabels?.[option] ?? prettyName(option))
-                : schemaKey === 'display.personality'
-                  ? c.none
-                  : c.noneParen}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    )
-  }
-
-  if (schema.type === 'number') {
-    return row(
-      <Input
-        className={CONTROL_TEXT}
-        onChange={e => {
-          const raw = e.target.value
-          const n = raw === '' ? 0 : Number(raw)
-
-          if (!Number.isNaN(n)) {
-            onChange(n)
-          }
-        }}
-        placeholder={c.notSet}
-        type="number"
-        value={value === undefined || value === null ? '' : String(value)}
-      />
-    )
-  }
-
-  if (schema.type === 'list') {
-    return row(
-      <Input
-        className={CONTROL_TEXT}
-        onChange={e =>
-          onChange(
-            e.target.value
-              .split(',')
-              .map(s => s.trim())
-              .filter(Boolean)
-          )
-        }
-        placeholder={c.commaSeparated}
-        value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
-      />
-    )
-  }
-
-  if (typeof value === 'object' && value !== null) {
-    return row(
-      <Textarea
-        className={cn('min-h-28 resize-y bg-background font-mono', CONTROL_TEXT)}
-        onChange={e => {
-          try {
-            onChange(JSON.parse(e.target.value))
-          } catch {
-            /* keep last valid */
-          }
-        }}
-        placeholder={c.notSet}
-        spellCheck={false}
-        value={JSON.stringify(value, null, 2)}
-      />,
-      true
-    )
-  }
-
-  const isLong = schema.type === 'text' || String(value ?? '').length > 100
-
-  return row(
-    isLong ? (
-      <Textarea
-        className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
-        onChange={e => onChange(e.target.value)}
-        placeholder={c.notSet}
-        value={String(value ?? '')}
-      />
-    ) : (
-      <Input
-        className={CONTROL_TEXT}
-        onChange={e => onChange(e.target.value)}
-        placeholder={c.notSet}
-        value={String(value ?? '')}
-      />
-    ),
-    isLong
-  )
-}
-
 export function ConfigSettings({
   activeSectionId,
   onConfigSaved,
@@ -225,6 +68,7 @@ export function ConfigSettings({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
+  const keepAwake = useStore($keepAwake)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -245,15 +89,18 @@ export function ConfigSettings({
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
+  const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
 
   // Seed the local draft once, the first time the shared record lands.
   // Background refetches thereafter must not clobber in-progress edits.
   const configSeeded = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (loadedConfig && !configSeeded.current) {
       configSeeded.current = true
+      savedDiscoverySignatureRef.current = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(loadedConfig))
       setConfig(loadedConfig)
     }
   }, [loadedConfig])
@@ -264,6 +111,7 @@ export function ConfigSettings({
   // the pending debounced autosave is cancelled by its effect cleanup.
   useOnProfileSwitch(() => {
     configSeeded.current = false
+    savedDiscoverySignatureRef.current = undefined
     setConfig(null)
     saveVersionRef.current = 0
     setSaveVersion(0)
@@ -291,6 +139,7 @@ export function ConfigSettings({
     return () => void (cancelled = true)
   }, [])
 
+  // eslint-disable-next-line no-restricted-syntax -- autosave bookkeeping refs, not an atom mirror
   useEffect(() => {
     if (!config || saveVersion === 0) {
       return
@@ -301,12 +150,24 @@ export function ConfigSettings({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          await saveHermesConfig(config)
+          const result = await saveHermesConfig(config)
+
+          if (!result.ok) {
+            throw new Error(c.autosaveFailed)
+          }
+
           // Mirror the saved record into the shared cache so MCP/model surfaces
           // reflect the edit without their own refetch.
           setHermesConfigCache(config)
 
           if (saveVersionRef.current === v) {
+            const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(config))
+
+            if (savedDiscoverySignatureRef.current !== discoverySignature) {
+              savedDiscoverySignatureRef.current = discoverySignature
+              await scanAndRecordRepos(true)
+            }
+
             onConfigSaved?.()
           }
         } catch (err) {
@@ -328,14 +189,12 @@ export function ConfigSettings({
   }
 
   const sectionFields = useMemo(() => {
-    if (!schema) {
+    if (!schema || !config) {
       return new Map<string, [string, ConfigFieldSchema][]>()
     }
 
-    return new Map(
-      SECTIONS.map(s => [s.id, s.keys.flatMap(k => (schema[k] ? [[k, schema[k]] as [string, ConfigFieldSchema]] : []))])
-    )
-  }, [schema])
+    return sectionFieldEntries(schema, config)
+  }, [schema, config])
 
   const fields = sectionFields.get(activeSectionId) ?? []
 
@@ -419,8 +278,8 @@ export function ConfigSettings({
       )
     }
 
-    // Model keeps its shape via a skeleton (its catalog fetch is the slow part);
-    // other sections are quick config/schema reads, so a light loader is fine.
+    // Every section keeps its shape via a skeleton; model gets its bespoke one
+    // (its catalog fetch is the slow part), the rest the shared field rhythm.
     if (activeSectionId === 'model') {
       return (
         <SettingsContent>
@@ -431,7 +290,7 @@ export function ConfigSettings({
       )
     }
 
-    return <LoadingState label={c.loading} />
+    return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
   const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
@@ -443,15 +302,33 @@ export function ConfigSettings({
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
       )}
-      {visibleFields.length === 0 ? (
+      {/* Device-local desktop prefs (not config.yaml) — they live here since
+          keeping the machine awake and the global Quick Entry chord are both
+          power-user, this-computer-only knobs. */}
+      {activeSectionId === 'advanced' && (
+        <>
+          <ToggleRow
+            checked={keepAwake}
+            description={c.keepAwakeDesc}
+            label={c.keepAwakeTitle}
+            onChange={setKeepAwake}
+          />
+          <QuickEntrySettings />
+        </>
+      )}
+      {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
+          where image-attachment behavior already lives, so this sits above the
+          schema fields for that section. */}
+      {activeSectionId === 'chat' ? <AttachmentSizeSetting /> : null}
+      {visibleFields.length === 0 && activeSectionId !== 'chat' ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
-      ) : (
+      ) : visibleFields.length === 0 ? null : (
         <div className="grid gap-1">
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
                 descriptionExtra={
-                  key === 'memory.provider' && Boolean(getNested(config, key)) ? (
+                  key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                     <MemoryConnect provider={String(getNested(config, key))} />
                   ) : undefined
                 }
@@ -466,8 +343,8 @@ export function ConfigSettings({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
-              {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
-                <ProviderConfigPanel provider={String(getNested(config, key))} />
+              {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+                <ProviderConfigPanel key={String(getNested(config, key))} provider={String(getNested(config, key))} />
               ) : null}
             </div>
           ))}
@@ -481,5 +358,75 @@ export function ConfigSettings({
         type="file"
       />
     </SettingsContent>
+  )
+}
+
+/** Free-form MB cap for Desktop's data-URL attach/preview path (main-process). */
+function AttachmentSizeSetting() {
+  const { t } = useI18n()
+  const c = t.settings.config
+  const stored = useStore($dataUrlReadMaxMb)
+  const [draft, setDraft] = useState(String(stored))
+
+  useEffect(() => {
+    void refreshDataUrlReadMaxMb()
+  }, [])
+
+  useEffect(() => {
+    setDraft(String(stored))
+  }, [stored])
+
+  const commit = () => {
+    // An empty draft means "reset to the default", not the 1 MB floor
+    // (Number('') === 0 would otherwise clamp down to the floor).
+    const applied = draft.trim() === '' ? DATA_URL_READ_DEFAULT_MAX_MB : clampDataUrlReadMaxMb(draft)
+
+    // Unchanged: snap the draft back to the stored value and skip the
+    // pointless IPC write + haptic.
+    if (applied === stored) {
+      setDraft(String(stored))
+
+      return
+    }
+
+    void setDataUrlReadMaxMb(applied).then(next => {
+      setDraft(String(next))
+
+      // On a bridge write failure the store keeps the old value; only
+      // celebrate when the new cap actually landed.
+      if (next === applied) {
+        triggerHaptic('selection')
+      }
+    })
+  }
+
+  return (
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            aria-label={c.attachmentSizeLabel}
+            className="w-20"
+            inputMode="numeric"
+            max={DATA_URL_READ_MAX_MAX_MB}
+            min={DATA_URL_READ_MIN_MAX_MB}
+            onBlur={commit}
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              }
+            }}
+            type="number"
+            value={draft}
+          />
+          <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {c.attachmentSizeUnit}
+          </span>
+        </div>
+      }
+      description={c.attachmentSizeDesc}
+      title={c.attachmentSizeTitle}
+    />
   )
 }

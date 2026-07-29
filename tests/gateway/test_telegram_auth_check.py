@@ -74,7 +74,7 @@ def _make_message(text="hello", *, from_user_id=111, chat_id=-100, chat_type="gr
 @pytest.mark.asyncio
 async def test_unauthorized_user_blocked_before_event_building():
     """Unauthorized user's message should be blocked before _build_message_event."""
-    adapter = _make_adapter(allow_from=["222"])  # Only user 222 allowed
+    adapter = _make_adapter(group_allow_from=["222"])  # Only user 222 allowed in groups
 
     build_called = False
     original_build = adapter._build_message_event
@@ -88,7 +88,7 @@ async def test_unauthorized_user_blocked_before_event_building():
 
     update = SimpleNamespace(
         update_id=1,
-        message=_make_message(from_user_id=111),  # User 111 NOT in allow_from
+        message=_make_message(from_user_id=111, chat_type="group"),  # User 111 NOT in group_allow_from
         effective_message=None,
     )
 
@@ -100,7 +100,7 @@ async def test_unauthorized_user_blocked_before_event_building():
 @pytest.mark.asyncio
 async def test_authorized_user_processed_normally():
     """Authorized user's message should pass the auth check and build an event."""
-    adapter = _make_adapter(allow_from=["111"])
+    adapter = _make_adapter(group_allow_from=["111"])
 
     build_called = False
     original_build = adapter._build_message_event
@@ -114,7 +114,7 @@ async def test_authorized_user_processed_normally():
 
     update = SimpleNamespace(
         update_id=1,
-        message=_make_message(from_user_id=111),
+        message=_make_message(from_user_id=111, chat_type="group"),
         effective_message=None,
     )
 
@@ -155,12 +155,12 @@ async def test_channel_post_passes_auth():
 @pytest.mark.asyncio
 async def test_command_from_unauthorized_user_blocked():
     """Commands from unauthorized users should be blocked."""
-    adapter = _make_adapter(allow_from=["222"])
+    adapter = _make_adapter(group_allow_from=["222"])
     adapter.handle_message = AsyncMock()
 
     update = SimpleNamespace(
         update_id=1,
-        message=_make_message(text="/start", from_user_id=111),
+        message=_make_message(text="/start", from_user_id=111, chat_type="group"),
         effective_message=None,
     )
 
@@ -172,12 +172,12 @@ async def test_command_from_unauthorized_user_blocked():
 @pytest.mark.asyncio
 async def test_command_from_authorized_user_processed():
     """Commands from authorized users should be processed."""
-    adapter = _make_adapter(allow_from=["111"])
+    adapter = _make_adapter(group_allow_from=["111"])
     adapter.handle_message = AsyncMock()
 
     update = SimpleNamespace(
         update_id=1,
-        message=_make_message(text="/start", from_user_id=111),
+        message=_make_message(text="/start", from_user_id=111, chat_type="group"),
         effective_message=None,
     )
 
@@ -189,9 +189,9 @@ async def test_command_from_authorized_user_processed():
 @pytest.mark.asyncio
 async def test_location_from_unauthorized_user_blocked():
     """Location messages from unauthorized users should be blocked."""
-    adapter = _make_adapter(allow_from=["222"])
+    adapter = _make_adapter(group_allow_from=["222"])
 
-    msg = _make_message(from_user_id=111)
+    msg = _make_message(from_user_id=111, chat_type="group")
     msg.text = None
     msg.location = SimpleNamespace(latitude=53.3498, longitude=-6.2603)
 
@@ -206,13 +206,24 @@ async def test_location_from_unauthorized_user_blocked():
 
 
 def test_is_user_authorized_from_message_allow_from():
-    """_is_user_authorized_from_message should respect adapter-level allow_from."""
+    """_is_user_authorized_from_message should respect adapter-level allow_from for DMs."""
     adapter = _make_adapter(allow_from=["111", "222"])
 
-    msg = _make_message(from_user_id=111)
+    msg = _make_message(from_user_id=111, chat_type="dm")
     assert adapter._is_user_authorized_from_message(msg) is True
 
-    msg = _make_message(from_user_id=333)
+    msg = _make_message(from_user_id=333, chat_type="dm")
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_group_allow_from():
+    """_is_user_authorized_from_message should respect adapter-level group_allow_from for groups."""
+    adapter = _make_adapter(group_allow_from=["111", "222"])
+
+    msg = _make_message(from_user_id=111, chat_type="group")
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=333, chat_type="group")
     assert adapter._is_user_authorized_from_message(msg) is False
 
 
@@ -357,7 +368,7 @@ async def test_media_from_removed_user_blocked_before_event_building(monkeypatch
 async def test_unmentioned_group_text_from_removed_user_not_observed():
     """Removed users must not persist unmentioned group text into observed context."""
     adapter = _make_adapter(
-        allow_from=["222"],
+        group_allow_from=["222"],
         allowed_chats=["-100"],
         group_allowed_chats=["-100"],
         require_mention=True,
@@ -378,7 +389,7 @@ async def test_unmentioned_group_text_from_removed_user_not_observed():
 async def test_unmentioned_group_location_from_removed_user_not_observed():
     """Removed users must not persist unmentioned group locations into observed context."""
     adapter = _make_adapter(
-        allow_from=["222"],
+        group_allow_from=["222"],
         allowed_chats=["-100"],
         group_allowed_chats=["-100"],
         require_mention=True,

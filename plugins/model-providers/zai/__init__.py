@@ -62,7 +62,7 @@ def _is_glm_5_2(model: str | None) -> bool:
 def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
     """Map Hermes reasoning effort onto GLM-5.2's native ``high``/``max``.
 
-    GLM-5.2 only supports two enabled effort levels. ``xhigh``/``max``
+    GLM-5.2 only supports two enabled effort levels. ``xhigh``/``max``/``ultra``
     request the top tier; everything else that is enabled requests ``high``
     (its minimum thinking level). When reasoning is explicitly disabled, or
     no effort preference is supplied, the server default is left untouched.
@@ -76,7 +76,7 @@ def _glm_5_2_reasoning_effort(reasoning_config: dict | None) -> str | None:
     if not effort or effort == "none":
         return None
 
-    if effort in {"xhigh", "max"}:
+    if effort in {"xhigh", "max", "ultra"}:
         return "max"
     # low / medium / minimal / high all clamp to GLM-5.2's minimum: high.
     return "high"

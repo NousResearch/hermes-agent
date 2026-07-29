@@ -43,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
@@ -99,18 +100,15 @@ def _guess_extension(data: bytes) -> str:
         return ".webp"
     if data[:4] == b"%PDF":
         return ".pdf"
-    if len(data) >= 8 and data[4:8] == b"ftyp":
-        return ".mp4"
-    if data[:4] == b"OggS":
-        return ".ogg"
-    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
-        # ``0xFF 0xFx`` is shared by MP3 and ADTS AAC. The discriminator
-        # is bits 3-1 of byte 1: ADTS has ``ID=0`` and ``layer=00`` (mask
-        # 0xF6, target 0xF0); MP3 has ``ID=1`` and ``layer`` in {01,10,11}
-        # (mask 0xF6, target in {0xF2, 0xF4, 0xF6}).
-        if (data[1] & 0xF6) == 0xF0:
-            return ".aac"
-        return ".mp3"
+    # Audio/AV containers: delegate to the shared central sniffer
+    # (tools/audio_container.py) — ONE module owns magic-byte container
+    # detection. It handles the brand/form-type disambiguations this
+    # function used to carry locally: RIFF/WAVE vs WEBP (WEBP is claimed
+    # above, before delegation), ftyp audio brands ("M4A ", "M4B ") vs
+    # video brands (isom/mp42/avc1/qt), and MP3 vs ADTS AAC sync words.
+    container = sniff_container(data)
+    if container is not None:
+        return CONTAINER_TO_EXT[container]
     if data[:2] == b"PK":
         return ".zip"
     return ".bin"
@@ -236,8 +234,16 @@ def _looks_like_e164_number(value: str) -> bool:
 
 
 def check_signal_requirements() -> bool:
-    """Check if Signal is configured (has URL and account)."""
-    return bool(os.getenv("SIGNAL_HTTP_URL") and os.getenv("SIGNAL_ACCOUNT"))
+    """Check if Signal runtime dependencies are available."""
+    return True
+
+
+def validate_signal_config(config: PlatformConfig) -> bool:
+    """Check if Signal has enough config to connect."""
+    extra = getattr(config, "extra", {}) or {}
+    http_url = (extra.get("http_url", "") or os.getenv("SIGNAL_HTTP_URL", "")).strip()
+    account = (extra.get("account", "") or os.getenv("SIGNAL_ACCOUNT", "")).strip()
+    return bool(http_url and account)
 
 
 # ---------------------------------------------------------------------------

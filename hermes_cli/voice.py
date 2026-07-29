@@ -775,6 +775,33 @@ def _continuous_on_silence() -> None:
 # ── TTS API ──────────────────────────────────────────────────────────
 
 
+def _speak_text_streaming(text: str) -> bool:
+    """Speak ``text`` via the generic streaming dispatcher; True on success.
+
+    Bridges the one-shot ``speak_text`` contract onto the shared
+    ``stream_tts_to_speaker`` pipeline (tools.tts_tool): the full reply is
+    fed as a single delta + end-of-text sentinel, and we block until the
+    pipeline's done event fires — same blocking semantics the sync path
+    has, so callers (and the mic re-arm logic in ``speak_text``) see no
+    behavioral difference beyond earlier first audio.
+
+    Returns False when playback produced nothing (caller falls back to the
+    whole-file sync path).
+    """
+    import queue as _queue
+    import threading as _threading
+
+    from tools.tts_tool import stream_tts_to_speaker
+
+    text_queue: "_queue.Queue" = _queue.Queue()
+    text_queue.put(text)
+    text_queue.put(None)  # end-of-text sentinel
+    stop_event = _threading.Event()
+    done_event = _threading.Event()
+    stream_tts_to_speaker(text_queue, stop_event, done_event)
+    return done_event.is_set()
+
+
 def speak_text(text: str) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
@@ -818,6 +845,22 @@ def speak_text(text: str) -> None:
 
     try:
         from tools.tts_tool import text_to_speech_tool
+
+        # One dispatcher, zero parallel streaming implementations (#58930):
+        # when the configured provider has a chunked streamer registered in
+        # tools.tts_streaming, route the whole reply through the same
+        # stream_tts_to_speaker pipeline the CLI voice mode uses — audio
+        # starts on sentence one instead of after full synthesis. Falls
+        # through to the legacy whole-file path when no streamer resolves.
+        try:
+            from tools.tts_streaming import resolve_streaming_provider
+            from tools.tts_tool import _load_tts_config
+
+            if resolve_streaming_provider(_load_tts_config()) is not None:
+                if _speak_text_streaming(text):
+                    return
+        except Exception as e:
+            _debug(f"speak_text: streaming dispatch unavailable ({e}); using sync path")
 
         # Shared cleaner (tools/tts_text_normalize): markdown, emoji,
         # <think> blocks, verifier footer, units, newline flattening.

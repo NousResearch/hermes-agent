@@ -416,11 +416,13 @@ def _discord_tools_loaded() -> bool:
     Returns False (safe default — keeps the stale-API disclaimer) on any
     error so a bad config can't silently promise tools the agent lacks.
     """
-    if not (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
-        return False
     try:
+        from agent.secret_scope import get_secret
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
+
+        if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
+            return False
         cfg = load_config()
         enabled = _get_platform_tools(cfg, "discord", include_default_mcp_servers=False)
         return "discord" in enabled or "discord_admin" in enabled

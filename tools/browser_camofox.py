@@ -36,6 +36,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
+from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
@@ -82,7 +83,7 @@ def _get_command_timeout() -> int:
 
 def _auth_headers() -> Dict[str, str]:
     """Return Authorization header when CAMOFOX_API_KEY is set."""
-    key = os.getenv("CAMOFOX_API_KEY", "").strip()
+    key = (get_secret("CAMOFOX_API_KEY", "") or "").strip()
     if key:
         return {"Authorization": f"Bearer {key}"}
     return {}
@@ -90,7 +91,7 @@ def _auth_headers() -> Dict[str, str]:
 
 def get_camofox_url() -> str:
     """Return the configured Camofox server URL, or empty string."""
-    return os.getenv("CAMOFOX_URL", "").rstrip("/")
+    return (get_secret("CAMOFOX_URL", "") or "").rstrip("/")
 
 
 def _config_cdp_url() -> str:

@@ -252,7 +252,12 @@ def _fetch_models_dev_from_network() -> Dict[str, Any]:
 
     Raises on network errors and on an empty/invalid registry payload.
     """
-    response = requests.get(MODELS_DEV_URL, timeout=15)
+    # Tuple (connect, read): a flat timeout=15 let a blackholed connect
+    # stall the first-turn critical path for the full 15 s. 5 s connect
+    # fails fast on unreachable hosts; 10 s read still tolerates a slow
+    # registry response (matches the OpenRouter fetch convention in
+    # agent/model_metadata.py).
+    response = requests.get(MODELS_DEV_URL, timeout=(5, 10))
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict) or not data:

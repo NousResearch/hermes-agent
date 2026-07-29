@@ -2110,6 +2110,77 @@ _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
 
+def _configured_terminal_backend() -> str:
+    """Return the configured ``terminal.backend`` name (default ``local``).
+
+    Read for DIAGNOSTICS only (#29849): script-backed cron jobs always execute
+    on the scheduler host, so when a remote/sandboxed backend is configured the
+    messages below can name the mismatch instead of leaving the operator with a
+    bare "not found". Never changes where anything runs.
+    """
+    try:
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
+        backend = terminal_cfg.get("backend") if isinstance(terminal_cfg, dict) else None
+        if backend:
+            return str(backend).strip().lower() or "local"
+    except Exception:
+        logger.debug("could not read terminal.backend for cron diagnostics", exc_info=True)
+    return "local"
+
+
+# Script paths already noted as running outside the configured backend, so a
+# frequently-firing job logs the isolation notice once per process instead of
+# once per run. Capped so a pathological job-churn loop can't grow it forever.
+_SCRIPT_HOST_NOTICES: set = set()
+_SCRIPT_HOST_NOTICES_MAX = 256
+
+
+def _script_runs_on_scheduler_host_hint(backend: Optional[str] = None) -> str:
+    """One-line explanation of the script execution contract (#29849).
+
+    Empty for a ``local`` backend, where scheduler host and terminal backend
+    are the same machine and there is nothing to explain.
+    """
+    backend = backend or _configured_terminal_backend()
+    if backend == "local":
+        return ""
+    return (
+        f" Note: script-backed cron jobs always execute on the host that ticks "
+        f"cron (this scheduler process), NOT on the configured "
+        f"terminal.backend ({backend}) — so a script written to the backend's "
+        f"filesystem by the agent is not visible here. Keep the script in this "
+        f"host's HERMES_HOME/scripts/, or drive the backend from the script "
+        f"itself."
+    )
+
+
+def _note_script_runs_outside_backend(script_path: Path, backend: str) -> None:
+    """Warn once per script that this execution leaves the configured backend.
+
+    Operators who set ``terminal.backend`` to ``docker``/``ssh`` reasonably read
+    that as the isolation boundary for what the agent runs. Script-backed cron
+    jobs predate and bypass it: they execute in the scheduler/gateway process
+    environment instead (#29849). This makes that visible in the log rather
+    than silent. Diagnostics only — execution is unchanged.
+    """
+    if backend == "local":
+        return
+    key = str(script_path)
+    if key in _SCRIPT_HOST_NOTICES:
+        return
+    if len(_SCRIPT_HOST_NOTICES) < _SCRIPT_HOST_NOTICES_MAX:
+        _SCRIPT_HOST_NOTICES.add(key)
+    logger.warning(
+        "Cron script %s runs on the scheduler host, OUTSIDE the configured "
+        "terminal.backend (%s). Script-backed cron jobs are not sandboxed by "
+        "the terminal backend: this script executes with the scheduler "
+        "process's environment and filesystem access (#29849).",
+        script_path,
+        backend,
+    )
+
+
 def _get_script_timeout() -> int:
     """Resolve cron pre-run script timeout from module/env/config with a safe default."""
     if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
@@ -2222,6 +2293,22 @@ def _run_job_script(
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
+    **Execution host (#29849).** The script always runs on the host that ticks
+    cron — this scheduler process — via ``subprocess``, independent of
+    ``terminal.backend``. That is deliberate for the host-side automation this
+    supports (a watchdog that backs up ``HERMES_HOME`` has to run where
+    ``HERMES_HOME`` is), but it has two consequences worth stating plainly:
+
+    * A script the agent wrote through ``terminal``/``write_file`` under a
+      remote backend lives on the BACKEND's filesystem and is not visible here.
+    * ``terminal.backend`` is therefore NOT an isolation boundary for
+      script-backed cron: the script runs with this process's environment and
+      filesystem access. ``_note_script_runs_outside_backend`` logs that once
+      per script so it is visible rather than silent.
+
+    Routing execution through the configured backend is a separate change that
+    needs a decision on defaults; see #29849.
+
     Subprocess environment is passed through ``_sanitize_subprocess_env`` so
     provider credentials and other Hermes-managed secrets are not inherited
     (SECURITY.md §2.3), matching terminal and MCP child processes.
@@ -2261,10 +2348,21 @@ def _run_job_script(
             f"({scripts_dir_resolved}): {script_path!r}"
         )
 
+    # Diagnostics for the scheduler-host contract (#29849). The reported
+    # symptom was a bare "Script not found" pointing at a path the user could
+    # `ls` on the remote backend seconds earlier — the message never said the
+    # lookup happened on a different machine. Name the mismatch instead.
+    _backend = _configured_terminal_backend()
+
     if not path.exists():
-        return False, f"Script not found: {path}"
+        return False, (
+            f"Script not found on the scheduler host: {path}"
+            f"{_script_runs_on_scheduler_host_hint(_backend)}"
+        )
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
+
+    _note_script_runs_outside_backend(path, _backend)
 
     script_timeout = _get_script_timeout()
 

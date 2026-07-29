@@ -242,7 +242,11 @@ _DEPRECATED_COMPRESSION_SUMMARY_KEYS: tuple[str, ...] = (
 # Deprecated env vars (checked in the .env file, not process env, so config→env
 # bridges like terminal.cwd → TERMINAL_CWD do not false-positive).
 _DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
-    ("HERMES_TOOL_PROGRESS", "display.tool_progress in config.yaml"),
+    # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
+    # floor removed its only consumer (the v3→4 migration) — it is silently
+    # ignored. HERMES_TOOL_PROGRESS_MODE is still read by the gateway as a
+    # back-compat fallback but remains deprecated.
+    ("HERMES_TOOL_PROGRESS", "display.tool_progress in config.yaml — ignored/unsupported since config floor v12"),
     ("HERMES_TOOL_PROGRESS_MODE", "display.tool_progress in config.yaml"),
     ("TERMINAL_CWD", "terminal.cwd in config.yaml"),
     ("MESSAGING_CWD", "terminal.cwd in config.yaml"),

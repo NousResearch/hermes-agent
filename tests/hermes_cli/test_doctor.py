@@ -755,6 +755,21 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert doctor_mod.collect_deprecated_env_vars({}) == []
         assert doctor_mod.collect_deprecated_env_vars(None) == []
 
+    def test_hermes_tool_progress_warning_says_unsupported_since_floor(self):
+        """HERMES_TOOL_PROGRESS lost its last consumer (the retired v3→4
+        migration) when the v12 support floor landed — doctor must say the
+        variable is ignored rather than merely 'deprecated but read'."""
+        findings = dict(
+            doctor_mod.collect_deprecated_env_vars({"HERMES_TOOL_PROGRESS": "true"})
+        )
+        assert "ignored/unsupported since config floor v12" in findings["HERMES_TOOL_PROGRESS"]
+        # The MODE variant is still read by the gateway fallback → keeps the
+        # plain deprecation wording.
+        mode = dict(
+            doctor_mod.collect_deprecated_env_vars({"HERMES_TOOL_PROGRESS_MODE": "all"})
+        )
+        assert mode["HERMES_TOOL_PROGRESS_MODE"] == "display.tool_progress in config.yaml"
+
     def _run_doctor_with_config(self, monkeypatch, tmp_path, *, config_yaml: str, env_text: str = ""):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir(parents=True)

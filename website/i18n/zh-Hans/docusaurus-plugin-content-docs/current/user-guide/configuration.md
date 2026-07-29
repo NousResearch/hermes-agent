@@ -1146,7 +1146,6 @@ display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # 在消息 gateway 中启用 /verbose 斜杠命令
   platforms: {}           # 每平台显示覆盖（见下文）
-  tool_progress_overrides: {}  # 已弃用 —— 改用 display.platforms
   interim_assistant_messages: true  # Gateway：将自然的轮次中 assistant 更新作为单独消息发送
   skin: default           # 内置或自定义 CLI 皮肤（参阅 user-guide/features/skins）
   personality: "kawaii"  # 旧版外观字段，仍在某些摘要中显示

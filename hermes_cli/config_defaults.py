@@ -1089,7 +1089,10 @@ DEFAULT_CONFIG = {
         # only visible when show_reasoning is enabled.
         "show_commentary": True,
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
+        # NOTE: display.tool_progress_overrides is deprecated and no longer
+        # seeded here — use display.platforms. A user-set value is still
+        # honored at runtime (gateway display_config back-compat read) and
+        # folded into display.platforms by the v15→16 migration.
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
         # Human-phrased tool status labels for built-in tools: "Searching the
         # web for ...", "Reading <file>", "Browsing <url>" instead of the raw
@@ -4143,13 +4146,15 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "setting",
     },
-    # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
-    # now configured via display.tool_progress in config.yaml (off|new|all|verbose|log).
-    # The gateway still falls back to these env vars for backward compatibility,
-    # so they live in _EXTRA_ENV_KEYS (known to reload and compatibility paths) but
-    # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing
-    # surfaces (dashboard keys page, setup checklists) and deprecated knobs
-    # shouldn't be offered there.
+    # HERMES_TOOL_PROGRESS_MODE is deprecated — tool progress is configured via
+    # display.tool_progress in config.yaml (off|new|all|verbose|log). The
+    # gateway still falls back to HERMES_TOOL_PROGRESS_MODE for backward
+    # compatibility, so it lives in _EXTRA_ENV_KEYS (known to reload and
+    # compatibility paths) but is intentionally NOT listed here:
+    # OPTIONAL_ENV_VARS feeds user-facing surfaces (dashboard keys page, setup
+    # checklists) and deprecated knobs shouldn't be offered there. The boolean
+    # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
+    # floor retired its only consumer (the v3→4 migration).
     "HERMES_PREFILL_MESSAGES_FILE": {
         "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
         "prompt": "Prefill messages file path",

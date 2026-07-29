@@ -45,26 +45,12 @@ def _run_migration(hermes_home: Path, **env_overrides: str) -> subprocess.Comple
 def test_docker_config_migrate_backs_up_and_migrates_legacy_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
-    model_map = {
-        "local-small": {"context_length": 8192},
-        "local-large": {"context_length": 32768},
-    }
     config_path.write_text(
         yaml.safe_dump(
             {
-                "_config_version": 11,
-                "custom_providers": [
-                    {
-                        "name": "Local API",
-                        "base_url": "http://localhost:8080/v1",
-                        "api_key": "test-key",
-                        "api_mode": "chat_completions",
-                        "model": "local-small",
-                        "models": model_map,
-                        "context_length": 32768,
-                        "discover_models": False,
-                    }
-                ],
+                "_config_version": 12,
+                "model_catalog": {"ttl_hours": 24},
+                "delegation": {"max_async_children": 8},
             }
         ),
         encoding="utf-8",
@@ -74,17 +60,115 @@ def test_docker_config_migrate_backs_up_and_migrates_legacy_config(tmp_path: Pat
     proc = _run_migration(tmp_path)
 
     assert proc.returncode == 0, proc.stderr
-    assert "Migrating config schema 11 ->" in proc.stdout
+    assert "Migrating config schema 12 ->" in proc.stdout
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
-    assert "custom_providers" not in raw
-    provider = raw["providers"]["local-api"]
-    assert provider["api"] == "http://localhost:8080/v1"
-    assert provider["transport"] == "chat_completions"
-    assert provider["default_model"] == "local-small"
-    assert provider["models"] == model_map
-    assert provider["context_length"] == 32768
-    assert provider["discover_models"] is False
+    # v24→25 lowers the old default model_catalog TTL; v32→33 folds
+    # max_async_children into max_concurrent_children.
+    assert raw["model_catalog"]["ttl_hours"] == 1
+    assert raw["delegation"] == {"max_concurrent_children": 8}
+    assert list(tmp_path.glob("config.yaml.bak-*"))
+    assert list(tmp_path.glob(".env.bak-*"))
+
+
+def test_docker_config_migrate_skips_below_floor_config_untouched(tmp_path: Path) -> None:
+    """Configs below the v12 auto-migration support floor are refused with a
+    warning: no migration, no backup, no rewrite — and the boot continues."""
+    config_path = tmp_path / "config.yaml"
+    original = (
+        yaml.safe_dump(
+            {
+                "_config_version": 11,
+                "custom_providers": [
+                    {
+                        "name": "Local API",
+                        "base_url": "http://localhost:8080/v1",
+                        "api_key": "test-key",
+                    }
+                ],
+            }
+        )
+    )
+    config_path.write_text(original, encoding="utf-8")
+
+    proc = _run_migration(tmp_path)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Migrating config schema" not in proc.stdout
+    assert "can no longer be auto-migrated" in proc.stderr
+    assert config_path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("*.bak-*"))
+
+
+def test_docker_config_migrate_skips_unversioned_config_untouched(tmp_path: Path) -> None:
+    """Unversioned configs coerce to version 0 — below the floor, so refused."""
+    config_path = tmp_path / "config.yaml"
+    original = yaml.safe_dump({"model": {"default": "m", "provider": "openrouter"}})
+    config_path.write_text(original, encoding="utf-8")
+
+    proc = _run_migration(tmp_path)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Migrating config schema" not in proc.stdout
+    assert "can no longer be auto-migrated" in proc.stderr
+    assert config_path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("*.bak-*"))
+
+
+def test_docker_config_migrate_does_not_rewrite_invalid_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    original = "model: [unterminated\n"
+    config_path.write_text(original, encoding="utf-8")
+
+    proc = _run_migration(tmp_path)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Migrating config schema" not in proc.stdout
+    assert "hermes config:" in proc.stderr
+    assert config_path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("*.bak-*"))
+
+
+def test_docker_config_migrate_skip_env_leaves_config_unchanged(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    original = yaml.safe_dump({"_config_version": 11})
+    config_path.write_text(original, encoding="utf-8")
+
+    proc = _run_migration(tmp_path, HERMES_SKIP_CONFIG_MIGRATION="1")
+
+    assert proc.returncode == 0, proc.stderr
+    assert "skipping config migration" in proc.stdout
+    assert config_path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("*.bak-*"))
+
+
+def test_docker_config_migrate_restores_backups_after_failed_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}})
+    original_env = "TELEGRAM_BOT_TOKEN=test-token\n"
+    config_path.write_text(original_config, encoding="utf-8")
+    env_path.write_text(original_env, encoding="utf-8")
+
+    monkeypatch.setattr(module, "check_config_version", lambda: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _failing_migrate(*, interactive: bool, quiet: bool):
+        config_path.write_text("gateway: {}\n", encoding="utf-8")
+        env_path.write_text("", encoding="utf-8")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "migrate_config", _failing_migrate)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        module.main()
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert env_path.read_text(encoding="utf-8") == original_env
     assert list(tmp_path.glob("config.yaml.bak-*"))
     assert list(tmp_path.glob(".env.bak-*"))
 
@@ -95,12 +179,12 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
     module = _load_script_module()
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
-    original_config = yaml.safe_dump({"_config_version": 11, "gateway": {"provider": "telegram"}})
+    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}})
     original_env = "TELEGRAM_BOT_TOKEN=test-token\n"
     config_path.write_text(original_config, encoding="utf-8")
     env_path.write_text(original_env, encoding="utf-8")
 
-    calls = iter([(11, DEFAULT_CONFIG["_config_version"]), (11, DEFAULT_CONFIG["_config_version"])])
+    calls = iter([(12, DEFAULT_CONFIG["_config_version"]), (12, DEFAULT_CONFIG["_config_version"])])
     monkeypatch.setattr(module, "check_config_version", lambda: next(calls))
     monkeypatch.setattr(module, "get_config_path", lambda: config_path)
     monkeypatch.setattr(module, "get_env_path", lambda: env_path)
@@ -134,7 +218,7 @@ def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path:
     config_path.write_text(
         yaml.safe_dump(
             {
-                "_config_version": 11,
+                "_config_version": 12,
                 "gateway": {"provider": "telegram"},
             }
         ),
@@ -151,7 +235,7 @@ def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path:
     # ── First boot: stale config migrates, version advances. ──
     first = _run_migration(tmp_path)
     assert first.returncode == 0, first.stderr
-    assert "Migrating config schema 11 ->" in first.stdout
+    assert "Migrating config schema 12 ->" in first.stdout
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
     # The token (and every other credential) must survive the migration.

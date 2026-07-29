@@ -32,6 +32,7 @@ import inspect
 import json
 import logging
 import os
+import queue
 import re
 import shlex
 import site
@@ -2200,6 +2201,7 @@ from gateway.session_state import (
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
+from gateway.turn_context import TurnContext
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -3335,6 +3337,631 @@ _RECONNECT_BACKOFF_CAP = 300
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
+
+
+class TurnRunner:
+    """Per-turn collaborator carrying the tool-progress callbacks that used to
+    be nested closures inside ``GatewayRunner._run_agent_inner``.
+
+    The bodies are byte-identical to the original closures modulo
+    ``local_name`` -> ``ctx.field`` rewrites (closed-over locals now travel on
+    the shared :class:`gateway.turn_context.TurnContext`) and ``self`` ->
+    ``self._runner`` (the owning :class:`GatewayRunner`). Module-global
+    references (logger, cfg_get, BasePlatformAdapter, ...) resolve in this
+    same module exactly as before.
+    """
+
+    def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
+        self._runner = runner
+        self._ctx = ctx
+
+    def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+        """Callback invoked by agent on tool lifecycle events."""
+        ctx = self._ctx
+        # Live status line (Slack's assistant status): stash the current
+        # tool phrase on the adapter; the _keep_typing refresh renders it
+        # within a couple of seconds. Handled before every other gate
+        # because it's independent of progress bubbles and queues (Slack
+        # keeps tool_progress off by default, but the ephemeral status
+        # line is always safe). Plain dict write — safe from the agent's
+        # sync worker thread, no event-loop hop needed.
+        if (
+            ctx._live_status_adapter is not None
+            and ctx._live_status_mode != "off"
+            and tool_name != "_thinking"
+        ):
+            try:
+                if event_type == "tool.started" and tool_name and ctx._run_still_current():
+                    from agent.display import build_status_phrase
+                    _phrase = build_status_phrase(
+                        tool_name,
+                        args if ctx._live_status_mode == "full" else None,
+                    )
+                    ctx._live_status_adapter.set_status_text(ctx.source.chat_id, _phrase)
+                elif event_type == "tool.completed":
+                    # Between tools the model is genuinely "thinking"
+                    # again — revert to the static default.
+                    ctx._live_status_adapter.set_status_text(ctx.source.chat_id, None)
+            except Exception as _ls_err:
+                logger.debug("live status update failed: %s", _ls_err)
+        # "log" mode: append tool.started lines to the log queue and stay
+        # silent in chat. Handled before the progress_queue guard because
+        # log mode runs without a chat progress queue.
+        if ctx.log_queue is not None:
+            if event_type == "tool.started" and tool_name and tool_name != "_thinking":
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                preview_str = f' "{preview}"' if preview else ""
+                ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
+            if not ctx.progress_queue:
+                return
+        if not ctx.progress_queue or not ctx._run_still_current():
+            return
+
+        # First-touch onboarding: the first time a tool takes longer than
+        # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
+        # (progress_mode == "all"), append a one-time hint suggesting
+        # /verbose.  We only fire when (a) the user hasn't seen the hint
+        # before and (b) /verbose is actually usable on this platform
+        # (gateway gate must be open).  The CLI has its own trigger.
+        if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
+            try:
+                duration = kwargs.get("duration") or 0
+                if duration >= ctx._LONG_TOOL_THRESHOLD_S and ctx.progress_mode == "all":
+                    from agent.onboarding import (
+                        TOOL_PROGRESS_FLAG,
+                        is_seen,
+                        mark_seen,
+                        tool_progress_hint_gateway,
+                    )
+                    _cfg = _load_gateway_config()
+                    gate_on = is_truthy_value(
+                        cfg_get(_cfg, "display", "tool_progress_command"),
+                        default=False,
+                    )
+                    if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                        ctx.long_tool_hint_fired[0] = True
+                        ctx.progress_queue.put(tool_progress_hint_gateway())
+                        mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+            except Exception as _hint_err:
+                logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+            return
+
+        # "_thinking" is assistant scratch text between tool calls.  It
+        # is never ordinary tool progress: only relay it when the platform
+        # explicitly opted into thinking_progress.  Handle both legacy
+        # callback shapes: ("_thinking", text) and
+        # ("reasoning.available", "_thinking", text, ...).
+        if event_type == "_thinking" or tool_name == "_thinking":
+            if not ctx._thinking_enabled:
+                return
+            thinking_text = preview if tool_name == "_thinking" else tool_name
+            msg = f"💬 {thinking_text}" if thinking_text else None
+            if msg:
+                ctx.progress_queue.put(msg)
+            return
+
+        # If tool_progress is off, only _thinking passes through (above).
+        # Regular tool calls are suppressed.
+        if not ctx.tool_progress_enabled:
+            return
+
+        # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+        if event_type not in {"tool.started",}:
+            return
+
+        # Never render a progress bubble for the clarify tool.  The
+        # adapter's send_clarify IS the user-facing rendering (interactive
+        # buttons or the numbered-text fallback), so a progress bubble is
+        # pure duplication — and in verbose mode it dumps the raw
+        # tool-call args JSON ({"question": ..., "choices": [...]}) into
+        # the chat.  Because the progress queue drains on a background
+        # task, that raw JSON typically lands right underneath the
+        # rendered prompt (#52374).
+        if tool_name == "clarify":
+            return
+
+        # Suppress tool-progress bubbles once the user has sent `stop`.
+        # When the LLM response carries N parallel tool calls, the agent
+        # fires N "tool.started" events back-to-back before checking for
+        # interrupts — without this guard, a late `stop` still renders
+        # all N as 🔍 bubbles, making the interrupt feel ignored.
+        # (agent lives in run_sync's scope; agent_holder[0] is the shared
+        # handle across nested scopes — see line ~9607.)
+        try:
+            _agent_for_interrupt = ctx.agent_holder[0] if ctx.agent_holder else None
+            if _agent_for_interrupt is not None and getattr(
+                _agent_for_interrupt, "is_interrupted", False
+            ):
+                return
+        except Exception:
+            pass
+
+        # "new" mode: only report when tool changes
+        if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
+            return
+        ctx.last_tool[0] = tool_name
+
+        # Build progress message with primary argument preview
+        from agent.display import get_tool_emoji
+        emoji = get_tool_emoji(tool_name, default="⚙️")
+
+        # Markdown-capable platforms render a terminal command as a fenced
+        # code block instead of the compact `terminal: "cmd…"` preview.
+        # Gated on the adapter's ``supports_code_blocks`` capability so
+        # plain-text platforms keep the short line.  No language tag is
+        # emitted — Slack mrkdwn renders the tag as a literal first code
+        # line ("bash"), and a bare fence renders correctly everywhere
+        # that supports blocks.
+        #
+        # Verbose mode shows the FULL command.  Non-verbose ("all"/"new")
+        # modes still wrap in a fence but truncate to a single line capped
+        # at ``tool_preview_length`` (default 40) so a long or multi-line
+        # command doesn't render as a huge block — matching the budget the
+        # non-terminal preview path already applies (#42634).
+        _code_block_full = None
+        _code_block_short = None
+        try:
+            _progress_adapter = self._runner._adapter_for_source(ctx.source)
+        except Exception:
+            _progress_adapter = None
+        if (
+            getattr(_progress_adapter, "supports_code_blocks", False)
+            and tool_name == "terminal"
+            and isinstance(args, dict)
+            and isinstance(args.get("command"), str)
+            and args["command"].strip()
+        ):
+            from agent.display import get_tool_preview_max_len
+            _cmd_full = args["command"].rstrip()
+            # Consecutive terminal calls: drop the repeated
+            # "💻 terminal" header so back-to-back commands render as
+            # adjacent code blocks under a single header.
+            _block_header = (
+                "" if ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+            )
+            _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
+            # Single-line, capped preview for non-verbose modes.
+            _pl = get_tool_preview_max_len()
+            _cap = _pl if _pl > 0 else 40
+            _lines = _cmd_full.splitlines()
+            _cmd_short = _lines[0] if _lines else _cmd_full
+            _multiline = len(_lines) > 1
+            if len(_cmd_short) > _cap:
+                _cmd_short = _cmd_short[:_cap - 3] + "..."
+            elif _multiline:
+                _cmd_short = _cmd_short + " ..."
+            _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
+
+        # Verbose mode: show detailed arguments, respects tool_preview_length
+        if ctx.progress_mode == "verbose":
+            if _code_block_full is not None:
+                ctx.last_was_terminal_block[0] = True
+                ctx.progress_queue.put(_code_block_full)
+                return
+            ctx.last_was_terminal_block[0] = False
+            if args:
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                args_str = json.dumps(args, ensure_ascii=False, default=str)
+                # When tool_preview_length is 0 (default), don't truncate
+                # in verbose mode — the user explicitly asked for full
+                # detail.  Platform message-length limits handle the rest.
+                if _pl > 0 and len(args_str) > _pl:
+                    args_str = args_str[:_pl - 3] + "..."
+                msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+            elif preview:
+                msg = f"{emoji} {tool_name}: \"{preview}\""
+            else:
+                msg = f"{emoji} {tool_name}..."
+            ctx.progress_queue.put(msg)
+            return
+
+        # "all" / "new" modes: short preview, respects tool_preview_length
+        # config (defaults to 40 chars when unset to keep gateway messages
+        # compact — unlike CLI spinners, these persist as permanent messages).
+        # Terminal commands on markdown platforms get a single-line capped
+        # fenced block (built above) instead of the truncated preview.
+        if _code_block_short is not None:
+            msg = _code_block_short
+            ctx.last_was_terminal_block[0] = True
+        elif preview:
+            from agent.display import (
+                get_tool_preview_max_len,
+                get_tool_verb,
+                tool_verb_connector,
+                verb_drops_preview,
+            )
+            _pl = get_tool_preview_max_len()
+            _cap = _pl if _pl > 0 else 40
+            if len(preview) > _cap:
+                preview = preview[:_cap - 3] + "..."
+            # Friendly labels: render a human-phrased line for built-in
+            # tools ("🔍 Searching the web for ...") by prefixing the verb
+            # onto the preview the callback already computed (so the
+            # command/url/query is preserved).  Custom/plugin/MCP tools
+            # have no verb and fall back to the raw "tool_name: ..." form.
+            _verb = get_tool_verb(tool_name)
+            if _verb:
+                if verb_drops_preview(tool_name):
+                    msg = f"{emoji} {_verb}"
+                else:
+                    msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
+            else:
+                msg = f"{emoji} {tool_name}: \"{preview}\""
+            ctx.last_was_terminal_block[0] = False
+        else:
+            msg = f"{emoji} {tool_name}..."
+            ctx.last_was_terminal_block[0] = False
+
+        # Dedup: collapse consecutive identical progress messages.
+        # Common with execute_code where models iterate with the same
+        # code (same boilerplate imports → identical previews).
+        if msg == ctx.last_progress_msg[0]:
+            ctx.repeat_count[0] += 1
+            # Update the last line in progress_lines with a counter
+            # via a special "dedup" queue message.
+            ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
+            return
+        ctx.last_progress_msg[0] = msg
+        ctx.repeat_count[0] = 0
+
+        ctx.progress_queue.put(msg)
+
+    async def send_progress_messages(self):
+        ctx = self._ctx
+        if not ctx.progress_queue:
+            return
+
+        adapter = self._runner._adapter_for_source(ctx.source)
+        if not adapter:
+            return
+
+        # Skip tool progress for platforms that don't support message
+        # editing (e.g. iMessage/BlueBubbles) — each progress update
+        # would become a separate message bubble, which is noisy.
+        # getattr, not attribute access: duck-typed adapters (test fakes,
+        # minimal plugin adapters) may not define edit_message at all —
+        # "missing" means the same thing as "base no-op": can't edit.
+        _adapter_edit = getattr(type(adapter), "edit_message", None)
+        if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
+            while not ctx.progress_queue.empty():
+                try:
+                    ctx.progress_queue.get_nowait()
+                except Exception:
+                    break
+            return
+
+        progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
+        progress_msg_id = None   # ID of the current progress message to edit
+        can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+        _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
+        _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+
+        _progress_len_fn = (
+            adapter.message_len_fn
+            if isinstance(adapter, BasePlatformAdapter)
+            else len
+        )
+        try:
+            _raw_progress_limit = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
+        except Exception:
+            _raw_progress_limit = 4000
+        # Per-chat resolution (relay adapter fronting N platforms): the cap
+        # and length unit follow the chat's underlying platform. Native
+        # adapters return their scalar/property unchanged.
+        if isinstance(adapter, BasePlatformAdapter):
+            try:
+                _raw_progress_limit = int(
+                    adapter.max_message_length_for_chat(ctx.source.chat_id) or 4000
+                )
+                _progress_len_fn = adapter.message_len_fn_for_chat(ctx.source.chat_id)
+            except Exception:
+                pass
+        # Leave a little room for platform quirks / formatting.  For tiny
+        # test adapters keep the limit usable instead of clamping to 500+.
+        _PROGRESS_TEXT_LIMIT = max(
+            1,
+            _raw_progress_limit - (64 if _raw_progress_limit > 128 else 0),
+        )
+
+        # Detect whether the adapter's edit_message accepts metadata so
+        # overflow edits preserve Telegram topic/thread routing (#27487).
+        _edit_accepts_metadata = False
+        if ctx._progress_metadata:
+            try:
+                _edit_params = inspect.signature(adapter.edit_message).parameters
+                _edit_accepts_metadata = (
+                    "metadata" in _edit_params
+                    or any(
+                        param.kind is inspect.Parameter.VAR_KEYWORD
+                        for param in _edit_params.values()
+                    )
+                )
+            except (TypeError, ValueError):
+                _edit_accepts_metadata = False
+
+        async def _edit_progress_message(message_id: str, content: str):
+            kwargs = {
+                "chat_id": ctx.source.chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+            if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
+                kwargs["finalize"] = True
+            if _edit_accepts_metadata:
+                kwargs["metadata"] = ctx._progress_metadata
+            return await adapter.edit_message(**kwargs)
+
+        def _progress_text(lines: list) -> str:
+            return "\n".join(str(line) for line in lines)
+
+        def _split_progress_groups(lines: list) -> list[list]:
+            """Partition progress lines into platform-sized editable bubbles."""
+            groups: list[list] = []
+            current: list = []
+            for line in lines:
+                candidate = current + [line]
+                if current and _progress_len_fn(_progress_text(candidate)) > _PROGRESS_TEXT_LIMIT:
+                    groups.append(current)
+                    current = [line]
+                else:
+                    current = candidate
+            if current:
+                groups.append(current)
+            return groups
+
+        def _track_progress_result(result) -> None:
+            if (
+                ctx._cleanup_progress
+                and getattr(result, "success", False)
+                and getattr(result, "message_id", None)
+            ):
+                ctx._cleanup_msg_ids.append(str(result.message_id))
+
+        async def _send_progress_text(text: str):
+            result = await adapter.send(
+                chat_id=ctx.source.chat_id,
+                content=text,
+                reply_to=ctx._progress_reply_to,
+                metadata=ctx._progress_metadata,
+            )
+            _track_progress_result(result)
+            return result
+
+        async def _roll_progress_overflow_if_needed() -> bool:
+            """Start fresh editable progress bubbles before a bubble exceeds limit.
+
+                Returns True when it delivered/split the current buffer, or when
+                a transient edit failure left the buffer and message identity
+                intact for a later retry.  In either case the caller should skip
+                the normal send/edit path for this tick.
+                """
+            nonlocal progress_msg_id, progress_lines, can_edit
+            if not progress_lines or not can_edit:
+                return False
+            groups = _split_progress_groups(progress_lines)
+            if len(groups) <= 1:
+                return False
+
+            first_text = _progress_text(groups[0])
+            if progress_msg_id is not None:
+                result = await _edit_progress_message(progress_msg_id, first_text)
+                if not result.success:
+                    if getattr(result, "retryable", False):
+                        logger.debug(
+                            "[%s] Transient overflow edit failure — keeping can_edit=True",
+                            adapter.name,
+                        )
+                        return True
+                    can_edit = False
+                    # Fall back to the existing non-edit behavior below.
+                    return False
+            else:
+                result = await _send_progress_text(first_text)
+                if result.success and result.message_id:
+                    progress_msg_id = result.message_id
+
+            for group in groups[1:]:
+                result = await _send_progress_text(_progress_text(group))
+                if result.success and result.message_id:
+                    progress_msg_id = result.message_id
+
+            # The newest continuation is now the only mutable bubble.  Keep
+            # just its lines so subsequent edits update it instead of
+            # replaying the full historical transcript into new messages.
+            progress_lines = groups[-1]
+            return True
+
+        while True:
+            try:
+                if not ctx._run_still_current():
+                    while not ctx.progress_queue.empty():
+                        try:
+                            ctx.progress_queue.get_nowait()
+                        except Exception:
+                            break
+                    return
+
+                raw = ctx.progress_queue.get_nowait()
+
+                # Drain silently when interrupted: events queued in the
+                # window between tool parse and interrupt processing
+                # should not render as bubbles.  The "⚡ Interrupting
+                # current task" message is sent separately and is the
+                # last progress-flavored bubble the user should see.
+                try:
+                    _agent_for_interrupt = ctx.agent_holder[0] if ctx.agent_holder else None
+                    if _agent_for_interrupt is not None and getattr(
+                        _agent_for_interrupt, "is_interrupted", False
+                    ):
+                        # Drop this event and continue draining.
+                        await asyncio.sleep(0)
+                        continue
+                except Exception:
+                    pass
+
+                # Handle dedup messages: update last line with repeat counter
+                if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    _, base_msg, count = raw
+                    if progress_lines:
+                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                    msg = progress_lines[-1] if progress_lines else base_msg
+                elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                    # Content bubble just landed on the platform — close off
+                    # the current tool-progress bubble so the next tool
+                    # starts a fresh bubble below the content. Without this,
+                    # tool lines keep editing the ORIGINAL progress message
+                    # above the new content, making the chat appear out of
+                    # order. Mirrors GatewayStreamConsumer.on_segment_break
+                    # on the content side. (Issue: tool + content
+                    # linearization regression after PR #7885.)
+                    progress_msg_id = None
+                    progress_lines = []
+                    ctx.last_progress_msg[0] = None
+                    ctx.repeat_count[0] = 0
+                    continue
+                else:
+                    msg = raw
+                    progress_lines.append(msg)
+
+                if await _roll_progress_overflow_if_needed():
+                    _last_edit_ts = time.monotonic()
+                    await asyncio.sleep(0.3)
+                    if ctx._run_still_current():
+                        await adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
+                    continue
+
+                # Throttle edits: batch rapid tool updates into fewer
+                # API calls to avoid hitting Telegram flood control.
+                # (grammY auto-retry pattern: proactively rate-limit
+                # instead of reacting to 429s.)
+                _now = time.monotonic()
+                _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
+                if _remaining > 0:
+                    # Wait out the throttle interval, then loop back to
+                    # drain any additional queued messages before sending
+                    # a single batched edit.
+                    await asyncio.sleep(_remaining)
+                    continue
+
+                if not ctx._run_still_current():
+                    return
+
+                if can_edit and progress_msg_id is not None:
+                    # Try to edit the existing progress message
+                    full_text = "\n".join(progress_lines)
+                    result = await _edit_progress_message(progress_msg_id, full_text)
+                    if not result.success:
+                        _err = (getattr(result, "error", "") or "").lower()
+                        # Transient network errors (ConnectError, timeouts)
+                        # must not permanently disable progress-message
+                        # editing — the next cycle can catch up.  Only
+                        # permanent failures (flood control, message not
+                        # found, permissions) should set can_edit = False.
+                        if getattr(result, "retryable", False):
+                            logger.debug(
+                                "[%s] Transient edit failure — keeping can_edit=True",
+                                adapter.name,
+                            )
+                            continue
+                        if "flood" in _err or "retry after" in _err:
+                            # Flood control hit — backoff but keep editing.
+                            # Only disable edits for non-recoverable errors.
+                            logger.info(
+                                "[%s] Progress edit flood control, backing off",
+                                adapter.name,
+                            )
+                            _last_edit_ts = time.monotonic()
+                        else:
+                            can_edit = False
+                        _flood_result = await adapter.send(
+                            chat_id=ctx.source.chat_id,
+                            content=msg,
+                            reply_to=ctx._progress_reply_to,
+                            metadata=ctx._progress_metadata,
+                        )
+                        if (
+                            ctx._cleanup_progress
+                            and getattr(_flood_result, "success", False)
+                            and getattr(_flood_result, "message_id", None)
+                        ):
+                            ctx._cleanup_msg_ids.append(str(_flood_result.message_id))
+                else:
+                    if can_edit:
+                        # First tool: send all accumulated text as new message
+                        full_text = "\n".join(progress_lines)
+                        result = await adapter.send(
+                            chat_id=ctx.source.chat_id,
+                            content=full_text,
+                            reply_to=ctx._progress_reply_to,
+                            metadata=ctx._progress_metadata,
+                        )
+                    else:
+                        # Editing unsupported: send just this line
+                        result = await adapter.send(
+                            chat_id=ctx.source.chat_id,
+                            content=msg,
+                            reply_to=ctx._progress_reply_to,
+                            metadata=ctx._progress_metadata,
+                        )
+                    if result.success and result.message_id:
+                        progress_msg_id = result.message_id
+                        if ctx._cleanup_progress:
+                            ctx._cleanup_msg_ids.append(str(result.message_id))
+
+                _last_edit_ts = time.monotonic()
+
+                # Restore typing indicator
+                await asyncio.sleep(0.3)
+                if ctx._run_still_current():
+                    await adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
+
+            except queue.Empty:
+                await asyncio.sleep(0.3)
+            except asyncio.CancelledError:
+                # Drain remaining queued messages
+                while not ctx.progress_queue.empty():
+                    try:
+                        raw = ctx.progress_queue.get_nowait()
+                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                            _, base_msg, count = raw
+                            if progress_lines:
+                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                await _roll_progress_overflow_if_needed()
+                        elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                            # Content-bubble marker during drain: close off
+                            # the current progress bubble and start a fresh
+                            # one for any tool lines that arrived after.
+                            await _roll_progress_overflow_if_needed()
+                            if can_edit and progress_lines and progress_msg_id:
+                                _pending_text = _progress_text(progress_lines)
+                                try:
+                                    await _edit_progress_message(progress_msg_id, _pending_text)
+                                except Exception:
+                                    pass
+                            progress_msg_id = None
+                            progress_lines = []
+                            ctx.last_progress_msg[0] = None
+                            ctx.repeat_count[0] = 0
+                        else:
+                            progress_lines.append(raw)
+                            await _roll_progress_overflow_if_needed()
+                    except Exception:
+                        break
+                # Final edit with all remaining tools (only if editing works)
+                if can_edit and progress_lines and progress_msg_id:
+                    await _roll_progress_overflow_if_needed()
+                if can_edit and progress_lines and progress_msg_id:
+                    full_text = _progress_text(progress_lines)
+                    try:
+                        await _edit_progress_message(progress_msg_id, full_text)
+                    except Exception:
+                        pass
+                return
+            except Exception as e:
+                logger.error("Progress message error: %s", e)
+                await asyncio.sleep(1)
+
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -21251,256 +21878,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
-        def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
-            """Callback invoked by agent on tool lifecycle events."""
-            # Live status line (Slack's assistant status): stash the current
-            # tool phrase on the adapter; the _keep_typing refresh renders it
-            # within a couple of seconds. Handled before every other gate
-            # because it's independent of progress bubbles and queues (Slack
-            # keeps tool_progress off by default, but the ephemeral status
-            # line is always safe). Plain dict write — safe from the agent's
-            # sync worker thread, no event-loop hop needed.
-            if (
-                _live_status_adapter is not None
-                and _live_status_mode != "off"
-                and tool_name != "_thinking"
-            ):
-                try:
-                    if event_type == "tool.started" and tool_name and _run_still_current():
-                        from agent.display import build_status_phrase
-                        _phrase = build_status_phrase(
-                            tool_name,
-                            args if _live_status_mode == "full" else None,
-                        )
-                        _live_status_adapter.set_status_text(source.chat_id, _phrase)
-                    elif event_type == "tool.completed":
-                        # Between tools the model is genuinely "thinking"
-                        # again — revert to the static default.
-                        _live_status_adapter.set_status_text(source.chat_id, None)
-                except Exception as _ls_err:
-                    logger.debug("live status update failed: %s", _ls_err)
-            # "log" mode: append tool.started lines to the log queue and stay
-            # silent in chat. Handled before the progress_queue guard because
-            # log mode runs without a chat progress queue.
-            if log_queue is not None:
-                if event_type == "tool.started" and tool_name and tool_name != "_thinking":
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    preview_str = f' "{preview}"' if preview else ""
-                    log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
-                if not progress_queue:
-                    return
-            if not progress_queue or not _run_still_current():
-                return
-
-            # First-touch onboarding: the first time a tool takes longer than
-            # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
-            # (progress_mode == "all"), append a one-time hint suggesting
-            # /verbose.  We only fire when (a) the user hasn't seen the hint
-            # before and (b) /verbose is actually usable on this platform
-            # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
-                try:
-                    duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
-                        from agent.onboarding import (
-                            TOOL_PROGRESS_FLAG,
-                            is_seen,
-                            mark_seen,
-                            tool_progress_hint_gateway,
-                        )
-                        _cfg = _load_gateway_config()
-                        gate_on = is_truthy_value(
-                            cfg_get(_cfg, "display", "tool_progress_command"),
-                            default=False,
-                        )
-                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                            long_tool_hint_fired[0] = True
-                            progress_queue.put(tool_progress_hint_gateway())
-                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
-                except Exception as _hint_err:
-                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
-                return
-
-            # "_thinking" is assistant scratch text between tool calls.  It
-            # is never ordinary tool progress: only relay it when the platform
-            # explicitly opted into thinking_progress.  Handle both legacy
-            # callback shapes: ("_thinking", text) and
-            # ("reasoning.available", "_thinking", text, ...).
-            if event_type == "_thinking" or tool_name == "_thinking":
-                if not _thinking_enabled:
-                    return
-                thinking_text = preview if tool_name == "_thinking" else tool_name
-                msg = f"💬 {thinking_text}" if thinking_text else None
-                if msg:
-                    progress_queue.put(msg)
-                return
-
-            # If tool_progress is off, only _thinking passes through (above).
-            # Regular tool calls are suppressed.
-            if not tool_progress_enabled:
-                return
-
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-            if event_type not in {"tool.started",}:
-                return
-
-            # Never render a progress bubble for the clarify tool.  The
-            # adapter's send_clarify IS the user-facing rendering (interactive
-            # buttons or the numbered-text fallback), so a progress bubble is
-            # pure duplication — and in verbose mode it dumps the raw
-            # tool-call args JSON ({"question": ..., "choices": [...]}) into
-            # the chat.  Because the progress queue drains on a background
-            # task, that raw JSON typically lands right underneath the
-            # rendered prompt (#52374).
-            if tool_name == "clarify":
-                return
-
-            # Suppress tool-progress bubbles once the user has sent `stop`.
-            # When the LLM response carries N parallel tool calls, the agent
-            # fires N "tool.started" events back-to-back before checking for
-            # interrupts — without this guard, a late `stop` still renders
-            # all N as 🔍 bubbles, making the interrupt feel ignored.
-            # (agent lives in run_sync's scope; agent_holder[0] is the shared
-            # handle across nested scopes — see line ~9607.)
-            try:
-                _agent_for_interrupt = agent_holder[0] if agent_holder else None
-                if _agent_for_interrupt is not None and getattr(
-                    _agent_for_interrupt, "is_interrupted", False
-                ):
-                    return
-            except Exception:
-                pass
-
-            # "new" mode: only report when tool changes
-            if progress_mode == "new" and tool_name == last_tool[0]:
-                return
-            last_tool[0] = tool_name
-
-            # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(tool_name, default="⚙️")
-
-            # Markdown-capable platforms render a terminal command as a fenced
-            # code block instead of the compact `terminal: "cmd…"` preview.
-            # Gated on the adapter's ``supports_code_blocks`` capability so
-            # plain-text platforms keep the short line.  No language tag is
-            # emitted — Slack mrkdwn renders the tag as a literal first code
-            # line ("bash"), and a bare fence renders correctly everywhere
-            # that supports blocks.
-            #
-            # Verbose mode shows the FULL command.  Non-verbose ("all"/"new")
-            # modes still wrap in a fence but truncate to a single line capped
-            # at ``tool_preview_length`` (default 40) so a long or multi-line
-            # command doesn't render as a huge block — matching the budget the
-            # non-terminal preview path already applies (#42634).
-            _code_block_full = None
-            _code_block_short = None
-            try:
-                _progress_adapter = self._adapter_for_source(source)
-            except Exception:
-                _progress_adapter = None
-            if (
-                getattr(_progress_adapter, "supports_code_blocks", False)
-                and tool_name == "terminal"
-                and isinstance(args, dict)
-                and isinstance(args.get("command"), str)
-                and args["command"].strip()
-            ):
-                from agent.display import get_tool_preview_max_len
-                _cmd_full = args["command"].rstrip()
-                # Consecutive terminal calls: drop the repeated
-                # "💻 terminal" header so back-to-back commands render as
-                # adjacent code blocks under a single header.
-                _block_header = (
-                    "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
-                )
-                _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
-                # Single-line, capped preview for non-verbose modes.
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                _lines = _cmd_full.splitlines()
-                _cmd_short = _lines[0] if _lines else _cmd_full
-                _multiline = len(_lines) > 1
-                if len(_cmd_short) > _cap:
-                    _cmd_short = _cmd_short[:_cap - 3] + "..."
-                elif _multiline:
-                    _cmd_short = _cmd_short + " ..."
-                _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
-
-            # Verbose mode: show detailed arguments, respects tool_preview_length
-            if progress_mode == "verbose":
-                if _code_block_full is not None:
-                    last_was_terminal_block[0] = True
-                    progress_queue.put(_code_block_full)
-                    return
-                last_was_terminal_block[0] = False
-                if args:
-                    from agent.display import get_tool_preview_max_len
-                    _pl = get_tool_preview_max_len()
-                    args_str = json.dumps(args, ensure_ascii=False, default=str)
-                    # When tool_preview_length is 0 (default), don't truncate
-                    # in verbose mode — the user explicitly asked for full
-                    # detail.  Platform message-length limits handle the rest.
-                    if _pl > 0 and len(args_str) > _pl:
-                        args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-                elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                else:
-                    msg = f"{emoji} {tool_name}..."
-                progress_queue.put(msg)
-                return
-            
-            # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
-            # Terminal commands on markdown platforms get a single-line capped
-            # fenced block (built above) instead of the truncated preview.
-            if _code_block_short is not None:
-                msg = _code_block_short
-                last_was_terminal_block[0] = True
-            elif preview:
-                from agent.display import (
-                    get_tool_preview_max_len,
-                    get_tool_verb,
-                    tool_verb_connector,
-                    verb_drops_preview,
-                )
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                # Friendly labels: render a human-phrased line for built-in
-                # tools ("🔍 Searching the web for ...") by prefixing the verb
-                # onto the preview the callback already computed (so the
-                # command/url/query is preserved).  Custom/plugin/MCP tools
-                # have no verb and fall back to the raw "tool_name: ..." form.
-                _verb = get_tool_verb(tool_name)
-                if _verb:
-                    if verb_drops_preview(tool_name):
-                        msg = f"{emoji} {_verb}"
-                    else:
-                        msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
-                else:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                last_was_terminal_block[0] = False
-            else:
-                msg = f"{emoji} {tool_name}..."
-                last_was_terminal_block[0] = False
-            
-            # Dedup: collapse consecutive identical progress messages.
-            # Common with execute_code where models iterate with the same
-            # code (same boilerplate imports → identical previews).
-            if msg == last_progress_msg[0]:
-                repeat_count[0] += 1
-                # Update the last line in progress_lines with a counter
-                # via a special "dedup" queue message.
-                progress_queue.put(("__dedup__", msg, repeat_count[0]))
-                return
-            last_progress_msg[0] = msg
-            repeat_count[0] = 0
-            
-            progress_queue.put(msg)
+        turn_ctx = TurnContext(
+            source=source,
+            _run_still_current=_run_still_current,
+            _live_status_adapter=_live_status_adapter,
+            _live_status_mode=_live_status_mode,
+            _thinking_enabled=_thinking_enabled,
+            progress_mode=progress_mode,
+            progress_grouping=progress_grouping,
+            tool_progress_enabled=tool_progress_enabled,
+            progress_queue=progress_queue,
+            log_queue=log_queue,
+            last_progress_msg=last_progress_msg,
+            last_tool=last_tool,
+            last_was_terminal_block=last_was_terminal_block,
+            repeat_count=repeat_count,
+            long_tool_hint_fired=long_tool_hint_fired,
+            _LONG_TOOL_THRESHOLD_S=_LONG_TOOL_THRESHOLD_S,
+            _cleanup_progress=_cleanup_progress,
+            _cleanup_msg_ids=_cleanup_msg_ids,
+        )
+        turn_runner = TurnRunner(self, turn_ctx)
+        # Callback invoked by agent on tool lifecycle events — extracted to
+        # TurnRunner.progress_callback (bound method, same signature).
+        progress_callback = turn_runner.progress_callback
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
@@ -21607,362 +22008,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
-        async def send_progress_messages():
-            if not progress_queue:
-                return
-
-            adapter = self._adapter_for_source(source)
-            if not adapter:
-                return
-
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            # getattr, not attribute access: duck-typed adapters (test fakes,
-            # minimal plugin adapters) may not define edit_message at all —
-            # "missing" means the same thing as "base no-op": can't edit.
-            _adapter_edit = getattr(type(adapter), "edit_message", None)
-            if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
-                while not progress_queue.empty():
-                    try:
-                        progress_queue.get_nowait()
-                    except Exception:
-                        break
-                return
-
-            progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
-            progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
-            _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
-
-            _progress_len_fn = (
-                adapter.message_len_fn
-                if isinstance(adapter, BasePlatformAdapter)
-                else len
-            )
-            try:
-                _raw_progress_limit = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
-            except Exception:
-                _raw_progress_limit = 4000
-            # Per-chat resolution (relay adapter fronting N platforms): the cap
-            # and length unit follow the chat's underlying platform. Native
-            # adapters return their scalar/property unchanged.
-            if isinstance(adapter, BasePlatformAdapter):
-                try:
-                    _raw_progress_limit = int(
-                        adapter.max_message_length_for_chat(source.chat_id) or 4000
-                    )
-                    _progress_len_fn = adapter.message_len_fn_for_chat(source.chat_id)
-                except Exception:
-                    pass
-            # Leave a little room for platform quirks / formatting.  For tiny
-            # test adapters keep the limit usable instead of clamping to 500+.
-            _PROGRESS_TEXT_LIMIT = max(
-                1,
-                _raw_progress_limit - (64 if _raw_progress_limit > 128 else 0),
-            )
-
-            # Detect whether the adapter's edit_message accepts metadata so
-            # overflow edits preserve Telegram topic/thread routing (#27487).
-            _edit_accepts_metadata = False
-            if _progress_metadata:
-                try:
-                    _edit_params = inspect.signature(adapter.edit_message).parameters
-                    _edit_accepts_metadata = (
-                        "metadata" in _edit_params
-                        or any(
-                            param.kind is inspect.Parameter.VAR_KEYWORD
-                            for param in _edit_params.values()
-                        )
-                    )
-                except (TypeError, ValueError):
-                    _edit_accepts_metadata = False
-
-            async def _edit_progress_message(message_id: str, content: str):
-                kwargs = {
-                    "chat_id": source.chat_id,
-                    "message_id": message_id,
-                    "content": content,
-                }
-                if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
-                    kwargs["finalize"] = True
-                if _edit_accepts_metadata:
-                    kwargs["metadata"] = _progress_metadata
-                return await adapter.edit_message(**kwargs)
-
-            def _progress_text(lines: list) -> str:
-                return "\n".join(str(line) for line in lines)
-
-            def _split_progress_groups(lines: list) -> list[list]:
-                """Partition progress lines into platform-sized editable bubbles."""
-                groups: list[list] = []
-                current: list = []
-                for line in lines:
-                    candidate = current + [line]
-                    if current and _progress_len_fn(_progress_text(candidate)) > _PROGRESS_TEXT_LIMIT:
-                        groups.append(current)
-                        current = [line]
-                    else:
-                        current = candidate
-                if current:
-                    groups.append(current)
-                return groups
-
-            def _track_progress_result(result) -> None:
-                if (
-                    _cleanup_progress
-                    and getattr(result, "success", False)
-                    and getattr(result, "message_id", None)
-                ):
-                    _cleanup_msg_ids.append(str(result.message_id))
-
-            async def _send_progress_text(text: str):
-                result = await adapter.send(
-                    chat_id=source.chat_id,
-                    content=text,
-                    reply_to=_progress_reply_to,
-                    metadata=_progress_metadata,
-                )
-                _track_progress_result(result)
-                return result
-
-            async def _roll_progress_overflow_if_needed() -> bool:
-                """Start fresh editable progress bubbles before a bubble exceeds limit.
-
-                Returns True when it delivered/split the current buffer, or when
-                a transient edit failure left the buffer and message identity
-                intact for a later retry.  In either case the caller should skip
-                the normal send/edit path for this tick.
-                """
-                nonlocal progress_msg_id, progress_lines, can_edit
-                if not progress_lines or not can_edit:
-                    return False
-                groups = _split_progress_groups(progress_lines)
-                if len(groups) <= 1:
-                    return False
-
-                first_text = _progress_text(groups[0])
-                if progress_msg_id is not None:
-                    result = await _edit_progress_message(progress_msg_id, first_text)
-                    if not result.success:
-                        if getattr(result, "retryable", False):
-                            logger.debug(
-                                "[%s] Transient overflow edit failure — keeping can_edit=True",
-                                adapter.name,
-                            )
-                            return True
-                        can_edit = False
-                        # Fall back to the existing non-edit behavior below.
-                        return False
-                else:
-                    result = await _send_progress_text(first_text)
-                    if result.success and result.message_id:
-                        progress_msg_id = result.message_id
-
-                for group in groups[1:]:
-                    result = await _send_progress_text(_progress_text(group))
-                    if result.success and result.message_id:
-                        progress_msg_id = result.message_id
-
-                # The newest continuation is now the only mutable bubble.  Keep
-                # just its lines so subsequent edits update it instead of
-                # replaying the full historical transcript into new messages.
-                progress_lines = groups[-1]
-                return True
-
-            while True:
-                try:
-                    if not _run_still_current():
-                        while not progress_queue.empty():
-                            try:
-                                progress_queue.get_nowait()
-                            except Exception:
-                                break
-                        return
-
-                    raw = progress_queue.get_nowait()
-
-                    # Drain silently when interrupted: events queued in the
-                    # window between tool parse and interrupt processing
-                    # should not render as bubbles.  The "⚡ Interrupting
-                    # current task" message is sent separately and is the
-                    # last progress-flavored bubble the user should see.
-                    try:
-                        _agent_for_interrupt = agent_holder[0] if agent_holder else None
-                        if _agent_for_interrupt is not None and getattr(
-                            _agent_for_interrupt, "is_interrupted", False
-                        ):
-                            # Drop this event and continue draining.
-                            await asyncio.sleep(0)
-                            continue
-                    except Exception:
-                        pass
-
-                    # Handle dedup messages: update last line with repeat counter
-                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                        _, base_msg, count = raw
-                        if progress_lines:
-                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                        msg = progress_lines[-1] if progress_lines else base_msg
-                    elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                        # Content bubble just landed on the platform — close off
-                        # the current tool-progress bubble so the next tool
-                        # starts a fresh bubble below the content. Without this,
-                        # tool lines keep editing the ORIGINAL progress message
-                        # above the new content, making the chat appear out of
-                        # order. Mirrors GatewayStreamConsumer.on_segment_break
-                        # on the content side. (Issue: tool + content
-                        # linearization regression after PR #7885.)
-                        progress_msg_id = None
-                        progress_lines = []
-                        last_progress_msg[0] = None
-                        repeat_count[0] = 0
-                        continue
-                    else:
-                        msg = raw
-                        progress_lines.append(msg)
-
-                    if await _roll_progress_overflow_if_needed():
-                        _last_edit_ts = time.monotonic()
-                        await asyncio.sleep(0.3)
-                        if _run_still_current():
-                            await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
-                        continue
-
-                    # Throttle edits: batch rapid tool updates into fewer
-                    # API calls to avoid hitting Telegram flood control.
-                    # (grammY auto-retry pattern: proactively rate-limit
-                    # instead of reacting to 429s.)
-                    _now = time.monotonic()
-                    _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
-                    if _remaining > 0:
-                        # Wait out the throttle interval, then loop back to
-                        # drain any additional queued messages before sending
-                        # a single batched edit.
-                        await asyncio.sleep(_remaining)
-                        continue
-
-                    if not _run_still_current():
-                        return
-
-                    if can_edit and progress_msg_id is not None:
-                        # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
-                        result = await _edit_progress_message(progress_msg_id, full_text)
-                        if not result.success:
-                            _err = (getattr(result, "error", "") or "").lower()
-                            # Transient network errors (ConnectError, timeouts)
-                            # must not permanently disable progress-message
-                            # editing — the next cycle can catch up.  Only
-                            # permanent failures (flood control, message not
-                            # found, permissions) should set can_edit = False.
-                            if getattr(result, "retryable", False):
-                                logger.debug(
-                                    "[%s] Transient edit failure — keeping can_edit=True",
-                                    adapter.name,
-                                )
-                                continue
-                            if "flood" in _err or "retry after" in _err:
-                                # Flood control hit — backoff but keep editing.
-                                # Only disable edits for non-recoverable errors.
-                                logger.info(
-                                    "[%s] Progress edit flood control, backing off",
-                                    adapter.name,
-                                )
-                                _last_edit_ts = time.monotonic()
-                            else:
-                                can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                            if (
-                                _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
-                    else:
-                        if can_edit:
-                            # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=full_text,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                        else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(str(result.message_id))
-
-                    _last_edit_ts = time.monotonic()
-
-                    # Restore typing indicator
-                    await asyncio.sleep(0.3)
-                    if _run_still_current():
-                        await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
-
-                except queue.Empty:
-                    await asyncio.sleep(0.3)
-                except asyncio.CancelledError:
-                    # Drain remaining queued messages
-                    while not progress_queue.empty():
-                        try:
-                            raw = progress_queue.get_nowait()
-                            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                                _, base_msg, count = raw
-                                if progress_lines:
-                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                    await _roll_progress_overflow_if_needed()
-                            elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                                # Content-bubble marker during drain: close off
-                                # the current progress bubble and start a fresh
-                                # one for any tool lines that arrived after.
-                                await _roll_progress_overflow_if_needed()
-                                if can_edit and progress_lines and progress_msg_id:
-                                    _pending_text = _progress_text(progress_lines)
-                                    try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
-                                    except Exception:
-                                        pass
-                                progress_msg_id = None
-                                progress_lines = []
-                                last_progress_msg[0] = None
-                                repeat_count[0] = 0
-                            else:
-                                progress_lines.append(raw)
-                                await _roll_progress_overflow_if_needed()
-                        except Exception:
-                            break
-                    # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
-                        await _roll_progress_overflow_if_needed()
-                    if can_edit and progress_lines and progress_msg_id:
-                        full_text = _progress_text(progress_lines)
-                        try:
-                            await _edit_progress_message(progress_msg_id, full_text)
-                        except Exception:
-                            pass
-                    return
-                except Exception as e:
-                    logger.error("Progress message error: %s", e)
-                    await asyncio.sleep(1)
+        # Extracted to TurnRunner.send_progress_messages. The threading
+        # metadata computed above is published onto the shared TurnContext
+        # exactly where the original closure's captured locals were bound.
+        turn_ctx._progress_metadata = _progress_metadata
+        turn_ctx._progress_reply_to = _progress_reply_to
+        send_progress_messages = turn_runner.send_progress_messages
         
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
+        turn_ctx.agent_holder = agent_holder
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer

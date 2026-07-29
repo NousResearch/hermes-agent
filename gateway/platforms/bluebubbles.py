@@ -245,8 +245,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         from aiohttp import web
 
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        # Attachment downloads follow redirects; re-validate hops so a
+        # public BB server URL cannot 302 into cloud metadata / private
+        # space. Localhost BB installs remain usable (origin-aware policy).
         from gateway.platforms._http_client_limits import platform_httpx_limits
-        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
+        from tools.url_safety import make_origin_aware_redirect_hooks
+
+        self.client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=platform_httpx_limits(),
+            follow_redirects=True,
+            event_hooks={
+                "response": make_origin_aware_redirect_hooks(
+                    self.server_url, label="BlueBubbles"
+                ),
+            },
+        )
         try:
             await self._api_get("/api/v1/ping")
             info = await self._api_get("/api/v1/server/info")

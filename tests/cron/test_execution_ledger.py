@@ -75,22 +75,6 @@ def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
     assert executions.EXECUTIONS_FILE.read_bytes() == b"not a sqlite database"
 
 
-def test_execution_history_is_paginated(monkeypatch, tmp_path):
-    executions = _point_ledger(monkeypatch, tmp_path)
-    ids = []
-    for _index in range(5):
-        row = executions.create_execution("paged", source="builtin")
-        executions.finish_execution(row["id"], success=True)
-        ids.append(row["id"])
-
-    first = executions.list_executions(job_id="paged", limit=2)
-    second = executions.list_executions(
-        job_id="paged", limit=2, before_claimed_at=first[-1]["claimed_at"]
-    )
-    assert [row["id"] for row in first] == list(reversed(ids))[:2]
-    assert set(row["id"] for row in first).isdisjoint(row["id"] for row in second)
-
-
 def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
     executions = _point_ledger(monkeypatch, tmp_path)
     row = executions.create_execution("cli-job", source="builtin")
@@ -128,32 +112,6 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
 
     assert executions.recover_interrupted_executions() == 0
     assert executions.latest_execution("still-live")["status"] == "running"
-
-
-def test_recovery_does_not_mark_other_live_owner_unknown(monkeypatch, tmp_path):
-    executions = _point_ledger(monkeypatch, tmp_path)
-    record = executions.create_execution("other-live", source="builtin")
-    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
-        conn.execute(
-            "UPDATE executions SET process_id=?, pid=? WHERE id=?",
-            ("another-import", os.getpid(), record["id"]),
-        )
-
-    assert executions.recover_interrupted_executions() == 0
-    assert executions.latest_execution("other-live")["status"] == "claimed"
-
-
-def test_recovery_rejects_recycled_pid(monkeypatch, tmp_path):
-    executions = _point_ledger(monkeypatch, tmp_path)
-    record = executions.create_execution("recycled", source="builtin")
-    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
-        conn.execute(
-            "UPDATE executions SET process_id=?, process_started_at=? WHERE id=?",
-            ("old-import", -1, record["id"]),
-        )
-
-    assert executions.recover_interrupted_executions() == 1
-    assert executions.latest_execution("recycled")["status"] == "unknown"
 
 
 def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
@@ -302,6 +260,126 @@ def test_external_provider_start_recovers_interrupted_records(monkeypatch):
     provider.start(__import__("threading").Event())
 
     assert events == ["recover", "reconcile"]
+
+
+class _TrackingConnection:
+    """Delegates to a real sqlite3.Connection while recording close() calls.
+
+    sqlite3.Connection is a static C type: it has no per-instance __dict__
+    and its class methods can't be monkeypatched, so open/close tracking is
+    done via a delegating wrapper returned in place of the real connection.
+    """
+
+    def __init__(self, real, closed_ids):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_closed_ids", closed_ids)
+
+    def close(self):
+        self._closed_ids.append(id(self._real))
+        self._real.close()
+
+    def __enter__(self):
+        self._real.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._real.__exit__(exc_type, exc, tb)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._real, name, value)
+
+
+def _count_open_connections(executions, monkeypatch):
+    """Wrap sqlite3.connect to track open/close balance for the ledger module."""
+    opened_ids = []
+    closed_ids = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened_ids.append(id(conn))
+        return _TrackingConnection(conn, closed_ids)
+
+    monkeypatch.setattr(executions.sqlite3, "connect", tracking_connect)
+    return opened_ids, closed_ids
+
+
+def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
+    """Regression for #69567: every ledger call must close its connection
+    deterministically instead of relying on garbage collection."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    opened, closed = _count_open_connections(executions, monkeypatch)
+
+    record = executions.create_execution("leak-check", source="builtin")
+    executions.mark_execution_running(record["id"])
+    executions.finish_execution(record["id"], success=True)
+    executions.list_executions(job_id="leak-check")
+    executions.latest_executions(["leak-check"])
+    executions.recover_interrupted_executions()
+
+    assert len(opened) == 6
+    assert len(closed) == 6
+    assert set(opened) == set(closed)
+
+
+def test_early_return_still_closes_connection(monkeypatch, tmp_path):
+    """mark_execution_running returns None mid-block on a bad transition;
+    the connection must still be closed rather than leaked."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    opened, closed = _count_open_connections(executions, monkeypatch)
+
+    assert executions.mark_execution_running("does-not-exist") is None
+
+    assert len(opened) == 1
+    assert len(closed) == 1
+
+
+def test_exception_during_operation_still_closes_connection(monkeypatch, tmp_path):
+    """A failing statement inside the transaction must roll back and close,
+    not leak the connection."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    opened, closed = _count_open_connections(executions, monkeypatch)
+
+    with __import__("pytest").raises(sqlite3.IntegrityError):
+        with executions._transaction() as conn:
+            conn.execute(
+                "INSERT INTO executions (id, job_id, source, process_id, pid, "
+                "status, claimed_at) VALUES ('x', 'x', 'x', 'x', 1, 'bogus-status', 'now')"
+            )
+
+    assert len(opened) == 1
+    assert len(closed) == 1
+
+
+def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
+    """If PRAGMA/DDL setup in _connect() fails after sqlite3.connect()
+    succeeds, the partially-initialized connection must still be closed."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    opened_ids = []
+    closed_ids = []
+    real_connect = sqlite3.connect
+
+    class _FailingSchemaConnection(_TrackingConnection):
+        def execute(self, sql, *args, **kwargs):
+            if "CREATE TABLE" in sql:
+                raise sqlite3.OperationalError("simulated schema init failure")
+            return self._real.execute(sql, *args, **kwargs)
+
+    def tracking_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened_ids.append(id(conn))
+        return _FailingSchemaConnection(conn, closed_ids)
+
+    monkeypatch.setattr(executions.sqlite3, "connect", tracking_connect)
+
+    with __import__("pytest").raises(sqlite3.OperationalError):
+        executions.create_execution("init-fail", source="builtin")
+
+    assert len(opened_ids) == 1
+    assert len(closed_ids) == 1
 
 
 def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):

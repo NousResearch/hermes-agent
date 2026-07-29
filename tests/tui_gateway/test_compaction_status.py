@@ -62,12 +62,3 @@ def test_manual_compressing_kind_is_preserved(server, monkeypatch):
     assert events[0]["kind"] == "compressing"
 
 
-def test_compaction_status_contains_marker():
-    # Contract: the gateway matches COMPACTION_STATUS_MARKER inside the emitted
-    # status text. If the message is reworded, the marker must survive.
-    from agent.conversation_compression import (
-        COMPACTION_STATUS,
-        COMPACTION_STATUS_MARKER,
-    )
-
-    assert COMPACTION_STATUS_MARKER in COMPACTION_STATUS

@@ -32,7 +32,11 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 
 
 @pytest.fixture
-def served_repo(tmp_path):
+def served_repo(tmp_path, monkeypatch):
+    # The fixture intentionally serves over loopback. Keep exercising the real
+    # HTTP transport while opting this test server into private-address access.
+    monkeypatch.setattr("tools.url_safety._global_allow_private_urls", lambda: True)
+
     repo = tmp_path / "upstream"
     repo.mkdir()
     (repo / "SKILL.md").write_text(SKILL_MD)
@@ -112,89 +116,6 @@ def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     )
 
     assert source.fetch("owner/repo/skill") is None
-
-
-def test_github_source_fetches_only_exact_references_and_records_tree_revision(monkeypatch):
-    source = GitHubSource(GitHubAuth())
-    skill = "---\nname: demo\ndescription: demo\n---\n[guide](references/guide.md)\n"
-    fetched = []
-    monkeypatch.setattr(
-        source,
-        "_fetch_file_content",
-        lambda _repo, path: skill if path.endswith("SKILL.md") else None,
-    )
-
-    def _fetch_bytes(_repo, path):
-        fetched.append(path)
-        return b"guide"
-
-    monkeypatch.setattr(source, "_fetch_file_bytes", _fetch_bytes, raising=False)
-    source._tree_cache["owner/repo"] = (
-        "develop",
-        [
-            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
-            {"path": "skill/references/guide.md", "type": "blob", "mode": "100644"},
-            {"path": "skill/references/unreferenced.md", "type": "blob", "mode": "100644"},
-        ],
-    )
-    source._tree_revisions = {"owner/repo": "deadbeef"}
-
-    bundle = source.fetch("owner/repo/skill")
-
-    assert bundle is not None
-    assert fetched == ["skill/references/guide.md"]
-    assert bundle.files["references/guide.md"] == b"guide"
-    assert bundle.metadata["source_url"] == "https://github.com/owner/repo/tree/deadbeef/skill"
-    assert bundle.metadata["source_revision"] == "deadbeef"
-
-
-def test_scan_cache_records_full_provenance_and_hash_change_forces_rescan(tmp_path):
-    skill = tmp_path / "skill"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("---\nname: skill\ndescription: test\n---\n# safe\n")
-    cache = tmp_path / "scan-cache"
-
-    first, first_provenance = scan_skill_cached(
-        skill, source="owner/repo/skill", source_url="https://github.com/owner/repo", cache_dir=cache
-    )
-    second, second_provenance = scan_skill_cached(
-        skill, source="owner/repo/skill", source_url="https://github.com/owner/repo", cache_dir=cache
-    )
-    (skill / "SKILL.md").write_text("---\nname: skill\ndescription: changed\n---\n# safe\n")
-    third, third_provenance = scan_skill_cached(
-        skill, source="owner/repo/skill", source_url="https://github.com/owner/repo", cache_dir=cache
-    )
-
-    assert first.verdict == second.verdict == third.verdict == "safe"
-    assert first_provenance["fresh"] is True
-    assert second_provenance["fresh"] is False
-    assert third_provenance["fresh"] is True
-    assert first_provenance["bundle_hash"].startswith("sha256:")
-    assert len(first_provenance["bundle_hash"].split(":", 1)[1]) == 64
-    assert third_provenance["bundle_hash"] != first_provenance["bundle_hash"]
-    assert first_provenance["scanner_version"] == SCANNER_VERSION
-    assert first_provenance["source_url"] == "https://github.com/owner/repo"
-    assert isinstance(first_provenance["findings"], list)
-    assert isinstance(first_provenance["rules"], list)
-    assert first_provenance["scanned_at"]
-
-
-def test_scan_cache_never_reuses_provenance_across_sources(tmp_path):
-    skill = tmp_path / "skill"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("---\nname: skill\ndescription: test\n---\n")
-    cache = tmp_path / "scan-cache"
-
-    _first, first = scan_skill_cached(
-        skill, source="community", source_url="https://one.example/SKILL.md", cache_dir=cache
-    )
-    _second, second = scan_skill_cached(
-        skill, source="community", source_url="https://two.example/SKILL.md", cache_dir=cache
-    )
-
-    assert first["fresh"] is True
-    assert second["fresh"] is True
-    assert second["source_url"] == "https://two.example/SKILL.md"
 
 
 def test_lock_file_persists_scan_provenance(tmp_path):

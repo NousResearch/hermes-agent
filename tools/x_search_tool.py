@@ -480,9 +480,12 @@ X_SEARCH_SCHEMA = {
     "name": "x_search",
     "description": (
         "Search X (Twitter) posts, profiles, and threads using xAI's built-in "
-        "X Search tool. Use this for current discussion, reactions, or claims "
-        "on X rather than general web pages. Available when xAI credentials "
-        "are configured (SuperGrok OAuth or XAI_API_KEY)."
+        "X Search tool. Read-only discovery only: use this for current "
+        "discussion, reactions, or claims on public X rather than general web "
+        "pages. Do not use it to post, reply, like, DM, upload media, delete, "
+        "or inspect the user's authenticated X account — those require a "
+        "separate authenticated X API surface outside this tool. Available "
+        "when xAI credentials are configured (SuperGrok OAuth or XAI_API_KEY)."
     ),
     "parameters": {
         "type": "object",

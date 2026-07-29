@@ -12,23 +12,56 @@ describe('resolveGatewayWsUrl', () => {
       expect(getGatewayWsUrl).toHaveBeenCalledOnce()
     })
 
-    it('throws a reauth error instead of falling back to the stale cached ticket', async () => {
-      const getGatewayWsUrl = vi.fn().mockRejectedValue(new Error('401 cookie expired'))
+    it('uses the structured URL returned across the Electron IPC boundary', async () => {
+      const getGatewayWsUrl = vi.fn().mockResolvedValue({ ok: true, wsUrl: 'ws://host/api/ws?ticket=fresh' })
+
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).resolves.toBe('ws://host/api/ws?ticket=fresh')
+    })
+
+    it('throws a reauth error when the main process reports an auth rejection', async () => {
+      const getGatewayWsUrl = vi.fn().mockResolvedValue({
+        error: '401 cookie expired',
+        needsOauthLogin: true,
+        ok: false
+      })
+
       await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).rejects.toBeInstanceOf(
         GatewayReauthRequiredError
       )
     })
 
-    it('preserves the underlying mint failure as the cause', async () => {
-      const cause = new Error('401 cookie expired')
-      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+    it('preserves the main-process auth failure as the cause', async () => {
+      const getGatewayWsUrl = vi.fn().mockResolvedValue({
+        error: '401 cookie expired',
+        needsOauthLogin: true,
+        ok: false
+      })
+
       const error = await resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn).catch(e => e)
       expect(error).toBeInstanceOf(GatewayReauthRequiredError)
-      expect((error as GatewayReauthRequiredError).cause).toBe(cause)
+      expect((error as GatewayReauthRequiredError).cause).toMatchObject({ message: '401 cookie expired' })
     })
 
-    it('throws a reauth error when the preload cannot mint (no method)', async () => {
-      await expect(resolveGatewayWsUrl({}, oauthConn)).rejects.toBeInstanceOf(GatewayReauthRequiredError)
+    it('keeps a transport failure retryable instead of demanding sign-in', async () => {
+      const getGatewayWsUrl = vi.fn().mockResolvedValue({ error: 'gateway timed out', ok: false })
+      const error = await resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn).catch(e => e)
+
+      expect(error).toMatchObject({ message: 'gateway timed out' })
+      expect(isGatewayReauthRequired(error)).toBe(false)
+    })
+
+    it('rethrows an unexpected transport rejection unchanged', async () => {
+      const cause = new Error('socket closed')
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn)).rejects.toBe(cause)
+    })
+
+    it('reports a missing preload method as an app capability error, not reauth', async () => {
+      const error = await resolveGatewayWsUrl({}, oauthConn).catch(e => e)
+
+      expect(error).toMatchObject({ message: expect.stringMatching(/cannot refresh OAuth WebSocket tickets/i) })
+      expect(isGatewayReauthRequired(error)).toBe(false)
     })
 
     it('never returns the stale cached ticket on failure', async () => {
@@ -42,6 +75,12 @@ describe('resolveGatewayWsUrl', () => {
   describe('token / local mode', () => {
     it('uses the minted URL when available', async () => {
       const getGatewayWsUrl = vi.fn().mockResolvedValue('ws://host/api/ws?token=fresh')
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, tokenConn)).resolves.toBe('ws://host/api/ws?token=fresh')
+    })
+
+    it('uses a structured refreshed token URL when available', async () => {
+      const getGatewayWsUrl = vi.fn().mockResolvedValue({ ok: true, wsUrl: 'ws://host/api/ws?token=fresh' })
+
       await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, tokenConn)).resolves.toBe('ws://host/api/ws?token=fresh')
     })
 

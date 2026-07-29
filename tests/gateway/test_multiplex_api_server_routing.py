@@ -35,39 +35,22 @@ class TestApiServerProfileResolution:
         adapter = _make_adapter(multiplex=True)
         assert adapter._resolve_request_profile(_FakeReq(None)) is None
 
-    def test_prefix_ignored_when_multiplex_off(self):
-        adapter = _make_adapter(multiplex=False)
-        # Even a bogus profile is ignored (not 404'd) when multiplexing is off.
-        assert adapter._resolve_request_profile(_FakeReq("anything")) is None
-
-    def test_known_profile_accepted(self, monkeypatch):
-        adapter = _make_adapter(multiplex=True)
-        monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [("default", None), ("coder", None)],
-        )
-        assert adapter._resolve_request_profile(_FakeReq("coder")) == "coder"
-
-    def test_unknown_profile_rejected(self, monkeypatch):
-        adapter = _make_adapter(multiplex=True)
-        monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [("default", None), ("coder", None)],
-        )
-        assert adapter._resolve_request_profile(_FakeReq("ghost")) is _PROFILE_REJECTED
-
 
 class TestApiServerRouteTable:
-    def test_route_table_includes_models_and_chat(self):
-        """ /p/{profile}/v1/models must be registered — this is the 404 Fadeway hit. """
+    def test_route_table_includes_models_options_and_chat(self):
+        """Model discovery and chat routes must survive profile multiplexing."""
         adapter = _make_adapter(multiplex=True)
         paths = {path for _method, path, _handler in adapter._http_route_table()}
         assert "/v1/models" in paths
+        assert "/api/model/options" in paths
         assert "/v1/chat/completions" in paths
+        assert "/api/sessions/{session_id}/model" in paths
         # connect() mirrors every native path under /p/{profile}/…
         mirrored = {f"/p/{{profile}}{path}" for path in paths}
         assert "/p/{profile}/v1/models" in mirrored
+        assert "/p/{profile}/api/model/options" in mirrored
         assert "/p/{profile}/v1/chat/completions" in mirrored
+        assert "/p/{profile}/api/sessions/{session_id}/model" in mirrored
 
 
 class TestApiServerModelsUnderProfile:

@@ -132,7 +132,7 @@ class SkillMeta:
     """Minimal metadata returned by search results."""
     name: str
     description: str
-    source: str           # "official", "github", "clawhub", "claude-marketplace", "lobehub"
+    source: str           # "official", "github", "clawhub", "lobehub"
     identifier: str       # source-specific ID (e.g. "openai/skills/skill-creator")
     trust_level: str      # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
@@ -291,8 +291,18 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     return target
 
 
+def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
+    """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
+    from tools.url_safety import create_ssrf_safe_client
+
+    with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
+        return client.get(url)
+
+
 def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation."""
+    from tools.url_safety import SSRFConnectionBlocked
+
     current_url = url
 
     for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
@@ -310,8 +320,8 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = httpx.get(current_url, timeout=timeout, follow_redirects=False)
-        except httpx.HTTPError as exc:
+            resp = _ssrf_safe_http_get(current_url, timeout=timeout)
+        except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
 
@@ -402,7 +412,7 @@ class GitHubAuth:
         try:
             result = subprocess.run(
                 ["gh", "auth", "token"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
                 stdin=subprocess.DEVNULL,
                 creationflags=windows_hide_flags(),
             )
@@ -866,7 +876,7 @@ class GitHubSource(SkillSource):
           - 403/429 with ``X-RateLimit-Remaining: 0`` — waits until the
             reset time (capped) when the header is present, else exponential
             backoff. This is the all-GitHub-tap-collapse case: a single
-            shared rate limit zeroes github + claude-marketplace + well-known
+            shared rate limit zeroes github + well-known
             at once during the index build.
           - 5xx and connection/timeout errors — exponential backoff.
 
@@ -1134,7 +1144,7 @@ class GitHubSource(SkillSource):
             stat = cache_file.stat()
             if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
                 return None
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -1144,7 +1154,7 @@ class GitHubSource(SkillSource):
         index_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = index_cache_dir / f"{key}.json"
         try:
-            cache_file.write_text(json.dumps(data, ensure_ascii=False))
+            cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except OSError as e:
             logger.debug("Could not write cache: %s", e)
 
@@ -2715,110 +2725,6 @@ class ClawHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
-# Claude Code marketplace source adapter
-# ---------------------------------------------------------------------------
-
-class ClaudeMarketplaceSource(SkillSource):
-    """
-    Discover skills from Claude Code marketplace repos.
-    Marketplace repos contain .claude-plugin/marketplace.json with plugin listings.
-    """
-
-    KNOWN_MARKETPLACES = [
-        "anthropics/skills",
-        "aiskillstore/marketplace",
-    ]
-
-    def __init__(self, auth: GitHubAuth):
-        self.auth = auth
-        # Persistent GitHubSource so rate-limit state survives across the
-        # marketplace-index fetch + per-skill inspect calls and can be
-        # surfaced to the index builder (see is_rate_limited).
-        self.github = GitHubSource(auth=auth)
-
-    def source_id(self) -> str:
-        return "claude-marketplace"
-
-    @property
-    def is_rate_limited(self) -> bool:
-        """Whether the underlying GitHub API hit a rate limit during the crawl."""
-        return self.github.is_rate_limited
-
-    def trust_level_for(self, identifier: str) -> str:
-        parts = identifier.split("/", 2)
-        if len(parts) >= 2:
-            repo = f"{parts[0]}/{parts[1]}"
-            if repo in TRUSTED_REPOS:
-                return "trusted"
-        return "community"
-
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        results: List[SkillMeta] = []
-        query_lower = query.lower()
-
-        for marketplace_repo in self.KNOWN_MARKETPLACES:
-            plugins = self._fetch_marketplace_index(marketplace_repo)
-            for plugin in plugins:
-                searchable = f"{plugin.get('name', '')} {plugin.get('description', '')}".lower()
-                if query_lower in searchable:
-                    source_path = plugin.get("source", "")
-                    if source_path.startswith("./"):
-                        identifier = f"{marketplace_repo}/{source_path[2:]}"
-                    elif "/" in source_path:
-                        identifier = source_path
-                    else:
-                        identifier = f"{marketplace_repo}/{source_path}"
-
-                    results.append(SkillMeta(
-                        name=plugin.get("name", ""),
-                        description=plugin.get("description", ""),
-                        source="claude-marketplace",
-                        identifier=identifier,
-                        trust_level=self.trust_level_for(identifier),
-                        repo=marketplace_repo,
-                    ))
-
-        return results[:limit]
-
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
-        # Delegate to GitHub Contents API since marketplace skills live in GitHub repos
-        bundle = self.github.fetch(identifier)
-        if bundle:
-            bundle.source = "claude-marketplace"
-        return bundle
-
-    def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        meta = self.github.inspect(identifier)
-        if meta:
-            meta.source = "claude-marketplace"
-            meta.trust_level = self.trust_level_for(identifier)
-        return meta
-
-    def _fetch_marketplace_index(self, repo: str) -> List[dict]:
-        """Fetch and parse .claude-plugin/marketplace.json from a repo."""
-        cache_key = f"claude_marketplace_{repo.replace('/', '_')}"
-        cached = _read_index_cache(cache_key)
-        if cached is not None:
-            return cached
-
-        url = f"https://api.github.com/repos/{repo}/contents/.claude-plugin/marketplace.json"
-        resp = self.github._github_get(
-            url,
-            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-        )
-        if resp is None or resp.status_code != 200:
-            return []
-        try:
-            data = json.loads(resp.text)
-        except json.JSONDecodeError:
-            return []
-
-        plugins = data.get("plugins", [])
-        _write_index_cache(cache_key, plugins)
-        return plugins
-
-
-# ---------------------------------------------------------------------------
 # LobeHub source adapter
 # ---------------------------------------------------------------------------
 
@@ -3267,7 +3173,9 @@ class OptionalSkillSource(SkillSource):
         if not self._optional_dir.is_dir():
             return None
         for skill_md in self._optional_dir.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(
+                skill_md.relative_to(self._optional_dir), root=self._optional_dir
+            ):
                 continue
             if skill_md.parent.name == name:
                 return skill_md.parent
@@ -3280,7 +3188,9 @@ class OptionalSkillSource(SkillSource):
 
         results: List[SkillMeta] = []
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(
+                skill_md.relative_to(self._optional_dir), root=self._optional_dir
+            ):
                 continue
             parent = skill_md.parent
 
@@ -3345,7 +3255,7 @@ def _read_index_cache(key: str) -> Optional[Any]:
         stat = cache_file.stat()
         if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
             return None
-        return json.loads(cache_file.read_text())
+        return json.loads(cache_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -3360,12 +3270,12 @@ def _write_index_cache(key: str, data: Any) -> None:
     ignore_file = _hub_dir() / ".ignore"
     if not ignore_file.exists():
         try:
-            ignore_file.write_text("# Exclude hub internals from search tools\n*\n")
+            ignore_file.write_text("# Exclude hub internals from search tools\n*\n", encoding="utf-8")
         except OSError:
             pass
     cache_file = index_cache_dir / f"{key}.json"
     try:
-        cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
+        cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:
         logger.debug("Could not write cache: %s", e)
 
@@ -3399,13 +3309,13 @@ class HubLockFile:
         if not self.path.exists():
             return {"version": 1, "installed": {}}
         try:
-            return json.loads(self.path.read_text())
+            return json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"version": 1, "installed": {}}
 
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def record_install(
         self,
@@ -3473,14 +3383,14 @@ class TapsManager:
         if not self.path.exists():
             return []
         try:
-            data = json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text(encoding="utf-8"))
             return data.get("taps", [])
         except (json.JSONDecodeError, OSError):
             return []
 
     def save(self, taps: List[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n", encoding="utf-8")
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
@@ -3539,11 +3449,11 @@ def ensure_hub_dirs() -> None:
     _quarantine_dir().mkdir(exist_ok=True)
     _index_cache_dir().mkdir(exist_ok=True)
     if not lock_file.exists():
-        lock_file.write_text('{"version": 1, "installed": {}}\n')
+        lock_file.write_text('{"version": 1, "installed": {}}\n', encoding="utf-8")
     if not audit_log.exists():
         audit_log.touch()
     if not taps_file.exists():
-        taps_file.write_text('{"taps": []}\n')
+        taps_file.write_text('{"taps": []}\n', encoding="utf-8")
 
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
@@ -3732,7 +3642,22 @@ def check_for_skill_updates(
     for entry in installed:
         identifier = entry.get("identifier", "")
         source_name = entry.get("source", "")
-        candidate_sources = [src for src in sources if _source_matches(src, source_name)] or sources
+        candidate_sources = [src for src in sources if _source_matches(src, source_name)]
+        if not candidate_sources:
+            # No adapter for the recorded source (e.g. a tap was removed, or the
+            # source was renamed upstream). Previously this fell back to *all*
+            # sources, which meant a same-named skill in a DIFFERENT registry
+            # could satisfy the fetch and be reported as an update for this
+            # entry -- silently reassigning provenance. Skill names are not
+            # namespaced across registries, so that fallback is unsafe by
+            # construction. Report unavailable instead and let the user decide.
+            results.append({
+                "name": entry.get("name", ""),
+                "identifier": identifier,
+                "source": source_name,
+                "status": "unavailable",
+            })
+            continue
 
         bundle = None
         for src in candidate_sources:
@@ -3793,7 +3718,7 @@ def _load_hermes_index() -> Optional[dict]:
         try:
             age = time.time() - hermes_index_cache_file.stat().st_mtime
             if age < HERMES_INDEX_TTL:
-                return json.loads(hermes_index_cache_file.read_text())
+                return json.loads(hermes_index_cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -3847,7 +3772,7 @@ def _load_hermes_index() -> Optional[dict]:
     # Cache locally
     try:
         hermes_index_cache_file.parent.mkdir(parents=True, exist_ok=True)
-        hermes_index_cache_file.write_text(json.dumps(data))
+        hermes_index_cache_file.write_text(json.dumps(data), encoding="utf-8")
     except OSError:
         pass
 
@@ -3859,7 +3784,7 @@ def _load_stale_index_cache() -> Optional[dict]:
     hermes_index_cache_file = _hermes_index_cache_file()
     if hermes_index_cache_file.exists():
         try:
-            return json.loads(hermes_index_cache_file.read_text())
+            return json.loads(hermes_index_cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
     return None
@@ -4073,7 +3998,6 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
-        ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
         BrowseShSource(),   # browse.sh: 169+ site-specific browser automation skills
     ]
@@ -4107,7 +4031,7 @@ def parallel_search_sources(
     *on_source_done* is an optional callback ``(source_id, count) -> None``
     invoked as each source completes — useful for progress indicators.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
     per_source_limits = per_source_limits or {}
 
@@ -4127,7 +4051,7 @@ def parallel_search_sources(
     # ~70 GitHub API calls per search for unauthenticated users.
     _index_available = False
     _api_source_ids = frozenset({"github", "skills-sh", "clawhub",
-                                  "claude-marketplace", "lobehub", "well-known"})
+                                  "lobehub", "well-known"})
     if _effective_filter == "all":
         for src in sources:
             if (src.source_id() == "hermes-index"

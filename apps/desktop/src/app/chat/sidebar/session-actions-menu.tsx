@@ -2,44 +2,25 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import { openSession } from '@/app/open-session'
 import {
   closeAllTreeTabs,
   closeOtherTreeTabs,
   closeTreeTabsToRight,
   treeTabCloseTargets
 } from '@/components/pane-shell/tree/store'
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  ActionsMenu,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuSub,
-  ContextMenuSubContent,
-  ContextMenuSubTrigger,
-  ContextMenuTrigger
-} from '@/components/ui/context-menu'
 import { CopyButton } from '@/components/ui/copy-button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -57,8 +38,8 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, openSessionTile } from '@/store/session-states'
-import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import { $sessionTiles } from '@/store/session-states'
+import { canOpenSessionWindow } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
 
@@ -130,42 +111,6 @@ interface SessionActions {
   onHideTabBar?: () => void
 }
 
-type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
-
-/** A menu flavour (dropdown / context) — item + separator + submenu components. */
-interface MenuKit {
-  Item: MenuItem
-  Separator: typeof DropdownMenuSeparator | typeof ContextMenuSeparator
-  Sub: typeof DropdownMenuSub | typeof ContextMenuSub
-  SubTrigger: typeof DropdownMenuSubTrigger | typeof ContextMenuSubTrigger
-  SubContent: typeof DropdownMenuSubContent | typeof ContextMenuSubContent
-}
-
-const DROPDOWN_KIT: MenuKit = {
-  Item: DropdownMenuItem,
-  Separator: DropdownMenuSeparator,
-  Sub: DropdownMenuSub,
-  SubContent: DropdownMenuSubContent,
-  SubTrigger: DropdownMenuSubTrigger
-}
-
-const CONTEXT_KIT: MenuKit = {
-  Item: ContextMenuItem,
-  Separator: ContextMenuSeparator,
-  Sub: ContextMenuSub,
-  SubContent: ContextMenuSubContent,
-  SubTrigger: ContextMenuSubTrigger
-}
-
-interface ItemSpec {
-  className?: string
-  disabled: boolean
-  icon: string
-  label: string
-  onSelect: (event: Event) => void
-  variant?: 'destructive'
-}
-
 // The color picker inside the session menu's Appearance submenu. Its own
 // component so only an OPEN submenu subscribes to the stores (not every row's
 // menu). Reads/writes the override keyed by the DURABLE id so a color survives
@@ -211,11 +156,11 @@ function useSessionActions({
   // a tab): offering "Open in new tab" again is noise.
   const alreadyTabbed = sessionId === selectedStoredSessionId || tiles.some(tile => tile.storedSessionId === sessionId)
 
-  const spec = (partial: Omit<ItemSpec, 'onSelect'> & { onSelect: () => void }): ItemSpec => partial
+  const spec = (partial: Omit<ActionItemSpec, 'onSelect'> & { onSelect: () => void }): ActionItemSpec => partial
 
   // OPEN — where else this session can go. A tab surface IS a tab already,
   // so it only offers the window hop (and its own Close, below).
-  const openItems: ItemSpec[] = [
+  const openItems: ActionItemSpec[] = [
     ...(surface === 'row' && !alreadyTabbed
       ? [
           spec({
@@ -225,8 +170,9 @@ function useSessionActions({
             onSelect: () => {
               triggerHaptic('selection')
               // Stack into the MAIN zone as a tab (center dock; the strip
-              // sticky-shows on gain) — the door to the tab bar.
-              openSessionTile(sessionId, 'center')
+              // sticky-shows on gain) — the door to the tab bar. Focuses first
+              // if the session is already on screen.
+              openSession(sessionId, () => undefined, 'tab')
             }
           })
         ]
@@ -239,7 +185,7 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              void openSessionInNewWindow(sessionId)
+              openSession(sessionId, () => undefined, 'window')
             }
           })
         ]
@@ -247,7 +193,7 @@ function useSessionActions({
   ]
 
   // IDENTITY — name/mark/reference the session.
-  const identityItems: ItemSpec[] = [
+  const identityItems: ActionItemSpec[] = [
     spec({
       disabled: !sessionId,
       icon: 'edit',
@@ -269,10 +215,13 @@ function useSessionActions({
   ]
 
   // WORK — derive/extract from the session.
-  const workItems: ItemSpec[] = [
+  const workItems: ActionItemSpec[] = [
     spec({
       disabled: !onBranch,
-      icon: 'git-branch',
+      // Fork glyph to match the inline message action's GitFork icon
+      // (assistant-message.tsx). NB: this codicon font has no `git-fork`
+      // glyph (only `git-fork-private`); `repo-forked` is the fork icon.
+      icon: 'repo-forked',
       label: r.branchFrom,
       onSelect: () => {
         triggerHaptic('selection')
@@ -293,7 +242,7 @@ function useSessionActions({
   // TAB — close verbs that act on the strip (tabs only; a row isn't a tab).
   const closeTargets = surface === 'tab' && tabPaneId ? treeTabCloseTargets(tabPaneId) : null
 
-  const tabCloseItems: ItemSpec[] =
+  const tabCloseItems: ActionItemSpec[] =
     surface === 'tab'
       ? [
           ...(onClose
@@ -344,7 +293,7 @@ function useSessionActions({
       : []
 
   // DANGER — put it away / destroy it (delete stays last, destructive-red).
-  const dangerItems: ItemSpec[] = [
+  const dangerItems: ActionItemSpec[] = [
     spec({
       disabled: !onArchive,
       icon: 'archive',
@@ -367,18 +316,11 @@ function useSessionActions({
     }
   ]
 
-  const renderMenuItem = (Item: MenuItem, { className, disabled, icon, label, onSelect, variant }: ItemSpec) => (
-    <Item className={className} disabled={disabled} key={label} onSelect={onSelect} variant={variant}>
-      <Codicon name={icon} size="0.875rem" />
-      <span>{label}</span>
-    </Item>
-  )
-
   const renderItems = (kit: MenuKit) => (
     <>
-      {openItems.map(item => renderMenuItem(kit.Item, item))}
+      {openItems.map(item => renderActionItem(kit, item))}
       {openItems.length > 0 && <kit.Separator />}
-      {identityItems.map(item => renderMenuItem(kit.Item, item))}
+      {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
           <Codicon name="symbol-color" size="0.875rem" />
@@ -389,7 +331,7 @@ function useSessionActions({
         </kit.SubContent>
       </kit.Sub>
       <CopyButton
-        appearance={kit.Item === DropdownMenuItem ? 'menu-item' : 'context-menu-item'}
+        appearance={kit.copyAppearance}
         disabled={!sessionId}
         errorMessage={r.copyIdFailed}
         iconClassName="size-3.5 text-current"
@@ -399,19 +341,19 @@ function useSessionActions({
         text={sessionId}
       />
       <kit.Separator />
-      {workItems.map(item => renderMenuItem(kit.Item, item))}
+      {workItems.map(item => renderActionItem(kit, item))}
       {tabCloseItems.length > 0 && (
         <>
           <kit.Separator />
-          {tabCloseItems.map(item => renderMenuItem(kit.Item, item))}
+          {tabCloseItems.map(item => renderActionItem(kit, item))}
         </>
       )}
       <kit.Separator />
-      {dangerItems.map(item => renderMenuItem(kit.Item, item))}
+      {dangerItems.map(item => renderActionItem(kit, item))}
       {onHideTabBar && (
         <>
           <kit.Separator />
-          {renderMenuItem(kit.Item, {
+          {renderActionItem(kit, {
             disabled: false,
             icon: 'eye-closed',
             label: r.hideTabBar,
@@ -439,28 +381,25 @@ function useSessionActions({
 }
 
 interface SessionActionsMenuProps
-  extends SessionActions, Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'sideOffset'> {
+  extends SessionActions, Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'> {
   children: React.ReactNode
 }
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { renameDialog, renderItems } = useSessionActions(actions)
-  const [open, setOpen] = useState(false)
 
   return (
     <>
-      <DropdownMenu onOpenChange={setOpen} open={open}>
-        <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-        <DropdownMenuContent
-          align={align}
-          aria-label={t.sidebar.row.actionsFor(actions.title)}
-          className="w-40"
-          sideOffset={sideOffset}
-        >
-          {renderItems(DROPDOWN_KIT)}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <ActionsMenu
+        align={align}
+        ariaLabel={t.sidebar.row.sessionActions}
+        contentClassName="w-40"
+        items={renderItems}
+        sideOffset={sideOffset}
+      >
+        {children}
+      </ActionsMenu>
       {renameDialog}
     </>
   )
@@ -476,12 +415,9 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
 
   return (
     <>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
-          {renderItems(CONTEXT_KIT)}
-        </ContextMenuContent>
-      </ContextMenu>
+      <ActionsContextMenu ariaLabel={t.sidebar.row.sessionActions} contentClassName="w-40" items={renderItems}>
+        {children}
+      </ActionsContextMenu>
       {renameDialog}
     </>
   )
@@ -542,7 +478,6 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{r.renameTitle}</DialogTitle>
-          <DialogDescription>{r.renameDesc}</DialogDescription>
         </DialogHeader>
         <Input
           autoFocus

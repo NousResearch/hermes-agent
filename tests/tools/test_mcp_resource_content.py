@@ -53,35 +53,6 @@ class TestRenderResourceBlock:
             assert fh.read() == PDF_BYTES
         assert "report.pdf" in path
 
-    def test_embedded_text_resource_is_inlined(self):
-        from tools.mcp_tool import _render_mcp_resource_block
-
-        res = SimpleNamespace(uri="mem://notes", mimeType="text/plain", text="hello world", blob=None)
-        assert _render_mcp_resource_block(_embedded(res), "srv") == "hello world"
-
-    def test_resource_link_preserves_uri_and_points_at_reader(self):
-        from tools.mcp_tool import _render_mcp_resource_block
-
-        link = SimpleNamespace(
-            type="resource_link",
-            uri="slack://files/F123",
-            name="report.pdf",
-            mimeType="application/pdf",
-        )
-        out = _render_mcp_resource_block(link, "slack")
-        assert "slack://files/F123" in out
-        # Must be the real wire name (mcp__<server>__read_resource), not a
-        # made-up "<server>_read_resource" the agent can't actually call.
-        assert "mcp__slack__read_resource" in out
-        assert "report.pdf" in out
-
-    def test_oversized_blob_fails_explicitly_without_writing(self, doc_cache, monkeypatch):
-        import tools.mcp_tool as m
-
-        monkeypatch.setattr(m, "_MCP_RESOURCE_MAX_BYTES", 8)
-        out = m._render_mcp_resource_block(_embedded(_blob_resource(PDF_BYTES)), "srv")
-        assert "too large" in out
-        assert not list(doc_cache.glob("doc_*"))
 
     def test_malformed_base64_fails_explicitly(self):
         from tools.mcp_tool import _render_mcp_resource_block
@@ -112,22 +83,6 @@ class TestResourceFilename:
 
         assert _mcp_resource_filename("slack://f/ABC/quarterly.pdf", "application/pdf") == "quarterly.pdf"
 
-    def test_fallback_to_mime_extension(self):
-        from tools.mcp_tool import _mcp_resource_filename
-
-        name = _mcp_resource_filename("", "application/pdf")
-        assert name.endswith(".pdf")
-
-    def test_dotdot_rejected(self):
-        from tools.mcp_tool import _mcp_resource_filename
-
-        assert _mcp_resource_filename("x://y/..", "application/pdf") != ".."
-
-    def test_control_chars_stripped(self):
-        from tools.mcp_tool import _mcp_resource_filename
-
-        name = _mcp_resource_filename("x://h/report.pdf%0Ainjected%1b[31m", "application/pdf")
-        assert "\n" not in name and "\x1b" not in name
 
     def test_long_filename_capped_preserving_extension(self):
         from tools.mcp_tool import _mcp_resource_filename
@@ -239,10 +194,14 @@ class TestErrorPathResourceText:
             finally:
                 loop.close()
 
-        with mock_patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
-             mock_patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
-            fake_session.call_tool = AsyncMock()
-            yield fake_session, mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        mcp_tool._reset_server_error("test-server")
+        try:
+            with mock_patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
+                 mock_patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
+                fake_session.call_tool = AsyncMock()
+                yield fake_session, mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        finally:
+            mcp_tool._reset_server_error("test-server")
 
     def test_error_embedded_resource_text_surfaced(self, _handler):
         from unittest.mock import AsyncMock

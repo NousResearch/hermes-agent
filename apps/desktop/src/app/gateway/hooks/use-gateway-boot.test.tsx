@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
 
+import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { useGatewayBoot } from './use-gateway-boot'
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
@@ -18,6 +19,7 @@ import { useGatewayBoot } from './use-gateway-boot'
 // post-boot reconnect loop.
 
 type Listener = (ev: unknown) => void
+let connectionApplied: null | (() => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -97,7 +99,13 @@ function fakeDesktop() {
     })),
     onBootProgress: vi.fn(() => () => undefined),
     onBackendExit: vi.fn(() => () => undefined),
-    onConnectionApplied: vi.fn(() => () => undefined),
+    onConnectionApplied: vi.fn(callback => {
+      connectionApplied = callback
+
+      return () => {
+        connectionApplied = null
+      }
+    }),
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
@@ -105,8 +113,12 @@ function fakeDesktop() {
   }
 }
 
-function Harness({ refreshSessions }: { refreshSessions?: () => Promise<void> } = {}) {
+function Harness({
+  beforeConnectionSwitch = () => undefined,
+  refreshSessions
+}: { beforeConnectionSwitch?: () => void; refreshSessions?: () => Promise<void> } = {}) {
   useGatewayBoot({
+    beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
@@ -120,9 +132,21 @@ function Harness({ refreshSessions }: { refreshSessions?: () => Promise<void> } 
 const originalWebSocket = globalThis.WebSocket
 
 beforeEach(() => {
+  // Drop any parked gateway left by a prior file/case (globalThis slot).
+  const leftover = takeGatewaySurvivor()
+
+  if (leftover) {
+    try {
+      leftover.gateway.close()
+    } catch {
+      // ignore
+    }
+  }
+
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  connectionApplied = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -140,6 +164,19 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  // Vitest keeps import.meta.hot truthy, so the boot effect's cleanup parks an
+  // open gateway instead of tearing it down (the real HMR path). Drain + close
+  // that survivor so the next test boots a fresh socket instead of adoptBoot().
+  const survivor = takeGatewaySurvivor()
+
+  if (survivor) {
+    try {
+      survivor.gateway.close()
+    } catch {
+      // ignore
+    }
+  }
+
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
@@ -197,6 +234,18 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('resets the old machine context before connecting an applied gateway', async () => {
+    const beforeConnectionSwitch = vi.fn()
+    render(<Harness beforeConnectionSwitch={beforeConnectionSwitch} />)
+    await flushAsync()
+    expect(connectionApplied).not.toBeNull()
+
+    act(() => connectionApplied?.())
+    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
   })
 
   it('a remote that drops post-boot keeps looping with NO boot.error (the dead-end CONNECTING combo)', async () => {

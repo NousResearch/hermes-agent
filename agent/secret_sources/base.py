@@ -190,6 +190,45 @@ class SecretSource(ABC):
         """
         return {}
 
+    def remediation(self, kind: Optional["ErrorKind"], cfg: dict) -> str:
+        """One-line, actionable next step for a failed fetch.
+
+        Called by the startup status printer (and ``hermes secrets ...
+        status``) right after a fetch error is surfaced, so the user sees
+        *what to run* next to fix it — not just what broke.  Sources
+        should override this to point at their own CLI verbs (e.g.
+        ``hermes secrets bitwarden token`` for AUTH_FAILED).  Return an
+        empty string to suppress the hint.
+
+        Must never raise and must not perform I/O — it's a pure
+        kind→string mapping on the startup path.
+        """
+        generic = {
+            ErrorKind.NOT_CONFIGURED: (
+                f"Run `hermes secrets {self.name} setup` to finish configuration."
+            ),
+            ErrorKind.BINARY_MISSING: (
+                f"Run `hermes secrets {self.name} setup` to install the helper CLI."
+            ),
+            ErrorKind.AUTH_FAILED: (
+                f"Credentials rejected — run `hermes secrets {self.name} setup` "
+                "to re-authenticate."
+            ),
+            ErrorKind.AUTH_EXPIRED: (
+                f"Credentials expired — run `hermes secrets {self.name} setup` "
+                "to re-authenticate."
+            ),
+            ErrorKind.NETWORK: (
+                "Network problem reaching the secrets backend — check "
+                "connectivity and retry."
+            ),
+            ErrorKind.TIMEOUT: (
+                f"Backend was slow — raise secrets.{self.name}.timeout_seconds "
+                "if this recurs."
+            ),
+        }
+        return generic.get(kind, "") if kind is not None else ""
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers — use these instead of hand-rolling per backend
@@ -200,6 +239,10 @@ _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # ANSI CSI/OSC escape sequences — helper-CLI stderr often carries color
 # codes that must not reach Hermes' own startup output.
+# NOTE: intentionally NOT migrated to tools.ansi_strip.strip_ansi — the
+# optional terminator here (``(?:\x07|\x1b\\)?``) also strips *unterminated*
+# OSC sequences (common when a CLI is killed mid-write), which strip_ansi
+# leaves untouched. strip_ansi is not a superset of this regex.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
 
 
@@ -256,7 +299,7 @@ def run_secret_cli(
             list(argv),
             env=env,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
             stdin=subprocess.DEVNULL,
         )

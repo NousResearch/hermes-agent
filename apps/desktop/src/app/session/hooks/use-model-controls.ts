@@ -4,8 +4,9 @@ import { useCallback, useRef } from 'react'
 import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { manualPickRemoved } from '@/lib/model-options'
+import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentModel,
@@ -36,16 +37,45 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // callbacks once and never re-evaluate — a captured prop would be stale
   // forever. The store read is always current.
   const updateModelOptionsCache = useCallback(
-    (sessionId: null | string, provider: string, model: string, includeGlobal: boolean) => {
+    (
+      sessionId: null | string,
+      provider: string,
+      model: string,
+      includeGlobal: boolean,
+      profile = $activeGatewayProfile.get()
+    ) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', sessionId || 'global'], patch)
+      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId), patch)
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
+        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile), patch)
       }
     },
     [queryClient]
+  )
+
+  // Settings → Model writes the profile default, which the backend applies to
+  // new sessions only. Keep a live session's renderer state and session-scoped
+  // model-options cache authoritative instead of briefly painting the saved
+  // default as if the active agent had switched. Marking the composer as
+  // default-derived still lets the next fresh draft reseed from profile config.
+  const applySavedMainModel = useCallback(
+    (provider: string, model: string) => {
+      const liveSessionId = $activeSessionId.get()
+
+      setCurrentModelSource('default')
+
+      if (!liveSessionId) {
+        setCurrentProvider(provider)
+        setCurrentModel(model)
+      }
+
+      // A null session id is the profile-global model-options key. Never patch
+      // the live session key here: only config.set --session may change it.
+      updateModelOptionsCache(null, provider, model, false)
+    },
+    [updateModelOptionsCache]
   )
 
   // Seed the composer's model state from the profile default. `force` reseeds
@@ -78,7 +108,9 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
             return false
           }
 
-          const options = queryClient.getQueryData<ModelOptionsResponse>(['model-options', 'global'])
+          const options = queryClient.getQueryData<ModelOptionsResponse>(
+            modelOptionsQueryKey($activeGatewayProfile.get())
+          )
 
           return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())
         }
@@ -144,6 +176,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
 
       const prevSource = getCurrentModelSource()
+      const liveGatewayProfile = $activeGatewayProfile.get()
 
       if (touchesPrimary) {
         setCurrentModel(selection.model)
@@ -158,7 +191,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         }))
       }
 
-      updateModelOptionsCache(liveSessionId, selection.provider, selection.model, touchesPrimary && !liveSessionId)
+      updateModelOptionsCache(
+        liveSessionId,
+        selection.provider,
+        selection.model,
+        touchesPrimary && !liveSessionId,
+        liveGatewayProfile
+      )
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
@@ -173,7 +212,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           value: `${selection.model} --provider ${selection.provider} --session`
         })
 
-        void queryClient.invalidateQueries({ queryKey: ['model-options', liveSessionId] })
+        void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
 
         return true
       } catch (err) {
@@ -189,7 +228,13 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           }))
         }
 
-        updateModelOptionsCache(liveSessionId, prevProvider, prevModel, touchesPrimary && !liveSessionId)
+        updateModelOptionsCache(
+          liveSessionId,
+          prevProvider,
+          prevModel,
+          touchesPrimary && !liveSessionId,
+          liveGatewayProfile
+        )
         notifyError(err, copy.modelSwitchFailed)
 
         return false
@@ -198,5 +243,5 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
     [copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
-  return { refreshCurrentModel, selectModel, updateModelOptionsCache }
+  return { applySavedMainModel, refreshCurrentModel, selectModel }
 }

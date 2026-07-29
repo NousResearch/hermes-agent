@@ -3,7 +3,32 @@ import { Text, useInput } from '@hermes/ink'
 import { type ReactNode, useState } from 'react'
 
 import type { UsageModelData } from '../gatewayTypes.js'
+import { liftForContrast, mix } from '../lib/color.js'
 import type { Theme } from '../theme.js'
+
+/**
+ * Overlay width clamp: prefer `preferred`, honor the caller's `maxWidth`
+ * ABSOLUTELY (a grid cell knows its budget — overflowing it clips at the
+ * terminal edge), and keep a usability floor only when the cap allows it.
+ */
+export function clampOverlayWidth(preferred: number, maxWidth?: number, min = 24): number {
+  const cap = maxWidth === undefined ? Number.MAX_SAFE_INTEGER : Math.max(1, Math.trunc(maxWidth))
+
+  return Math.max(Math.min(min, cap), Math.min(preferred, cap))
+}
+
+/**
+ * THE scrollbar treatment (transcript + overlays): thumb rides the theme
+ * base, accent while interacting; track recedes via an explicit blend toward
+ * the surface. Never SGR dim — terminal-interpreted, it renders as a black
+ * slab on transparent profiles (terminal.background #00000000).
+ */
+export function scrollbarColors(t: Theme, hover: boolean, grabbed: boolean): { thumb: string; track: string } {
+  return {
+    thumb: grabbed || hover ? t.color.accent : t.color.primary,
+    track: mix(hover ? t.color.border : t.color.muted, t.color.completionBg, hover ? 0.25 : 0.55)
+  }
+}
 
 export interface MenuRowSpec {
   color?: string
@@ -51,11 +76,51 @@ export function useMenu(rows: MenuRowSpec[], onEscape: () => void, onKey?: (ch: 
   return Math.min(sel, Math.max(0, rows.length - 1))
 }
 
-/** A numbered menu row with the ▸ cursor (mirrors ClarifyPrompt). */
+/**
+ * THE selected-row treatment for every list surface (completions popover,
+ * session switcher, pickers): a `selection` chip on the active row, nothing
+ * painted otherwise. Panels never paint their own full background — floating
+ * surfaces are `opaque` (terminal-native canvas) and only the active row
+ * carries color, so list surfaces cannot disagree about "selected" and stay
+ * correct on any terminal background. Callers own layout; this owns color.
+ */
+export function listRowStyle(t: Theme, active: boolean): { backgroundColor?: string; color?: string } {
+  if (!active) {
+    return {}
+  }
+
+  const backgroundColor = t.color.completionCurrentBg
+
+  // The chip guarantees its own ink: a cross-polarity theme (dark palette on
+  // a light terminal) pairs pale text with a light chip, so lift the ink
+  // against the ACTUAL chip fill with the xterm algorithm.
+  return { backgroundColor, color: liftForContrast(t.color.text, backgroundColor, 4.5) }
+}
+
+/** Spreadable props for a selectable row: chip bg + ink + bold when active.
+ *  Spread AFTER `color` so the chip ink wins on the active row. Replaces
+ *  `inverse`, which swaps against the terminal's unknowable default colors
+ *  (a black slab on transparent profiles). */
+export function chipRowProps(t: Theme, active: boolean): { backgroundColor?: string; bold: boolean; color?: string } {
+  const row = listRowStyle(t, active)
+
+  return { backgroundColor: row.backgroundColor, bold: active, ...(row.color ? { color: row.color } : {}) }
+}
+
+/** A numbered menu row with the ▸ cursor (mirrors ClarifyPrompt). Active rows
+ *  carry the shared list-row selection chip — same treatment as completions
+ *  and the session switcher — instead of `inverse`, whose contrast depends on
+ *  the terminal's unknowable default colors. */
 export function MenuRow({ active, index, label, t }: { active: boolean; index: number; label: string; t: Theme }) {
+  const row = listRowStyle(t, active)
+
   return (
     <Text>
-      <Text bold={active} color={active ? t.color.label : t.color.muted} inverse={active}>
+      <Text
+        backgroundColor={row.backgroundColor}
+        bold={active}
+        color={active ? (row.color ?? t.color.label) : t.color.muted}
+      >
         {active ? '▸ ' : '  '}
         {index}. {label}
       </Text>

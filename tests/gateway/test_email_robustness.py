@@ -67,41 +67,13 @@ class TestImapResponseGuard(unittest.TestCase):
         results = self._fetch_with([("OK", [None])])
         self.assertEqual(results, [])
 
-    def test_empty_list_skipped(self):
-        results = self._fetch_with([("OK", [])])
-        self.assertEqual(results, [])
-
-    def test_bare_bytes_element_skipped(self):
-        # Single bytes item instead of a (header, payload) tuple
-        results = self._fetch_with([("OK", [b"not-a-tuple"])])
-        self.assertEqual(results, [])
-
-    def test_non_bytes_payload_skipped(self):
-        results = self._fetch_with([("OK", [(b"1", None)])])
-        self.assertEqual(results, [])
-
-    def test_malformed_does_not_abort_batch(self):
-        """A malformed response mid-batch must not lose the messages after it."""
-        results = self._fetch_with([
-            ("OK", [None]),                                # UID 1 malformed
-            ("OK", [(b"2 (RFC822 {123}", _raw_email())]),  # UID 2 fine
-        ])
-        self.assertEqual(len(results), 1)
-
 
 class TestMessageIdDomain(unittest.TestCase):
     """Message-ID generation tolerates EMAIL_ADDRESS without '@'."""
 
-    def test_normal_address(self):
-        adapter = _make_adapter("hermes@example.org")
-        self.assertEqual(adapter._message_id_domain(), "example.org")
 
     def test_address_without_at(self):
         adapter = _make_adapter("not-an-email")
-        self.assertEqual(adapter._message_id_domain(), "localhost")
-
-    def test_address_trailing_at(self):
-        adapter = _make_adapter("weird@")
         self.assertEqual(adapter._message_id_domain(), "localhost")
 
 

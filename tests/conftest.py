@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -169,6 +170,16 @@ def _looks_like_credential(name: str) -> bool:
 # HERMES_* vars that change test behavior by being set. Unset all of these
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({
+    # Voice/TTS runtime flags. ``tui_gateway/server.py`` reads these straight
+    # off ``os.environ`` at call time (``_voice_mode_enabled`` /
+    # ``_voice_tts_enabled``) and, on every completed turn, hands the turn's
+    # final response text to ``hermes_cli.voice.speak_text`` — real synthesis,
+    # real playback, out of the developer's speakers. Blank them per-test so a
+    # leak (from the shell, or from an earlier test that drove the
+    # ``voice.toggle`` RPC, which writes ``os.environ`` directly) cannot carry
+    # into the next test. See ``_audio_playback_guard`` for the second layer.
+    "HERMES_VOICE",
+    "HERMES_VOICE_TTS",
     "HERMES_YOLO_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
@@ -178,6 +189,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_PLATFORM",
     "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_NAME",
+    "HERMES_SESSION_CHAT_TYPE",
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
@@ -213,6 +225,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+    # Pytest is routinely launched from a delegated worker.  The worker
+    # lineage marker must not make parent-state tests run as delegated
+    # children; tests that exercise child behavior set it explicitly.
+    "HERMES_DELEGATED_CHILD_CONTEXT",
     "HERMES_TENANT",
     # Honcho host selection changes which nested config block wins. A local
     # shell override leaked "myhost" into the full suite and flipped 20
@@ -253,6 +269,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "DINGTALK_ALLOWED_USERS",
     "FEISHU_ALLOWED_USERS",
     "WECOM_ALLOWED_USERS",
+    "PHOTON_ALLOWED_USERS",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
     "TELEGRAM_ALLOW_ALL_USERS",
@@ -262,6 +279,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SIGNAL_ALLOW_ALL_USERS",
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
+    "PHOTON_ALLOW_ALL_USERS",
     # Gateway home channels are set by /sethome in real profiles. Tests that
     # exercise dashboard notification toggles must opt in explicitly or they
     # can accidentally subscribe against a developer's real home channel.
@@ -302,6 +320,9 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "WECOM_HOME_CHANNEL",
     "WECOM_HOME_CHANNEL_THREAD_ID",
     "WECOM_HOME_CHANNEL_NAME",
+    "PHOTON_HOME_CHANNEL",
+    "PHOTON_HOME_CHANNEL_THREAD_ID",
+    "PHOTON_HOME_CHANNEL_NAME",
     # API server bind/auth settings are common in local gateway profiles and
     # change adapter defaults plus load_gateway_config() enablement. Tests that
     # need them set opt in explicitly with monkeypatch.
@@ -317,7 +338,13 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # Force-clear on every test setup so the leak can't happen.
     "SLACK_REQUIRE_MENTION",
     "SLACK_STRICT_MENTION",
+    "SLACK_THREAD_REQUIRE_MENTION",
+    "SLACK_IGNORE_OTHER_USER_MENTIONS",
+    "SLACK_REQUIRE_MENTION_CHANNELS",
     "SLACK_FREE_RESPONSE_CHANNELS",
+    "SLACK_ALLOWED_CHANNELS",
+    "SLACK_IGNORED_CHANNELS",
+    "SLACK_DISABLE_DMS",
     "SLACK_ALLOW_BOTS",
     "SLACK_REACTIONS",
     "DISCORD_REQUIRE_MENTION",
@@ -535,6 +562,89 @@ def _ensure_current_event_loop(request):
 # delivery is harmless.
 
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
+_REQUIRES_WAL_MARK = "requires_wal"
+
+
+def _wal_is_usable() -> bool:
+    """True when Hermes will actually put a database into WAL mode here.
+
+    Hermes refuses journal_mode=WAL on SQLite builds carrying the upstream
+    WAL-reset corruption bug (3.7.0–3.51.2, excluding backports 3.50.7 /
+    3.44.6) and falls back to DELETE. On such a build NO ``-wal`` sidecar is
+    ever created, so a test asserting on WAL frames, ``-wal`` file size, or
+    checkpoint behaviour cannot pass — it is testing a mode the runtime
+    declined to enable, not a regression.
+
+    This matters because the interpreter running the tests and the interpreter
+    running Hermes can link DIFFERENT SQLite versions: a repo ``.venv`` on
+    3.50.4 (vulnerable → DELETE) alongside a Hermes managed runtime on 3.53.1
+    (fixed → WAL). The same test then passes in one and fails in the other.
+
+    IMPORTANT: this must NOT import ``hermes_state``. That module computes
+    ``DEFAULT_DB_PATH`` from ``get_hermes_home()`` at import time, so importing
+    it during collection — before the per-test ``_isolate_hermes_home`` fixture
+    redirects ``HERMES_HOME`` — permanently caches the DEVELOPER'S REAL
+    ``~/.hermes/state.db`` for the whole session. Tests then read live
+    production sessions instead of a tempdir. The version predicate is
+    duplicated from ``hermes_state._is_sqlite_wal_reset_vulnerable`` (upstream
+    fixed ranges, stable) rather than imported, and
+    ``test_conftest_wal_gate.py`` pins the two implementations in agreement.
+    """
+    info = sqlite3.sqlite_version_info
+    if info < (3, 7, 0):
+        return True  # pre-WAL library: cannot hit the race
+    if info >= (3, 51, 3):
+        return True  # fixed upstream
+    if (3, 50, 7) <= info < (3, 51, 0):
+        return True  # 3.50.x backport
+    if (3, 44, 6) <= info < (3, 45, 0):
+        return True  # 3.44.x backport
+    return False
+
+
+# ── Audio-playback guard ───────────────────────────────────────────────────
+#
+# Same class of incident as the live-system guard above, different primitive:
+# a test run spoke the string "partial answer complete" out of the developer's
+# speakers. That string is a test fixture
+# (``tests/test_tui_gateway_server.py``'s fake ``final_response``), and the
+# route it took is fully in-process — no leaked shell variable required:
+#
+#   1. ``test_voice_toggle_tts_branch_also_carries_record_key`` drives the
+#      ``voice.toggle`` RPC with ``action="tts"``. The handler
+#      (``tui_gateway/server.py``) flips the flag by writing the *real*
+#      process environment: ``os.environ["HERMES_VOICE_TTS"] = "1"``. The
+#      test's ``monkeypatch.delenv(..., raising=False)`` records no undo entry
+#      (pytest only records an undo when the key was present), so the "1"
+#      survives teardown and persists for the rest of the pytest process.
+#   2. Any later test in that process that drives a turn to completion hits
+#      the TTS dispatch in ``prompt.submit``, which checks
+#      ``_voice_tts_enabled()`` — now true — and fires
+#      ``hermes_cli.voice.speak_text(final_response)`` on a daemon thread.
+#   3. ``speak_text`` needs no API key to be audible: ``tools/tts_tool.py``
+#      defaults to the ``edge`` provider, which is keyless.
+#
+# Because the flag is set from *inside* the process, ``scripts/run_tests.sh``'s
+# ``env -i`` does not help, and neither does env-blanking on its own — the
+# hermetic fixture blanks at test setup, and step 1 re-sets it mid-test. So we
+# also intercept the primitive that does the damage, exactly as the
+# live-system guard intercepts ``os.kill`` rather than trusting every caller
+# to mock it:
+#
+#  • ``hermes_cli.voice.speak_text`` — the synth+playback entry point both
+#    gateway call sites late-import, so patching the module attribute catches
+#    them wherever they import it from.
+#  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
+#    ``speak_text`` actually plays through. Patching the binding inside
+#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
+#    available to the tests that legitimately exercise it with a mocked
+#    audio backend (``tests/tools/test_voice_mode.py``).
+#
+# Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
+# only selects *which* provider speaks, never *whether* to speak — that gate
+# is the env var alone.
+
+_AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
@@ -545,6 +655,18 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
     )
+    config.addinivalue_line(
+        "markers",
+        f"{_REQUIRES_WAL_MARK}: test needs the runtime to actually enable "
+        "SQLite WAL mode; skipped on builds where Hermes falls back to "
+        "journal_mode=DELETE for the WAL-reset bug.",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{_AUDIO_GUARD_BYPASS_MARK}: bypass the audio-playback guard (only "
+        "for tests that genuinely need real TTS synthesis and speaker "
+        "playback — there are none in the default suite).",
+    )
 
     # The pyproject addopts pin ``--timeout-method=signal`` relies on
     # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout
@@ -553,6 +675,26 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     # suite runs natively there (POSIX keeps the more reliable signal method).
     if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
         config.option.timeout_method = "thread"
+
+
+def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
+    """Skip ``requires_wal`` tests when the linked SQLite can't use WAL.
+
+    Cheaper and more honest than each test hand-rolling a version check: the
+    reason string names the actual linked version so the skip is diagnosable
+    rather than mysterious.
+    """
+    if _wal_is_usable():
+        return
+
+    reason = (
+        f"SQLite {sqlite3.sqlite_version} has the WAL-reset bug — Hermes uses "
+        "journal_mode=DELETE here, so no -wal sidecar exists to assert on"
+    )
+    skip_marker = pytest.mark.skip(reason=reason)
+    for item in items:
+        if item.get_closest_marker(_REQUIRES_WAL_MARK) is not None:
+            item.add_marker(skip_marker)
 
 
 @pytest.fixture(autouse=True)
@@ -905,3 +1047,79 @@ def _live_system_guard(request, monkeypatch):
         pass
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def _audio_playback_guard(request, monkeypatch):
+    """Stub TTS synthesis + speaker playback for every test.
+
+    See the block comment above for the incident this closes. Defence in
+    depth behind ``_HERMES_BEHAVIORAL_VARS``: the env blanking stops the flag
+    leaking *between* tests, this stops the speakers ever opening even when a
+    test sets the flag *itself* (which the ``voice.toggle`` RPC handler does,
+    by writing ``os.environ`` directly).
+
+    Deliberately silent rather than raising: unlike a stray ``os.kill``, a
+    stray ``speak_text`` is dispatched on a daemon thread whose exception
+    nobody would ever see, so a hard failure would neither stop the test nor
+    surface. Silence is the whole point. Tests that genuinely want real audio
+    can opt out with ``@pytest.mark.real_audio_playback``.
+    """
+    if request.node.get_closest_marker(_AUDIO_GUARD_BYPASS_MARK):
+        yield
+        return
+
+    try:
+        import hermes_cli.voice as _voice
+    except Exception:
+        # Optional audio deps missing — nothing importable to speak with.
+        yield
+        return
+
+    def _blocked_speak_text(text, *args, **kwargs):
+        return None
+
+    def _blocked_play_audio_file(path, *args, **kwargs):
+        return False
+
+    if hasattr(_voice, "speak_text"):
+        monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
+    if hasattr(_voice, "play_audio_file"):
+        monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_computer_use_approval_state():
+    """Reset computer-use approval globals after every test.
+
+    ``tools.computer_use.tool`` keeps three module-globals for the CLI
+    approval flow: ``_approval_callback`` (set by the CLI console on init)
+    plus the per-session unlock stores ``_always_allow`` /
+    ``_session_auto_approve``. A test that installs a callback — or drives
+    CLI init far enough that the real one is registered — and does not reset
+    it poisons every later computer-use test in the same process:
+
+    * a leaked callback that raises (dead UI/queue infra, or a stale
+      two-argument signature — the real contract is ``(action, args,
+      summary)``) turns into ``verdict = "deny"`` in ``_request_approval``,
+      so dispatch tests fail with an empty backend call list;
+    * a leaked callback that blocks (the real CLI one waits on an answer
+      queue) hangs the whole single-process run forever — pytest-timeout is
+      the only thing that can cut it.
+
+    Both symptoms are order-dependent: the affected files pass in isolation
+    and only fail in full-suite runs. Teardown-only, so tests that install
+    their own callback keep it for their own duration.
+    """
+    yield
+    try:
+        from tools.computer_use import tool as _cu_tool
+
+        _cu_tool.set_approval_callback(None)
+        with _cu_tool._approval_lock:
+            _cu_tool._always_allow.clear()
+            _cu_tool._session_auto_approve.clear()
+    except Exception:
+        pass

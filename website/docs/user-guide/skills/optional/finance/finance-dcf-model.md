@@ -1,14 +1,14 @@
 ---
-title: "Dcf Model"
+title: "Dcf Model — Build discounted cash flow valuation workbooks in Excel"
 sidebar_label: "Dcf Model"
-description: "Build institutional-quality DCF valuation models in Excel — revenue projections, FCF build, WACC, terminal value, Bear/Base/Bull scenarios, 5x5 sensitivity t..."
+description: "Build discounted cash flow valuation workbooks in Excel"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Dcf Model
 
-Build institutional-quality DCF valuation models in Excel — revenue projections, FCF build, WACC, terminal value, Bear/Base/Bull scenarios, 5x5 sensitivity tables. Pairs with excel-author. Use for intrinsic-value equity analysis.
+Build discounted cash flow valuation workbooks in Excel.
 
 ## Skill metadata
 

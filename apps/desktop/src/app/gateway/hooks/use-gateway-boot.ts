@@ -40,6 +40,8 @@ import {
 import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
+import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
 // raise a recoverable boot error. Otherwise a dropped remote gateway loops the
 // backoff forever behind the fullscreen CONNECTING overlay with no way to reach
@@ -48,6 +50,7 @@ import type { RpcEvent } from '@/types/hermes'
 const RECONNECT_ESCALATE_AFTER = 6
 
 interface GatewayBootOptions {
+  beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: RpcEvent) => void
   onConnectionReady: (
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
@@ -58,6 +61,7 @@ interface GatewayBootOptions {
 }
 
 export function useGatewayBoot({
+  beforeConnectionSwitch,
   handleGatewayEvent,
   onConnectionReady,
   onGatewayReady,
@@ -65,6 +69,7 @@ export function useGatewayBoot({
   refreshSessions
 }: GatewayBootOptions) {
   const callbacksRef = useRef({
+    beforeConnectionSwitch,
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
@@ -73,6 +78,7 @@ export function useGatewayBoot({
   })
 
   callbacksRef.current = {
+    beforeConnectionSwitch,
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
@@ -155,9 +161,10 @@ export function useGatewayBoot({
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces
         // as an opaque "Could not connect to Hermes gateway". resolveGatewayWsUrl
-        // mints a fresh ticket (or throws a reauth error in OAuth mode rather
-        // than connecting with a stale one). For local/token gateways the URL
-        // carries a long-lived token and the re-mint is a cheap no-op.
+        // mints a fresh ticket rather than connecting with a stale one. An
+        // explicit auth rejection asks for sign-in; transport failures stay in
+        // this reconnect loop. For local/token gateways the URL carries a
+        // long-lived token and the re-mint is a cheap no-op.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
 
@@ -264,6 +271,7 @@ export function useGatewayBoot({
       reconnectAttempt = 0
       escalated = false
       reauthNotified = false
+      callbacksRef.current.beforeConnectionSwitch()
       wipeSessionListsForGatewaySwitch()
 
       try {
@@ -331,9 +339,28 @@ export function useGatewayBoot({
       progress: 6
     })
 
-    const gateway = new HermesGateway()
+    // HMR adoption: in a dev hot update, the previous effect instance parked its
+    // still-open socket instead of closing it (see the cleanup below). Re-adopt
+    // it so an edit doesn't drop the live agent session. A stale (closed) parked
+    // socket is discarded and we boot fresh. No-op in production: import.meta.hot
+    // is undefined there, so this folds to `null` and the whole survivor module
+    // dead-code-eliminates out of the bundle.
+    const survivor = import.meta.hot ? takeGatewaySurvivor() : null
+    const adoptedFromHmr = Boolean(survivor && !survivorIsStale(survivor))
+
+    if (survivor && !adoptedFromHmr) {
+      // Parked socket died between edits (e.g. backend restart) — release it.
+      try {
+        survivor.gateway.close()
+      } catch {
+        // ignore
+      }
+    }
+
+    const gateway = adoptedFromHmr ? survivor!.gateway : new HermesGateway()
+
     callbacksRef.current.onGatewayReady(gateway)
-    setPrimaryGateway(gateway, normalizeProfileKey($activeGatewayProfile.get()))
+    setPrimaryGateway(gateway, survivor?.profile ?? normalizeProfileKey($activeGatewayProfile.get()))
     // Secondary (background-profile) sockets funnel into the same handler.
     configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
 
@@ -454,9 +481,9 @@ export function useGatewayBoot({
         publish(conn)
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
-        // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
-        // failure, throws a reauth error rather than connecting with a dead
-        // ticket (which would surface as an opaque "connection closed").
+        // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
+        // connecting with a dead ticket. Auth rejection asks for sign-in;
+        // connectivity failures remain retryable.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
 
@@ -507,7 +534,42 @@ export function useGatewayBoot({
       }
     }
 
-    void boot()
+    // Adopt the parked socket without re-running the full boot handshake: the
+    // socket is already open, the backend session is untouched, and we already
+    // know the profile. We only re-publish the connection, re-sync config +
+    // sessions (cheap, and the backend may have moved on between edits), and
+    // dismiss any boot overlay. This is what keeps a live, mid-stream session
+    // intact across an HMR update.
+    async function adoptBoot() {
+      bootCompleted = true
+      completeDesktopBoot()
+
+      if (survivor?.connection) {
+        publish(survivor.connection)
+      }
+
+      const profile = survivor?.profile ?? $activeGatewayProfile.get()
+      $activeGatewayProfile.set(profile)
+      void ensureGatewayForProfile(profile)
+
+      // Mirror the current (already-open) socket state into the composer so the
+      // input doesn't sit disabled after the swap.
+      reportPrimaryGatewayState(gateway.connectionState)
+
+      await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
+
+      if (cancelled) {
+        return
+      }
+
+      await callbacksRef.current.refreshSessions().catch(() => undefined)
+    }
+
+    if (adoptedFromHmr) {
+      void adoptBoot()
+    } else {
+      void boot()
+    }
 
     return () => {
       cancelled = true
@@ -526,6 +588,24 @@ export function useGatewayBoot({
       offExit()
       offWindowState?.()
       offBootProgress()
+
+      // HMR teardown vs. real unmount. On a hot update we must NOT close the
+      // socket — that's the whole bug. Detach this instance's listeners (their
+      // closures capture the disposed module), park the still-open gateway, and
+      // let the freshly loaded effect re-adopt it. Secondaries are owned by the
+      // gateway store (HMR-stable module state), so they survive untouched.
+      // Production: import.meta.hot is undefined, so this branch never runs and
+      // the original destructive teardown below is byte-for-byte preserved.
+      if (import.meta.hot && gateway.connectionState === 'open') {
+        stashGatewaySurvivor({
+          gateway,
+          profile: survivor?.profile ?? $activeGatewayProfile.get(),
+          connection: $connection.get()
+        })
+
+        return
+      }
+
       closeSecondaryGateways()
       gateway.close()
       publish(null)

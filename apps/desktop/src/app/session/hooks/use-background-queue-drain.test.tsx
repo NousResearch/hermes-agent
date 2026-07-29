@@ -3,7 +3,13 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
+import {
+  $parkedQueueSessions,
+  $queuedPromptsBySession,
+  enqueueQueuedPrompt,
+  getQueuedPrompts,
+  parkQueuedPrompts
+} from '@/store/composer-queue'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
@@ -41,6 +47,7 @@ describe('useBackgroundQueueDrain', () => {
     vi.restoreAllMocks()
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
     clearAllSessionStates()
   })
 
@@ -87,6 +94,25 @@ describe('useBackgroundQueueDrain', () => {
     enqueueQueuedPrompt('stored-session-a', { text: 'wait for current turn', attachments: [] })
     // Mark the session as working (busy) so the drain should skip it
     publishSessionState('rt-session-a', { ...createClientSessionState('stored-session-a'), busy: true })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('does not drain a parked background session, even when idle', async () => {
+    // A Stop in a tile parks that session's queue; when the user then focuses
+    // another chat, THIS drainer takes over the tile's queue — it must honor
+    // the park just like the mounted ChatBar drainer does.
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'halted by stop', attachments: [] })
+    parkQueuedPrompts('stored-session-a')
+    clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 

@@ -36,6 +36,9 @@ _WARNED_UTF32_PATHS: set[str] = set()
 # directly (otherwise the "credentials detected ✓" line looks identical to
 # the .env case and they don't know Bitwarden is wired up).
 _SECRET_SOURCES: dict[str, str] = {}
+# Applied values are immutable per-home snapshots.  ``os.environ`` is shared
+# across profiles and may be overwritten by a later home's source apply.
+_SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 
 # HERMES_HOME paths we've already pulled external secrets for during this
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
@@ -60,6 +63,14 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def get_secret_source_values(
+    hermes_home: str | os.PathLike,
+) -> dict[str, str]:
+    """Return the external-secret value snapshot for ``hermes_home``."""
+    home_key = str(Path(hermes_home).resolve())
+    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
+
+
 def reset_secret_source_cache() -> None:
     """Forget which HERMES_HOME paths have already had external secrets applied.
 
@@ -71,6 +82,8 @@ def reset_secret_source_cache() -> None:
     that want to refresh after a config change.
     """
     _APPLIED_HOMES.clear()
+    _SECRET_SOURCES.clear()
+    _SECRET_SOURCE_VALUES_BY_HOME.clear()
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -175,12 +188,7 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it.
 
-    python-dotenv does not handle corrupted lines where multiple
-    KEY=VALUE pairs are concatenated on a single line (missing newline).
-    This produces mangled values — e.g. a bot token duplicated 8×
-    (see #8908).
-
-    Also strips embedded null bytes which crash ``os.environ[k] = v``
+    Strips embedded null bytes which crash ``os.environ[k] = v``
     with ``ValueError: embedded null byte`` — typically introduced by
     copy-pasting API keys from terminals or rich-text editors.
 
@@ -190,9 +198,8 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     to the errors=replace corruption path. Order of BOM checks matters:
     UTF-32-LE's BOM starts with UTF-16-LE's FF FE.
 
-    We delegate to ``hermes_cli.config._sanitize_env_lines`` which
-    already knows all valid Hermes env-var names and can split
-    concatenated lines correctly.
+    ``hermes_cli.config._sanitize_env_lines`` normalizes line endings while
+    treating content after the first ``=`` as opaque for boundary discovery.
     """
     if not path.exists():
         return
@@ -304,7 +311,7 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
-    # Fix corrupted .env files before python-dotenv parses them (#8908).
+    # Normalize safe formatting and remove invalid NUL bytes before parsing.
     if user_env.exists():
         _sanitize_env_file_if_needed(user_env)
     if project_env_path and project_env_path.exists():
@@ -396,13 +403,19 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
         return
-    _APPLIED_HOMES.add(home_key)
 
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
+        # Deliberately NOT marked applied: a malformed config.yaml would
+        # otherwise permanently disable secret loading for this process
+        # even after the user fixes the file (#40597).
         return
     if not cfg:
+        # No secrets section (or everything disabled at parse level).  Not
+        # marked applied either — the re-parse is a cheap fast_safe_load and
+        # leaving the home unmarked lets a process pick up a config change
+        # on its next load_hermes_dotenv() call instead of never.
         return
 
     try:
@@ -415,6 +428,19 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
         return
 
+    if not report.sources:
+        # Config parsed but no source is enabled: keep retrying cheaply
+        # (no fetch happens for disabled sources) so flipping a source on
+        # mid-process takes effect on the next call.
+        return
+
+    # A real fetch attempt happened (success OR error).  Mark the home now
+    # so the 3-5 import-time load_hermes_dotenv() calls per startup don't
+    # re-fetch / re-print — error retries within one process are opt-in via
+    # reset_secret_source_cache().  Marking AFTER the attempt (not before,
+    # see #40597) is what lets the earlier failure paths stay retryable.
+    _APPLIED_HOMES.add(home_key)
+
     if report.applied_any:
         # Re-run the ASCII sanitization pass: vault values are
         # user-supplied and might have the same copy-paste corruption as
@@ -424,23 +450,49 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # flows can label detected credentials with "(from Bitwarden)" /
         # "(from 1Password)" — otherwise users see "credentials ✓" with
         # no hint the value came from a vault rather than .env.
+        values: dict[str, str] = {}
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+            if name in os.environ:
+                values[name] = os.environ[name]
+        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
 
     for src in report.sources:
         if src.applied:
             print(
                 f"  {src.label}: applied {len(src.applied)} "
-                f"secret{'s' if len(src.applied) != 1 else ''} "
-                f"({', '.join(sorted(src.applied))})",
+                f"secret{'s' if len(src.applied) != 1 else ''}",
                 file=sys.stderr,
             )
         if src.result.error:
             print(f"  {src.label}: {src.result.error}", file=sys.stderr)
+            hint = _remediation_hint(src.name, src.result.error_kind, cfg)
+            if hint:
+                print(f"  {src.label}: → {hint}", file=sys.stderr)
         for warn in src.result.warnings:
             print(f"  {src.label}: {warn}", file=sys.stderr)
     for conflict in report.conflicts:
         print(f"  Secret sources: {conflict}", file=sys.stderr)
+
+
+def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict) -> str:
+    """Ask the failed source for its one-line fix-it hint.
+
+    Defensive wrapper: remediation() is a pure mapping and shouldn't
+    raise, but a plugin source could — and startup must never break on
+    a status line.
+    """
+    try:
+        from agent.secret_sources.registry import get_source
+
+        source = get_source(source_name)
+        if source is None:
+            return ""
+        src_cfg = secrets_cfg.get(source_name)
+        src_cfg = src_cfg if isinstance(src_cfg, dict) else {}
+        return str(source.remediation(error_kind, src_cfg) or "").strip()
+    except Exception:  # noqa: BLE001 — hints must never block startup
+        return ""
 
 
 def _load_secrets_config(home_path: Path) -> dict:
@@ -452,6 +504,21 @@ def _load_secrets_config(home_path: Path) -> dict:
     config_path = home_path / "config.yaml"
     if not config_path.exists():
         return {}
+    # Prefer the shared (mtime, size)-keyed raw-config cache — this is the
+    # first config.yaml read in a normal `hermes` startup, so populating the
+    # shared cache here lets main.py's early bridge and hermes_logging reuse
+    # the same parse (one parse per process instead of 3-4). Falls back to a
+    # direct isolated parse if the shared reader is unavailable, preserving
+    # the "malformed config can't take down dotenv loading" property (the
+    # shared reader also swallows parse errors and returns {}).
+    if home_path == _process_hermes_home():
+        try:
+            from hermes_cli.config import read_raw_config
+
+            data = read_raw_config() or {}
+            return data.get("secrets") or {}
+        except Exception:
+            pass
     try:
         import yaml  # type: ignore
     except ImportError:
@@ -462,3 +529,13 @@ def _load_secrets_config(home_path: Path) -> dict:
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}
+
+
+def _process_hermes_home() -> Path:
+    """The HERMES_HOME the shared config cache is keyed to."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home()
+    except Exception:
+        return Path.home() / ".hermes"

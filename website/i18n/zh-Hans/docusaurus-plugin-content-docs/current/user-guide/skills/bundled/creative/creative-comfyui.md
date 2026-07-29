@@ -21,7 +21,7 @@ description: "使用 ComfyUI 生成图像、视频和音频——安装、启动
 | 许可证 | MIT |
 | 平台 | macos, linux, windows |
 | 标签 | `comfyui`, `image-generation`, `stable-diffusion`, `flux`, `sd3`, `wan-video`, `hunyuan-video`, `creative`, `generative-ai`, `video-generation` |
-| 相关 skill | [`stable-diffusion-image-generation`](/user-guide/skills/optional/mlops/mlops-stable-diffusion), `image_gen` |
+| 相关 skill | [`stable-diffusion-image-generation`](/user-guide/skills/optional/mlops/mlops-stable-diffusion) |
 
 ## 参考：完整 SKILL.md
 

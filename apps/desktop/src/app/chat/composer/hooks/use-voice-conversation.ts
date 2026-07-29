@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
   markVoicePlaybackInterrupted,
@@ -573,6 +574,22 @@ export function useVoiceConversation({
 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [enabled, stopTurn])
+
+  // Ambient "thinking" sound: while the agent works (status 'thinking') no
+  // audio flows, which reads as dead air mid-conversation. Calm bubble blips
+  // fill the gap; they stop the INSTANT speech starts, the mic re-arms, or the
+  // conversation ends. Gated by voice.thinking_sound + the shared sound mute.
+  useEffect(() => {
+    if (enabled && !muted && status === 'thinking') {
+      startThinkingSound()
+
+      return stopThinkingSound
+    }
+
+    stopThinkingSound()
+
+    return undefined
+  }, [enabled, muted, status])
 
   // Drive the loop: when a voice-submitted reply appears, open a live speech
   // session (which feeds itself from then on). Otherwise start listening when

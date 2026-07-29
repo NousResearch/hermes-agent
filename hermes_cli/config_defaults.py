@@ -2370,7 +2370,7 @@ DEFAULT_CONFIG = {
             "listing": "auto",
             # Absolute cap on the embedded listing in tokens (chars/4
             # estimate), regardless of context size. Range 200..60000.
-            "listing_max_tokens": 20000,
+            "listing_max_tokens": 4000,
         },
     },
 

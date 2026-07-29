@@ -303,6 +303,14 @@ class TestHelpers:
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         assert mcp_serve._load_sessions_index() == {}
 
+    def test_parse_message_timestamp_supports_z_suffix(self):
+        from mcp_serve import _parse_message_timestamp
+        assert _parse_message_timestamp("2026-03-29T15:00:10Z") > 0
+
+    def test_parse_message_timestamp_invalid_value(self):
+        from mcp_serve import _parse_message_timestamp
+        assert _parse_message_timestamp("definitely-not-a-timestamp") == 0.0
+
 
 class TestContentExtraction:
     def test_text(self):
@@ -346,6 +354,23 @@ class TestAttachmentExtraction:
         from mcp_serve import _extract_attachments
         msg = {"content": "MEDIA: /a.png and MEDIA: /b.mp3"}
         assert len(_extract_attachments(msg)) == 2
+
+    def test_media_tag_strips_trailing_punctuation(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": "Please inspect MEDIA: /tmp/screenshot.png). Thanks"}
+        att = _extract_attachments(msg)
+        assert len(att) == 1
+        assert att[0] == {"type": "media", "path": "/tmp/screenshot.png"}
+
+    def test_deduplicates_identical_attachments(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": [
+            {"type": "image_url", "image_url": {"url": "http://x.com/pic.jpg"}},
+            {"type": "image_url", "image_url": {"url": "http://x.com/pic.jpg"}},
+        ]}
+        att = _extract_attachments(msg)
+        assert len(att) == 1
+        assert att[0] == {"type": "image", "url": "http://x.com/pic.jpg"}
 
     def test_no_attachments(self):
         from mcp_serve import _extract_attachments
@@ -1299,3 +1324,45 @@ class TestEventBridgePollE2E:
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL
         assert POLL_INTERVAL == 0.2
+
+    def test_poll_detects_zulu_timestamps(self, tmp_path, monkeypatch):
+        """EventBridge should detect ISO timestamps with trailing Z."""
+        import mcp_serve
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_id = "20260329_150000_zulu"
+        db_path = tmp_path / "state.db"
+        sessions_data = {
+            "agent:main:telegram:dm:zulu": {
+                "session_key": "agent:main:telegram:dm:zulu",
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:05Z",
+                "origin": {"platform": "telegram", "chat_id": "zulu"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "Zulu first", "timestamp": "2026-03-29T15:00:01Z"},
+            {"role": "assistant", "content": "Zulu reply", "timestamp": "2026-03-29T15:00:03Z"},
+        ])
+
+        class TestDB:
+            def get_messages(self, sid):
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                    (sid,),
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+
+        bridge = mcp_serve.EventBridge()
+        bridge._poll_once(TestDB())
+        result = bridge.poll_events(after_cursor=0)
+        assert len(result["events"]) == 2
+        assert result["events"][0]["content"] == "Zulu first"
+        assert result["events"][1]["content"] == "Zulu reply"

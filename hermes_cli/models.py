@@ -1861,8 +1861,8 @@ def _should_use_copilot_responses_api(model_id: str) -> bool:
 def copilot_model_api_mode(
     model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
     api_key: Optional[str] = None) -> str:
-    """Use the GPT model-id rule first, then prefer native Messages when the catalog advertises it.
-    Models without either signal fall back to Chat Completions."""
+    """Use the GPT model-id rule first, then catalog Responses, then catalog Messages.
+    Fall back to Chat Completions when none applies."""
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
         catalog = fetch_github_model_catalog(api_key=api_key)
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
@@ -1878,7 +1878,9 @@ def copilot_model_api_mode(
                 for endpoint in (catalog_entry.get("supported_endpoints") or [])
                 if str(endpoint).strip()
             }
-            # For non-GPT-5 models, check if they support messages API
+            # For non-GPT-5 models, check catalog endpoints
+            if "/responses" in supported_endpoints:
+                return "codex_responses"
             if "/v1/messages" in supported_endpoints:
                 return "anthropic_messages"
 

@@ -71,3 +71,54 @@ def test_wayland_prefers_wl_copy():
          patch.object(clip.subprocess, "run", return_value=_completed()) as run:
         assert clip.write_clipboard_text("x") is True
     assert run.call_args[0][0][0] == "wl-copy"
+
+
+def test_is_remote_shell_session_detects_ssh_env():
+    assert clip.is_remote_shell_session({"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"})
+    assert clip.is_remote_shell_session({"SSH_TTY": "/dev/pts/0"})
+    assert clip.is_remote_shell_session({"SSH_CLIENT": "1.2.3.4 5 22"})
+    assert not clip.is_remote_shell_session({})
+    assert not clip.is_remote_shell_session({"TERM": "xterm-256color"})
+
+
+class TestOsc52MultiplexerWrapping:
+    """CLI _write_osc52_clipboard must wrap for tmux/screen passthrough
+    (mirrors ui-tui/src/lib/osc52.ts wrapForMultiplexer)."""
+
+    def _capture_seq(self, env):
+        import io
+        from unittest.mock import patch as _patch
+        from cli import HermesCLI
+
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj._app = None
+        buf = io.StringIO()
+        with _patch.dict(clip.os.environ, env, clear=False), \
+             _patch("cli.sys.stdout", buf):
+            for var in ("TMUX", "STY"):
+                if var not in env:
+                    clip.os.environ.pop(var, None)
+            cli_obj._write_osc52_clipboard("hello")
+        return buf.getvalue()
+
+    def test_tmux_wraps_in_dcs_passthrough(self, monkeypatch):
+        monkeypatch.setenv("TMUX", "/tmp/tmux-123/default,1,0")
+        monkeypatch.delenv("STY", raising=False)
+        seq = self._capture_seq({"TMUX": "/tmp/tmux-123/default,1,0"})
+        assert seq.startswith("\x1bPtmux;")
+        assert "]52;c;" in seq
+        assert seq.endswith("\x1b\\")
+
+    def test_raw_osc52_outside_multiplexers(self, monkeypatch):
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.delenv("STY", raising=False)
+        seq = self._capture_seq({})
+        assert seq.startswith("\x1b]52;c;")
+        assert seq.endswith("\x07")
+
+    def test_screen_wraps_in_dcs(self, monkeypatch):
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.setenv("STY", "12345.pts-0.host")
+        seq = self._capture_seq({"STY": "12345.pts-0.host"})
+        assert seq.startswith("\x1bP\x1b]52;c;")
+        assert seq.endswith("\x1b\\")

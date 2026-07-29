@@ -65,10 +65,39 @@ def test_copy_falls_back_to_osc52_when_native_tools_fail():
     cli_obj.conversation_history = [{"role": "assistant", "content": "hello"}]
 
     with patch("hermes_cli.clipboard.write_clipboard_text", return_value=False), \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
          patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
         cli_obj.process_command("/copy")
 
     mock_osc52.assert_called_once_with("hello")
+
+
+def test_copy_prefers_osc52_in_ssh_sessions():
+    """Over SSH, native tools write the REMOTE clipboard — OSC 52 reaches
+    the local terminal instead (#31528)."""
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "remote answer"}]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_native, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=True), \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/copy")
+
+    mock_osc52.assert_called_once_with("remote answer")
+    mock_native.assert_not_called()
+
+
+def test_copy_native_first_when_local():
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "local answer"}]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_native, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/copy")
+
+    mock_native.assert_called_once_with("local answer")
+    mock_osc52.assert_not_called()
 
 
 def test_copy_invalid_index_does_not_copy():

@@ -2599,6 +2599,11 @@ class SessionDB:
         random 20-150ms, and retry — breaking the convoy pattern that
         SQLite's built-in deterministic backoff creates.
 
+        ``CompressionSessionBusyError`` (raised by *fn* when another writer
+        holds the compression lock on a session) is treated the same way as a
+        transient SQLite lock — retried with jitter.  The compression lock is
+        short-lived by design, so this is never a fatal error.
+
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
@@ -2648,6 +2653,21 @@ class SessionDB:
                 if not self._try_runtime_fts_rebuild(exc):
                     raise
                 continue
+            except CompressionSessionBusyError as exc:
+                # Another writer holds the compression lock on this session.
+                # The lock is short-lived (has expiry), so retry with jitter
+                # just like a SQLite lock contention — this is the same class
+                # of transient conflict, not a fatal error.
+                last_err = exc
+                if attempt < self._WRITE_MAX_RETRIES - 1:
+                    jitter = random.uniform(
+                        self._WRITE_RETRY_MIN_S,
+                        self._WRITE_RETRY_MAX_S,
+                    )
+                    time.sleep(jitter)
+                    continue
+                # Retries exhausted — give up.
+                raise
         # Retries exhausted (shouldn't normally reach here).
         raise last_err or sqlite3.OperationalError(
             "database is locked after max retries"

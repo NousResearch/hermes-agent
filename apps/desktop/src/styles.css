@@ -188,6 +188,13 @@
     --context-usage-subagents: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-cyan));
     --context-usage-memory: color-mix(in srgb, var(--ui-orange) 80%, var(--ui-yellow));
     --context-usage-conversation: var(--ui-cyan);
+    /* Landed memory-write tool row — gold → purple, never amber warning. */
+    --tool-memory-legendary-from: color-mix(in srgb, var(--ui-yellow) 72%, #f5d08a);
+    --tool-memory-legendary-mid: color-mix(in srgb, var(--ui-orange) 55%, var(--ui-purple));
+    --tool-memory-legendary-to: color-mix(in srgb, var(--ui-purple) 82%, #c4b5fd);
+    --tool-memory-legendary-icon: color-mix(in srgb, var(--ui-yellow) 55%, var(--ui-purple));
+    --tool-memory-legendary-meta: color-mix(in srgb, var(--ui-purple) 58%, var(--ui-text-tertiary));
+    --tool-memory-legendary-glow: color-mix(in srgb, var(--ui-purple) 38%, transparent);
     /* Diff add/remove, derived from the semantic palette so every diff surface
        (tool cards, preview, review pane) tracks the theme's green/red. Only the
        foregrounds need a dark override — they mix toward the page instead of
@@ -736,6 +743,29 @@
       0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
       0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
   }
+}
+
+/* Landed `memory` tool row — gold → purple on the brain glyph + title.
+   Pair with `text-transparent` so the scaffold label color can't win. */
+.tool-memory-legendary-title {
+  background-image: linear-gradient(
+    105deg,
+    var(--tool-memory-legendary-from) 0%,
+    var(--tool-memory-legendary-mid) 48%,
+    var(--tool-memory-legendary-to) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+  font-weight: 600;
+}
+
+.tool-memory-legendary-glyph {
+  filter: drop-shadow(0 0 0.28rem var(--tool-memory-legendary-glow));
+}
+
+.tool-memory-legendary-meta {
+  color: var(--tool-memory-legendary-meta);
 }
 
 .quest-glow {

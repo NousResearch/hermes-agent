@@ -188,6 +188,37 @@ class TestGenerateZsh:
         finally:
             os.unlink(path)
 
+    def test_zsh_eval_style_source_defers_registration_until_compinit(self):
+        if not shutil.which("zsh"):
+            pytest.skip("zsh not installed")
+        out = generate_zsh(_make_parser())
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".zsh", delete=False) as f:
+            f.write(out)
+            path = f.name
+        try:
+            result = subprocess.run(
+                [
+                    "zsh",
+                    "-dfc",
+                    (
+                        f"source {path}; "
+                        '[[ -z "${_comps[hermes]-}" ]]; '
+                        '[[ "${precmd_functions[(r)_hermes_register_completion]-}" '
+                        "== _hermes_register_completion ]]; "
+                        "autoload -Uz compinit && compinit -D; "
+                        "_hermes_register_completion; "
+                        '[[ "${_comps[hermes]-}" == _hermes ]]; '
+                        '[[ -z "${precmd_functions[(r)_hermes_register_completion]-}" ]]'
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+            assert "command not found: compdef" not in result.stderr
+        finally:
+            os.unlink(path)
+
 
 # ---------------------------------------------------------------------------
 # 4. Fish output

@@ -61,10 +61,8 @@ import sys
 import tempfile
 import threading
 import time
-import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
-from agent.auxiliary_client import call_llm
 from agent.redact import redact_cdp_url
 from hermes_constants import (
     agent_browser_runnable,
@@ -74,6 +72,38 @@ from hermes_constants import (
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli._subprocess_compat import windows_hide_flags
+
+
+def __getattr__(name: str):
+    """Lazy module attributes (PEP 562) — import diet for cold start.
+
+    ``requests`` (~40 ms) and ``agent.auxiliary_client.call_llm`` (~65 ms)
+    are only needed on specific code paths, so they load on first use. The
+    module-level names are preserved for the test-patch surface
+    (``patch("tools.browser_tool.requests.get")`` /
+    ``patch("tools.browser_tool.call_llm")``): first attribute access imports
+    the real object and binds it into module globals.
+    """
+    if name == "requests":
+        import requests as _requests
+
+        globals()["requests"] = _requests
+        return _requests
+    if name == "call_llm":
+        from agent.auxiliary_client import call_llm as _call_llm
+
+        globals()["call_llm"] = _call_llm
+        return _call_llm
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _lazy_call_llm(*args, **kwargs):
+    """Invoke ``call_llm`` through module globals so test patches of
+    ``tools.browser_tool.call_llm`` are honored, importing lazily otherwise."""
+    fn = globals().get("call_llm")
+    if fn is None:
+        fn = __getattr__("call_llm")
+    return fn(*args, **kwargs)
 
 # Browser-specific tool keys passed through to the agent-browser subprocess
 # AFTER credential stripping.  agent-browser is a Node process loading npm
@@ -433,6 +463,8 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         version_url = discovery_url.rstrip("/") + "/json/version"
 
     try:
+        import requests  # lazy — shared module object, test patches still apply
+
         response = requests.get(version_url, timeout=10)
         response.raise_for_status()
         payload = response.json()
@@ -2770,7 +2802,7 @@ def _extract_relevant_content(
         model = _get_extraction_model()
         if model:
             call_kwargs["model"] = model
-        response = call_llm(**call_kwargs)
+        response = _lazy_call_llm(**call_kwargs)
         extracted = (response.choices[0].message.content or "").strip()
         if not extracted:
             # _truncate_snapshot stores its own pointer (dedupes to the same
@@ -4333,7 +4365,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             call_kwargs["model"] = vision_model
         # Try full-size screenshot; on size-related rejection, downscale and retry.
         try:
-            response = call_llm(**call_kwargs)
+            response = _lazy_call_llm(**call_kwargs)
         except Exception as _api_err:
             from tools.vision_tools import (
                 _is_image_size_error, _resize_image_for_vision, _RESIZE_TARGET_BYTES,
@@ -4349,7 +4381,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 data_url = _resize_image_for_vision(
                     screenshot_path, mime_type="image/png")
                 call_kwargs["messages"][0]["content"][1]["image_url"]["url"] = data_url
-                response = call_llm(**call_kwargs)
+                response = _lazy_call_llm(**call_kwargs)
             else:
                 raise
 

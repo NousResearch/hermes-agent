@@ -75,6 +75,14 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/pets')).toBe(false)
   })
 
+  it('routes /wake through the desktop wake action instead of the slash worker', () => {
+    expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
+    expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')
+    expect(isDesktopSlashSuggestion('/wake')).toBe(true)
+    expect(isDesktopSlashCommand('/wake')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
+  })
+
   it('treats /browser as an executable action command (local-gateway connect)', () => {
     // /browser used to be terminal-only; it now resolves to a desktop action
     // handler that routes browser.manage RPC when the gateway is local.

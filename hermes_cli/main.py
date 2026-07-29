@@ -697,14 +697,15 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # `load_config()` was doing a full deep-merge for one boolean lookup).
 _FORCE_IPV4_EARLY = False
 try:
-    import yaml as _yaml_early
+    # Reuse read_raw_config()'s (mtime, size)-keyed cache instead of a bespoke
+    # yaml.load — the SAME parse then serves hermes_logging's
+    # _read_logging_config and any later raw reads in this process, collapsing
+    # 3-4 config.yaml parses per invocation into one.
+    from hermes_cli.config import read_raw_config as _read_raw_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
     if _cfg_path.exists():
-        with open(_cfg_path, encoding="utf-8") as _f:
-            _early_cfg_raw = _yaml_early.load(
-                _f, Loader=getattr(_yaml_early, "CSafeLoader", None) or _yaml_early.SafeLoader
-            ) or {}
+        _early_cfg_raw = _read_raw_early() or {}
         # Managed scope: overlay administrator-pinned values so a managed
         # security.redact_secrets / network.force_ipv4 wins here too. This early
         # bridge reads config.yaml directly (before load_config is usable), so

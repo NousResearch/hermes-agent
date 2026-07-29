@@ -218,10 +218,54 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # as a flake (last-good True is served) rather than a real outage. Kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_CHECK_FN_CACHE_MAX = 512
+_check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
-_check_fn_last_good: Dict[Callable, float] = {}
+_check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
 _check_fn_cache_lock = threading.Lock()
+CHECK_FN_CACHE_BYPASS = ""
+
+
+def _prune_check_fn_caches(now: float) -> None:
+    """Expire stale entries and cap profile-dimensional cache growth.
+
+    Caller must hold ``_check_fn_cache_lock``.
+    """
+    for key, (timestamp, _) in list(_check_fn_cache.items()):
+        if now - timestamp >= _CHECK_FN_TTL_SECONDS:
+            _check_fn_cache.pop(key, None)
+    for key, timestamp in list(_check_fn_last_good.items()):
+        if now - timestamp >= _CHECK_FN_FAILURE_GRACE_SECONDS:
+            _check_fn_last_good.pop(key, None)
+    while len(_check_fn_cache) >= _CHECK_FN_CACHE_MAX:
+        _check_fn_cache.pop(next(iter(_check_fn_cache)))
+    while len(_check_fn_last_good) >= _CHECK_FN_CACHE_MAX:
+        _check_fn_last_good.pop(next(iter(_check_fn_last_good)))
+
+
+def check_fn_cache_scope() -> Optional[str]:
+    """Return the active profile key when availability is profile-scoped.
+
+    Single-profile processes intentionally keep the historical process-wide
+    cache. A multiplex gateway installs a Hermes-home override for every
+    profile turn, so the canonical profile key is the stable isolation
+    boundary across repeated turns for that profile.
+    """
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        if not is_multiplex_active():
+            return None
+        from hermes_constants import get_hermes_home_override
+
+        override = get_hermes_home_override()
+        if not override:
+            return CHECK_FN_CACHE_BYPASS
+        return str(Path(override).expanduser().resolve())
+    except Exception:
+        # Fail closed: bypass both cache layers rather than aliasing requests
+        # whose multiplex profile identity could not be resolved.
+        return CHECK_FN_CACHE_BYPASS
 
 
 def _check_fn_cached(fn: Callable) -> bool:
@@ -234,8 +278,22 @@ def _check_fn_cached(fn: Callable) -> bool:
     contention, probe timeout) from silently stripping tools mid-session.
     """
     now = time.monotonic()
+    scope = check_fn_cache_scope()
+    if scope == CHECK_FN_CACHE_BYPASS:
+        try:
+            return bool(fn())
+        except Exception:
+            logger.warning(
+                "check_fn %s raised while profile cache scope was unresolved; "
+                "dependent tools will be unavailable this turn",
+                getattr(fn, "__qualname__", fn),
+                exc_info=True,
+            )
+            return False
+    cache_key = (fn, scope)
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        _prune_check_fn_caches(now)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
@@ -249,12 +307,13 @@ def _check_fn_cached(fn: Callable) -> bool:
         raised = True
 
     with _check_fn_cache_lock:
+        _prune_check_fn_caches(now)
         if value:
-            _check_fn_last_good[fn] = now
-            _check_fn_cache[fn] = (now, True)
+            _check_fn_last_good[cache_key] = now
+            _check_fn_cache[cache_key] = (now, True)
             return True
 
-        last_good = _check_fn_last_good.get(fn)
+        last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → treat this failure as a flake. Serve last-good
             # True and do NOT cache the failure, so the next call re-probes
@@ -275,7 +334,7 @@ def _check_fn_cached(fn: Callable) -> bool:
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
-        _check_fn_cache[fn] = (now, False)
+        _check_fn_cache[cache_key] = (now, False)
         return False
 
 

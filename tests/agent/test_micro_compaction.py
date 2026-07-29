@@ -124,6 +124,46 @@ class TestMicroCompaction:
         ]
         assert surviving == originals, "user turns must survive verbatim"
 
+    def test_cursor_is_derived_from_the_spliced_list(self):
+        """The cursor must never carry over a pre-splice index.
+
+        A splice collapses an assistant plus its tool results -- often several
+        messages -- into one marker, so every later index shifts. Reusing
+        ``exchange_end`` left the cursor pointing inside a *later* exchange's
+        tool group; the next pass walked forward to the following assistant
+        and skipped that exchange entirely, so on tool-bearing conversations
+        roughly half the work silently never happened.
+
+        Tool-free fixtures cannot catch this: the span is one message, so
+        nothing shifts.
+        """
+        cc = _compressor()
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(8):
+            msgs.append({"role": "user", "content": f"q{i}"})
+            msgs.append({
+                "role": "assistant",
+                "content": f"a{i}",
+                "tool_calls": [
+                    {"id": f"c{i}-{j}", "type": "function",
+                     "function": {"name": "f", "arguments": "{}"}}
+                    for j in range(3)
+                ],
+            })
+            for j in range(3):
+                msgs.append({"role": "tool", "tool_call_id": f"c{i}-{j}",
+                             "content": "T" * 500})
+
+        for _ in range(4):
+            msgs = cc._micro_compact(msgs)
+            marker_idx = next(
+                i for i, m in enumerate(msgs)
+                if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+            )
+            assert cc._micro_compact_cursor == marker_idx + 1, (
+                "cursor must sit just past the marker in the spliced list"
+            )
+
     def test_short_conversation_is_untouched(self):
         cc = _compressor()
         messages = [

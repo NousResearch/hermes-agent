@@ -52,15 +52,14 @@ export default function PairingPage() {
   }, [loadPairing]);
 
   const handleApprove = async (user: PairingUser) => {
-    const requestId = user.request_id || user.code;
-    if (!requestId) {
+    if (!user.request_id) {
       showToast("Missing pairing request", "error");
       return;
     }
     const key = getUserKey(user);
     setApproving(key);
     try {
-      await api.approvePairing(user.platform, requestId);
+      await api.approvePairing(user.platform, user.request_id);
       showToast(`Approved: "${getUserLabel(user)}"`, "success");
       loadPairing();
     } catch (e) {
@@ -180,22 +179,12 @@ export default function PairingPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <Badge tone="outline">{user.platform}</Badge>
-                    {(user.request_id || user.code) && (
-                      <span className="font-mono text-sm">
-                        {user.request_id || user.code}
-                      </span>
-                    )}
-                    {user.code_hash_prefix && (
-                      <span className="font-mono text-xs text-muted-foreground">
-                        hash {user.code_hash_prefix}
-                      </span>
-                    )}
+                    <span className="font-medium text-sm truncate">
+                      {getUserLabel(user)}
+                    </span>
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     <span className="truncate">{user.user_id}</span>
-                    {user.user_name && (
-                      <span className="truncate">{user.user_name}</span>
-                    )}
                     {typeof user.age_minutes === "number" && (
                       <span>{user.age_minutes}m ago</span>
                     )}
@@ -207,7 +196,7 @@ export default function PairingPage() {
                     size="sm"
                     className="uppercase"
                     onClick={() => handleApprove(user)}
-                    disabled={approving === key || !(user.request_id || user.code)}
+                    disabled={approving === key || !user.request_id}
                     prefix={
                       approving === key ? (
                         <Spinner />

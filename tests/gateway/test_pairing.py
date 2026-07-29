@@ -265,6 +265,58 @@ class TestApprovalFlow:
         assert result["user_name"] == "Alice"
         assert remaining == []
 
+    def test_approve_request_never_reveals_or_accepts_the_code_digest(self, tmp_path):
+        """`list_pending` exposes an approvable id and nothing derived from the code.
+
+        The pre-fix listing returned the code's hash prefix under a ``code``
+        key, which admin GUIs posted straight back to approve — it could never
+        match, because approval hashes its input and compares to that digest.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            entry = store.list_pending("telegram")[0]
+
+            digest = json.loads(
+                (tmp_path / "telegram-pending.json").read_text()
+            )[entry["request_id"]]["hash"]
+
+            assert set(entry) == {
+                "platform",
+                "request_id",
+                "user_id",
+                "user_name",
+                "age_minutes",
+            }
+            assert bot_code not in entry.values()
+            assert entry["request_id"] not in (digest, digest[:8])
+            # The digest prefix is not a credential on either grant path.
+            assert store.approve_code("telegram", digest[:8]) is None
+            assert store.approve_request("telegram", digest[:8]) is None
+
+    def test_stale_request_id_never_locks_out_the_code_path(self, tmp_path):
+        """Clicking Approve on an expired row is not a brute-force attempt.
+
+        Request ids only reach an admin already authenticated to this store, so
+        a miss means the row went stale — counting it toward the code lockout
+        let a handful of GUI clicks lock the operator out of `pairing approve`.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            stale_id = store.list_pending("telegram")[0]["request_id"]
+            assert store.approve_request("telegram", stale_id) is not None
+
+            # Re-click the now-approved row well past the lockout threshold.
+            for _ in range(MAX_FAILED_ATTEMPTS + 3):
+                assert store.approve_request("telegram", stale_id) is None
+
+            assert store._is_locked_out("telegram") is False
+            # And the code path is still usable for the next real request.
+            next_code = store.generate_code("telegram", "user2", "Bee")
+            assert store.approve_code("telegram", next_code) is not None
+            assert code != next_code
+
 
     def test_whatsapp_legacy_raw_jid_approval_survives_alias_flip(self, tmp_path, monkeypatch):
         mapping_dir = tmp_path / "whatsapp" / "session"

@@ -13021,22 +13021,28 @@ async def list_pairing():
 async def approve_pairing(body: PairingApprove):
     store = _pairing_store()
     platform = (body.platform or "").lower().strip()
-    code = (body.code or "").strip()
-    request_id = (body.request_id or "").strip()
-    if not platform or not (request_id or code):
-        raise HTTPException(status_code=400, detail="platform and request_id or code are required")
+    # `request_id` is what an admin surface sends after listing pending
+    # requests; `code` is the one-time code the user relays from their DM.
+    # A GUI that only knows the older field name still works — a value with
+    # request-id shape routes to the request path either way.
+    target = (body.request_id or body.code or "").strip()
+    if not platform or not target:
+        raise HTTPException(
+            status_code=400, detail="platform and request_id or code are required"
+        )
 
-    is_request_id = len(code) == 16 and all(c in "0123456789abcdefABCDEF" for c in code)
-    result = (
-        store.approve_request(platform, request_id)
-        if request_id
-        else store.approve_request(platform, code)
-        if is_request_id
-        else store.approve_code(platform, code)
-    )
+    by_request_id = bool(body.request_id) or store.looks_like_request_id(target)
+    if by_request_id:
+        result = store.approve_request(platform, target)
+    else:
+        result = store.approve_code(platform, target.upper())
+
     if result:
         return {"ok": True, "user": result}
-    if store._is_locked_out(platform):
+    # Lockout only gates the code path, so only report it there — otherwise a
+    # stale request id would surface as a bogus 429 while the platform sat
+    # locked out for an unrelated reason.
+    if not by_request_id and store._is_locked_out(platform):
         raise HTTPException(
             status_code=429,
             detail=f"Platform '{platform}' is locked out after too many failed approvals.",

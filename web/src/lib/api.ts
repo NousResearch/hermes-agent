@@ -1588,8 +1588,6 @@ export interface PairingUser {
   user_id: string;
   user_name?: string;
   request_id?: string;
-  code?: string;
-  code_hash_prefix?: string;
   age_minutes?: number;
 }
 

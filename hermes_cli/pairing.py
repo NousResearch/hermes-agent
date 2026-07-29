@@ -42,13 +42,12 @@ def _cmd_list(store):
         print(f"  {'Platform':<12} {'Request ID':<18} {'User ID':<20} {'Name':<20} {'Age'}")
         print(f"  {'--------':<12} {'----------':<18} {'-------':<20} {'----':<20} {'---'}")
         for p in pending:
-            request_id = p.get("request_id") or p.get("code") or ""
             print(
-                f"  {p['platform']:<12} {request_id:<18} {p['user_id']:<20} "
+                f"  {p['platform']:<12} {(p.get('request_id') or '-'):<18} {p['user_id']:<20} "
                 f"{(p.get('user_name') or ''):<20} {p['age_minutes']}m ago"
             )
         print("\n  Approve with: hermes pairing approve <platform> <request-id>")
-        print("  The bot-delivered code also still works if the user shares it.")
+        print("  The code the bot DM'd the user also works if they relay it.")
     else:
         print("\n  No pending pairing requests.")
 
@@ -65,12 +64,14 @@ def _cmd_list(store):
 
 
 def _cmd_approve(store, platform: str, code: str):
-    """Approve a pairing request id or pairing code."""
+    """Approve a pairing request id (from ``pairing list``) or a DM'd code."""
     platform = platform.lower().strip()
     code = code.strip()
-    is_request_id = len(code) == 16 and all(c in "0123456789abcdefABCDEF" for c in code)
 
-    result = store.approve_request(platform, code) if is_request_id else store.approve_code(platform, code)
+    if store.looks_like_request_id(code):
+        result = store.approve_request(platform, code)
+    else:
+        result = store.approve_code(platform, code.upper())
     if result:
         uid = result["user_id"]
         name = result.get("user_name") or ""

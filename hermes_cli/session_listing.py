@@ -47,6 +47,7 @@ def query_session_listing(
     *,
     source: str | None,
     current_session_id: str | None = None,
+    include_current_session: bool = False,
     include_all_sources: bool = False,
     include_unnamed: bool = False,
     search_query: str | None = None,
@@ -57,7 +58,8 @@ def query_session_listing(
 
     This is the shared selection policy behind CLI/gateway session browsing:
     source-scoped by default, optionally global, hide unnamed sessions unless
-    the caller asks for a full listing, and never include the current session.
+    the caller asks for a full listing, and hide the current session unless the
+    caller asks to show it with an ``is_current_session`` marker.
     With ``search_query``, rows are filtered by title/id match (SQL-level, see
     ``SessionDB.list_sessions_rich``) and ordered by most-recent activity;
     unnamed sessions stay visible since an id match may be the only handle.
@@ -74,10 +76,14 @@ def query_session_listing(
     )
     result: list[dict[str, Any]] = []
     for row in rows:
-        if current_session_id and row.get("id") == current_session_id:
+        is_current = bool(current_session_id and row.get("id") == current_session_id)
+        if is_current and not include_current_session:
             continue
-        if not include_unnamed and not row.get("title") and not search:
+        if not include_unnamed and not row.get("title") and not search and not is_current:
             continue
+        if is_current:
+            row = dict(row)
+            row["is_current_session"] = True
         result.append(row)
         if len(result) >= limit:
             break
@@ -102,11 +108,12 @@ def format_gateway_session_listing(
     for idx, row in enumerate(rows, start=1):
         session_id = str(row.get("id") or "")
         title_text = str(row.get("title") or "—")
+        current_part = " (current)" if row.get("is_current_session") else ""
         preview = str(row.get("preview") or "")[:40]
         source = str(row.get("source") or "")
         source_part = f" `{source}`" if include_source and source else ""
         preview_part = f" — _{preview}_" if preview else ""
-        lines.append(f"{idx}. **{title_text}**{source_part} — `{session_id}`{preview_part}")
+        lines.append(f"{idx}. **{title_text}**{current_part}{source_part} — `{session_id}`{preview_part}")
     lines.append("")
     lines.append("Resume: `/resume <session id>` or `/resume <number>` from `/resume`.")
     lines.append("More: `/sessions all`, `/sessions full`, `/sessions search <query>`.")

@@ -147,3 +147,41 @@ def test_dir_writable_probe(tmp_path) -> None:
         assert sidecar_paths.dir_writable(ro) is False
     finally:
         ro.chmod(0o755)
+
+
+def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
+    """Importing the adapter must not probe the filesystem or mirror files.
+
+    resolve_sidecar_dir() touch/unlink-probes the source tree and may copy
+    files to HERMES_HOME; the adapter and CLI resolve lazily on first use so
+    a bare import (plugin discovery, `hermes --help`, test collection) has
+    no filesystem side effects.
+    """
+    import importlib
+
+    from plugins.platforms.photon import adapter as photon_adapter
+    from plugins.platforms.photon import cli as photon_cli
+
+    def _boom(*args, **kwargs):  # pragma: no cover - failure path
+        raise AssertionError("resolve_sidecar_dir called at import time")
+
+    monkeypatch.setattr(sidecar_paths, "resolve_sidecar_dir", _boom)
+    try:
+        importlib.reload(photon_adapter)
+        importlib.reload(photon_cli)
+        # Nothing resolved yet.
+        assert photon_adapter._SIDECAR_DIR is None
+        assert photon_cli._SIDECAR_DIR is None
+        # First real use resolves (and would call resolve_sidecar_dir).
+        with pytest.raises(AssertionError, match="import time"):
+            photon_adapter._sidecar_dir()
+        # A monkeypatched _SIDECAR_DIR (the pattern existing tests use) is
+        # honored without touching the resolver.
+        monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", Path("/tmp/x"))
+        assert photon_adapter._sidecar_dir() == Path("/tmp/x")
+        assert photon_adapter._npm_error_log() == Path("/tmp/x/.photon-npm-error.log")
+    finally:
+        # Restore real bindings for any later test importing these modules.
+        monkeypatch.undo()
+        importlib.reload(photon_adapter)
+        importlib.reload(photon_cli)

@@ -640,17 +640,7 @@ A third-party skills marketplace integrated as a community source.
 - Site: [clawhub.ai](https://clawhub.ai/)
 - Hermes source id: `clawhub`
 
-#### 6. Claude marketplace-style repos (`claude-marketplace`)
-
-Hermes supports marketplace repos that publish Claude-compatible plugin/marketplace manifests.
-
-Known integrated sources include:
-- [anthropics/skills](https://github.com/anthropics/skills)
-- [aiskillstore/marketplace](https://github.com/aiskillstore/marketplace)
-
-Hermes source id: `claude-marketplace`
-
-#### 7. LobeHub (`lobehub`)
+#### 6. LobeHub (`lobehub`)
 
 Hermes can search and convert agent entries from LobeHub's public catalog into installable Hermes skills.
 
@@ -659,7 +649,7 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
-#### 8. browse.sh (`browse-sh`)
+#### 7. browse.sh (`browse-sh`)
 
 Hermes integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Hermes' browser tools and any browser-automation skills you already have installed.
 
@@ -676,7 +666,7 @@ hermes skills install browse-sh/airbnb.com/search-listings-ddgioa
 
 Identifiers use the form `browse-sh/<hostname>/<task-id>` and match the slug exposed by the browse.sh catalog. Content is resolved through the per-skill detail endpoint (`/api/skills/<slug>` → `skillMdUrl`), not through the catalog's GitHub `sourceUrl`.
 
-#### 9. Direct URL (`url`)
+#### 8. Direct URL (`url`)
 
 Install `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes also fetches explicitly referenced files under `references/`, `templates/`, `scripts/`, `assets/`, and `examples/`, then scans and installs the complete bundle.
 

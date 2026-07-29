@@ -3,16 +3,17 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, and Daytona environments. Supports local execution,
+Singularity, Daytona, and Sprites environments. Supports local execution,
 containerized backends, and cloud sandboxes, including managed Modal mode.
 
 Supported environments:
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
+- "sprites": Execute in Sprites — stateful cloud sandboxes on Fly.io, with checkpoint & restore
 
 Features:
-- Multiple execution backends (local, docker, modal)
+- Multiple execution backends (local, docker, modal, sprites)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -1265,7 +1266,7 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "sprites"})
 
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
@@ -1491,7 +1492,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "ssh"
+            "daytona", "sprites", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
@@ -1614,6 +1615,14 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "sprites":
+        from tools.environments.sprites import SpritesEnvironment as _SpritesEnvironment
+        return _SpritesEnvironment(
+            cwd=cwd, timeout=timeout,
+            persistent_filesystem=persistent, task_id=task_id,
+        )
+
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1629,7 +1638,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'sprites', or 'ssh'"
         )
 
 
@@ -2289,7 +2298,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "sprites"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -3006,10 +3015,23 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "sprites":
+            import importlib.util as _iu
+            if _iu.find_spec("sprites") is None:
+                logger.error(
+                    "sprites-py is required for sprites terminal backend: "
+                    "pip install 'hermes-agent[sprites]'"
+                )
+                return False
+            if not (os.getenv("SPRITES_TOKEN") or os.getenv("SPRITE_TOKEN")):
+                logger.error("SPRITES_TOKEN is required for sprites terminal backend")
+                return False
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "modal, daytona, sprites, ssh.",
                 env_type,
             )
             return False

@@ -315,6 +315,8 @@ def _build_provider_env_blocklist() -> frozenset:
         "GATEWAY_RELAY_ID",
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_DELIVERY_KEY",
+        "SPRITES_TOKEN",
+        "SPRITE_TOKEN",
     })
     # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
     # owned by the user's Claude Code install (subscription OAuth), not a

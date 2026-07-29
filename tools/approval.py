@@ -3026,7 +3026,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     """
     if env_type == "docker":
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona")
+    return env_type in ("singularity", "modal", "daytona", "sprites")
 
 
 def check_dangerous_command(command: str, env_type: str,

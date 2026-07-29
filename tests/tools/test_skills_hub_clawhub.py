@@ -246,7 +246,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
-        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20)
+        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20, headers=None, params=None)
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_versions_list(self, mock_get):

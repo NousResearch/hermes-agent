@@ -21924,11 +21924,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _slack_adapter_for_progress = self._adapter_for_source(source)
             if _slack_adapter_for_progress is not None:
                 try:
-                    _progress_reply_in_thread = bool(
-                        _slack_adapter_for_progress.config.extra.get(
-                            "reply_in_thread", True
-                        )
+                    # Relay lane: the adapter owns mode resolution (nested
+                    # platforms.relay.extra.slack subset with flat-key
+                    # fallback). Native lane: read the flat extra as before.
+                    _mode_fn = getattr(
+                        _slack_adapter_for_progress,
+                        "_effective_reply_in_thread",
+                        None,
                     )
+                    if callable(_mode_fn):
+                        _progress_reply_in_thread = bool(_mode_fn())
+                    else:
+                        _progress_reply_in_thread = bool(
+                            _slack_adapter_for_progress.config.extra.get(
+                                "reply_in_thread", True
+                            )
+                        )
                 except Exception:
                     _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(
@@ -24706,6 +24717,23 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
+
+            # Skill Sync — best-effort periodic pull on the same cadence.
+            # Inert unless the access gate is open and a sync base URL is
+            # configured; never raises.
+            try:
+                from tools.skills_sync_client import maybe_pull_skills
+                maybe_pull_skills()
+            except Exception as e:
+                logger.debug("Sync pull tick error: %s", e)
+
+            # Org-shared skills. Gated on real org membership (the token must
+            # carry an org role), so a solo account never reaches the network.
+            try:
+                from tools.skills_sync_client import maybe_pull_org_skills
+                maybe_pull_org_skills()
+            except Exception as e:
+                logger.debug("Org sync pull tick error: %s", e)
 
         # Stale-session auto-archive — a live timer, so gateways that stay up
         # for weeks keep sweeping on schedule (the startup hook fires once).

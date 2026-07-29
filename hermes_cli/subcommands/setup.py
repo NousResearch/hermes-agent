@@ -19,7 +19,7 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
         help="Interactive setup wizard",
         description="Configure Hermes Agent with an interactive wizard. "
         "Run a specific section: "
-        "hermes setup model|tts|terminal|gateway|tools|telemetry|agent",
+        "hermes setup model|tts|terminal|gateway|tools|telemetry|agent|agui",
     )
     setup_parser.add_argument(
         "section",
@@ -32,6 +32,7 @@ def build_setup_parser(subparsers, *, cmd_setup: Callable) -> None:
             "tools",
             "telemetry",
             "agent",
+            "agui",
         ],
         default=None,
         help="Run a specific setup section instead of the full wizard",

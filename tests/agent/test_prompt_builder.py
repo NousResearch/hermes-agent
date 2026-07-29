@@ -138,6 +138,8 @@ class TestTruncateContent:
 
         monkeypatch.setattr("hermes_cli.config.load_config", default_load_config)
 
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", default_load_config)
+
     def test_context_file_max_chars_default_matches_upstream_limit(self):
         assert CONTEXT_FILE_MAX_CHARS == 20_000
 
@@ -171,6 +173,8 @@ class TestTruncateContent:
             return {"context_file_max_chars": 120}
 
         monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
         content = "HEAD" + "x" * 160 + "TAIL"
 
         result = _truncate_content(content, "config.md")
@@ -186,6 +190,8 @@ class TestTruncateContent:
             return {"context_file_max_chars": 120}
 
         monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
         content = "x" * 180
 
         result = _truncate_content(content, "explicit.md", max_chars=200)
@@ -197,6 +203,8 @@ class TestTruncateContent:
             return {"context_file_max_chars": 120}
 
         monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         _truncate_content("x" * 180, "warning.md")
 
@@ -214,6 +222,8 @@ class TestTruncateContent:
             return {"context_file_max_chars": 120}
 
         monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
 
         # Generate a warning in a fresh child context, then assert it did NOT
         # leak into the parent context's accumulator.
@@ -242,6 +252,7 @@ class TestDynamicContextFileCap:
     def _no_explicit_config(self, monkeypatch):
         # No explicit context_file_max_chars → dynamic path is eligible.
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
 
     def test_dynamic_floor_for_small_window(self):
         # A small context window never drops below the historical 20K floor.
@@ -271,6 +282,14 @@ class TestDynamicContextFileCap:
         # An explicit value always wins, even when a big window is available.
         monkeypatch.setattr(
             "hermes_cli.config.load_config",
+            lambda: {"context_file_max_chars": 1_000},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"context_file_max_chars": 1_000},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
             lambda: {"context_file_max_chars": 1_000},
         )
         assert _get_context_file_max_chars(200_000) == 1_000
@@ -1406,6 +1425,14 @@ class TestEnvironmentHints:
             "hermes_cli.config.load_config",
             lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
         )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "ENV-WINS" in result
@@ -1421,6 +1448,14 @@ class TestEnvironmentHints:
             "hermes_cli.config.load_config",
             lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
         )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "CONFIG-VALUE" in result
@@ -1432,6 +1467,7 @@ class TestEnvironmentHints:
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"agent": {}})
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"agent": {}})
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "Host:" in result

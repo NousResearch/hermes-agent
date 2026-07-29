@@ -295,6 +295,10 @@ def test_create_from_config_reads_idle_timeout(monkeypatch):
         "hermes_cli.config.load_config",
         lambda: {"lsp": {"enabled": False, "idle_timeout": 42}},
     )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"lsp": {"enabled": False, "idle_timeout": 42}},
+    )
     svc = LSPService.create_from_config()
     assert svc is not None
     assert svc._idle_timeout == 42.0
@@ -305,6 +309,10 @@ def test_create_from_config_invalid_idle_timeout_falls_back(monkeypatch):
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
+        lambda: {"lsp": {"enabled": False, "idle_timeout": "not-a-number"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
         lambda: {"lsp": {"enabled": False, "idle_timeout": "not-a-number"}},
     )
     svc = LSPService.create_from_config()
@@ -322,12 +330,20 @@ def test_create_from_config_clamps_tiny_idle_timeout(monkeypatch):
         "hermes_cli.config.load_config",
         lambda: {"lsp": {"enabled": False, "idle_timeout": 2}},
     )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"lsp": {"enabled": False, "idle_timeout": 2}},
+    )
     svc = LSPService.create_from_config()
     assert svc is not None
     assert svc._idle_timeout == MIN_IDLE_TIMEOUT
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
+        lambda: {"lsp": {"enabled": False, "idle_timeout": 0}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
         lambda: {"lsp": {"enabled": False, "idle_timeout": 0}},
     )
     svc = LSPService.create_from_config()

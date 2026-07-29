@@ -290,6 +290,7 @@ class TestResolveTaskProviderModel:
             lambda cfg, name: preset,
         )
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -325,6 +326,7 @@ class TestResolveTaskProviderModel:
             lambda cfg, name: preset,
         )
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -355,6 +357,7 @@ class TestResolveTaskProviderModel:
         )
         monkeypatch.setattr("hermes_cli.moa_config.resolve_moa_preset", fake_resolve)
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -373,6 +376,7 @@ class TestResolveTaskProviderModel:
             lambda cfg, name: (_ for _ in ()).throw(KeyError("gone-preset")),
         )
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -3765,7 +3769,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch(
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -3796,7 +3800,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch(
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -3822,7 +3826,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch(
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -3841,7 +3845,7 @@ class TestAuxiliaryTaskExtraBody:
 
         config = {"auxiliary": {"session_search": {"reasoning_effort": "none"}}}
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch(
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -3865,7 +3869,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch(
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -3881,7 +3885,7 @@ class TestAuxiliaryTaskExtraBody:
 
         config = {"auxiliary": {"session_search": {"reasoning_effort": "warp9"}}}
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch(
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ), caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
@@ -3896,7 +3900,7 @@ class TestAuxiliaryTaskExtraBody:
         from agent.auxiliary_client import _get_task_extra_body
 
         config = {"auxiliary": {"session_search": {"reasoning_effort": ""}}}
-        with patch("hermes_cli.config.load_config", return_value=config):
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config):
             assert _get_task_extra_body("session_search") == {}
 
     @pytest.mark.parametrize("moa_task", ["moa_reference", "moa_aggregator"])
@@ -3906,7 +3910,7 @@ class TestAuxiliaryTaskExtraBody:
         from agent.auxiliary_client import _get_task_extra_body
 
         config = {"auxiliary": {moa_task: {"reasoning_effort": "xhigh"}}}
-        with patch("hermes_cli.config.load_config", return_value=config), \
+        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), \
              caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
             result = _get_task_extra_body(moa_task)
 
@@ -6665,7 +6669,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -6693,7 +6697,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -6718,7 +6722,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -6745,6 +6749,7 @@ class TestCustomEndpointApiKeyInheritance:
         with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
              patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
              patch("hermes_cli.config.load_config", return_value={"model": {}}), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -6776,7 +6781,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -6801,7 +6806,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",

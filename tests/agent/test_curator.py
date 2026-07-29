@@ -1333,6 +1333,14 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
         lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
     )
     monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
+    )
+    monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         _fake_resolve_runtime_provider,
     )
@@ -1353,6 +1361,14 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(
@@ -1394,6 +1410,18 @@ def test_review_fork_merges_slot_extra_body_over_runtime(curator_env, monkeypatc
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
+        lambda: {
+            "auxiliary": {
+                "curator": {
+                    "provider": "custom:gateway",
+                    "model": "gateway",
+                    "extra_body": {"shared": "slot", "slot_only": True},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
         lambda: {
             "auxiliary": {
                 "curator": {

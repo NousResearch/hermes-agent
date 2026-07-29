@@ -40,8 +40,7 @@ export function ComboboxInput({
   const query = value.trim().toLowerCase()
   const isExact = options.some(option => option.toLowerCase() === query)
 
-  const visible =
-    query && !isExact ? options.filter(option => option.toLowerCase().includes(query)) : options
+  const visible = query && !isExact ? options.filter(option => option.toLowerCase().includes(query)) : options
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
@@ -98,7 +97,10 @@ export function ComboboxInput({
                     }}
                     value={option}
                   >
-                    <Codicon className={cn('mr-2 size-4', option === value ? 'opacity-100' : 'opacity-0')} name="check" />
+                    <Codicon
+                      className={cn('mr-2 size-4', option === value ? 'opacity-100' : 'opacity-0')}
+                      name="check"
+                    />
                     <span className="truncate">{optionLabels?.[option] ?? option}</span>
                   </CommandItem>
                 ))}

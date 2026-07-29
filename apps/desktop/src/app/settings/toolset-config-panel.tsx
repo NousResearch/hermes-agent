@@ -798,11 +798,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                         {copy.activeBackendHint}
                       </Pill>
                     ) : (
-                      <Button
-                        disabled={selecting !== null}
-                        onClick={() => void handleSelect(provider)}
-                        size="sm"
-                      >
+                      <Button disabled={selecting !== null} onClick={() => void handleSelect(provider)} size="sm">
                         {selecting === provider.name ? <Loader2 className="size-3.5 animate-spin" /> : <Check />}
                         {copy.useBackend}
                       </Button>

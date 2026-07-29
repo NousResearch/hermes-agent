@@ -760,11 +760,11 @@ export const zh: Translations = {
       invalidJson: '配置 JSON 无效',
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
-      attachmentSizeTitle: '附件大小上限',
+      attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
-        '桌面端为附件和预览加载本地文件的大小上限（MB）。默认为 16。此限制仅作用于本机。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
+        '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: '附件大小上限（MB）'
+      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）'
     },
     quickEntry: {
       enabledTitle: '快速输入',

@@ -44,13 +44,17 @@ const DEFAULT_PROBE_TIMEOUT_MS = 15_000
  */
 function resolveProbeTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.HERMES_PROBE_TIMEOUT_MS
+
   if (raw == null || raw === '') {
     return DEFAULT_PROBE_TIMEOUT_MS
   }
+
   const n = Number.parseInt(String(raw), 10)
+
   if (!Number.isFinite(n) || n <= 0) {
     return DEFAULT_PROBE_TIMEOUT_MS
   }
+
   // Clamp absurd values (ms) so a typo can't hang startup forever.
   return Math.min(n, 120_000)
 }
@@ -61,17 +65,22 @@ function isTimeoutError(err: unknown): boolean {
   if (!err || typeof err !== 'object') {
     return false
   }
+
   const e = err as { code?: string; killed?: boolean; signal?: string }
+
   if (e.killed === true) {
     return true
   }
+
   if (e.code === 'ETIMEDOUT') {
     return true
   }
+
   // Node marks timed-out execFileSync with SIGTERM on some platforms.
   if (e.signal === 'SIGTERM') {
     return true
   }
+
   return false
 }
 
@@ -96,6 +105,7 @@ function execProbeSync(
     if (!isTimeoutError(err)) {
       throw err
     }
+
     // One cold-cache / AV miss should not force hermes-setup --update (#61764).
     execFileSync(command, args, options)
   }
@@ -198,4 +208,12 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   }
 }
 
-export { canImportHermesCli, DEFAULT_PROBE_TIMEOUT_MS, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, resolveProbeTimeoutMs, shouldTrustHermesOverride, verifyHermesCli }
+export {
+  canImportHermesCli,
+  DEFAULT_PROBE_TIMEOUT_MS,
+  hermesRuntimeImportProbe,
+  PROBE_TIMEOUT_MS,
+  resolveProbeTimeoutMs,
+  shouldTrustHermesOverride,
+  verifyHermesCli
+}

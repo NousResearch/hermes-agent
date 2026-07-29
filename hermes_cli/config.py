@@ -292,11 +292,13 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
-    # Deprecated tool-progress env vars — replaced by display.tool_progress in
-    # config.yaml. Kept known here so reload and compatibility paths still
-    # handle them for existing users (gateway reads them as a back-compat fallback),
-    # without surfacing them in user-facing OPTIONAL_ENV_VARS listings.
-    "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
+    # HERMES_TOOL_PROGRESS_MODE is deprecated (replaced by display.tool_progress
+    # in config.yaml) but STILL READ at runtime by the gateway as a back-compat
+    # fallback, so it must stay known to reload/compat paths. The boolean
+    # HERMES_TOOL_PROGRESS variant is fully unsupported since the v12 config
+    # support floor retired its only consumer (the v3→4 migration): it is no
+    # longer listed here and doctor flags it as ignored.
+    "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -2139,15 +2141,38 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # Check config version
     current_ver, latest_ver = check_config_version()
 
-    # ── Versioned migration ladder (table-driven) ──
-    # The per-version steps live in hermes_cli.config_migrations as a
-    # (target_version, fn) registry; the driver applies every step whose
-    # target exceeds current_ver, in strict ascending order, preserving the
-    # original sequential if-block semantics byte-for-byte. Imported lazily
-    # to avoid a module-level import cycle (the steps call back into this
-    # module for read_raw_config/_persist_migration/etc. at call time).
-    from hermes_cli.config_migrations import run_migrations
-    run_migrations(current_ver, results, quiet)
+    # ── Auto-migration support floor (policy: v12, July 2026) ──
+    # A config below the floor is NOT auto-migrated and NOT rewritten: we
+    # surface a clear, actionable message and leave the file byte-for-byte
+    # untouched. This matches the fail-safe posture for unparseable configs
+    # (warn on stderr, continue — load_config() deep-merges defaults at read
+    # time), so the CLI never crashes on an ancient config. The floor gate
+    # lives here in the wrapper (not in run_migrations) so the registry
+    # driver stays a pure mechanism that tests can exercise directly.
+    from hermes_cli.config_migrations import (
+        SUPPORT_FLOOR_VERSION,
+        run_migrations,
+        support_floor_message,
+    )
+
+    floor_refused = current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver
+    if floor_refused:
+        msg = support_floor_message()
+        results["warnings"].append(msg)
+        # stderr so it is visible even on quiet startup paths, matching the
+        # corrupt-config warning posture in _warn_config_parse_failure().
+        sys.stderr.write(f"⚠ hermes config: {msg}\n")
+        if not quiet:
+            print(f"  ⚠ {msg}")
+    else:
+        # ── Versioned migration ladder (table-driven) ──
+        # The per-version steps live in hermes_cli.config_migrations as a
+        # (target_version, fn) registry; the driver applies every step whose
+        # target exceeds current_ver, in strict ascending order, preserving the
+        # original sequential if-block semantics byte-for-byte. Imported lazily
+        # to avoid a module-level import cycle (the steps call back into this
+        # module for read_raw_config/_persist_migration/etc. at call time).
+        run_migrations(current_ver, results, quiet)
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a
@@ -2201,7 +2226,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         # best-effort; never block migration on validation
         logger.debug("platform_toolsets validation skipped: %s", _ts_val_err)
 
-    if current_ver < latest_ver and not quiet:
+    if current_ver < latest_ver and not quiet and not floor_refused:
         print(f"Config version: {current_ver} → {latest_ver}")
 
     # Check for missing required env vars
@@ -2294,7 +2319,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     if missing_config:
         results["config_added"].extend(field["key"] for field in missing_config)
 
-    if current_ver < latest_ver:
+    if current_ver < latest_ver and not floor_refused:
         config = read_raw_config()
         config["_config_version"] = latest_ver
         _persist_migration(config)

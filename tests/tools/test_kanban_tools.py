@@ -314,6 +314,28 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_rejects_dirty_git_workspace(worker_env, tmp_path):
+    """The tool surface must refuse dirty git checkouts before completion."""
+    repo = tmp_path / "repo"
+    from tests.hermes_cli.test_kanban_db import _init_git_repo
+
+    _init_git_repo(repo)
+    (repo / "dirty.txt").write_text("unstaged changes\n", encoding="utf-8")
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        kb.set_workspace_path(conn, worker_env, str(repo))
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "should fail"})
+    d = json.loads(out)
+    assert "dirty git workspace" in json.dumps(d)
+    assert "dirty.txt" in json.dumps(d)
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

@@ -2363,6 +2363,71 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
     assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
 
 
+def test_complete_task_rejects_dirty_git_workspace_and_allows_override(
+    kanban_home,
+    tmp_path,
+):
+    """Dirty git checkouts are rejected unless the reviewer explicitly overrides."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    (repo / "dirty.txt").write_text("unstaged changes\n", encoding="utf-8")
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="git-backed task",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+            branch_name="wt/test-dirty",
+        )
+        kb.claim_task(conn, t)
+
+        dirty = kb.list_dirty_task_worktrees(conn)
+        assert dirty == [
+            {
+                "task_id": t,
+                "title": "git-backed task",
+                "status": "running",
+                "assignee": None,
+                "workspace_kind": "worktree",
+                "workspace_path": str(repo),
+                "branch": "wt/test-dirty",
+                "status_lines": ["?? dirty.txt"],
+            }
+        ]
+
+        with pytest.raises(kb.DirtyWorkspaceError) as excinfo:
+            kb.complete_task(conn, t, result="done")
+        assert "dirty git workspace" in str(excinfo.value)
+        assert "dirty.txt" in str(excinfo.value)
+        assert kb.get_task(conn, t).status == "running"
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="done",
+            allow_dirty_workspace=True,
+        )
+        assert kb.get_task(conn, t).status == "done"
+
+
+def test_complete_task_allows_clean_git_workspace(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="git-backed task",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+            branch_name="wt/test-clean",
+        )
+        kb.claim_task(conn, t)
+        assert kb.complete_task(conn, t, result="done")
+        assert kb.get_task(conn, t).status == "done"
+
+
 def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     """Completion artifacts from scratch workspaces survive workspace cleanup."""
     with kb.connect() as conn:
@@ -3255,6 +3320,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     """
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
+    import hermes_state as _hs
 
     import hermes_state as _hs
 
@@ -3272,8 +3338,11 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Clear module cache so a fresh connect() is attempted
+    # Clear module caches so a fresh connect() is attempted and the
+    # one-shot WAL fallback warning is not suppressed by earlier tests.
     kb._INITIALIZED_PATHS.clear()
+    _hs._wal_fallback_warned_paths.clear()
+    _hs._wal_reset_bug_warned_paths.clear()
 
     real_connect = _sqlite3.connect
 

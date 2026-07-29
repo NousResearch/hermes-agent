@@ -217,6 +217,24 @@ def test_model_call_fields_report_terminal_model_and_provider_without_a_catalog(
 
 
 @pytest.mark.parametrize(
+    "response_model",
+    [
+        "contains a space",
+        "x" * (MODEL_IDENTIFIER_MAX_LENGTH + 1),
+    ],
+)
+def test_model_call_fields_fall_back_when_response_model_is_invalid(response_model):
+    assert model_call_fields({
+        "model": "nvidia/nemotron-3-ultra",
+        "response_model": response_model,
+        "provider": "openrouter",
+    }) == {
+        "model": "nvidia/nemotron-3-ultra",
+        "provider": "openrouter",
+    }
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("model", ""),

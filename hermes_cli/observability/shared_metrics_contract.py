@@ -363,17 +363,17 @@ def count_bucket(count: int) -> str:
 
 def model_call_fields(kwargs: dict[str, Any]) -> dict[str, str]:
     """Return the terminal model identity and provider route known to Hermes."""
-    response_model = kwargs.get("response_model")
-    model = (
-        response_model
-        if isinstance(response_model, str) and response_model.strip()
-        else kwargs.get("model")
+    model = _metric_identifier(
+        kwargs.get("response_model"),
+        max_length=MODEL_IDENTIFIER_MAX_LENGTH,
     )
-    return {
-        "model": _metric_identifier(
-            model,
+    if model == "unknown":
+        model = _metric_identifier(
+            kwargs.get("model"),
             max_length=MODEL_IDENTIFIER_MAX_LENGTH,
-        ),
+        )
+    return {
+        "model": model,
         "provider": _metric_identifier(
             kwargs.get("provider"),
             max_length=PROVIDER_IDENTIFIER_MAX_LENGTH,

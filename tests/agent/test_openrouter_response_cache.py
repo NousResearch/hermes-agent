@@ -119,7 +119,7 @@ class TestBuildOrHeaders:
         fake_cfg = {
             "openrouter": {"response_cache": True, "response_cache_ttl": 900},
         }
-        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg), patch("hermes_cli.config.load_config_readonly", return_value=fake_cfg):
             headers = build_or_headers(or_config=None)
         assert headers["X-OpenRouter-Cache"] == "true"
         assert headers["X-OpenRouter-Cache-TTL"] == "900"
@@ -128,7 +128,8 @@ class TestBuildOrHeaders:
         """When load_config() fails, build_or_headers still returns base headers."""
         from agent.auxiliary_client import build_or_headers
 
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")), \
+             patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("boom")):
             headers = build_or_headers(or_config=None)
         # Should have base attribution but no cache headers
         assert "HTTP-Referer" in headers

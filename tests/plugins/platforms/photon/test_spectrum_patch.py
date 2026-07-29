@@ -36,6 +36,12 @@ def _write_sidecar_fixture(tmp_path: Path, *, sdk_available: bool) -> Path:
     sidecar = tmp_path / "sidecar"
     sidecar.mkdir()
     shutil.copyfile("plugins/platforms/photon/sidecar/index.mjs", sidecar / "index.mjs")
+    # index.mjs imports sibling helper modules — copy every non-patch .mjs so
+    # the fixture keeps working as helpers are extracted from index.mjs.
+    for helper in Path("plugins/platforms/photon/sidecar").glob("*.mjs"):
+        if helper.name in ("index.mjs", "patch-spectrum-mixed-attachments.mjs"):
+            continue
+        shutil.copyfile(helper, sidecar / helper.name)
     (sidecar / "patch-spectrum-mixed-attachments.mjs").write_text(
         "export function patchSpectrumTs() { throw new Error('forced patch failure'); }\n",
         encoding="utf-8",

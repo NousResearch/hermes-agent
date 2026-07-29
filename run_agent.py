@@ -2004,7 +2004,27 @@ class AIAgent:
                 if isinstance(item, dict)
             }
 
-            for _msg_idx, msg in enumerate(messages):
+            # Bounded scan: skip the longest identity-matched prefix of the
+            # list snapshot taken at the end of the previous successful flush.
+            # Every message in that snapshot was already given its final
+            # disposition (written+stamped, stamped as durable history, or
+            # skipped as ephemeral scaffolding / non-dict), and no code path
+            # pops _DB_PERSISTED_MARKER from a live dict in place (compression
+            # strips markers on fresh copies, which breaks identity here and
+            # forces a full re-scan). Identity match ⇒ identical skip decision,
+            # so starting after the matched prefix is behavior-preserving.
+            _scan_start = 0
+            _prev_prefix = getattr(self, "_db_flush_scan_prefix", None)
+            if isinstance(_prev_prefix, list):
+                _limit = min(len(_prev_prefix), len(messages))
+                while (
+                    _scan_start < _limit
+                    and messages[_scan_start] is _prev_prefix[_scan_start]
+                ):
+                    _scan_start += 1
+
+            for _msg_idx in range(_scan_start, len(messages)):
+                msg = messages[_msg_idx]
                 if not isinstance(msg, dict):
                     continue
                 # Never write ephemeral recovery scaffolding to the session
@@ -2153,8 +2173,14 @@ class AIAgent:
             # allocated next turn at a recycled address.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)
+            # Snapshot for the bounded scan above — only on full success, so
+            # a partially-processed list can never be treated as settled.
+            self._db_flush_scan_prefix = messages[:]
             return True
         except Exception as e:
+            # Force a full re-scan on the next flush: an exception mid-loop
+            # leaves messages with mixed dispositions.
+            self._db_flush_scan_prefix = None
             logger.warning("Session DB append_message failed: %s", e)
             return False
 
@@ -6738,10 +6764,13 @@ class AIAgent:
         *,
         logger=None,
         session_id: str = None,
+        cursor=None,
     ) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.sanitize_tool_call_arguments``."""
         from agent.agent_runtime_helpers import sanitize_tool_call_arguments
-        return sanitize_tool_call_arguments(messages, logger=logger, session_id=session_id)
+        return sanitize_tool_call_arguments(
+            messages, logger=logger, session_id=session_id, cursor=cursor
+        )
 
     def _should_sanitize_tool_calls(self) -> bool:
         """Determine if tool_calls need sanitization for strict APIs.

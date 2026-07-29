@@ -210,6 +210,26 @@ class TestJudgeGoal:
         assert verdict == "continue"
         assert reason == "not yet"
 
+    def test_judge_response_excerpt_is_bounded_and_omits_middle(self):
+        from hermes_cli import goals
+
+        truncate_response = getattr(goals, "_truncate_judge_response")
+        response = "HEAD" + ("A" * 2500) + "MIDDLE-SENTINEL" + ("B" * 2500) + "TAIL"
+        excerpt = truncate_response(response, 4000)
+
+        assert len(excerpt) == 4000
+        assert excerpt.startswith("HEAD")
+        assert excerpt.endswith("TAIL")
+        assert "… [response middle truncated] …" in excerpt
+        assert "MIDDLE-SENTINEL" not in excerpt
+
+    @pytest.mark.parametrize("limit", [0, 1, 2, 34, 35, 36])
+    def test_judge_response_excerpt_never_exceeds_tiny_limit(self, limit):
+        from hermes_cli import goals
+
+        truncate_response = getattr(goals, "_truncate_judge_response")
+        assert len(truncate_response("x" * 100, limit)) <= limit
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence
@@ -770,6 +790,51 @@ class TestJudgeGoalWithSubgoals:
         assert "2. update docs" in user_msg
         assert "every additional criterion" in user_msg
         assert verdict == "done"
+
+    @pytest.mark.parametrize("prompt_kind", ["plain", "subgoals", "contract"])
+    def test_judge_preserves_completion_evidence_at_end_of_long_response(
+        self, hermes_home, prompt_kind
+    ):
+        """Every judge prompt must retain tail evidence within the response budget."""
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+
+        class _FakeMsg:
+            content = '{"done": true, "reason": "all evidence visible"}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+        def _fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+
+        response = (
+            "HEAD-EVIDENCE\n"
+            + ("leading filler " * 250)
+            + "MIDDLE-SENTINEL"
+            + ("trailing filler " * 250)
+            + "\nTAIL-COMPLETION-EVIDENCE"
+        )
+        judge_kwargs = {}
+        if prompt_kind == "subgoals":
+            judge_kwargs["subgoals"] = ["include the completion evidence"]
+        elif prompt_kind == "contract":
+            judge_kwargs["contract"] = goals.GoalContract(
+                verification="include the completion evidence"
+            )
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
+            goals.judge_goal("ship the feature", response, **judge_kwargs)
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "HEAD-EVIDENCE" in user_msg
+        assert "TAIL-COMPLETION-EVIDENCE" in user_msg
+        assert "… [response middle truncated] …" in user_msg
+        assert "MIDDLE-SENTINEL" not in user_msg
 
     def test_judge_uses_original_template_when_no_subgoals(self, hermes_home):
         from unittest.mock import patch

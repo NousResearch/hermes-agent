@@ -2328,6 +2328,7 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
         or "not enough rights" in blob
         or "have no rights" in blob
         or "not a member" in blob
+        or "target_not_allowed" in blob
     ):
         return "forbidden"
     if any(s in blob for s in _CHAT_LEVEL_NOT_FOUND_SUBSTRINGS) or any(

@@ -12,6 +12,31 @@ export function applyAutoSpeakFromConfig(config: { voice?: { auto_tts?: unknown 
   $autoSpeakReplies.set(Boolean(config?.voice?.auto_tts))
 }
 
+// First configured `voice.stop_phrases` entry — drives the "Say "stop" to end
+// the voice chat" notice shown when a voice conversation starts. `null` means
+// the user disabled stop phrases (`stop_phrases: []`), so no notice is shown.
+// Defaults to "stop" (the backend default) before config loads.
+export const $voiceStopPhrase = atom<string | null>('stop')
+
+/** Seed the stop-phrase atom from a loaded config payload (mount / refresh). */
+export function applyVoiceStopPhraseFromConfig(
+  config: { voice?: { stop_phrases?: unknown } | null } | null | undefined
+) {
+  const raw = config?.voice?.stop_phrases
+
+  if (raw === undefined) {
+    // Key absent — backend default applies.
+    $voiceStopPhrase.set('stop')
+
+    return
+  }
+
+  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
+  const first = list.map(entry => String(entry).trim()).find(entry => entry.length > 0)
+
+  $voiceStopPhrase.set(first ?? null)
+}
+
 /**
  * Flip the preference and persist it. Optimistic — the atom updates instantly and
  * reverts if the config write fails. Read-modify-writes the whole record (the

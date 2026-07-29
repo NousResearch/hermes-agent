@@ -18287,6 +18287,18 @@ def _(rid, params: dict) -> dict:
         # persisted stale toggle.
         os.environ["HERMES_VOICE"] = "1" if enabled else "0"
 
+        stop_hint = ""
+        if enabled:
+            # Spoken-stop hint for the client to render on voice-mode start.
+            # Sourced from voice.stop_phrases (custom phrases render
+            # correctly); empty when the feature is disabled.
+            try:
+                from tools.voice_mode import voice_stop_hint
+
+                stop_hint = voice_stop_hint()
+            except Exception:
+                stop_hint = ""
+
         if not enabled:
             # Disabling the mode must tear the continuous loop down; the
             # loop holds the microphone and would otherwise keep running.
@@ -18310,6 +18322,7 @@ def _(rid, params: dict) -> dict:
                 "enabled": enabled,
                 "record_key": _voice_record_key(),
                 "tts": _voice_tts_enabled(),
+                "stop_hint": stop_hint,
             },
         )
 

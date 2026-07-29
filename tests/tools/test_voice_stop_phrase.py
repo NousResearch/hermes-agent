@@ -17,7 +17,27 @@ from tools.voice_mode import (
     DEFAULT_VOICE_STOP_PHRASES,
     _load_voice_stop_phrases,
     is_voice_stop_phrase,
+    voice_stop_hint,
 )
+
+
+class TestVoiceStopHint:
+    """The 'Say "stop" to end the voice chat.' hint shown on voice-mode start."""
+
+    def test_default_phrase(self):
+        with patch("tools.voice_mode._load_voice_stop_phrases", return_value=("stop",)):
+            assert voice_stop_hint() == 'Say "stop" to end the voice chat.'
+
+    def test_custom_phrase_uses_first_entry(self):
+        with patch(
+            "tools.voice_mode._load_voice_stop_phrases",
+            return_value=("goodbye hermes", "stop"),
+        ):
+            assert voice_stop_hint() == 'Say "goodbye hermes" to end the voice chat.'
+
+    def test_disabled_phrases_show_no_hint(self):
+        with patch("tools.voice_mode._load_voice_stop_phrases", return_value=()):
+            assert voice_stop_hint() == ""
 
 
 class TestIsVoiceStopPhrase:

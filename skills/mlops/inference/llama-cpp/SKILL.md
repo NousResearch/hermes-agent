@@ -62,10 +62,20 @@ brew install llama.cpp
 ```
 
 ```bash
+# 🪟 Windows
 winget install llama.cpp
 ```
 
 ```bash
+# 🐧 WSL / Debian/Ubuntu
+sudo apt-get install -y build-essential cmake
+git clone https://github.com/ggml-org/llama.cpp
+cd llama.cpp && cmake -B build && cmake --build build --config Release
+sudo cmake --install build
+```
+
+```bash
+# Manual build (any platform)
 git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp
 cmake -B build

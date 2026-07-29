@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
+from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -1258,6 +1259,55 @@ def _safe_getcwd() -> str:
     except FileNotFoundError:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
+# Regex patterns for CWD path conversion (hoisted to module level per
+# style review — re.compile once, not on every _get_env_config call).
+_WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[/\\]?(.*)$")
+_MNT_RE = re.compile(r"^/mnt/([a-z])(/.*)?$")
+
+_AUTO_SAVED_CWDS: set = set()
+
+def _maybe_convert_and_persist_cwd(
+    env_type: str, cwd: str, default_cwd: str, _backend_cwd: str | None
+) -> str:
+    """Discard stale CWDs from other backends and auto-save for persistence.
+
+    Returns the cleaned CWD (possibly empty for WSL to trigger $HOME probe).
+    """
+    # Stale path detection — container paths like /workspace don't belong in
+    # WSL or local backends.
+    if not _backend_cwd and cwd:
+        if env_type == "wsl" and not any(
+            cwd.startswith(p) for p in ("/home/", "/mnt/", "/root/", "/tmp", "/opt")
+        ):
+            logger.info(
+                "Discarding stale TERMINAL_CWD=%r for wsl backend "
+                "(leftover from another backend). Falling back to $HOME probe.",
+                cwd,
+            )
+            cwd = ""
+        elif env_type in ("local", "ssh") and cwd in ("/workspace", "/root", "/home"):
+            logger.info(
+                "Discarding stale TERMINAL_CWD=%r for %s backend "
+                "(leftover from container backend).",
+                cwd, env_type,
+            )
+            cwd = default_cwd
+
+    # Auto-save per-backend CWD on first use (once per process lifetime).
+    if not _backend_cwd and cwd and cwd != default_cwd and env_type not in _AUTO_SAVED_CWDS:
+        try:
+            from hermes_cli.config import set_config_value
+            _backend_key = f"terminal.{env_type}_cwd"
+            set_config_value(_backend_key, cwd, source="auto:per-backend-cwd")
+            _AUTO_SAVED_CWDS.add(env_type)
+            logger.info("Auto-saved %s=%r for %s backend", _backend_key, cwd, env_type)
+        except Exception:
+            logger.debug(
+                "Auto-save of %s skipped (config write failed)", _backend_key, exc_info=True
+            )
+
+    return cwd
+
 
 # Path prefixes that identify a *host* working directory which cannot exist
 # inside a container sandbox. Covers POSIX user dirs and Windows drive paths
@@ -1382,20 +1432,48 @@ def _get_env_config() -> Dict[str, Any]:
         docker_extra_args = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, and everything else starts in the backend's default
-    # root-like cwd.
+    # ── Per-backend default CWD ──────────────────────────────────────
+    # When no per-backend CWD is saved yet, these defaults are used.
+    # Users can reset any backend's CWD by clearing its terminal.<name>_cwd
+    # key in config.yaml or setting it to one of these defaults.
+    #
+    #   local         current OS working directory
+    #   wsl           probed $HOME via wsl -e echo $HOME
+    #   ssh           ~ (remote home)
+    #   docker        /root
+    #   singularity   /root
+    #   modal         /root
+    #   daytona       /workspace  (Daytona's standard workspace)
+    # ─────────────────────────────────────────────────────────────────
     if env_type == "local":
         default_cwd = _safe_getcwd()
+    elif env_type == "wsl":
+        default_cwd = ""  # WslEnvironment probes $HOME at init
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "daytona":
+        default_cwd = "/workspace"
     else:
         default_cwd = "/root"
 
-    # Read TERMINAL_CWD but sanity-check it for container backends.
-    # If Docker cwd passthrough is explicitly enabled, remap the host path to
-    # /workspace and track the original host path separately. Otherwise keep the
-    # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    # Per-backend CWD allows each backend to remember its working directory
+    # independently. On first use, auto-populate a sensible default and save it
+    # so subsequent switches restore the same directory.
+    _backend_cwd_env = f"TERMINAL_{env_type.upper()}_CWD"
+    _backend_cwd = os.getenv(_backend_cwd_env)
+    if _backend_cwd:
+        cwd = _backend_cwd
+        logger.debug("Using per-backend CWD %s=%r", _backend_cwd_env, cwd)
+    else:
+        # Read TERMINAL_CWD but sanity-check it for container backends.
+        # If Docker cwd passthrough is explicitly enabled, remap the host path to
+        # /workspace and track the original host path separately. Otherwise keep the
+        # normal sandbox behavior and discard host paths.
+        cwd = os.getenv("TERMINAL_CWD", default_cwd)
+
+    # Discard stale paths left over from a different backend, then
+    # auto-save the resolved CWD for future sessions (once per lifetime).
+    cwd = _maybe_convert_and_persist_cwd(env_type, cwd, default_cwd, _backend_cwd)
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
@@ -1415,6 +1493,40 @@ def _get_env_config() -> Dict[str, Any]:
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
             cwd = default_cwd
+    elif env_type == "wsl" and cwd:
+        # WSL is not a container.  Try to convert Windows-style CWDs
+        # (C:\Users\..., D:\project) to WSL mount points so desktop
+        # users keep their working directory when switching backends.
+        _m = _WIN_DRIVE_RE.match(cwd)
+        if _m:
+            drive = _m.group(1).lower()
+            tail = _m.group(2).replace("\\", "/")
+            cwd = f"/mnt/{drive}/{tail}" if tail else f"/mnt/{drive}"
+            logger.info("Converted Windows CWD %r → %r for wsl backend",
+                        _m.group(0), cwd)
+        elif not cwd.startswith("/"):
+            # Relative path or non-Windows non-Linux — fall back
+            logger.info("Ignoring TERMINAL_CWD=%r for wsl backend "
+                        "(not an absolute path). "
+                        "Falling back to $HOME probe.",
+                        cwd)
+            cwd = ""  # empty → WslEnvironment probes $HOME
+    elif (
+        env_type == "local"
+        and platform.system() == "Windows"
+        and cwd
+        and cwd.startswith("/mnt/")
+    ):
+        # Convert WSL /mnt/drive/... paths back to Windows only when switching
+        # to the Windows-hosted local backend. SSH paths belong to the remote
+        # host and must keep their Linux semantics.
+        _m = _MNT_RE.match(cwd)
+        if _m:
+            drive = _m.group(1).upper() + ":"
+            tail = (_m.group(2) or "").replace("/", "\\")
+            cwd = drive + tail if tail else drive + "\\"
+            logger.info("Converted WSL CWD %r → %r for %s backend",
+                        _m.group(0), cwd, env_type)
 
     return {
         "env_type": env_type,
@@ -1429,6 +1541,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "wsl_distro": os.getenv("TERMINAL_WSL_DISTRO", ""),
         # SSH-specific config
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
@@ -1490,7 +1603,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment for sandboxed command execution.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal",
+        env_type: One of "local", "docker", "singularity", "modal", "wsl",
             "daytona", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
@@ -1614,6 +1727,15 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "wsl":
+        from tools.environments.wsl import WslEnvironment as _WslEnvironment
+        return _WslEnvironment(
+            cwd=cwd,
+            timeout=timeout,
+            env={"TERMINAL_WSL_DISTRO": cc.get("wsl_distro", "")} if cc else None,
+            distro=cc.get("wsl_distro", ""),
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1629,7 +1751,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'wsl', or 'ssh'"
         )
 
 
@@ -3068,7 +3190,6 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
 
 TERMINAL_SCHEMA = {
     "name": "terminal",

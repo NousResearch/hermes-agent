@@ -984,6 +984,23 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # across Hermes restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
+_WSL_BACKEND_HINT = (
+    "Terminal backend: wsl. ALL your tools — `terminal`, `read_file`, "
+    "`write_file`, `patch`, and `search_files` — execute inside WSL2, "
+    "a full Linux environment running on your Windows machine.\n"
+    "\n"
+    "Use Linux-native tools and the package manager provided by the selected "
+    "distribution. Use `python3` and `pip` when available. Do NOT use `winget`, "
+    "PowerShell, or Windows commands — they do not exist here.\n"
+    "\n"
+    "Skills with script directories: run `python3 scripts/...` from the "
+    "skill directory.  WSL mounts Windows drives under `/mnt/`:\n"
+    "  - `C:\\Users\\<you>\\Desktop`  →  `/mnt/c/Users/<you>/Desktop`\n"
+    "  - `D:\\project`                 →  `/mnt/d/project`\n"
+    "`pwd` returns a Linux path; `read_file` and `write_file` expect "
+    "Linux paths just like `terminal` does."
+)
+
 
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
@@ -1179,6 +1196,10 @@ def build_environment_hints() -> str:
                 "hostname."
             )
         hints.append("\n".join(host_lines))
+
+        # WSL backend: all tools execute inside WSL2 (Linux).
+        if backend == "wsl":
+            hints.append(_WSL_BACKEND_HINT)
 
         # Windows-local terminal runs bash, not PowerShell — the model must
         # know this or it will issue PowerShell syntax and fail.

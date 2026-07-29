@@ -44,7 +44,7 @@ import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
-import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
+import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
 import { APPROVAL_TOOLS, PendingToolApproval } from './approval'
 import {
@@ -316,6 +316,17 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
   return persistedOpen ?? fallbackOpen
 }
 
+/**
+ * A row's disclosure id, scoped to the message it was rendered in.
+ *
+ * Shared with the run that wraps the row: a live run has to know when one of
+ * its own rows has been opened, and both sides have to name it identically or
+ * the run never hears about it.
+ */
+function toolEntryDisclosureId(messageId: string, part: ToolPart): string {
+  return `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
+}
+
 function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
@@ -336,7 +347,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     [args, isError, result, toolCallId, toolName]
   )
 
-  const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(stablePart)}`
+  const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
   const isPending = messageRunning && result === undefined
   // Subscribe to this tool's diff only, so a live patch for one tool doesn't
@@ -789,6 +800,8 @@ function ToolRunHeader({
 
 interface ToolRunState {
   count: number
+  /** Disclosure id of each row in the run, so the run can tell when one is open. */
+  entryIds: readonly string[]
   key: string
   live: boolean
   /** A call still awaiting a result that could be the one blocking on approval. */
@@ -827,6 +840,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
         signature,
         value: {
           count: tools.length,
+          entryIds: tools.map(tool => toolEntryDisclosureId(state.message.id, tool)),
           key: tools[0]?.toolCallId ?? '',
           live,
           pendingApprovalTool: tools.some(tool => tool.result === undefined && APPROVAL_TOOLS.has(tool.toolName)),
@@ -859,11 +873,12 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   startIndex
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
-  const { count, key, live, pendingApprovalTool, summary } = useToolRun(startIndex, endIndex)
+  const { count, entryIds, key, live, pendingApprovalTool, summary } = useToolRun(startIndex, endIndex)
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const disclosureId = `tool-run:${key}`
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
+  const rowOpen = useStore(useMemo(() => $anyToolDisclosureOpen(entryIds), [entryIds]))
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
 
   // A lone call is already its own one-line summary; heading it with a second
@@ -872,11 +887,14 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
     return <>{children}</>
   }
 
-  // An approval is a question the user has to answer, and the ticker only ever
-  // shows one line — the row carrying the approval bar could tick straight
-  // past it. Show the whole run until it's answered.
+  // Two things a one-line window can't hold. An approval is a question the
+  // user has to answer, and expanded output is one they went looking for —
+  // both would tick straight past, or be sliced to a single line, as the run
+  // keeps going. Either one hands the run back its full height until the run
+  // settles and the row can be reached through the summary instead.
   const blocked = Boolean(approval) && pendingApprovalTool
-  const expanded = live ? blocked : (persistedOpen ?? false)
+  const unfurled = blocked || rowOpen
+  const expanded = live ? unfurled : (persistedOpen ?? false)
 
   return (
     <div
@@ -891,7 +909,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
         open={expanded}
         summary={summary}
       />
-      {live && !blocked && <ToolRunTicker>{children}</ToolRunTicker>}
+      {live && !unfurled && <ToolRunTicker>{children}</ToolRunTicker>}
       {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
     </div>
   )

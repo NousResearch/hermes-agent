@@ -6680,6 +6680,16 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    spawn_failed: list[str] = field(default_factory=list)
+    """Task ids whose spawn attempt failed THIS tick — recorded on every
+    failure (workspace resolution or worker launch), whether or not it was
+    the failure that tripped the circuit breaker. ``auto_blocked`` is the
+    subset that crossed ``failure_limit`` this tick; ``spawn_failed`` is the
+    superset including the earlier, pre-breaker failures. Health telemetry
+    consults this so a genuine early-phase spawn failure on one board is
+    visible as a fault immediately (failure #1), instead of staying invisible
+    until the breaker trips several ticks later — where a benign decline on a
+    DIFFERENT board could otherwise mask it and reset the stuck-streak."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -8400,6 +8410,9 @@ def _dispatch_once_locked(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
             )
+            # Record EVERY spawn failure (not just breaker trips) so a
+            # pre-circuit-breaker stall is visible to health telemetry.
+            result.spawn_failed.append(claimed.id)
             if auto:
                 result.auto_blocked.append(claimed.id)
             continue
@@ -8445,6 +8458,9 @@ def _dispatch_once_locked(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
             )
+            # Record EVERY spawn failure (not just breaker trips) so a
+            # pre-circuit-breaker stall is visible to health telemetry.
+            result.spawn_failed.append(claimed.id)
             if auto:
                 result.auto_blocked.append(claimed.id)
 
@@ -8492,6 +8508,9 @@ def _dispatch_once_locked(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
             )
+            # Record EVERY spawn failure (not just breaker trips) so a
+            # pre-circuit-breaker stall is visible to health telemetry.
+            result.spawn_failed.append(claimed.id)
             if auto:
                 result.auto_blocked.append(claimed.id)
             continue
@@ -8526,6 +8545,9 @@ def _dispatch_once_locked(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
             )
+            # Record EVERY spawn failure (not just breaker trips) so a
+            # pre-circuit-breaker stall is visible to health telemetry.
+            result.spawn_failed.append(claimed.id)
             if auto:
                 result.auto_blocked.append(claimed.id)
     return result

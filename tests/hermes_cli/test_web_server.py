@@ -4616,6 +4616,67 @@ class TestWebServerEndpoints:
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
 
+    def test_set_model_auxiliary_persists_base_url_and_api_key(self):
+        """Aux assignments for a custom/local endpoint must persist the slot's
+        own base_url/api_key (sibling of the main-slot fix, #65254). Without
+        them the aux resolver falls back to model.base_url — which breaks the
+        moment the main slot switches away and clears it."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "custom",
+                "model": "qwen3:latest",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "sk-local",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+        slot = load_config()["auxiliary"]["vision"]
+        assert slot["provider"] == "custom"
+        assert slot["model"] == "qwen3:latest"
+        assert slot["base_url"] == "http://localhost:11434/v1"
+        assert slot["api_key"] == "sk-local"
+
+    def test_set_model_auxiliary_provider_switch_still_clears_stale_endpoint(self):
+        """The existing stale-endpoint scrub on provider switch is preserved
+        when the new assignment carries no base_url."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["auxiliary"] = {
+            "vision": {
+                "provider": "custom",
+                "model": "qwen3:latest",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "sk-local",
+            },
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "vision",
+                "provider": "openrouter",
+                "model": "google/gemini-2.5-flash",
+            },
+        )
+        assert resp.status_code == 200
+
+        slot = load_config()["auxiliary"]["vision"]
+        assert slot["provider"] == "openrouter"
+        # load_config deep-merges DEFAULT_CONFIG, which re-materializes the
+        # keys as empty strings — assert the stale endpoint VALUES are gone.
+        assert not slot.get("base_url")
+        assert not slot.get("api_key")
+
     def test_custom_endpoints_list_includes_direct_custom_config(self):
         """A bare model.provider=custom config should show up in Desktop even
         before the user has materialized it under providers.

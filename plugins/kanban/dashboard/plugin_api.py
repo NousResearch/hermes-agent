@@ -646,6 +646,10 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             provider_override=payload.provider_override,
             reasoning_effort=payload.reasoning_effort,
             project_id=payload.project_id,
+            # Forward the resolved board so the create_task worktree guard
+            # reads the right board's default_workdir when validating a
+            # worktree-without-path task (the dashboard can target a
+            # non-default board via ?board=<slug>).
             board=board,
         )
         task = kanban_db.get_task(conn, task_id)
@@ -674,7 +678,22 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
                 pass
         return body
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Map structural-input validation failures (workspace_kind/worktree
+        # pairing, etc.) to 422 so the UI gets a structured error rather
+        # than a generic 400 — these are request-shape problems, not
+        # server-state problems. The DB-side guard is the source of truth;
+        # we just want the right HTTP status and a field-tagging detail.
+        msg = str(e)
+        if "workspace_path" in msg or "default_workdir" in msg:
+            raise HTTPException(
+                status_code=422,
+                detail=[{
+                    "loc": ["body", "workspace_path"],
+                    "msg": msg,
+                    "type": "value_error",
+                }],
+            )
+        raise HTTPException(status_code=400, detail=msg)
     finally:
         conn.close()
 

@@ -116,6 +116,152 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_worktree_without_path_maps_to_422(client, kanban_home, monkeypatch):
+    """Reproduces the bug where 14 pm-board tasks were created with
+    workspace_kind='worktree' and workspace_path=None on a board that has no
+    default_workdir. The dispatcher then failed to spawn and the task burned
+    its retry budget before parking in 'blocked'.
+
+    create_task()'s own validation for this pairing is being consolidated
+    into #70865 (a stricter resolvability predicate covering relative and
+    repo-less paths too), so this test targets only the dashboard-layer
+    contract: whichever ValueError create_task() raises for a
+    workspace_path/default_workdir problem, POST /tasks must map it to a
+    structured 422 instead of a generic 400, and must forward the caller's
+    board= into create_task() so the error reflects the right board.
+    """
+
+    def fake_create_task(*args, **kwargs):
+        assert kwargs.get("board") == "default"
+        raise ValueError(
+            "workspace_kind='worktree' requires a workspace_path or the "
+            "board 'default' to have a default_workdir set."
+        )
+
+    monkeypatch.setattr(kb, "create_task", fake_create_task)
+
+    response = client.post(
+        "/api/plugins/kanban/tasks?board=default",
+        json={
+            "title": "should fail fast",
+            "assignee": "coding",
+            "workspace_kind": "worktree",
+            "workspace_path": None,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    detail = response.text
+    # The error must point the user at the two ways to fix it.
+    assert "workspace_path" in detail
+    assert "default_workdir" in detail
+
+
+def test_create_task_worktree_without_path_accepted_when_board_has_default(
+    client, tmp_path
+):
+    """The board's default_workdir rescues an omitted workspace_path: the
+    existing test in test_kanban_db.py::test_worktree_no_path_no_board_default_raises
+    pins the resolution behavior, and the dashboard API must mirror it.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    kb.create_board("with-default", default_workdir=str(repo))
+
+    response = client.post(
+        "/api/plugins/kanban/tasks?board=with-default",
+        json={
+            "title": "board default rescues",
+            "workspace_kind": "worktree",
+            "workspace_path": None,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["task"]["workspace_kind"] == "worktree"
+    # The dashboard's POST handler materializes the board's default_workdir
+    # at create time so the resulting row is fully self-contained for the
+    # dispatcher. (The DB-layer guard allows the row to be created without
+    # a path; the dashboard's handler fills it in before persisting.)
+    assert body["task"]["workspace_path"] == str(repo.resolve())
+
+
+def test_create_task_worktree_with_explicit_path_still_works(client):
+    """The happy path must keep working — explicit worktree:<path> is the
+    primary use case for coding tasks and cannot regress."""
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "explicit worktree",
+            "workspace_kind": "worktree",
+            "workspace_path": "/tmp/some/repo",
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["task"]["workspace_kind"] == "worktree"
+
+
+def test_board_list_recommends_persistent_workspace_for_configured_workdir(
+    client, tmp_path
+):
+    """Board metadata should tell the UI which safe task default to use."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    plain_dir = tmp_path / "notes"
+    plain_dir.mkdir()
+    kb.create_board("notes", default_workdir=str(plain_dir))
+    kb.create_board("disposable")
+
+    response = client.get("/api/plugins/kanban/boards")
+
+    assert response.status_code == 200
+    boards = {board["slug"]: board for board in response.json()["boards"]}
+    assert boards["default"]["default_workspace_kind"] == "worktree"
+    assert boards["notes"]["default_workspace_kind"] == "dir"
+    assert boards["disposable"]["default_workspace_kind"] == "scratch"
+
+
+def test_create_board_persists_project_directory(client, tmp_path):
+    """The dashboard board form should anchor future tasks to its project."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={
+            "slug": "project-board",
+            "name": "Project Board",
+            "default_workdir": str(project_dir),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    board = response.json()["board"]
+    assert board["default_workdir"] == str(project_dir.resolve())
+    assert board["default_workspace_kind"] == "dir"
+    assert kb.read_board_metadata("project-board")["default_workdir"] == str(
+        project_dir.resolve()
+    )
+
+
+@pytest.mark.parametrize("path", ["relative/project", "~/missing-project"])
+def test_create_board_rejects_invalid_project_directory(client, path):
+    """A board must not persist a path that cannot anchor worker output."""
+    response = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "invalid-project", "default_workdir": path},
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"].lower()
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

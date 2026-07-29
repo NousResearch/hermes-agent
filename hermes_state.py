@@ -6491,6 +6491,7 @@ class SessionDB:
         id_query: str = None,
         search_query: str = None,
         compact_rows: bool = False,
+        include_pinned: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -6530,6 +6531,14 @@ class SessionDB:
         the SELECT so SQLite never copies it out of the B-tree page — a
         significant I/O saving on large databases where the blob routinely
         runs to tens of kilobytes per row.
+
+        Pass ``include_pinned=True`` to back-fill any conversation carrying the
+        durable ``pinned`` flag that the LIMIT/OFFSET window left out. A pin is
+        a "this must always be reachable" statement, so a pinned conversation
+        aging past the requested page is a bug, not a paging outcome — the
+        desktop sidebar would render an empty Pinned section. Back-filled rows
+        obey the same filters (source, archived, min_message_count) as the
+        page: an archived or filtered-out conversation stays out.
         """
         # Rows carry token/cost totals — drain queued deltas first so
         # listings (sidebar, /resume, dashboards) show exact counters.
@@ -6577,6 +6586,9 @@ class SessionDB:
             where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        # Snapshot the filter params before the query builders below extend
+        # them with LIMIT/OFFSET — the pinned back-fill reuses the same WHERE.
+        base_where_params = list(params)
 
         # Optional session-id filter, pushed into SQL so callers (Desktop
         # session-id search) don't have to fetch every row and filter in
@@ -6729,6 +6741,45 @@ class SessionDB:
             # Drop the internal ordering column so callers see a clean dict.
             s.pop("_effective_last_active", None)
             sessions.append(s)
+
+        # Back-fill pinned conversations the page missed. A pin outlives
+        # recency, so this runs BEFORE compression projection below — a
+        # back-filled root then projects to its live tip exactly like a row
+        # that had made the page on its own. One extra query, bounded by the
+        # number of pins (a handful), never N+1 per pin.
+        if include_pinned:
+            seen_ids = {s["id"] for s in sessions}
+            pinned_where = (
+                f"{where_sql} AND s.pinned = 1" if where_sql else "WHERE s.pinned = 1"
+            )
+            _sel = self._compact_session_cols() if compact_rows else "s.*"
+            pinned_query = f"""
+                SELECT {_sel},
+                    COALESCE(
+                        (SELECT {_PREVIEW_RAW_SELECT}
+                         FROM messages m
+                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                         ORDER BY m.timestamp, m.id LIMIT 1),
+                        ''
+                    ) AS _preview_raw,
+                    COALESCE(
+                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        s.started_at
+                    ) AS last_active
+                FROM sessions s
+                {pinned_where}
+                ORDER BY s.started_at DESC
+            """
+            with self._read_ctx() as conn:
+                pinned_cursor = conn.execute(pinned_query, base_where_params)
+                pinned_rows = pinned_cursor.fetchall()
+            for row in pinned_rows:
+                s = dict(row)
+                if s["id"] in seen_ids:
+                    continue
+                s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
+                seen_ids.add(s["id"])
+                sessions.append(s)
 
         # Project compression roots forward to their tips. Each row whose
         # end_reason is 'compression' has a continuation child; replace the

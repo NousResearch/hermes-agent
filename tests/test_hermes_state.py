@@ -6960,6 +6960,99 @@ class TestSessionPinAndStaleArchive:
         assert self._pinned(db, "root") == 1
         assert self._pinned(db, "tip") == 1
 
+    # ── pinned back-fill past the page window ─────────────────────────────
+    def test_pinned_session_survives_the_limit_window(self, db):
+        """A pin outlives recency: paging must not evict a pinned row.
+
+        Without ``include_pinned`` the desktop's Pinned section renders empty
+        for any conversation that has aged off the sidebar page.
+        """
+        for i in range(6):
+            self._make_idle(db, f"s{i}", days_idle=6 - i)
+        db.set_session_pinned("s0", True)  # the oldest — off a 3-row page
+
+        def ids(**kw):
+            return [
+                s["id"]
+                for s in db.list_sessions_rich(
+                    limit=3, min_message_count=1, order_by_last_active=True, **kw
+                )
+            ]
+
+        page = ids()
+        assert "s0" not in page, "precondition: the pin is off the page"
+
+        with_pins = ids(include_pinned=True)
+        assert "s0" in with_pins
+        # The page itself is untouched; the pin is additive.
+        assert with_pins[:3] == page
+        assert len(with_pins) == len(page) + 1
+
+    def test_pinned_backfill_still_obeys_the_page_filters(self, db):
+        """A back-filled pin is not a bypass — archived/short rows stay out."""
+        for i in range(4):
+            self._make_idle(db, f"f{i}", days_idle=4 - i)
+        self._make_idle(db, "archived_pin", days_idle=9)
+        db.set_session_pinned("archived_pin", True)
+        db.set_session_archived("archived_pin", True)
+        # Pinned but with no messages at all.
+        db.create_session(session_id="empty_pin", source="cli")
+        db.set_session_pinned("empty_pin", True)
+
+        ids = [
+            s["id"]
+            for s in db.list_sessions_rich(
+                limit=2,
+                min_message_count=1,
+                order_by_last_active=True,
+                include_pinned=True,
+            )
+        ]
+
+        assert "archived_pin" not in ids
+        assert "empty_pin" not in ids
+
+    def test_pinned_backfill_does_not_duplicate_an_on_page_row(self, db):
+        for i in range(3):
+            self._make_idle(db, f"p{i}", days_idle=3 - i)
+        db.set_session_pinned("p2", True)  # newest — already on the page
+
+        ids = [
+            s["id"]
+            for s in db.list_sessions_rich(
+                limit=3,
+                min_message_count=1,
+                order_by_last_active=True,
+                include_pinned=True,
+            )
+        ]
+
+        assert ids.count("p2") == 1
+
+    def test_pinned_backfill_projects_a_compression_root_to_its_tip(self, db):
+        """A back-filled root goes through tip projection like any other row."""
+        for i in range(4):
+            self._make_idle(db, f"n{i}", days_idle=4 - i)
+
+        self._make_idle(db, "old_root", days_idle=30)
+        db.end_session("old_root", end_reason="compression")
+        db.create_session(
+            session_id="old_tip", source="cli", parent_session_id="old_root"
+        )
+        db.append_message(session_id="old_tip", role="user", content="continued")
+        db.set_session_pinned("old_root", True)
+
+        rows = db.list_sessions_rich(
+            limit=2,
+            min_message_count=1,
+            order_by_last_active=True,
+            include_pinned=True,
+        )
+        backfilled = next(s for s in rows if s.get("_lineage_root_id") == "old_root")
+
+        # Surfaced under the live tip's identity, keyed on the durable root.
+        assert backfilled["id"] == "old_tip"
+
     # ── stale archive ─────────────────────────────────────────────────────
     def test_archives_only_sessions_idle_past_threshold(self, db):
         self._make_idle(db, "stale", days_idle=5)

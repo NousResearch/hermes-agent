@@ -547,6 +547,34 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
+    # STT — show configured provider
+    stt_provider = cfg_get(config, "stt", "provider", default="local") or "local"
+    if getattr(subscription_features, "stt", None) and subscription_features.stt.managed_by_nous:
+        tool_status.append(("Speech-to-Text (OpenAI via Nous subscription)", True, None))
+    elif stt_provider == "openai" and (
+        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+    ):
+        tool_status.append(("Speech-to-Text (OpenAI)", True, None))
+    elif stt_provider == "groq" and get_env_value("GROQ_API_KEY"):
+        tool_status.append(("Speech-to-Text (Groq Whisper)", True, None))
+    elif stt_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
+        tool_status.append(("Speech-to-Text (ElevenLabs Scribe)", True, None))
+    elif stt_provider == "xai":
+        tool_status.append(("Speech-to-Text (xAI)", True, None))
+    elif stt_provider == "deepinfra" and get_env_value("DEEPINFRA_API_KEY"):
+        tool_status.append(("Speech-to-Text (DeepInfra)", True, None))
+    else:
+        try:
+            fw_ok = importlib.util.find_spec("faster_whisper") is not None
+        except Exception:
+            fw_ok = False
+        if fw_ok:
+            tool_status.append(("Speech-to-Text (Local Whisper)", True, None))
+        else:
+            tool_status.append(
+                ("Speech-to-Text (Local Whisper — not installed)", False, "run 'hermes tools' → Speech-to-Text")
+            )
+
     if subscription_features.modal.managed_by_nous:
         tool_status.append(("Modal Execution (Nous subscription)", True, None))
     elif cfg_get(config, "terminal", "backend") == "modal":

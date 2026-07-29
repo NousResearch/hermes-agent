@@ -68,6 +68,39 @@ class _NoTrigramConnection(sqlite3.Connection):
         return super().cursor(factory or _NoTrigramCursor)
 
 
+def test_startup_removes_orphan_fts_triggers_but_preserves_other_triggers(tmp_path):
+    """Startup cleanup must be limited to duplicate FTS triggers."""
+    db_path = tmp_path / "trigger-cleanup.db"
+    db = SessionDB(db_path=db_path)
+    db._conn.executescript(
+        """
+        CREATE TRIGGER app_messages_audit AFTER INSERT ON messages
+        BEGIN
+            SELECT 1;
+        END;
+        CREATE TRIGGER legacy_messages_search AFTER INSERT ON messages
+        BEGIN
+            INSERT INTO messages_fts(rowid, content) VALUES (NEW.id, NEW.content);
+        END;
+        """
+    )
+    db._conn.commit()
+    db.close()
+
+    db = SessionDB(db_path=db_path)
+    trigger_names = {
+        row["name"]
+        for row in db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "AND tbl_name = 'messages'"
+        )
+    }
+    db.close()
+
+    assert "app_messages_audit" in trigger_names
+    assert "legacy_messages_search" not in trigger_names
+
+
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""

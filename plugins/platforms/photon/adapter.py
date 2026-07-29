@@ -184,15 +184,37 @@ _DEDUP_WINDOW_SECONDS = 48 * 3600
 
 _FFFC_WAIT_SECONDS = 15.0  # Timeout for waiting on an attachment after a U+FFFC placeholder.
 
-# Resolved once at import: the installed plugin tree when writable (dev
+# Resolved lazily on first use: the installed plugin tree when writable (dev
 # installs), or a mirror on the durable data volume when the install tree
 # is immutable and the baked deps are missing/stale (hosted images, NS-606).
 # See sidecar_paths.resolve_sidecar_dir for the full decision table.
+#
+# Resolution is deliberately NOT done at import time: resolve_sidecar_dir()
+# probes the filesystem (touch/unlink) and may mirror files to the data
+# volume — side effects that must not fire just because something imported
+# this module (hermes status, test collection, plugin discovery).
 from .sidecar_paths import dir_writable as _dir_writable, resolve_sidecar_dir
 
-_SIDECAR_DIR = resolve_sidecar_dir()
-_NPM_ERROR_LOG = _SIDECAR_DIR / ".photon-npm-error.log"
+# Tests monkeypatch these module globals directly; the accessors below
+# honor a non-None value and only resolve/derive when unset.
+_SIDECAR_DIR: Optional[Path] = None
+_NPM_ERROR_LOG: Optional[Path] = None
 _NPM_ERROR_LOG_MAX_CHARS = 300
+
+
+def _sidecar_dir() -> Path:
+    """Sidecar runtime dir, resolved once on first use (never at import)."""
+    global _SIDECAR_DIR
+    if _SIDECAR_DIR is None:
+        _SIDECAR_DIR = resolve_sidecar_dir()
+    return _SIDECAR_DIR
+
+
+def _npm_error_log() -> Path:
+    """Path of the persisted npm-failure log (derived from the sidecar dir)."""
+    if _NPM_ERROR_LOG is not None:
+        return _NPM_ERROR_LOG
+    return _sidecar_dir() / ".photon-npm-error.log"
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
 # install of the pinned spectrum-ts tree normally takes well under a minute;
@@ -314,7 +336,7 @@ def sidecar_deps_installed() -> bool:
     _start_sidecar(), and `hermes photon status` so all three agree on
     what "installed" means.
     """
-    return (_SIDECAR_DIR / "node_modules" / "spectrum-ts").exists()
+    return (_sidecar_dir() / "node_modules" / "spectrum-ts").exists()
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -381,7 +403,7 @@ def check_requirements() -> bool:
         # user has no CLI to run `hermes photon setup`, so the connect path
         # must self-heal). Otherwise keep returning False so
         # `hermes setup` / status surface the missing-deps state.
-        if bool(shutil.which("npm")) and _dir_writable(_SIDECAR_DIR):
+        if bool(shutil.which("npm")) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG (not WARNING): this is the normal pre-setup state.
         # check_fn() is called from multiple hot paths in the core
@@ -389,21 +411,21 @@ def check_requirements() -> bool:
         # WARNING here would spam logs on every probe for unconfigured photon.
         npm_error = ""
         try:
-            if _NPM_ERROR_LOG.exists():
-                npm_error = _NPM_ERROR_LOG.read_text(encoding="utf-8").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
+            if _npm_error_log().exists():
+                npm_error = _npm_error_log().read_text(encoding="utf-8").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
         except OSError:
             pass
         if npm_error:
             logger.debug(
                 "photon: spectrum-ts not installed at %s "
                 "(last npm error: %s) — run: hermes photon setup",
-                _SIDECAR_DIR,
+                _sidecar_dir(),
                 npm_error,
             )
         else:
             logger.debug(
                 "photon: spectrum-ts not installed at %s — run: hermes photon setup",
-                _SIDECAR_DIR,
+                _sidecar_dir(),
             )
         return False
     return True
@@ -419,8 +441,8 @@ def _sidecar_deps_stale() -> bool:
     same signal ``npm ci`` uses. Returns False (do nothing) if either file is
     missing or unreadable, so a first-run or odd filesystem never blocks start.
     """
-    lockfile = _SIDECAR_DIR / "package-lock.json"
-    marker = _SIDECAR_DIR / "node_modules" / ".package-lock.json"
+    lockfile = _sidecar_dir() / "package-lock.json"
+    marker = _sidecar_dir() / "node_modules" / ".package-lock.json"
     try:
         return lockfile.stat().st_mtime > marker.stat().st_mtime
     except OSError:
@@ -447,7 +469,7 @@ def _reinstall_sidecar_deps() -> None:
     try:
         result = subprocess.run(  # noqa: S603
             [npm, "ci"],
-            cwd=str(_SIDECAR_DIR),
+            cwd=str(_sidecar_dir()),
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
             check=False,
@@ -460,7 +482,7 @@ def _reinstall_sidecar_deps() -> None:
             )
             result = subprocess.run(  # noqa: S603
                 [npm, "install"],
-                cwd=str(_SIDECAR_DIR),
+                cwd=str(_sidecar_dir()),
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
                 check=False,
@@ -1538,7 +1560,7 @@ class PhotonAdapter(BasePlatformAdapter):
             # Cold install (NS-606): on hosted/managed images the install
             # tree is immutable and the user has no CLI to run
             # `hermes photon setup`, so the connect path must be able to
-            # bootstrap the deps itself. _SIDECAR_DIR has already been
+            # bootstrap the deps itself. _sidecar_dir() has already been
             # resolved to a writable location (or mirrored to the data
             # volume) by sidecar_paths.resolve_sidecar_dir; `npm ci` off
             # the committed lockfile is deterministic and bounded by
@@ -1547,14 +1569,14 @@ class PhotonAdapter(BasePlatformAdapter):
             # install (empty node_modules/) also triggers the reinstall.
             logger.info(
                 "[photon] sidecar deps not installed; installing into %s",
-                _SIDECAR_DIR,
+                _sidecar_dir(),
             )
             await asyncio.to_thread(_reinstall_sidecar_deps)
             if not sidecar_deps_installed():
                 raise RuntimeError(
                     f"Photon sidecar deps could not be installed into "
-                    f"{_SIDECAR_DIR} (see log for the npm error). "
-                    f"Run: cd {_SIDECAR_DIR} && npm ci   (or `hermes photon setup`)"
+                    f"{_sidecar_dir()} (see log for the npm error). "
+                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)"
                 )
         # A `hermes update` that bumps the spectrum-ts pin rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
@@ -1597,8 +1619,8 @@ class PhotonAdapter(BasePlatformAdapter):
                 subprocess.run,  # noqa: S603
                 [
                     self._node_bin,
-                    str(_SIDECAR_DIR / "patch-spectrum-mixed-attachments.mjs"),
-                    str(_SIDECAR_DIR),
+                    str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"),
+                    str(_sidecar_dir()),
                 ],
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
@@ -1619,7 +1641,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
-            [self._node_bin, str(_SIDECAR_DIR / "index.mjs")],
+            [self._node_bin, str(_sidecar_dir() / "index.mjs")],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

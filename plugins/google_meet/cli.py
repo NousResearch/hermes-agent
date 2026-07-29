@@ -214,7 +214,7 @@ def _cmd_setup() -> int:
 def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     """Install the plugin's prerequisites.
 
-    Always: pip install playwright + websockets, then
+    Always: pip install playwright, then
     ``python -m playwright install chromium``.
 
     With ``--realtime``: also install the platform audio bridge deps.
@@ -247,7 +247,9 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     print("-------------------")
 
     # 1) pip deps — always safe, venv-scoped.
-    pip_pkgs = ["playwright", "websockets"]
+    # websockets is already a hard runtime dependency of hermes-agent (pyproject.toml pins it).
+    # Dropping it here to avoid unconditionally upgrading past the project's own pin.
+    pip_pkgs = ["playwright"]
     print(f"\n[1/3] pip install: {' '.join(pip_pkgs)}")
     try:
         from hermes_cli.tools_config import _pip_install

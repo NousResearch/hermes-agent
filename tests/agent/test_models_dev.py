@@ -344,11 +344,12 @@ class TestFetchModelsDev:
             return_value=md._MODELS_DEV_CACHE_TTL + 60,
         ), patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
             first = fetch_models_dev()
-            # Wait for the background refresh worker to finish so its
-            # failure backoff is observable and requests.get stays patched.
-            deadline = time.time() + 5
-            while md._models_dev_refresh_in_flight and time.time() < deadline:
-                time.sleep(0.01)
+            # Join the background refresh worker so its failure backoff is
+            # observable and requests.get stays patched for its lifetime.
+            for worker in threading.enumerate():
+                if worker.name == "models-dev-refresh":
+                    worker.join(timeout=5)
+                    assert not worker.is_alive()
 
         assert first == SAMPLE_REGISTRY
         assert not md._models_dev_refresh_in_flight
@@ -363,6 +364,30 @@ class TestFetchModelsDev:
         assert second == SAMPLE_REGISTRY
         assert not md._models_dev_refresh_in_flight
         mock_get.assert_called_once()
+
+    @patch("agent.models_dev.requests.get")
+    def test_background_refresh_success_commits_registry(self, mock_get):
+        """The bg worker must save disk + swap mem cache + clear backoff."""
+        import agent.models_dev as md
+
+        response = MagicMock()
+        response.json.return_value = SAMPLE_REGISTRY
+        mock_get.return_value = response
+
+        md._models_dev_cache = {"stale": {}}
+        md._models_dev_cache_time = 0
+        md._models_dev_retry_after = time.time() - 1
+
+        with patch.object(md, "_save_disk_cache") as mock_save:
+            # Run the worker synchronously — deterministic, no thread.
+            md._models_dev_refresh_in_flight = True
+            md._background_refresh_models_dev()
+
+        mock_save.assert_called_once_with(SAMPLE_REGISTRY)
+        assert md._models_dev_cache == SAMPLE_REGISTRY
+        assert md._models_dev_cache_time > 0
+        assert md._models_dev_retry_after == 0
+        assert not md._models_dev_refresh_in_flight
 
     @patch("agent.models_dev.requests.get")
     def test_missing_cache_failure_enters_backoff(self, mock_get):

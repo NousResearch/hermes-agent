@@ -5366,7 +5366,7 @@ async def search_sessions(
                 payload["session_id"] = sid
                 payload["lineage_root"] = root
                 try:
-                    row = db._get_session_rich_row(sid)
+                    row = db.get_session_rich_row(sid)
                 except Exception:
                     row = None
                 if row:

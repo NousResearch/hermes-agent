@@ -6956,7 +6956,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _flush_err,
                             len(_session_messages),
                         )
-                        self._preserve_agent_history_on_shutdown(
+                        from gateway.shutdown_flush import flush_agent_history_to_file
+                        flush_agent_history_to_file(
                             getattr(agent, "session_id", None),
                             _session_messages,
                         )
@@ -6976,66 +6977,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._cleanup_agent_resources_off_loop(
                 agent, context="shutdown finalize"
             )
-
-    def _preserve_agent_history_on_shutdown(
-        self, session_id: Optional[str], history: list
-    ) -> None:
-        """Best-effort dump of an agent's in-memory transcript before teardown.
-
-        Used when ``_flush_messages_to_session_db`` raises (e.g. FTS/SQLite
-        index corruption, #72680): the live ``agent._session_messages`` could
-        not be written to disk, and a plain debug log would lose it permanently
-        when the process exits. Serialize to an external JSON file outside the
-        broken DB so an operator can salvage the conversation after repairing
-        state.db.
-
-        Failures are swallowed — shutdown must never block on a best-effort
-        backup.
-        """
-        if not history:
-            return
-        try:
-            import json
-            import os
-            from datetime import datetime, timezone
-
-            hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-            out_dir = os.path.join(hermes_home, "shutdown-recovery")
-            os.makedirs(out_dir, exist_ok=True)
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            safe_sid = (session_id or "unknown").replace("/", "_").replace("\\", "_")
-            out_path = os.path.join(out_dir, f"agent_history_{safe_sid}_{stamp}.json")
-            snapshot = []
-            for _m in history:
-                try:
-                    snapshot.append(
-                        _m if isinstance(_m, (dict, list, str, int, float, bool, type(None)))
-                        else str(_m)
-                    )
-                except Exception:
-                    continue
-            with open(out_path, "w", encoding="utf-8") as _fh:
-                json.dump(
-                    {
-                        "reason": "shutdown-with-unpersisted-agent-history",
-                        "issue": "#72680",
-                        "session_id": session_id,
-                        "count": len(snapshot),
-                        "messages": snapshot,
-                    },
-                    _fh,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            logger.warning(
-                "Preserved %d in-memory message(s) for session %s to %s "
-                "(possible FTS corruption — recover after repairing state.db)",
-                len(snapshot),
-                session_id,
-                out_path,
-            )
-        except Exception as _e:
-            logger.debug("Agent-history shutdown preservation skipped: %s", _e)
 
     def _should_emit_long_running_notification(
         self,

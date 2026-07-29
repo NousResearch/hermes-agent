@@ -249,6 +249,13 @@ function profileScoped(profile?: null | string): { profile?: string } {
   return selected ? { profile: selected } : {}
 }
 
+/** Profile that profile-scoped REST/WS calls should target (null → primary).
+ *  Read-only twin of setApiRequestProfile for modules (e.g. voice playback)
+ *  that build their own connection URLs and must stay on the same backend. */
+export function getApiRequestProfile(): null | string {
+  return _apiProfile
+}
+
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {
@@ -1513,6 +1520,7 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   return window.hermesDesktop.api<AudioTranscriptionResponse>({
     path: '/api/audio/transcribe',
     method: 'POST',
+    ...profileScoped(),
     body: {
       data_url: dataUrl,
       mime_type: mimeType
@@ -1526,6 +1534,7 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
 
 export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
+    ...profileScoped(),
     path: '/api/audio/speak',
     method: 'POST',
     body: { text },
@@ -1538,7 +1547,8 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
 
 export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
   return window.hermesDesktop.api<ElevenLabsVoicesResponse>({
-    path: '/api/audio/elevenlabs/voices'
+    path: '/api/audio/elevenlabs/voices',
+    ...profileScoped()
   })
 }
 

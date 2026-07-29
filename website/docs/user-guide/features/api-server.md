@@ -517,6 +517,27 @@ Authorization: Bearer ***
 
 Configure the key via `API_SERVER_KEY` env var. If you need a browser to call Hermes directly, also set `API_SERVER_CORS_ORIGINS` to an explicit allowlist.
 
+### Multi-profile routing (`/p/<profile>/…`)
+
+When [multi-profile gateway routing](/user-guide/multi-profile-gateways) is
+enabled (`gateway.multiplex_profiles`), the shared listener serves every
+profile through a `/p/<profile>/` URL prefix — and **authentication is bound
+to the routed profile**:
+
+- Requests to `/p/<profile>/v1/...` must present that profile's own
+  `API_SERVER_KEY` (from `~/.hermes/profiles/<profile>/.env`). The default
+  listener's key is rejected on named-profile prefixes.
+- Unprefixed routes and `/p/default/...` keep using the default profile's key.
+- A named profile with no `API_SERVER_KEY` of its own fails closed — its
+  prefix is unreachable until you set one.
+
+:::warning Breaking change (July 2026)
+Before this fix, a valid default-profile key was accepted on any
+`/p/<profile>/` prefix. If you relied on one shared key across profile
+prefixes, set a distinct `API_SERVER_KEY` in each profile's `.env` — reused
+default keys on named prefixes now return `401`.
+:::
+
 :::warning Security
 The API server gives full access to hermes-agent's toolset, **including terminal commands**. `API_SERVER_KEY` is **required for every deployment**, including the default loopback bind on `127.0.0.1`. Keep `API_SERVER_CORS_ORIGINS` narrow to control browser access when you explicitly allow browser callers.
 :::

@@ -38,6 +38,16 @@ export function hasCachedSlashCompletion(key: string): boolean {
 }
 
 /**
+ * Read a cached completion response without fetching. For data that improves a
+ * response but must not cost a round trip to get — the catalog's per-skill
+ * usage map, which refines the ordering of a typed query but is not worth
+ * delaying that query for.
+ */
+export function peekCachedSlashCompletion<T>(key: string): T | undefined {
+  return hasCachedSlashCompletion(key) ? queryClient.getQueryData<T>([SLASH_COMPLETIONS_KEY, key]) : undefined
+}
+
+/**
  * Bumped on every invalidation. The composer's completion adapter de-dupes by
  * query, so an unchanged `/` would never re-ask on its own — it watches this
  * instead to know the answer it's holding is no longer current.

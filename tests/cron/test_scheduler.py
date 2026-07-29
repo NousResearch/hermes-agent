@@ -575,13 +575,27 @@ class TestRoutingIntents:
 
     def test_all_with_no_connected_channels_returns_empty(self, monkeypatch):
         """deliver='all' with nothing connected returns [] — delivery is recorded as failed upstream."""
-        from cron.scheduler import _resolve_delivery_targets
+        from cron.scheduler import (
+            _LEGACY_HOME_TARGET_ENV_VARS,
+            _iter_home_target_platforms,
+            _resolve_delivery_targets,
+            _resolve_home_env_var,
+        )
 
-        for var in ("TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL",
-                    "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "MATTERMOST_HOME_CHANNEL",
-                    "SMS_HOME_CHANNEL", "EMAIL_HOME_ADDRESS", "DINGTALK_HOME_CHANNEL",
-                    "FEISHU_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL",
-                    "BLUEBUBBLES_HOME_CHANNEL", "QQBOT_HOME_CHANNEL", "QQ_HOME_CHANNEL"):
+        # Derive the quarantine from the same registry used by delivery
+        # resolution.  A newly registered platform must not require another
+        # hard-coded test list update.
+        env_vars = {
+            _resolve_home_env_var(platform)
+            for platform in _iter_home_target_platforms()
+        }
+        env_vars.discard("")
+        env_vars.update(
+            legacy
+            for current, legacy in _LEGACY_HOME_TARGET_ENV_VARS.items()
+            if current in env_vars
+        )
+        for var in env_vars:
             monkeypatch.delenv(var, raising=False)
 
         assert _resolve_delivery_targets({"deliver": "all", "origin": None}) == []

@@ -44,6 +44,8 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# Photon DM chat GUID (mirrors _DM_CHAT_GUID_RE in the photon adapter).
+_PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")
 # WhatsApp JIDs: group chats (<digits>@g.us), individual users
 # (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
 # newsletter chats. These are explicit native targets the bridge accepts
@@ -63,7 +65,7 @@ _EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2
 _HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
-_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to
@@ -602,6 +604,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
+            return target_ref.strip(), None, True
+    if platform_name == "photon":
+        # Photon DM chat GUIDs ('any;-;+1555...') are platform-native ids the
+        # adapter resolves itself — pass through verbatim instead of bouncing
+        # them off the channel directory (mirrors the react handler).
+        if _PHOTON_DM_GUID_RE.fullmatch(target_ref.strip()):
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True

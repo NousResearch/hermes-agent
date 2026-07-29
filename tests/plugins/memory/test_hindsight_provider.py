@@ -1842,12 +1842,16 @@ class TestPostSetupEnvEncoding:
     def _run_cloud_post_setup(self, tmp_path, monkeypatch):
         """Drive post_setup through the cloud path with piped stdin."""
         import io
-        import shutil as shutil_mod
 
         monkeypatch.setattr("hermes_cli.memory_setup._curses_select",
                             lambda *a, **kw: 0)  # cloud mode
         monkeypatch.setattr("hermes_cli.config.save_config", lambda c: None)
-        monkeypatch.setattr(shutil_mod, "which", lambda *_: None)  # skip uv install
+        # Skip the dependency install (now routed through lazy_deps, NS-605).
+        import tools.lazy_deps as lazy_deps_mod
+        monkeypatch.setattr(
+            lazy_deps_mod, "install_specs",
+            lambda *a, **kw: lazy_deps_mod.InstallSpecsResult(ok=True),
+        )
         # First line: API key prompt (readline). Second line: API URL (input).
         monkeypatch.setattr(sys, "stdin", io.StringIO("sk-new\n\n"))
 
@@ -1879,3 +1883,65 @@ class TestPostSetupEnvEncoding:
         content = env_path.read_text(encoding="utf-8")
         assert "PROXY_NOTE=café-zürich-完了" in content
         assert "HINDSIGHT_API_KEY=sk-new" in content
+
+
+class TestClientAutoUpgradeRoutesThroughLazyDeps:
+    """The initialize()-time hindsight-client auto-upgrade must go through
+    lazy_deps.install_specs() (environment-aware, durable-target on sealed
+    hosted venvs) — never a direct `uv pip install --python sys.executable`
+    subprocess, which fails with EROFS/EACCES on immutable images (NS-605)."""
+
+    def _init_with_outdated_client(self, tmp_path, monkeypatch, outcome):
+        import importlib.metadata as md
+        import subprocess as subprocess_mod
+        import tools.lazy_deps as lazy_deps_mod
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({"mode": "cloud"}))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        # Simulate an installed-but-outdated client.
+        monkeypatch.setattr(md, "version", lambda name: "0.0.1")
+
+        calls = []
+        monkeypatch.setattr(
+            lazy_deps_mod, "install_specs",
+            lambda specs, **kw: calls.append(tuple(specs)) or outcome,
+        )
+
+        # Regression guard: no direct pip subprocess may run.
+        def _no_subprocess(*a, **kw):  # pragma: no cover - fails loudly
+            raise AssertionError(f"unexpected subprocess.run during auto-upgrade: {a}")
+        monkeypatch.setattr(subprocess_mod, "run", _no_subprocess)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+        return calls
+
+    def test_upgrade_uses_install_specs_not_subprocess(self, tmp_path, monkeypatch):
+        from plugins.memory.hindsight import _MIN_CLIENT_VERSION
+        from tools.lazy_deps import InstallSpecsResult
+
+        calls = self._init_with_outdated_client(
+            tmp_path, monkeypatch, InstallSpecsResult(ok=True)
+        )
+        assert calls == [(f"hindsight-client>={_MIN_CLIENT_VERSION}",)]
+
+    def test_blocked_upgrade_is_nonfatal_and_surfaces_reason(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        from tools.lazy_deps import InstallSpecsResult
+
+        with caplog.at_level(logging.WARNING):
+            calls = self._init_with_outdated_client(
+                tmp_path, monkeypatch,
+                InstallSpecsResult(ok=False, blocked=True,
+                                   reason="runtime installs are disabled on this deployment"),
+            )
+        assert len(calls) == 1  # attempted exactly once, init still completed
+        assert any("runtime installs are disabled" in r.getMessage()
+                   for r in caplog.records)

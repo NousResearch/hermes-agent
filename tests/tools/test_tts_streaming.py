@@ -124,15 +124,113 @@ def test_never_swaps_provider_for_streaming(monkeypatch):
 
 
 def test_elevenlabs_available_reflects_key(monkeypatch):
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "ELEVENLABS_API_KEY" else None)
+    # Key lookups now route through the provider-secret resolver
+    # (config > env/.env > credential pool), not bare get_env_value.
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "key" if env == "ELEVENLABS_API_KEY" else "")
     assert ts.ElevenLabsStreamer.available() is True
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: None)
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "")
     assert ts.ElevenLabsStreamer.available() is False
 
 
-def test_openai_available_reflects_key(monkeypatch):
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "OPENAI_API_KEY" else None)
+def test_openai_available_reflects_audio_key_resolution(monkeypatch):
+    monkeypatch.setattr(ts, "_openai_config_api_key", lambda: "")
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "voice-key")
     assert ts.OpenAIStreamer.available() is True
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "")
+    assert ts.OpenAIStreamer.available() is False
+    # tts.openai.api_key from config.yaml counts too
+    monkeypatch.setattr(ts, "_openai_config_api_key", lambda: "cfg-key")
+    assert ts.OpenAIStreamer.available() is True
+
+
+def test_openai_streamer_prefers_configured_base_url(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            captured["request"] = kwargs
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "voice-key")
+    monkeypatch.setattr(
+        ts,
+        "get_env_value",
+        lambda key, *args: "https://env.example/v1" if key == "OPENAI_BASE_URL" else None,
+    )
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    config = {
+        "provider": "openai",
+        "openai": {
+            "base_url": "http://local-tts.example/v1",
+            "model": "tts-1",
+            "voice": "local-voice",
+        },
+    }
+    streamer = ts.resolve_streaming_provider(config)
+
+    assert streamer is not None
+    assert list(streamer.stream("Streaming test.")) == [b"\x01\x00"]
+    assert captured["client"] == {
+        "api_key": "voice-key",
+        "base_url": "http://local-tts.example/v1",
+    }
+
+
+def test_openai_streamer_prefers_configured_api_key(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x00"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
+    monkeypatch.setattr(ts, "get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    config = {
+        "provider": "openai",
+        "openai": {"api_key": "cfg-key", "base_url": "http://local-tts.example/v1"},
+    }
+    streamer = ts.resolve_streaming_provider(config)
+
+    assert streamer is not None
+    assert list(streamer.stream("Streaming test.")) == [b"\x01\x00"]
+    assert captured["client"]["api_key"] == "cfg-key"
 
 
 # ── Dispatch: chunked streamer path ──────────────────────────────────────
@@ -246,3 +344,158 @@ def test_display_callback_fires_without_audio(monkeypatch):
 
     assert seen, "display_callback should fire even on the sync path"
     assert done.is_set()
+
+
+# ── tts.streaming.provider config knob (salvaged from PR #47588) ─────────
+
+
+def test_streaming_provider_knob_pins_streamer(monkeypatch):
+    _register_fake(monkeypatch, "faketts")
+    prov = ts.resolve_streaming_provider(
+        {"provider": "edge", "streaming": {"provider": "faketts"}}
+    )
+    assert isinstance(prov, ts.StreamingTTSProvider)
+
+
+def test_streaming_provider_knob_pin_unusable_returns_none(monkeypatch):
+    _register_fake(monkeypatch, "faketts", available=False)
+    # A pinned-but-unusable streamer must NOT fall through to another
+    # provider — the user asked for that one specifically.
+    _register_fake(monkeypatch, "otherstreamer")
+    assert ts.resolve_streaming_provider(
+        {"provider": "otherstreamer", "streaming": {"provider": "faketts"}}
+    ) is None
+
+
+def test_streaming_provider_auto_walks_priority(monkeypatch):
+    # elevenlabs unavailable, gemini available → auto resolves gemini.
+    _register_fake(monkeypatch, "elevenlabs", available=False)
+    fake_gemini = _register_fake(monkeypatch, "gemini")
+    _register_fake(monkeypatch, "openai")
+    prov = ts.resolve_streaming_provider(
+        {"provider": "edge", "streaming": {"provider": "auto"}}
+    )
+    assert isinstance(prov, fake_gemini)
+
+
+def test_streaming_provider_auto_none_when_nothing_usable(monkeypatch):
+    for name in ts._PROVIDER_PRIORITY:
+        _register_fake(monkeypatch, name, available=False)
+    assert ts.resolve_streaming_provider(
+        {"provider": "edge", "streaming": {"provider": "auto"}}
+    ) is None
+
+
+# ── Credential routing: resolve_provider_secret, never bare env ──────────
+
+
+def test_elevenlabs_available_routes_through_secret_resolver(monkeypatch):
+    calls = []
+
+    def _fake_resolve(env_var, provider_id):
+        calls.append((env_var, provider_id))
+        return "pool-key"
+
+    monkeypatch.setattr(ts, "_resolve_key", _fake_resolve)
+    assert ts.ElevenLabsStreamer.available() is True
+    assert ("ELEVENLABS_API_KEY", "elevenlabs") in calls
+
+
+def test_gemini_available_falls_back_to_google_key(monkeypatch):
+    keys = {"GOOGLE_API_KEY": "g-key"}
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: keys.get(env, ""))
+    assert ts.GeminiStreamer.available() is True
+    keys.clear()
+    assert ts.GeminiStreamer.available() is False
+
+
+def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("tools.xai_http")
+    fake.resolve_xai_http_credentials = lambda: {"api_key": "xai-key"}
+    monkeypatch.setitem(sys.modules, "tools.xai_http", fake)
+    assert ts.XAIStreamer.available() is True
+    fake.resolve_xai_http_credentials = lambda: {"api_key": ""}
+    assert ts.XAIStreamer.available() is False
+
+
+# ── Gemini SSE parsing ────────────────────────────────────────────────────
+
+
+def test_gemini_streamer_decodes_sse_pcm_chunks(monkeypatch):
+    import base64
+    import json as _json
+    import sys
+    import types
+
+    pcm1, pcm2 = b"\x01\x00" * 40, b"\x02\x00" * 40
+
+    def _event(pcm):
+        return "data: " + _json.dumps({
+            "candidates": [{"content": {"parts": [
+                {"inlineData": {"data": base64.b64encode(pcm).decode()}}
+            ]}}]
+        })
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self, decode_unicode=True):
+            yield _event(pcm1)
+            yield ""  # SSE separator
+            yield ": heartbeat"  # comment line
+            yield _event(pcm2)
+
+    captured = {}
+
+    def _post(url, **kwargs):
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        captured["stream"] = kwargs.get("stream")
+        return _Resp()
+
+    fake_requests = types.ModuleType("requests")
+    fake_requests.post = _post
+    monkeypatch.setitem(sys.modules, "requests", fake_requests)
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "g-key")
+
+    streamer = ts.GeminiStreamer({}, {"voice": "Kore"})
+    assert list(streamer.stream("Hello there.")) == [pcm1, pcm2]
+    assert captured["params"]["alt"] == "sse"
+    assert captured["params"]["key"] == "g-key"
+    assert captured["stream"] is True, "Gemini SSE must use a bounded streamed body"
+
+
+# ── xAI WebSocket bridge ─────────────────────────────────────────────────
+
+
+def test_xai_streamer_yields_collected_frames(monkeypatch):
+    frames = [b"\x01\x00" * 30, b"\x02\x00" * 30]
+    streamer = ts.XAIStreamer.__new__(ts.XAIStreamer)
+    streamer.tts_config, streamer.section = {}, {}
+    monkeypatch.setattr(streamer, "_collect_async", lambda text: list(frames))
+    assert list(streamer.stream("A sentence.")) == frames
+
+
+# ── 16 MiB per-sentence stream cap ───────────────────────────────────────
+
+
+def test_stream_cap_truncates_runaway_upstream(monkeypatch):
+    monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
+
+    def _endless():
+        while True:
+            yield b"\x00" * 64
+
+    out = list(ts._capped(_endless(), "test"))
+    assert len(out) == 1  # 64 ok, 128 > cap → stop
+    assert sum(len(c) for c in out) <= 100

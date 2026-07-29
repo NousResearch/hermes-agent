@@ -2,6 +2,7 @@ import { useAuiState } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import {
+  chatSurfaceRoot,
   clearSurfaceVar,
   COMPOSER_HEIGHT_VAR,
   COMPOSER_SURFACE_HEIGHT_VAR,
@@ -168,11 +169,16 @@ export function useComposerMetrics({ composerRef, composerSurfaceRef, editorRef,
   }, [poppedOut, syncComposerMetrics])
 
   useEffect(() => {
-    const composer = composerRef.current
+    // Resolve the owning surface while the composer is still attached; the
+    // unmount cleanup runs after React detached the node, where closest()
+    // can no longer find [data-chat-surface] and would clear the document
+    // root instead of this surface (same class of bug as the status stack's
+    // stale-clearance leak).
+    const root = chatSurfaceRoot(composerRef.current)
 
     return () => {
-      clearSurfaceVar(composer, COMPOSER_HEIGHT_VAR)
-      clearSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR)
+      clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
+      clearSurfaceVar(root, COMPOSER_SURFACE_HEIGHT_VAR)
     }
   }, [composerRef])
 

@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import asyncio
+import atexit
 import contextlib
 import json
 import logging
@@ -25,6 +26,8 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -1973,16 +1976,21 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
-    # Merge fragmented FTS5 segments every N successful writes. The message
-    # triggers append one segment per insert; left unmaintained these grow
-    # into tens of thousands of segments, so every MATCH must scan them all
-    # and every insert pays a growing automerge cost — which lengthens the
-    # write-lock hold time and starves competing writers (gateway + cron
-    # processes share one state.db), surfacing as "database is locked".
-    # 'optimize' is a no-op once the index is already merged, so an idle DB
-    # pays almost nothing; the cadence is deliberately coarse so the one-off
-    # merge cost is amortised far below the checkpoint cadence.
-    _OPTIMIZE_EVERY_N_WRITES = 1000
+    # Retain the existing coarse 1000-write maintenance cadence, but replace
+    # the unbounded FTS5 ``'optimize'`` (measured holding the write lock for
+    # 9-18 s per index on a 10 GB production DB — longer than a competing
+    # writer's full retry patience, surfacing as "database is locked" /
+    # session_persistence_failed) with bounded ``'merge'`` commands. A
+    # positive merge rank is an approximate output-page budget, so each
+    # command holds the write lock for milliseconds; up to
+    # ``_FTS_MERGE_COMMANDS_PER_PASS`` commands run per index per cadence,
+    # stopping early on the documented no-progress signal. ``usermerge`` is
+    # lowered to 2 so positive merges act on any level with >= 2 segments —
+    # without that, levels below the default threshold of 4 are skipped and
+    # a fragmented index never converges (SQLite FTS5 §6.8-6.9).
+    _FTS_MERGE_EVERY_N_WRITES = 1000
+    _FTS_MERGE_MAX_PAGES_PER_INDEX = 500
+    _FTS_MERGE_COMMANDS_PER_PASS = 4
     # Session imports intentionally use a lower cap than exports: import holds
     # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
     # gateway/CLI writers. The dashboard accepts one exported JSON/JSONL file
@@ -1998,6 +2006,21 @@ class SessionDB:
         self.read_only = read_only
 
         self._lock = threading.Lock()
+        # Read-path split (WAL only): recall/browse queries run on per-thread
+        # read-only connections so they never queue behind writer flushes on
+        # self._lock. See _read_ctx().
+        self._read_local = threading.local()
+        # Strong set of all live read connections across all threads.  We
+        # hold a reference so short-lived reader threads' connections are
+        # not GC'd without close() — that would leak tracked fds in
+        # _live_connections.  close() drains this set.
+        self._read_conns: "set[sqlite3.Connection]" = set()
+        self._read_conns_lock = threading.Lock()
+        # Set when close() begins.  _get_read_conn checks this under the
+        # lock so a reader that finishes opening after the drain finds the
+        # shutdown in progress and closes its own connection immediately.
+        self._read_conns_closed = False
+        self._wal_active = False
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
@@ -2005,6 +2028,9 @@ class SessionDB:
         # in place at most once per SessionDB instance so a genuinely
         # unrecoverable database can't put writers into a rebuild loop.
         self._fts_runtime_rebuild_attempted = False
+        # One-shot guard for the usermerge-floor config write on the
+        # incremental FTS merge cadence (see _merge_fts_incrementally).
+        self._fts_usermerge_floor_applied = False
         self._fts_enabled = False
         self._trigram_available = False
         # CJK-bigram index (cjk_unicode61 loadable tokenizer). _fts_cjk_loaded:
@@ -2015,6 +2041,14 @@ class SessionDB:
         self._fts_cjk_available = False
         self._fts_unavailable_warned = False
         self._conn = None
+        # Async token accounting (see queue_token_counts). The condition
+        # guards queue + writer state; it is distinct from self._lock so
+        # enqueue/flush bookkeeping never contends with SQLite writes.
+        self._token_queue: deque = deque()
+        self._token_queue_cond = threading.Condition(threading.Lock())
+        self._token_writer_thread: Optional[threading.Thread] = None
+        self._token_writer_stop = False
+        self._token_writer_busy = False
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -2088,7 +2122,9 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                apply_wal_with_fallback(self._conn, db_label="state.db")
+                self._wal_active = (
+                    apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
+                )
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
@@ -2141,6 +2177,77 @@ class SessionDB:
             # ``hermes_state._set_last_init_error(None)`` explicitly.
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
             raise
+
+    # ── Read-path split ──
+
+    def _get_read_conn(self) -> Optional[sqlite3.Connection]:
+        """Per-thread read-only connection, or None when unavailable.
+
+        Only used under WAL: WAL readers see a consistent snapshot and never
+        block on (or get blocked by) the writer, so recall/browse queries can
+        skip self._lock entirely. Under DELETE journal mode (NFS fallback) a
+        reader can hit SQLITE_BUSY storms during writes, so we keep the
+        legacy locked single-connection path there.
+
+        Fresh read transactions begin per statement (autocommit), so each
+        query observes everything committed so far — read-your-writes holds
+        for the flush-then-search patterns in a turn.
+        """
+        if not self._wal_active or self.read_only:
+            return None
+        conn = getattr(self._read_local, "conn", None)
+        if conn is not None:
+            return conn
+        if getattr(self._read_local, "failed", False):
+            return None
+        try:
+            conn = _connect_tracked_db(
+                f"file:{self.db_path}?mode=ro",
+                tracking_path=self.db_path,
+                uri=True,
+                timeout=5.0,
+                isolation_level=None,
+            )
+            conn.row_factory = sqlite3.Row
+            # Load the CJK tokenizer extension on this connection so
+            # messages_fts_cjk queries work on the read path. The .so
+            # registers the tokenizer in the connection's in-memory
+            # registry, not the database file, so mode=ro is fine.
+            if self._fts_cjk_loaded:
+                load_fts5_cjk_extension(conn)
+            with self._read_conns_lock:
+                if self._read_conns_closed:
+                    # close() already drained — don't register; close
+                    # immediately so no tracked fd leaks.
+                    conn.close()
+                    self._read_local.failed = True
+                    return None
+                self._read_conns.add(conn)
+        except sqlite3.Error:
+            # Mark this thread failed so we don't retry the open on every
+            # query; the locked writer connection still serves reads.
+            self._read_local.failed = True
+            logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
+            return None
+        self._read_local.conn = conn
+        return conn
+
+    @contextmanager
+    def _read_ctx(self):
+        """Yield a connection for read-only statements.
+
+        WAL: a per-thread read-only connection with NO lock — recall queries
+        never convoy behind writer flushes (the gateway shares one SessionDB
+        across every agent, so this lock was a global choke point).
+        Non-WAL or read-conn failure: the shared writer connection under
+        self._lock, byte-for-byte the legacy behavior.
+        """
+        conn = self._get_read_conn()
+        if conn is not None:
+            yield conn
+            return
+        with self._lock:
+            yield self._conn
 
     # ── Core write helper ──
 
@@ -2512,8 +2619,8 @@ class SessionDB:
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()
-                if self._write_count % self._OPTIMIZE_EVERY_N_WRITES == 0:
-                    self._try_optimize_fts()
+                if self._write_count % self._FTS_MERGE_EVERY_N_WRITES == 0:
+                    self._try_incremental_merge_fts()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -2641,28 +2748,51 @@ class SessionDB:
         except Exception as exc:
             logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
-    def _try_optimize_fts(self) -> None:
-        """Best-effort FTS5 segment merge. Never raises.
-
-        Runs on the ``_OPTIMIZE_EVERY_N_WRITES`` cadence from the write hot
-        path (off the lock — ``optimize_fts`` re-acquires ``self._lock``
-        itself, mirroring ``_try_wal_checkpoint``). ``read_only`` connections
-        never reach the write path, so this is implicitly skipped for them.
-        Once the index is merged the 'optimize' command is close to free, so
-        the steady-state cost is negligible; the expensive case is only the
-        first merge of a long-neglected index.
-        """
+    def _try_incremental_merge_fts(self) -> None:
+        """Run one bounded FTS5 merge pass without failing the completed write."""
+        if not self._fts_enabled:
+            return
         try:
-            self.optimize_fts()
-        except Exception:
-            pass  # Best effort — never fatal.
+            self._merge_fts_incrementally(
+                max_pages=self._FTS_MERGE_MAX_PAGES_PER_INDEX
+            )
+        except sqlite3.Error as exc:
+            # Routine maintenance is best effort, but unexpected SQLite errors
+            # must remain visible instead of being silently mistaken for an
+            # optional missing index.
+            logger.warning("FTS incremental merge failed: %s", exc)
 
     def close(self):
         """Close the database connection.
 
-        Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.
+        Drains queued token deltas first (the background writer needs the
+        connection), then attempts a TRUNCATE WAL checkpoint so that
+        exiting processes help shrink the WAL file.
         """
+        self._stop_token_writer()
+        # The atexit hook holds a strong reference to this instance (bound
+        # method); without unregistering, every closed SessionDB stays
+        # reachable until interpreter exit. Bound methods compare equal by
+        # (instance, function), so this removes exactly our registration;
+        # no-op when the writer never started.
+        atexit.unregister(self._drain_token_queue_at_exit)
+        # Close all read-only connections across all threads.  Per-thread
+        # connections live in threading.local() and would otherwise be GC'd
+        # without calling close(), leaking tracked fds in _live_connections.
+        # The strong set holds references so short-lived reader threads'
+        # connections survive until close() drains them.  Setting the closed
+        # flag under the lock prevents a reader from registering a new
+        # connection after the drain.
+        with self._read_conns_lock:
+            self._read_conns_closed = True
+            read_conns = list(self._read_conns)
+            self._read_conns.clear()
+        for conn in read_conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._read_local.conn = None
         with self._lock:
             if self._conn:
                 try:
@@ -2713,11 +2843,21 @@ class SessionDB:
         "indexed": <rows backfilled>, "percent": <0-100 int>}.
         Consumed by search_messages() notes and by status surfaces
         (dashboard/desktop can poll this to render a progress indicator).
+
+        Reads state_meta directly via _read_ctx instead of calling
+        get_meta() (which takes self._lock) so search_messages doesn't
+        block on the writer lock when checking rebuild status.
         """
-        high_water = self.get_meta("fts_rebuild_high_water")
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT key, value FROM state_meta WHERE key IN (?, ?)",
+                ("fts_rebuild_high_water", "fts_rebuild_progress"),
+            ).fetchall()
+        meta = {r["key"]: r["value"] for r in row}
+        high_water = meta.get("fts_rebuild_high_water")
         if high_water is None:
             return None
-        progress = int(self.get_meta("fts_rebuild_progress") or 0)
+        progress = int(meta.get("fts_rebuild_progress") or 0)
         total = int(high_water)
         if total <= 0:
             return None
@@ -2890,10 +3030,16 @@ class SessionDB:
 
     def fts_cjk_rebuild_status(self) -> Optional[Dict[str, Any]]:
         """CJK-index backfill progress, or None when none is pending."""
-        high_water = self.get_meta("fts_cjk_rebuild_high_water")
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT key, value FROM state_meta WHERE key IN (?, ?)",
+                ("fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress"),
+            ).fetchall()
+        meta = {r["key"]: r["value"] for r in row}
+        high_water = meta.get("fts_cjk_rebuild_high_water")
         if high_water is None:
             return None
-        progress = int(self.get_meta("fts_cjk_rebuild_progress") or 0)
+        progress = int(meta.get("fts_cjk_rebuild_progress") or 0)
         total = int(high_water)
         if total <= 0:
             return None
@@ -3350,6 +3496,79 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _heal_gateway_routing_pk(self, cursor: sqlite3.Cursor) -> None:
+        """Rebuild ``gateway_routing`` when its PRIMARY KEY predates scoping.
+
+        Early builds of the routing-index migration (#59203) created the
+        table with ``session_key TEXT PRIMARY KEY`` and no ``scope`` column.
+        ``_reconcile_columns()`` ADDs the missing ``scope`` column on those
+        databases, but SQLite cannot ALTER a primary key, so the shipped
+        composite ``PRIMARY KEY (scope, session_key)`` never lands.  On such
+        tables every write path is broken:
+
+        * ``save_gateway_routing_entry`` fails with "ON CONFLICT clause does
+          not match any PRIMARY KEY or UNIQUE constraint" (its upsert targets
+          the composite key), and
+        * ``replace_gateway_routing_entries`` fails with "UNIQUE constraint
+          failed: gateway_routing.session_key" whenever the same session_key
+          exists under a different scope — the exact isolation the composite
+          key exists to provide.
+
+        Each failed save logs a warning and falls back to sessions.json,
+        so a legacy-shaped table produces endless per-save warning spam.
+        Rebuild it once, preserving rows.  On a session_key collision across
+        scopes (possible while the PK was wrong) the newest row wins.
+        """
+        try:
+            rows = cursor.execute(
+                'PRAGMA table_info("gateway_routing")'
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+        if not rows:
+            return
+
+        def _col(row, idx, name):
+            return row[idx] if isinstance(row, (tuple, list)) else row[name]
+
+        pk_cols = [
+            _col(r, 1, "name")
+            for r in sorted(
+                (r for r in rows if _col(r, 5, "pk")),
+                key=lambda r: _col(r, 5, "pk"),
+            )
+        ]
+        if pk_cols == ["scope", "session_key"]:
+            return
+
+        logger.info(
+            "gateway_routing has legacy primary key %r; rebuilding with "
+            "composite (scope, session_key) key",
+            pk_cols,
+        )
+        cursor.execute(
+            "ALTER TABLE gateway_routing RENAME TO gateway_routing_legacy_pk"
+        )
+        cursor.execute(
+            """CREATE TABLE gateway_routing (
+    scope TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    entry_json TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (scope, session_key)
+)"""
+        )
+        # INSERT OR REPLACE + updated_at ordering: if the broken PK ever let
+        # two scopes race over one session_key, keep the newest row per
+        # (scope, session_key) pair.
+        cursor.execute(
+            "INSERT OR REPLACE INTO gateway_routing "
+            "(scope, session_key, entry_json, updated_at) "
+            "SELECT COALESCE(scope, ''), session_key, entry_json, updated_at "
+            "FROM gateway_routing_legacy_pk ORDER BY updated_at ASC"
+        )
+        cursor.execute("DROP TABLE gateway_routing_legacy_pk")
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -3373,6 +3592,11 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # Rebuild gateway_routing if it still carries the pre-scope PRIMARY
+        # KEY (session_key alone). ADD COLUMN cannot fix a PK, so this is
+        # the one table-shape repair reconciliation can't express.
+        self._heal_gateway_routing_pk(cursor)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -4099,6 +4323,9 @@ class SessionDB:
         filters on ``source``; ``active_only`` restricts to sessions that
         have not ended.
         """
+        # Full rows carry token/cost totals (MCP listings, /status) — drain
+        # queued async accounting deltas so consumers see exact counters.
+        self.flush_token_counts()
         query = """
             SELECT sessions.*,
                    COALESCE(
@@ -4938,6 +5165,9 @@ class SessionDB:
         column unchanged.  Routes through _execute_write for the standard
         BEGIN IMMEDIATE + jitter-retry + lock guarantee.
         """
+        # Barrier against queued token deltas — see update_session_model.
+        self.flush_token_counts()
+
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
@@ -4965,6 +5195,14 @@ class SessionDB:
         switch explicitly replaces any confirmed Browser runtime lock while
         preserving unrelated lineage markers in ``model_config``.
         """
+        # This write bypasses the token queue, so deltas enqueued before the
+        # switch must land first: a still-queued first delta carries the
+        # pre-switch route, and applying it after this UPDATE would trip the
+        # first_accounted_route overwrite in update_token_counts (row sees
+        # api_call_count == 0 + a route mismatch) and resurrect the old
+        # model/provider. Flushing here restores the pre-queue ordering.
+        self.flush_token_counts()
+
         def _do(conn):
             conn.execute(
                 """UPDATE sessions SET
@@ -5053,6 +5291,9 @@ class SessionDB:
         stale ``Model:`` / ``Provider:`` header) is rebuilt — matching the
         behavior of ``update_session_model`` (see #48173, #48248).
         """
+        # Barrier against queued token deltas — see update_session_model.
+        self.flush_token_counts()
+
         def _do(conn):
             conn.execute(
                 """UPDATE sessions SET
@@ -5064,6 +5305,263 @@ class SessionDB:
                 (provider, base_url, billing_mode, session_id),
             )
         self._execute_write(_do)
+
+    # ── Async token accounting ──
+    # update_token_counts() runs a sessions UPDATE (plus a per-model usage
+    # upsert) inside BEGIN IMMEDIATE; against a cold multi-GB state.db one
+    # call can stall the turn thread for tens to hundreds of ms, and the
+    # tool loop pays it after EVERY API call (measured p50 3.3ms / p95 70ms
+    # per call in production). queue_token_counts() reduces the critical
+    # path to a deque append: a dedicated single-writer thread applies
+    # deltas in enqueue order, coalescing consecutive same-route deltas
+    # into one UPDATE when a backlog forms. Readers that need exact
+    # mid-turn totals (get_session and friends) call flush_token_counts()
+    # first — a plain attribute check when nothing is queued.
+
+    # Delta fields summed when coalescing. Route fields must be equal for
+    # two deltas to merge: model/billing_* feed COALESCE backfill and the
+    # per-model usage attribution key, and cost_status/cost_source are
+    # last-non-None-wins — equality makes the merged UPDATE byte-for-byte
+    # equivalent to applying the deltas sequentially.
+    _TOKEN_DELTA_SUM_FIELDS = (
+        "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens", "reasoning_tokens", "api_call_count",
+    )
+    _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
+    _TOKEN_DELTA_ROUTE_FIELDS = (
+        "model", "cost_status", "cost_source", "pricing_version",
+        "billing_provider", "billing_base_url", "billing_mode",
+    )
+
+    def queue_token_counts(self, session_id: str, **kwargs) -> None:
+        """Enqueue a token/cost delta for the background writer.
+
+        Accepts the same keyword arguments as :meth:`update_token_counts`
+        and applies them asynchronously with identical semantics.  Cheap
+        (append + notify) — safe to call on the turn thread after every
+        API call.  After close() has stopped the writer, falls back to the
+        synchronous path and may raise like :meth:`update_token_counts`.
+        """
+        with self._token_queue_cond:
+            thread = self._token_writer_thread
+            writer_stopped = self._token_writer_stop and (
+                thread is None or not thread.is_alive()
+            )
+            if not writer_stopped:
+                self._token_queue.append((session_id, kwargs))
+                if thread is None or not thread.is_alive():
+                    # Daemon so process exit never hangs on accounting; the
+                    # atexit hook drains anything still queued at interpreter
+                    # shutdown (registered once per instance, on first use).
+                    # ``not is_alive()`` (rather than ``is None`` only)
+                    # respawns the writer if it ever died from an unexpected
+                    # escape — otherwise a dead thread object would block
+                    # respawn forever and deltas would pile up on the deque
+                    # until a reader's flush drained them synchronously.
+                    thread = threading.Thread(
+                        target=self._token_writer_loop,
+                        name="session-db-token-writer",
+                        daemon=True,
+                    )
+                    self._token_writer_thread = thread
+                    thread.start()
+                    atexit.register(self._drain_token_queue_at_exit)
+                self._token_queue_cond.notify_all()
+        if writer_stopped:
+            # Writer permanently stopped (close() ran; a stop-flagged but
+            # still-live writer keeps accepting — its loop drains before
+            # exiting). Enqueueing now would drop the delta silently: no
+            # writer will run and close() already unregistered the atexit
+            # hook. Apply inline instead so a closed-connection failure
+            # raises at the call site, exactly like the old synchronous
+            # update_token_counts path these call sites still guard for.
+            self.update_token_counts(session_id, **kwargs)
+
+    def flush_token_counts(self, timeout: float = 5.0) -> bool:
+        """Block until every queued token delta has been applied.
+
+        Returns True when the queue is fully drained, False on timeout
+        (callers then read totals that are stale by the still-queued
+        deltas — no worse than reading before the flush existed).
+        Never raises: apply failures are logged by the writer.
+        """
+        # Fast path — nothing queued, nothing in flight.
+        if not self._token_queue and not self._token_writer_busy:
+            return True
+        batch = None
+        with self._token_queue_cond:
+            deadline = time.monotonic() + timeout
+            while self._token_queue or self._token_writer_busy:
+                # A live writer is authoritative even when stop-flagged
+                # (close() in progress): its loop drains the queue before
+                # exiting, and draining here instead would race its
+                # in-flight batch — newer deltas committing before older
+                # ones breaks the last-non-None-wins / first-accounted-
+                # route / COALESCE-backfill fields. Only when the writer is
+                # dead (or never started for these deltas) does the caller
+                # take the leftovers. Re-checked each wakeup: the writer
+                # can exit mid-wait with deltas enqueued after its final
+                # empty-queue check. busy is claimed while draining (same
+                # protocol as the writer) so a concurrent flush cannot
+                # report drained — or pop a newer delta — while this batch
+                # is still unapplied; a claimed busy therefore also means
+                # "wait", never "drain alongside".
+                thread = self._token_writer_thread
+                if (
+                    (thread is None or not thread.is_alive())
+                    and not self._token_writer_busy
+                ):
+                    self._token_writer_busy = True
+                    batch = list(self._token_queue)
+                    self._token_queue.clear()
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._token_queue_cond.wait(remaining)
+        if batch:
+            try:
+                self._apply_token_batch(batch)
+            finally:
+                with self._token_queue_cond:
+                    self._token_writer_busy = False
+                    self._token_queue_cond.notify_all()
+        return True
+
+    def _token_writer_loop(self) -> None:
+        while True:
+            with self._token_queue_cond:
+                while not self._token_queue and not self._token_writer_stop:
+                    self._token_queue_cond.wait()
+                if not self._token_queue:
+                    return  # stop requested and fully drained
+                # busy is set BEFORE the queue is cleared: the lock-free
+                # fast path in flush_token_counts() reads queue-then-busy,
+                # so this order guarantees it can never observe an empty
+                # queue while the popped batch is still unapplied.
+                self._token_writer_busy = True
+                batch = list(self._token_queue)
+                self._token_queue.clear()
+            try:
+                self._apply_token_batch(batch)
+            finally:
+                with self._token_queue_cond:
+                    self._token_writer_busy = False
+                    self._token_queue_cond.notify_all()
+
+    def _apply_token_batch(self, batch: List[Tuple[str, Dict[str, Any]]]) -> None:
+        """Apply queued deltas in order, coalescing where safe. Never raises."""
+        try:
+            coalesced = self._coalesce_token_deltas(batch)
+        except Exception as exc:
+            # Coalescing must never kill the writer thread (a dead writer
+            # can't be observed by callers). Fall back to applying the raw
+            # batch delta-by-delta — the merge is an optimization only.
+            logger.warning(
+                "async token accounting: coalesce failed, applying raw "
+                "batch: %s", exc,
+            )
+            coalesced = batch
+        for session_id, kwargs in coalesced:
+            try:
+                self.update_token_counts(session_id, **kwargs)
+            except Exception as exc:
+                # Same contract as the old inline call sites: accounting
+                # loss is logged, never raised into a turn.
+                logger.warning(
+                    "async token accounting: apply failed (session=%s): %s",
+                    session_id, exc,
+                )
+
+    def _coalesce_token_deltas(
+        self, batch: List[Tuple[str, Dict[str, Any]]]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """Merge consecutive incremental deltas with an identical route.
+
+        Only adjacent deltas merge, so ordering across sessions and across
+        a mid-session /model switch is preserved exactly.  absolute=True
+        deltas (cumulative overwrites) never merge.
+        """
+        groups: List[Tuple[Optional[tuple], str, Dict[str, Any]]] = []
+        for session_id, kwargs in batch:
+            key = None
+            if not kwargs.get("absolute"):
+                key = (session_id,) + tuple(
+                    kwargs.get(f) for f in self._TOKEN_DELTA_ROUTE_FIELDS
+                )
+            if groups and key is not None and groups[-1][0] == key:
+                merged = groups[-1][2]
+                for f in self._TOKEN_DELTA_SUM_FIELDS:
+                    merged[f] = merged.get(f, 0) + kwargs.get(f, 0)
+                for f in self._TOKEN_DELTA_COST_FIELDS:
+                    value = kwargs.get(f)
+                    if value is not None:
+                        # None-preserving sum: an all-None run must stay
+                        # None so COALESCE keeps the stored value untouched.
+                        merged[f] = (merged.get(f) or 0.0) + value
+            else:
+                groups.append((key, session_id, dict(kwargs)))
+        return [(sid, kw) for _, sid, kw in groups]
+
+    def _stop_token_writer(self, join_timeout: float = 10.0) -> None:
+        """Stop the writer thread and drain remaining deltas. Never raises."""
+        with self._token_queue_cond:
+            self._token_writer_stop = True
+            self._token_queue_cond.notify_all()
+            thread = self._token_writer_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=join_timeout)
+            if thread.is_alive():
+                # Writer stuck mid-apply (pathological lock contention).
+                # Leave any queued deltas unapplied rather than racing the
+                # stuck apply and misordering/double-counting.
+                logger.warning(
+                    "async token accounting: writer did not stop within %.0fs; "
+                    "%d queued delta(s) not persisted",
+                    join_timeout, len(self._token_queue),
+                )
+                return
+        # Writer exited (or never started) — apply leftovers synchronously.
+        # Claim busy like the writer/flush drains do, so a concurrent
+        # flush_token_counts cannot fast-path True while this batch is
+        # still being applied; conversely, wait out a flush caller-drain
+        # that already claimed busy — close() nulls the connection right
+        # after this returns, and must not yank it mid-batch.
+        with self._token_queue_cond:
+            deadline = time.monotonic() + join_timeout
+            while self._token_writer_busy:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "async token accounting: concurrent drain did not "
+                        "finish within %.0fs; %d queued delta(s) not persisted",
+                        join_timeout, len(self._token_queue),
+                    )
+                    return
+                self._token_queue_cond.wait(remaining)
+            # busy is claimed BEFORE the queue is cleared — same ordering
+            # as the writer loop and the flush caller-drain. The lock-free
+            # fast path in flush_token_counts() reads queue-then-busy
+            # without the cond, so clearing first would let a concurrent
+            # flush observe "empty and idle" and return True while this
+            # popped batch is still unapplied.
+            batch = list(self._token_queue)
+            if batch:
+                self._token_writer_busy = True
+                self._token_queue.clear()
+        if batch:
+            try:
+                self._apply_token_batch(batch)
+            finally:
+                with self._token_queue_cond:
+                    self._token_writer_busy = False
+                    self._token_queue_cond.notify_all()
+
+    def _drain_token_queue_at_exit(self) -> None:
+        try:
+            self._stop_token_writer()
+        except Exception:
+            pass  # Best effort — never fatal at interpreter shutdown.
 
     def update_token_counts(
         self,
@@ -5477,8 +5975,12 @@ class SessionDB:
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
-        with self._lock:
-            cursor = self._conn.execute(
+        # Cost/usage readers (/status, /usage, gateway endpoints) reach the
+        # row through here; drain queued token deltas so they see exact
+        # totals. No-op attribute check when nothing is queued.
+        self.flush_token_counts()
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             )
             row = cursor.fetchone()
@@ -5790,8 +6292,8 @@ class SessionDB:
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
-        with self._lock:
-            cursor = self._conn.execute(
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
                 "SELECT * FROM sessions WHERE title = ?", (title,)
             )
             row = cursor.fetchone()
@@ -5811,8 +6313,8 @@ class SessionDB:
         # Also search for numbered variants: "title #2", "title #3", etc.
         # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        with self._lock:
-            cursor = self._conn.execute(
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
                 "SELECT id, title, started_at FROM sessions "
                 "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
                 (f"{escaped} #%",),
@@ -5975,6 +6477,7 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
+        sources: List[str] = None,
         exclude_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
@@ -6028,6 +6531,9 @@ class SessionDB:
         significant I/O saving on large databases where the blob routinely
         runs to tens of kilobytes per row.
         """
+        # Rows carry token/cost totals — drain queued deltas first so
+        # listings (sidebar, /resume, dashboards) show exact counters.
+        self.flush_token_counts()
         where_clauses = []
         params = []
 
@@ -6049,9 +6555,11 @@ class SessionDB:
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
-        if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+        include_sources = [source] if source else list(sources or [])
+        if include_sources:
+            placeholders = ",".join("?" for _ in include_sources)
+            where_clauses.append(f"s.source IN ({placeholders})")
+            params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -6211,8 +6719,8 @@ class SessionDB:
                 LIMIT ? OFFSET ?
             """
             params.extend([limit, offset])
-        with self._lock:
-            cursor = self._conn.execute(query, params)
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, params)
             rows = cursor.fetchall()
         sessions = []
         for row in rows:
@@ -6327,6 +6835,8 @@ class SessionDB:
         Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
         ``list_sessions_rich`` for details).
         """
+        # Same read-your-writes guarantee as list_sessions_rich.
+        self.flush_token_counts()
         _sel = self._compact_session_cols() if compact_rows else "s.*"
         query = f"""
             SELECT {_sel},
@@ -6352,6 +6862,15 @@ class SessionDB:
         s = dict(row)
         s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
         return s
+
+    def get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
+        """Public wrapper for :meth:`_get_session_rich_row`.
+
+        Exposes the single-session enriched row (same columns as
+        ``list_sessions_rich``: preview + last_active) for callers outside
+        this module, e.g. the web server's session-search hydration.
+        """
+        return self._get_session_rich_row(session_id, compact_rows=compact_rows)
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
         """Titled sessions whose first user turn was a ``/skill`` invocation.
@@ -6988,8 +7507,8 @@ class SessionDB:
             # SQLite's OFFSET requires LIMIT; -1 means "no limit".
             sql += " LIMIT ? OFFSET ?"
             params.extend([-1 if limit is None else limit, offset])
-        with self._lock:
-            cursor = self._conn.execute(sql, params)
+        with self._read_ctx() as conn:
+            cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
         result = []
         for row in rows:
@@ -7034,9 +7553,9 @@ class SessionDB:
         """
         if window < 0:
             window = 0
-        with self._lock:
+        with self._read_ctx() as conn:
             # Confirm the anchor exists in this session.
-            anchor_exists = self._conn.execute(
+            anchor_exists = conn.execute(
                 "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
                 (around_message_id, session_id),
             ).fetchone()
@@ -7045,13 +7564,13 @@ class SessionDB:
 
             # Two queries: anchor + before (DESC, take window+1), and after
             # (ASC, take window). Final order is id ASC.
-            before_rows = self._conn.execute(
+            before_rows = conn.execute(
                 "SELECT * FROM messages "
                 "WHERE session_id = ? AND id <= ? "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1),
             ).fetchall()
-            after_rows = self._conn.execute(
+            after_rows = conn.execute(
                 "SELECT * FROM messages "
                 "WHERE session_id = ? AND id > ? "
                 "ORDER BY id ASC LIMIT ?",
@@ -7159,7 +7678,7 @@ class SessionDB:
         bookend_start_rows: List[Any] = []
         bookend_end_rows: List[Any] = []
         if bookend > 0:
-            with self._lock:
+            with self._read_ctx() as conn:
                 role_clause = ""
                 role_params: list = []
                 if keep_roles is not None:
@@ -7167,7 +7686,7 @@ class SessionDB:
                     role_clause = f" AND role IN ({role_placeholders})"
                     role_params = list(keep_roles)
 
-                bookend_start_rows = self._conn.execute(
+                bookend_start_rows = conn.execute(
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id < ?{role_clause} "
                     f"AND length(content) > 0 "
@@ -7175,7 +7694,7 @@ class SessionDB:
                     (session_id, window_min_id, *role_params, bookend),
                 ).fetchall()
 
-                bookend_end_rows = self._conn.execute(
+                bookend_end_rows = conn.execute(
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id > ?{role_clause} "
                     f"AND length(content) > 0 "
@@ -7748,16 +8267,27 @@ class SessionDB:
         Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
         ``preview`` is the first 80 characters of the message content
         (with line breaks collapsed to spaces). Used by the /rewind
-        slash command picker.
+        slash command picker, CLI/TUI/gateway ``/undo [N]``, and any other
+        caller that needs real user-turn targets.
+
+        Bookkeeping timeline rows (``display_kind`` set — e.g. model_switch,
+        async_delegation_complete, auto_continue, hidden) are excluded. They
+        are durable ``role='user'`` rows for the API transcript, but no client
+        counts them as user turns (desktop demotes them to system / drops them;
+        the CLI already uses ``not m.get("display_kind")``). Including them here
+        made ``/undo`` soft-delete from a marker instead of the last real turn —
+        same class of index skew as the prompt.submit ordinal bug.
 
         By default only active messages are returned.
         """
         active_clause = "" if include_inactive else " AND active = 1"
+        # Match CLI/desktop: only real user turns, not timeline bookkeeping.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT id, timestamp, content FROM messages "
                 "WHERE session_id = ? AND role = 'user'"
-                f"{active_clause} "
+                f"{active_clause}{display_clause} "
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, int(limit)),
             )
@@ -8013,9 +8543,9 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
         tri_params.extend([limit, offset])
-        with self._lock:
+        with self._read_ctx() as conn:
             try:
-                tri_cursor = self._conn.execute(tri_sql, tri_params)
+                tri_cursor = conn.execute(tri_sql, tri_params)
             except sqlite3.OperationalError:
                 # Query failed at runtime — let the caller fall back.
                 return None
@@ -8296,8 +8826,8 @@ class SessionDB:
                 """
                 cjk_params.extend([limit, offset])
                 try:
-                    with self._lock:
-                        cjk_cursor = self._conn.execute(cjk_sql, cjk_params)
+                    with self._read_ctx() as conn:
+                        cjk_cursor = conn.execute(cjk_sql, cjk_params)
                         matches = [dict(row) for row in cjk_cursor.fetchall()]
                         _trigram_succeeded = True
                 except sqlite3.OperationalError:
@@ -8312,8 +8842,8 @@ class SessionDB:
                     # in place once and retry; on refusal/failure fall back.
                     if self._try_runtime_fts_rebuild(exc):
                         try:
-                            with self._lock:
-                                cjk_cursor = self._conn.execute(
+                            with self._read_ctx() as conn:
+                                cjk_cursor = conn.execute(
                                     cjk_sql, cjk_params
                                 )
                                 matches = [
@@ -8385,8 +8915,8 @@ class SessionDB:
                 """
                 tri_params.extend([limit, offset])
                 try:
-                    with self._lock:
-                        tri_cursor = self._conn.execute(tri_sql, tri_params)
+                    with self._read_ctx() as conn:
+                        tri_cursor = conn.execute(tri_sql, tri_params)
                         matches = [dict(row) for row in tri_cursor.fetchall()]
                         _trigram_succeeded = True
                 except sqlite3.OperationalError:
@@ -8406,8 +8936,8 @@ class SessionDB:
                     # messages table, so CJK search stays available.
                     if self._try_runtime_fts_rebuild(exc):
                         try:
-                            with self._lock:
-                                tri_cursor = self._conn.execute(
+                            with self._read_ctx() as conn:
+                                tri_cursor = conn.execute(
                                     tri_sql, tri_params
                                 )
                                 matches = [
@@ -8474,13 +9004,13 @@ class SessionDB:
                 like_params.extend([limit, offset])
                 # instr() for snippet uses first search token
                 like_params = [non_op_tokens[0]] + like_params
-                with self._lock:
-                    like_cursor = self._conn.execute(like_sql, like_params)
+                with self._read_ctx() as conn:
+                    like_cursor = conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]
         else:
             try:
-                with self._lock:
-                    cursor = self._conn.execute(sql, params)
+                with self._read_ctx() as conn:
+                    cursor = conn.execute(sql, params)
                     matches = [dict(row) for row in cursor.fetchall()]
             except sqlite3.OperationalError:
                 # FTS5 query syntax error despite sanitization — return empty
@@ -8490,14 +9020,14 @@ class SessionDB:
                 # structure record" class on the MATCH read, the same class the
                 # write path self-heals (#66296). OperationalError (query
                 # syntax) is a subclass caught above; this arm is the corruption
-                # parent. Rebuild the index in place once — the lock is released
-                # here, so rebuild_fts() can re-acquire it — and retry, so
-                # search self-heals for read-only sessions (cron/CLI history
-                # search) that never trigger a write to repair it first.
+                # parent. Rebuild the index in place once — the read context
+                # holds no writer lock, so rebuild_fts() can acquire it — and
+                # retry, so search self-heals for read-only sessions (cron/CLI
+                # history search) that never trigger a write to repair it first.
                 if not self._try_runtime_fts_rebuild(exc):
                     raise
-                with self._lock:
-                    cursor = self._conn.execute(sql, params)
+                with self._read_ctx() as conn:
+                    cursor = conn.execute(sql, params)
                     matches = [dict(row) for row in cursor.fetchall()]
 
         # Deferred-rebuild supplement (schema v23): while the background
@@ -8579,11 +9109,12 @@ class SessionDB:
                     matches = tri_matches
 
         # Add surrounding context (1 message before + after each match).
-        # Done outside the lock so we don't hold it across N sequential queries.
+        # Each query takes its own fresh read transaction via _read_ctx, so
+        # we never hold a lock across N sequential queries.
         for match in matches:
             try:
-                with self._lock:
-                    ctx_cursor = self._conn.execute(
+                with self._read_ctx() as conn:
+                    ctx_cursor = conn.execute(
                         """WITH target AS (
                                SELECT session_id, timestamp, id
                                FROM messages
@@ -8715,8 +9246,8 @@ class SessionDB:
             LIMIT ?
         """
         params = [terms[0]] + params + [limit]
-        with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+        with self._read_ctx() as conn:
+            rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def search_sessions_by_id(
@@ -8724,6 +9255,9 @@ class SessionDB:
         query: str,
         limit: int = 20,
         include_archived: bool = True,
+        source: str = None,
+        sources: List[str] = None,
+        exclude_sources: List[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search surfaced sessions by exact/prefix/substring session id.
 
@@ -8744,6 +9278,9 @@ class SessionDB:
         # in-Python exact/prefix/substring ranking below has enough candidates
         # to order, then truncate.
         candidates = self.list_sessions_rich(
+            source=source,
+            sources=sources,
+            exclude_sources=exclude_sources,
             limit=max(limit * 4, limit),
             offset=0,
             include_archived=include_archived,
@@ -8819,6 +9356,7 @@ class SessionDB:
     def session_count(
         self,
         source: str = None,
+        sources: List[str] = None,
         cwd_prefix: str = None,
         min_message_count: int = 0,
         include_archived: bool = False,
@@ -8849,9 +9387,11 @@ class SessionDB:
             # children (parent ended with end_reason='branched').
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
-        if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+        include_sources = [source] if source else list(sources or [])
+        if include_sources:
+            placeholders = ",".join("?" for _ in include_sources)
+            where_clauses.append(f"s.source IN ({placeholders})")
+            params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -8873,6 +9413,51 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
+
+    def session_count_by_source(
+        self,
+        *,
+        include_archived: bool = False,
+        archived_only: bool = False,
+        exclude_children: bool = False,
+    ) -> Dict[str, int]:
+        """Return a ``{source: count}`` dict via a single ``GROUP BY`` query.
+
+        Replaces the O(N) ``list_sessions_rich`` histogram loop with an
+        aggregate query. When ``exclude_children`` is False the query uses
+        ``idx_sessions_source``; when True, the child-exclusion predicates
+        require a full table scan (same as ``session_count`` and
+        ``list_sessions_rich``).
+
+        ``exclude_children=True`` mirrors ``list_sessions_rich`` visibility
+        (roots + branch sessions, excluding sub-agent runs, delegates, and
+        compression continuations) so the source counts match what the
+        Sessions page actually lists.
+        """
+        where_clauses = []
+        params: list = []
+
+        if exclude_children:
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("SessionDB connection is closed")
+            rows = self._conn.execute(
+                "SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count "
+                f"FROM sessions s{where_sql} "
+                "GROUP BY COALESCE(NULLIF(s.source, ''), 'cli') "
+                "ORDER BY count DESC",
+                params,
+            ).fetchall()
+        return {str(row["source"]): int(row["count"] or 0) for row in rows}
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
@@ -10080,6 +10665,12 @@ class SessionDB:
 
     def get_meta(self, key: str) -> Optional[str]:
         """Read a value from the state_meta key/value store."""
+        # Kept on self._lock (not _read_ctx) because callers like
+        # fts_rebuild_step read progress before entering a write
+        # transaction, and the read-only WAL connection sees only
+        # committed data — a pending write transaction's uncommitted
+        # meta writes would be invisible.  This is a cheap point lookup,
+        # not the convoy bottleneck the read-path split targets.
         with self._lock:
             row = self._conn.execute(
                 "SELECT value FROM state_meta WHERE key = ?", (key,)
@@ -10735,6 +11326,77 @@ class SessionDB:
         except Exception as exc:
             logger.debug("Could not read logical DB size: %s", exc)
             return None
+
+    def _merge_fts_incrementally(
+        self, *, max_pages: int, max_commands: Optional[int] = None
+    ) -> int:
+        """Run bounded FTS5 ``'merge'`` commands against each present index.
+
+        A positive merge rank tells SQLite to stop after approximately that
+        many output pages, so each command holds the write lock for
+        milliseconds regardless of index size — unlike ``'optimize'``, which
+        rewrites the whole index in one transaction (measured 9-18 s per
+        index on a 10 GB production DB, long enough to exhaust a competing
+        writer's entire lock-retry patience).
+
+        Protocol (SQLite FTS5 §6.8-6.9):
+
+        - ``usermerge`` is lowered to its minimum of 2 (persisted in the
+          ``%_config`` shadow table, applied once per instance) so a
+          positive merge acts on ANY level holding >= 2 segments. With the
+          default of 4, levels below that threshold are never merged by a
+          positive-rank command and a fragmented index cannot converge.
+        - Up to *max_commands* merge commands run per index, stopping early
+          on the documented no-progress signal: the delta in
+          ``total_changes`` is < 2 (the command's own INSERT accounts
+          for 1 change; >= 2 means real merge work happened).
+
+        Each command is its own implicit transaction (the connection runs
+        with ``isolation_level=None``), so the SQLite write lock is released
+        between commands and competing processes can interleave writes
+        mid-pass. Missing tables are valid schema variants (FTS variants are
+        optional, and ``optimize_fts_storage`` legitimately drops + backfills
+        these tables while writers keep running) and are skipped, mirroring
+        ``optimize_fts``. Other SQLite errors propagate to the caller.
+
+        Returns the number of merge commands executed.
+        """
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int):
+            raise TypeError("max_pages must be an integer")
+        if max_pages <= 0:
+            raise ValueError("max_pages must be greater than zero")
+        if max_commands is None:
+            max_commands = self._FTS_MERGE_COMMANDS_PER_PASS
+        if isinstance(max_commands, bool) or not isinstance(max_commands, int):
+            raise TypeError("max_commands must be an integer")
+        if max_commands <= 0:
+            raise ValueError("max_commands must be greater than zero")
+
+        executed = 0
+        with self._lock:
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                # One-time (per instance) usermerge floor; the value is
+                # persisted in the index's config shadow table so future
+                # connections inherit it. Setting config is a metadata-only
+                # write — it never touches segment data.
+                if not getattr(self, "_fts_usermerge_floor_applied", False):
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}, rank) "
+                        "VALUES('usermerge', 2)"
+                    )
+                for _ in range(max_commands):
+                    before = self._conn.total_changes
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}, rank) VALUES('merge', ?)",
+                        (max_pages,),
+                    )
+                    executed += 1
+                    if self._conn.total_changes - before < 2:
+                        break
+            self._fts_usermerge_floor_applied = True
+        return executed
 
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.

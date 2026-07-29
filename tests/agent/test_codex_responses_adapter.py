@@ -227,6 +227,72 @@ def test_chat_messages_to_responses_input_keeps_short_message_id():
     assert message_item["id"] == _VALID_ITEM_ID
 
 
+# The codex app-server overflows the Responses 64-char call_id limit for
+# MCP-routed tools, e.g. codex_mcp__hermes-tools__web_search_exec-<uuid> (#73492).
+_OVERSIZED_CALL_ID = "codex_mcp__hermes-tools__web_search_exec-" + "0" * 43
+
+
+def test_chat_messages_to_responses_input_clamps_oversized_call_id():
+    """An oversized call_id must be clamped to <=64 chars on BOTH the
+    function_call and its matching function_call_output, to the same surrogate,
+    so the pairing survives (#73492)."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": _OVERSIZED_CALL_ID,
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": _OVERSIZED_CALL_ID,
+            "content": "some result",
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    call = next(i for i in items if i.get("type") == "function_call")
+    output = next(i for i in items if i.get("type") == "function_call_output")
+
+    assert len(call["call_id"]) <= 64
+    assert call["call_id"] != _OVERSIZED_CALL_ID
+    # Deterministic surrogate — the pair must still reference the same id.
+    assert call["call_id"] == output["call_id"]
+
+
+def test_chat_messages_to_responses_input_keeps_short_call_id():
+    """A call_id already within the limit passes through unchanged (#73492)."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": "call_abc123",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_abc123",
+            "content": "some result",
+        },
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    call = next(i for i in items if i.get("type") == "function_call")
+    output = next(i for i in items if i.get("type") == "function_call_output")
+    assert call["call_id"] == "call_abc123"
+    assert output["call_id"] == "call_abc123"
+
+
 def test_preflight_codex_input_items_drops_oversized_message_id():
     items = _preflight_codex_input_items(
         [

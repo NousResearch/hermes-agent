@@ -4270,7 +4270,12 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
 
 
 
-def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
+def _prompt_api_key(
+    pconfig,
+    existing_key: str,
+    provider_id: str = "",
+    existing_source: str = "",
+) -> tuple:
     """Shared API-key entry point for ``hermes setup`` / ``hermes model``.
 
     Handles both first-time entry and the already-configured case.  When a key
@@ -4324,8 +4329,14 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         # Nothing we can rewrite; just acknowledge and move on.
         print()
         return existing_key, False
+    pool_backed = existing_source.startswith("credential_pool:")
+    menu = (
+        "  [K]eep / [R]eplace (default K): "
+        if pool_backed
+        else "  [K]eep / [R]eplace / [C]lear (default K): "
+    )
     try:
-        choice = input("  [K]eep / [R]eplace / [C]lear (default K): ").strip().lower()
+        choice = input(menu).strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
         choice = "k"
@@ -4341,7 +4352,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         print()
         return new_key, False
 
-    if choice.startswith("c"):
+    if choice.startswith("c") and not pool_backed:
         save_env_value(key_env, "")
         print(
             f"  API key cleared.  Re-run `hermes setup` to configure {pconfig.name} again."
@@ -6366,41 +6377,253 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
-def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
-    """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
+def _desktop_macos_bundle_id(bundle: Path) -> Optional[str]:
+    """Return a bundle/framework CFBundleIdentifier for local macOS signing."""
+    import plistlib
 
-    An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
-    when the self-updater rebuilds the bundle in place with a fresh build (a new,
-    different cdhash) Gatekeeper/LaunchServices treats the changed code as
-    tampering and macOS reports "Hermes is damaged and can't be opened." The
-    bundle also inherits the com.apple.quarantine flag from the downloaded
-    installer process chain. Both make the relaunch fail.
+    info = bundle / "Contents" / "Info.plist"
+    if not info.exists() and bundle.suffix == ".framework":
+        candidates = list(bundle.glob("Versions/*/Resources/Info.plist")) + list(
+            bundle.glob("Resources/Info.plist")
+        )
+        if candidates:
+            info = candidates[0]
+    if not info.exists():
+        return None
+    try:
+        data = plistlib.loads(info.read_bytes())
+    except Exception:
+        return None
+    ident = data.get("CFBundleIdentifier")
+    return str(ident) if ident else None
 
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
-    (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+
+def _desktop_macos_local_signing_identity() -> Optional[str]:
+    """Return the opt-in keychain identity for local macOS desktop signing.
+
+    ``desktop.macos_signing_identity`` in config.yaml names a persistent
+    code-signing certificate in the user's login keychain (a self-signed
+    "Code Signing" cert made in Keychain Access is enough — no Apple Developer
+    account needed). Signing with any identity gives the app a
+    certificate-anchored Designated Requirement, which is the strongest way to
+    keep macOS TCC grants (Full Disk Access, Accessibility, Automation, Files
+    and Folders) stable across local rebuilds. Empty/unset keeps the default
+    identifier-pinned ad-hoc signing.
     """
     if sys.platform != "darwin":
-        return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
-        return
+        return None
+    try:
+        from hermes_cli.config import load_config
+
+        desktop = load_config().get("desktop", {})
+        if not isinstance(desktop, dict):
+            return None
+        identity = desktop.get("macos_signing_identity")
+        if not isinstance(identity, str):
+            return None
+        return identity.strip() or None
+    except Exception as exc:
+        print(
+            "  (warning: could not load desktop.macos_signing_identity: "
+            f"{exc}; falling back to ad-hoc signing)"
+        )
+        return None
+
+
+def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
+    """True when the bundle carries an intact non-ad-hoc (Team ID) signature.
+
+    Used to make the relaunch fixup a no-op on properly signed/notarized
+    builds even when CSC_LINK / APPLE_SIGNING_IDENTITY aren't in the
+    environment (e.g. a release DMG install being repaired) — clobbering a
+    Developer ID signature with an ad-hoc one would reset TCC grants and can
+    break the hardened runtime. A *stale* real signature (in-place rebuild
+    tampered with the bundle) fails --verify and returns False so the fixup
+    can repair it.
+    """
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+    try:
+        info = subprocess.run(
+            [codesign, "-dv", str(app)], check=False, capture_output=True, text=True
+        )
+        output = f"{info.stdout}\n{info.stderr}"
+        if info.returncode != 0 or "TeamIdentifier=" not in output \
+                or "TeamIdentifier=not set" in output:
+            return False
+        verify = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(app)],
+            check=False, capture_output=True,
+        )
+        return verify.returncode == 0
+    except Exception:
+        return False
+
+
+def _desktop_macos_local_codesign(
+    app: Path, *, desktop_dir: Path, identity: str = "-"
+) -> bool:
+    """Re-sign a local Desktop build so macOS TCC grants survive rebuilds.
+
+    A plain ``codesign --deep --sign -`` leaves the bundle with a cdhash-only
+    Designated Requirement and strips electron-builder's entitlements. Every
+    rebuild changes the cdhash, so TCC (Full Disk Access, Accessibility,
+    Automation, Files and Folders: Desktop/Downloads/Documents, microphone)
+    treats the rebuilt app as different code and the user must re-grant
+    everything — and the lost entitlements break microphone/JIT under the
+    hardened runtime.
+
+    Instead, sign inside-out (standalone Mach-O binaries, then nested
+    frameworks/helper apps, then the main bundle), preserving the repo's
+    entitlement plists, and pin an explicit identifier-based Designated
+    Requirement when signing ad-hoc. With a real ``identity`` the certificate
+    anchors the DR, so no explicit requirement is needed. Raises on signing
+    failure; returns True after strict verification passes.
+    """
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+
+    ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
+    ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    if not (ent_main.exists() and ent_inherit.exists()):
+        # Hardened-runtime restrictions are enforced even for ad-hoc
+        # signatures. Signing with --options runtime but WITHOUT the allow-jit
+        # entitlements would leave Electron/V8 crashing on launch — strictly
+        # worse than the legacy plain ad-hoc sign. Bail out so the caller
+        # falls back to that legacy path instead.
+        raise FileNotFoundError(
+            f"desktop entitlement plists missing under {desktop_dir / 'electron'}"
+        )
+
+    def sign_path(
+        path: Path,
+        *,
+        entitlements: Optional[Path] = None,
+        identifier: Optional[str] = None,
+        runtime: bool = True,
+    ) -> None:
+        args = [codesign, "--force", "--sign", identity, "--timestamp=none"]
+        if runtime:
+            args += ["--options", "runtime"]
+        if entitlements is not None and entitlements.exists():
+            args += ["--entitlements", str(entitlements)]
+        if identifier and identity == "-":
+            # Ad-hoc signatures get a cdhash-only DR by default; pin an
+            # identifier-based DR so TCC has something stable to persist.
+            args += ["--requirements", f'=designated => identifier "{identifier}"']
+        args.append(str(path))
+        subprocess.run(args, check=True, capture_output=True)
+
+    # 1) Standalone Mach-O files (native modules, dylibs, crashpad handler).
+    #    Compare paths relative to the app root — the absolute path always
+    #    contains the outer Hermes.app component, so an absolute-parts check
+    #    would skip every file.
+    contents = app / "Contents"
+    standalone: list[Path] = []
+    for root, _dirs, files in os.walk(contents):
+        root_path = Path(root)
+        rel_parts = root_path.relative_to(app).parts
+        if any(part.endswith(".app") for part in rel_parts):
+            continue  # nested helper apps are signed as bundles below
+        for name in files:
+            fp = root_path / name
+            if name in {"chrome_crashpad_handler", "spawn-helper"} or fp.suffix in {
+                ".node",
+                ".dylib",
+            }:
+                standalone.append(fp)
+    for fp in sorted(standalone, key=lambda p: len(p.parts), reverse=True):
+        sign_path(fp, runtime=False)
+
+    # 2) Nested frameworks and helper apps, deepest first.
+    bundles: list[Path] = []
+    frameworks_dir = contents / "Frameworks"
+    if frameworks_dir.exists():
+        for root, _dirs, _files in os.walk(frameworks_dir):
+            p = Path(root)
+            if p.suffix in {".framework", ".app"}:
+                bundles.append(p)
+    for bundle in sorted(set(bundles), key=lambda p: len(p.parts), reverse=True):
+        ent = ent_inherit if bundle.suffix == ".app" and "Helper" in bundle.name else None
+        sign_path(bundle, entitlements=ent, identifier=_desktop_macos_bundle_id(bundle))
+
+    # 3) The main bundle, with the app's own entitlements.
+    sign_path(app, entitlements=ent_main, identifier=_desktop_macos_bundle_id(app))
+    subprocess.run(
+        [codesign, "--verify", "--deep", "--strict", str(app)],
+        check=True, capture_output=True,
+    )
+    return True
+
+
+def _desktop_macos_relaunchable_fixup(
+    desktop_dir: Path,
+    *,
+    publisher_signing_configured: Optional[bool] = None,
+) -> bool:
+    """Make a locally-built macOS desktop app survive in-place self-update
+    without resetting the user's TCC permission grants.
+
+    An ad-hoc-signed .app has no stable Designated Requirement, so when the
+    self-updater rebuilds the bundle in place (new cdhash) Gatekeeper reports
+    "Hermes is damaged and can't be opened" — and macOS TCC forgets every
+    permission the user granted (Full Disk Access, Desktop/Downloads/Documents,
+    Accessibility, Automation, microphone), re-prompting on every launch after
+    every update.
+
+    Clear the quarantine xattrs, then re-sign with a stable identity:
+    ``desktop.macos_signing_identity`` (a persistent keychain cert — strongest)
+    when configured, else ad-hoc with identifier-pinned Designated Requirements,
+    preserving the repo's entitlement plists either way. No-op when a real
+    publisher identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) or the
+    bundle already carries an intact Developer ID signature, so a properly
+    signed/notarized build is never clobbered. Callers that already made the
+    publisher-signing decision may pass it explicitly so a later dotenv load
+    can't reverse it. Falls back to the legacy deep ad-hoc sign if the
+    entitlement-preserving path fails. Best-effort: never raises. Returns True
+    when no work was needed or signing + strict verification succeeded.
+    """
+    if sys.platform != "darwin":
+        return True
+    if publisher_signing_configured is None:
+        publisher_signing_configured = bool(
+            os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY")
+        )
+    if publisher_signing_configured:
+        return True
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
-        return
+        return True
     # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
     app = exe.parents[2]
     if not str(app).endswith(".app") or not app.is_dir():
-        return
+        return True
     codesign = shutil.which("codesign")
     if not codesign:
-        return
+        return False
+    if _desktop_macos_has_valid_real_signature(app):
+        return True
+    subprocess.run(["xattr", "-cr", str(app)], check=False)
+    identity = _desktop_macos_local_signing_identity() or "-"
     try:
-        subprocess.run(["xattr", "-cr", str(app)], check=False)
+        if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
+            label = "keychain identity" if identity != "-" else "stable ad-hoc identity"
+            print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
+            return True
+    except Exception as exc:
+        if identity != "-":
+            print(
+                f"  (warning: configured macOS signing identity failed: {identity!r}; "
+                "falling back to ad-hoc — TCC grants may need to be re-granted)"
+            )
+        print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
+    try:
         subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
+    return False
 
 
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
@@ -10987,6 +11210,54 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 
+def _ensure_acp_launcher() -> None:
+    """Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
+
+    Mirrors the launcher block in ``scripts/install.sh`` so existing installs
+    gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
+    (Zed, JetBrains, Buzz Desktop) spawn the agent by resolving the
+    ``hermes-acp`` command name against the login-shell PATH; the console
+    script of that name lives inside the install's venv, which is not on that
+    PATH, so those hosts report Hermes as not installed even when it is.
+
+    The shim simply delegates to the sibling ``hermes`` launcher with the
+    ``acp`` subcommand, which makes it correct for every install layout
+    (venv wrapper, FHS symlink, pipx/pip console script) without having to
+    reconstruct interpreter/entrypoint paths.
+
+    No-op on Windows (install.ps1 puts ``venv\\Scripts`` on the user PATH, so
+    ``hermes-acp.exe`` already resolves) and wherever a ``hermes-acp`` is
+    already present next to the ``hermes`` command.  Unwritable directories
+    (e.g. ``/usr/local/bin`` as non-root) are skipped silently.  Idempotent.
+    """
+    if sys.platform == "win32":
+        return
+    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
+        hermes_cmd = bin_dir / "hermes"
+        acp_cmd = bin_dir / "hermes-acp"
+        try:
+            if not (hermes_cmd.is_file() or hermes_cmd.is_symlink()):
+                continue
+            # Already present — a console script (pip/pipx install), an
+            # earlier shim, or a symlink. is_symlink() catches broken
+            # symlinks that exists() would miss; never follow-and-overwrite
+            # (the #21454 failure mode).
+            if acp_cmd.exists() or acp_cmd.is_symlink():
+                continue
+            shim = (
+                "#!/usr/bin/env bash\n"
+                "# Hermes Agent — ACP launcher (written by `hermes update`).\n"
+                "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
+                "# command name on the login-shell PATH.\n"
+                f'exec "{hermes_cmd}" acp "$@"\n'
+            )
+            acp_cmd.write_text(shim, encoding="utf-8")
+            acp_cmd.chmod(acp_cmd.stat().st_mode | 0o755)
+        except OSError:
+            continue
+        print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
+
+
 def _size_delta_label(saved_mb: float) -> str:
     """Human label for a before/after database size delta, in MB.
 
@@ -12916,6 +13187,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _ensure_fhs_path_guard()
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
+
+        # Self-heal the hermes-acp launcher for installs that predate it, so
+        # ACP hosts (Zed, JetBrains, Buzz) can resolve Hermes on PATH without
+        # a reinstall.  No-op on Windows and when already present.
+        try:
+            _ensure_acp_launcher()
+        except Exception as e:
+            logger.debug("hermes-acp launcher self-heal failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on supported platforms and on the
@@ -15246,6 +15525,35 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
+def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
+    """Materialize the deferred platform whose top-level CLI command matches.
+
+    Bundled platform plugins are cheap-registered as *deferred* entries to
+    avoid importing every gateway SDK during normal startup. A platform that
+    registers a top-level ``hermes <name>`` command (e.g. Photon ->
+    ``ctx.register_cli_command(name="photon", ...)``) only runs that side
+    effect when its module is imported. On the unknown-top-level-command slow
+    path, ``discover_plugins()`` records the deferred loader but does not
+    import it, so the CLI registration never happens and ``hermes photon``
+    fails with argparse ``invalid choice`` (issue #54678).
+
+    Resolving only the platform whose name matches the first positional token
+    keeps normal startup cheap while making the targeted command available.
+    """
+    if not command_name:
+        return
+    try:
+        from gateway.platform_registry import platform_registry
+
+        platform_registry.get(command_name)
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Deferred platform CLI resolution failed for %s: %s",
+            command_name,
+            exc,
+        )
+
+
 _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
@@ -16151,6 +16459,11 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
+            # A bundled platform whose top-level CLI command is the one being
+            # invoked is still only a deferred entry at this point; import it
+            # so its register_cli_command side effect runs before we read
+            # _cli_commands (issue #54678).
+            _resolve_deferred_platform_cli_command(_first_positional_argv())
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue

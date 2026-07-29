@@ -854,3 +854,37 @@ def test_apply_gateway_defaults_sets_stt_use_gateway(monkeypatch):
     assert "stt" in changed
     assert config["stt"]["provider"] == "openai"
     assert config["stt"]["use_gateway"] is True
+
+
+def test_has_agent_browser_resolves_via_hermes_managed_node_path(monkeypatch, tmp_path):
+    """The managed-Node rung: a runnable agent-browser under the Hermes Node
+    dir must count even when it's absent from the probe process's PATH (the
+    Windows installer shape — install succeeded, GUI still said needs setup)."""
+    import shutil as _shutil
+
+    managed_dir = tmp_path / "node"
+    managed_dir.mkdir()
+    managed_bin = managed_dir / "agent-browser"
+    managed_bin.write_text("#!/bin/sh\nexit 0\n")
+    managed_bin.chmod(0o755)
+
+    monkeypatch.setattr(_shutil, "which", lambda cmd, path=None: str(managed_bin) if path else None)
+    monkeypatch.setattr(
+        "hermes_constants.with_hermes_node_path", lambda: {"PATH": str(managed_dir)}
+    )
+    monkeypatch.setattr(
+        "hermes_constants.agent_browser_runnable",
+        lambda p: bool(p) and str(p) == str(managed_bin),
+    )
+
+    assert ns._has_agent_browser() is True
+
+
+def test_has_agent_browser_false_when_nothing_runnable(monkeypatch):
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda cmd, path=None: None)
+    monkeypatch.setattr("hermes_constants.with_hermes_node_path", lambda: {"PATH": ""})
+    monkeypatch.setattr("hermes_constants.agent_browser_runnable", lambda p: False)
+
+    assert ns._has_agent_browser() is False

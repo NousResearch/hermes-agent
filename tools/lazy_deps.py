@@ -145,6 +145,43 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
+    # SILK voice-note decoding (WeChat/QQ .silk voice messages). pilk is a
+    # small silk-v3 codec binding; installed on first .silk transcription.
+    "stt.silk": ("pilk==0.2.4",),
+
+    # ─── Wake word ("Hey Hermes") engines ──────────────────────────────────
+    # Keep in sync with the `wake` extra in pyproject.toml. openWakeWord is the
+    # free, local default (ONNX runtime); Porcupine is the premium engine.
+    # openWakeWord's ONNX embedding model returns near-zero scores on macOS
+    # ARM64 (dscripka/openWakeWord#336), so the wake word runs on the tflite
+    # backend there. Upstream declares tflite-runtime for Linux only;
+    # ai-edge-litert is the macOS equivalent, bridged in tools/wake_word.py.
+    # It lives in its own feature because lazy-dep specs cannot carry PEP 508
+    # environment markers (_spec_is_safe rejects ";"), so the platform gate is
+    # applied by the caller instead.
+    "wake.openwakeword.tflite": (
+        "ai-edge-litert==2.1.6",
+    ),
+    "wake.openwakeword": (
+        "openwakeword==0.6.0",
+        "onnxruntime==1.27.0",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    # Open-vocabulary keyword spotting: any typed phrase, zero training.
+    # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
+    # tokenization) even though sherpa-onnx doesn't declare it.
+    "wake.sherpa": (
+        "sherpa-onnx==1.13.4",
+        "sentencepiece==0.2.2",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
+    "wake.porcupine": (
+        "pvporcupine==4.0.3",
+        "sounddevice==0.5.5",
+        "numpy==2.4.3",
+    ),
 
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
@@ -881,6 +918,105 @@ def feature_install_command(feature: str) -> Optional[str]:
         return None
     specs = LAZY_DEPS[feature]
     return "uv pip install " + " ".join(repr(s) for s in specs)
+
+
+@dataclass
+class InstallSpecsResult:
+    """Outcome of :func:`install_specs` for one batch of pip specs.
+
+    ``ok``       — install succeeded (or nothing was missing).
+    ``blocked``  — installs are gated off (config kill switch, sealed venv
+                   without a durable target) or a spec failed validation;
+                   nothing was executed. ``reason`` explains why.
+    ``command``  — human-readable description of what ran (for UIs/logs).
+    """
+    ok: bool
+    blocked: bool = False
+    reason: str = ""
+    command: str = ""
+    stdout: str = ""
+    stderr: str = ""
+
+
+def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> InstallSpecsResult:
+    """Install arbitrary (validated) pip specs through the lazy-install pipeline.
+
+    This is the environment-aware install path for callers whose package
+    lists come from data (e.g. memory-provider plugin manifests declaring
+    ``pip_dependencies``) rather than the static :data:`LAZY_DEPS` allowlist.
+    It applies the exact same environment routing as :func:`ensure`:
+
+    * **Venv-scoped by default** — installs into ``sys.executable``'s venv.
+    * **Durable-target on immutable images** — when the deployment seals the
+      agent venv (``HERMES_DISABLE_LAZY_INSTALLS=1``) and sets
+      ``HERMES_LAZY_INSTALL_TARGET``, installs are redirected to the writable
+      data-volume dir (``--target`` + core-venv constraints), then activated
+      on ``sys.path`` so the packages import in this process immediately.
+    * **Gated** — honors ``security.allow_lazy_installs`` and refuses to run
+      when the venv is sealed with no durable target (never attempts a write
+      to a read-only tree; reports *why* instead of surfacing EROFS/EACCES).
+
+    Every spec must pass :func:`_spec_is_safe` (no URLs, paths, or shell
+    metacharacters). Unlike :func:`ensure`, unknown packages are permitted —
+    the caller owns manifest trust; this function owns spec hygiene and
+    environment routing.
+
+    Never raises; inspect the returned :class:`InstallSpecsResult`.
+    """
+    cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
+    if not cleaned:
+        return InstallSpecsResult(ok=True, command="")
+
+    for spec in cleaned:
+        if not _spec_is_safe(spec):
+            return InstallSpecsResult(
+                ok=False, blocked=True,
+                reason=f"refusing to install unsafe spec {spec!r}",
+            )
+
+    if not _allow_lazy_installs():
+        target = _lazy_install_target()
+        if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1" and target is None:
+            reason = (
+                "runtime installs are disabled on this deployment: the agent "
+                "environment is immutable and no writable install target is "
+                "configured (HERMES_LAZY_INSTALL_TARGET)"
+            )
+        else:
+            reason = "runtime installs disabled (security.allow_lazy_installs=false)"
+        return InstallSpecsResult(ok=False, blocked=True, reason=reason)
+
+    target = _lazy_install_target()
+    display = "uv pip install " + (
+        f"--target {target} " if target is not None else ""
+    ) + " ".join(cleaned)
+
+    logger.info("Installing pip specs %s (target=%s)", " ".join(cleaned), target or "venv")
+    try:
+        result = _venv_pip_install(cleaned, timeout=timeout)
+    except Exception as exc:
+        logger.warning("install_specs failed unexpectedly: %s", exc)
+        return InstallSpecsResult(
+            ok=False, command=display, stderr=f"install failed: {exc}"
+        )
+
+    # Freshly-installed dists must be visible to importers and metadata
+    # checks in this same process (dashboard rechecks availability inline).
+    try:
+        import importlib
+        importlib.invalidate_caches()
+        import importlib.metadata as _md
+        if hasattr(_md, "_cache_clear"):
+            _md._cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    return InstallSpecsResult(
+        ok=result.success,
+        command=display,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
 
 
 def active_features() -> list[str]:

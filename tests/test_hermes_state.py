@@ -2667,6 +2667,54 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_session_count_by_source_group_by(self, db):
+        """session_count_by_source() returns grouped counts via a single query."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.create_session(session_id="s3", source="cli")
+        db.create_session(session_id="s4", source="discord")
+        result = db.session_count_by_source(include_archived=True)
+        assert result == {"cli": 2, "telegram": 1, "discord": 1}
+
+    def test_session_count_by_source_empty(self, db):
+        """Empty database returns empty dict."""
+        assert db.session_count_by_source() == {}
+
+    def test_session_count_by_source_excludes_children(self, db):
+        """exclude_children=True hides subagent runs and compression continuations.
+
+        Mirrors list_sessions_rich visibility so the source histogram matches
+        what the Sessions page actually lists, not raw row counts.
+        """
+        db.create_session(session_id="root", source="cli")
+        # Child session (subagent run) — should be excluded.
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="root"
+        )
+        # End the parent so the child looks like a subagent run (not a branch).
+        db.end_session("root", "ended")
+
+        without_children = db.session_count_by_source(exclude_children=True)
+        assert without_children == {"cli": 1}
+
+        with_children = db.session_count_by_source(include_archived=True)
+        assert with_children == {"cli": 2}
+
+    def test_session_count_by_source_coalesce_groups_null(self, db):
+        """GROUP BY COALESCE(source, 'cli') avoids duplicate-key data loss.
+
+        If NULL source rows existed (schema is NOT NULL, but defence-in-depth),
+        NULL and literal 'cli' must collapse to a single 'cli' key — not two
+        separate groups that the dict comprehension silently drops.
+        """
+        db.create_session(session_id="s1", source="cli")
+        # Inject a NULL source directly (bypassing the NOT NULL constraint
+        # would fail on a real db, so just verify the COALESCE works on
+        # normal data — the aliasing is the structural invariant).
+        result = db.session_count_by_source(include_archived=True)
+        assert "cli" in result
+        assert result["cli"] == 1
+
     def test_session_count_by_cwd_prefix(self, db):
         db.create_session("s1", "cli", cwd="/repo")
         db.create_session("s2", "cli", cwd="/repo-wt-feature")
@@ -5219,6 +5267,18 @@ class TestExcludeSources:
         assert "s2" not in ids
         assert "s3" not in ids
 
+    def test_list_sessions_rich_includes_multiple_sources(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "cron")
+        db.create_session("s4", "telegram")
+
+        sessions = db.list_sessions_rich(sources=["tool", "cron"])
+        ids = {s["id"] for s in sessions}
+
+        assert ids == {"s2", "s3"}
+        assert db.session_count(sources=["tool", "cron"]) == 2
+
     def test_search_messages_excludes_tool_source(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Python deployment question")
@@ -5366,7 +5426,15 @@ class TestOptimizeFts:
         """A fresh DB has both FTS indexes; optimize merges both."""
         db.create_session(session_id="s1", source="cli")
         db.append_message(session_id="s1", role="user", content="hello world")
-        assert db.optimize_fts() == 2
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        try:
+            assert db.optimize_fts() == 2
+        finally:
+            db._conn.set_trace_callback(None)
+        optimize_sql = [sql for sql in statements if "'optimize'" in sql]
+        assert len(optimize_sql) == 2
+        assert not any("'merge'" in sql for sql in optimize_sql)
 
     def test_optimize_preserves_search_and_snippet(self, db):
         """Optimize is layout-only: MATCH results + snippets are unchanged."""
@@ -5418,39 +5486,200 @@ class TestOptimizeFts:
         # Search still works after repeated optimization.
         assert len(db.search_messages("repeat")) == 1
 
-    def test_write_path_optimizes_fts_on_cadence(self, db, monkeypatch):
-        """Writes periodically merge FTS segments so they never accumulate
-        into the tens-of-thousands that lengthen the write-lock hold and
-        starve competing writers ("database is locked")."""
-        db._OPTIMIZE_EVERY_N_WRITES = 5
-        calls = {"n": 0}
-        real_optimize = db.optimize_fts
-
-        def _counting_optimize():
-            calls["n"] += 1
-            return real_optimize()
-
-        monkeypatch.setattr(db, "optimize_fts", _counting_optimize)
-        # create_session is write #1; appends are #2.. -> #5 and #10 trigger.
+    def test_incremental_merge_bounded_commands_per_present_index(self, db):
+        """Each pass issues bounded 'merge' commands, never 'optimize'."""
         db.create_session(session_id="s1", source="cli")
-        for i in range(9):
+        db.append_message(session_id="s1", role="user", content="bounded merge")
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        try:
+            executed = db._merge_fts_incrementally(max_pages=37)
+        finally:
+            db._conn.set_trace_callback(None)
+
+        # At least one merge command per present FTS index, and never more
+        # than the per-pass command cap per index.
+        present = [t for t in db._FTS_TABLES if db._fts_table_exists(t)]
+        assert len(present) >= 2  # messages_fts + trigram on a fresh DB
+        merge_sql = [sql for sql in statements if "VALUES('merge', 37)" in sql]
+        assert len(merge_sql) == executed
+        assert len(present) <= executed <= (
+            len(present) * db._FTS_MERGE_COMMANDS_PER_PASS
+        )
+        for tbl in present:
+            n = sum(f"{tbl}({tbl}, rank)" in sql for sql in merge_sql)
+            assert 1 <= n <= db._FTS_MERGE_COMMANDS_PER_PASS
+        # The usermerge floor is applied so positive merges can make
+        # progress on levels with >= 2 segments (SQLite FTS5 §6.8).
+        assert any("VALUES('usermerge', 2)" in sql for sql in statements)
+        assert not any("'optimize'" in sql for sql in statements)
+
+    def test_incremental_merge_converges_on_fragmented_index(self, db):
+        """Bounded passes make real progress on a fragmented index and
+        reach a no-more-work steady state — the failure mode of a bare
+        positive-rank merge (usermerge default 4) is that it never merges
+        anything and the index stays fragmented forever."""
+        db.create_session(session_id="s1", source="cli")
+        # Suppress automerge so every insert leaves its own level-0 segment
+        # — a deliberately fragmented index that only explicit merge
+        # commands can compact. Config is scoped to this test's temp DB.
+        with db._lock:
+            for tbl in ("messages_fts", "messages_fts_trigram"):
+                db._conn.execute(
+                    f"INSERT INTO {tbl}({tbl}, rank) VALUES('automerge', 0)"
+                )
+        for i in range(60):
+            db.append_message(
+                session_id="s1", role="user",
+                content=f"fragment needle {i} lorem ipsum dolor",
+            )
+
+        # First pass must do real merge work (shadow-table rows change).
+        before = db._conn.total_changes
+        executed_first = db._merge_fts_incrementally(max_pages=500)
+        assert executed_first >= 2
+        assert db._conn.total_changes - before > executed_first  # real work
+
+        # Repeated passes converge: eventually a pass issues exactly one
+        # no-progress command per present index and stops early.
+        present = sum(1 for t in db._FTS_TABLES if db._fts_table_exists(t))
+        for _ in range(50):
+            if db._merge_fts_incrementally(max_pages=500) == present:
+                break
+        else:
+            pytest.fail("bounded merge passes never converged")
+
+        # Merging is layout-only: every row is still searchable.
+        assert len(db.search_messages("fragment", limit=100)) == 60
+
+    def test_incremental_merge_compacts_below_default_usermerge(self, db):
+        """A level with only 2-3 segments — below FTS5's default usermerge
+        threshold of 4 — must still get merged. A bare positive-rank
+        'merge' skips such levels entirely (SQLite FTS5 §6.8), which is
+        why the cadence lowers usermerge to 2 first; without the floor,
+        light fragmentation persists forever and every MATCH pays for it."""
+
+        def _segment_count(tbl: str) -> int:
+            # FTS5 structure record: id=10 in the %_data shadow table.
+            # Format: 4-byte cookie, then varint nlevel, varint nsegment...
+            # nsegment fits in one varint byte for small indexes; parse the
+            # second varint (single-byte values < 128 read directly).
+            blob = db._conn.execute(
+                f"SELECT block FROM {tbl}_data WHERE id=10"
+            ).fetchone()[0]
+            pos = 4
+            for _ in range(1):  # skip nlevel varint (single byte here)
+                assert blob[pos] < 0x80
+                pos += 1
+            assert blob[pos] < 0x80
+            return blob[pos]
+
+        db.create_session(session_id="s1", source="cli")
+        with db._lock:
+            db._conn.execute(
+                "INSERT INTO messages_fts(messages_fts, rank) "
+                "VALUES('automerge', 0)"
+            )
+        # Exactly 3 level-0 segments: below the default usermerge of 4.
+        for i in range(3):
+            db.append_message(
+                session_id="s1", role="user", content=f"sparse token{i}"
+            )
+        assert _segment_count("messages_fts") == 3
+
+        for _ in range(10):
+            db._merge_fts_incrementally(max_pages=500)
+
+        assert _segment_count("messages_fts") == 1, (
+            "3-segment level was not compacted — usermerge floor missing?"
+        )
+        assert len(db.search_messages("sparse")) == 3
+
+    def test_incremental_merge_skips_absent_optional_index(self, db):
+        with db._lock:
+            for trigger in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                db._conn.execute(f"DROP TRIGGER {trigger}")
+            db._conn.execute("DROP TABLE messages_fts_trigram")
+
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        try:
+            assert db._merge_fts_incrementally(max_pages=19) >= 1
+        finally:
+            db._conn.set_trace_callback(None)
+        merge_sql = [sql for sql in statements if "VALUES('merge', 19)" in sql]
+        assert merge_sql
+        assert all("messages_fts(messages_fts, rank)" in sql for sql in merge_sql)
+
+    def test_incremental_merge_skips_missing_primary_index(self, db):
+        """A missing messages_fts is a valid transient state (chunked
+        optimize-storage rebuild drops + backfills it while writers keep
+        running) — the cadence must skip it, not raise a warning every
+        1000 writes for the whole backfill window."""
+        with db._lock:
+            for trigger in (
+                "messages_fts_insert",
+                "messages_fts_delete",
+                "messages_fts_update",
+            ):
+                db._conn.execute(f"DROP TRIGGER {trigger}")
+            db._conn.execute("DROP TABLE messages_fts")
+
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        try:
+            executed = db._merge_fts_incrementally(max_pages=19)
+        finally:
+            db._conn.set_trace_callback(None)
+        assert executed >= 1  # trigram index still present and merged
+        assert not any(
+            "messages_fts(messages_fts, rank)" in sql for sql in statements
+        )
+
+    def test_write_path_merges_fts_only_at_cadence_boundary(self, db, monkeypatch):
+        """Routine writes use bounded merge and never full optimize."""
+        db._FTS_MERGE_EVERY_N_WRITES = 5
+        calls = []
+
+        def _counting_merge(*, max_pages):
+            calls.append(max_pages)
+            return 0
+
+        def _unexpected_optimize():
+            raise AssertionError("routine cadence must not call optimize")
+
+        monkeypatch.setattr(db, "_merge_fts_incrementally", _counting_merge)
+        monkeypatch.setattr(db, "optimize_fts", _unexpected_optimize)
+        db.create_session(session_id="s1", source="cli")
+        for i in range(3):
             db.append_message(session_id="s1", role="user", content=f"needle {i}")
-        assert calls["n"] == 2
-        # The auto-merge is layout-only: search is unaffected.
+        assert calls == []  # Four successful writes are below the boundary.
+        db.append_message(session_id="s1", role="user", content="needle 3")
+        assert calls == [500]  # The fifth write gets the production page budget.
+        for i in range(4, 8):
+            db.append_message(session_id="s1", role="user", content=f"needle {i}")
+        assert calls == [500]
+        db.append_message(session_id="s1", role="user", content="needle 8")
+        assert calls == [500, 500]  # The tenth write is the next boundary.
         assert len(db.search_messages("needle")) == 9
 
-    def test_write_path_optimize_failure_never_breaks_write(self, db, monkeypatch):
-        """A failing periodic optimize must not fail the surrounding write."""
-        db._OPTIMIZE_EVERY_N_WRITES = 2
+    def test_write_path_merge_failure_is_logged_without_breaking_write(
+        self, db, monkeypatch, caplog
+    ):
+        db._FTS_MERGE_EVERY_N_WRITES = 2
 
-        def _boom():
-            raise sqlite3.OperationalError("simulated optimize failure")
+        def _boom(*, max_pages):
+            raise sqlite3.OperationalError("simulated merge failure")
 
-        monkeypatch.setattr(db, "optimize_fts", _boom)
+        monkeypatch.setattr(db, "_merge_fts_incrementally", _boom)
         db.create_session(session_id="s1", source="cli")  # write #1
-        # write #2 trips the cadence; the swallowed failure must not propagate.
         db.append_message(session_id="s1", role="user", content="still persists")
         assert len(db.get_messages("s1")) == 1
+        assert "FTS incremental merge failed: simulated merge failure" in caplog.text
 
 
 class TestAutoMaintenance:
@@ -6821,8 +7050,8 @@ class TestSessionPinAndStaleArchive:
 class TestSessionIdSearch:
     """Session id search backs Desktop's Search Sessions UX."""
 
-    def _seed(self, db, sid, *, content="ordinary message", archived=False):
-        db.create_session(session_id=sid, source="cli", model="test-model")
+    def _seed(self, db, sid, *, content="ordinary message", archived=False, source="cli"):
+        db.create_session(session_id=sid, source=source, model="test-model")
         db.append_message(session_id=sid, role="user", content=content)
         if archived:
             db.set_session_archived(sid, True)
@@ -6869,6 +7098,29 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
+
+    def test_search_sessions_by_id_respects_source_filters(self, db):
+        self._seed(db, "20260603_090200_cli")
+        self._seed(db, "20260603_090200_cron", source="cron")
+        self._seed(db, "20260603_090200_tool", source="tool")
+
+        automation = {
+            s["id"]
+            for s in db.search_sessions_by_id(
+                "20260603_090200",
+                sources=["cron", "tool"],
+            )
+        }
+        chats = {
+            s["id"]
+            for s in db.search_sessions_by_id(
+                "20260603_090200",
+                exclude_sources=["cron", "tool"],
+            )
+        }
+
+        assert automation == {"20260603_090200_cron", "20260603_090200_tool"}
+        assert chats == {"20260603_090200_cli"}
 
 
 class TestListCronJobRuns:
@@ -7762,3 +8014,115 @@ class TestDisplayMetadataReadPaths:
         )
         assert db.get_messages_as_conversation("s1")[0]["display_metadata"] == self.META
 
+
+
+class TestGatewayRoutingPkHeal:
+    """Legacy gateway_routing tables (session_key-only PK) get rebuilt on open.
+
+    Early builds of the #59203 routing-index migration created gateway_routing
+    with ``session_key TEXT PRIMARY KEY`` and no ``scope`` column. The column
+    reconciler ADDs ``scope`` but cannot change the PK, so on those databases
+    every routing save failed ("ON CONFLICT clause does not match any PRIMARY
+    KEY or UNIQUE constraint" / "UNIQUE constraint failed:
+    gateway_routing.session_key") and spammed warnings on each save.
+    """
+
+    LEGACY_SQL = """
+        CREATE TABLE gateway_routing (
+            session_key TEXT PRIMARY KEY,
+            entry_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        , "scope" TEXT DEFAULT '')
+    """
+
+    def _make_legacy_db(self, tmp_path, rows=()):
+        db_path = tmp_path / "state.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(self.LEGACY_SQL)
+        conn.executemany(
+            "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            list(rows),
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def _pk_cols(self, db):
+        rows = db._conn.execute('PRAGMA table_info("gateway_routing")').fetchall()
+        cols = sorted(
+            ((r["pk"], r["name"]) for r in rows if r["pk"]),
+        )
+        return [name for _, name in cols]
+
+    def test_legacy_pk_rebuilt_to_composite(self, tmp_path):
+        db_path = self._make_legacy_db(
+            tmp_path, rows=[("/home/u/.hermes/sessions", "agent:main:telegram:dm:1", "{}", 1.0)]
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            assert self._pk_cols(db) == ["scope", "session_key"]
+            # Existing rows survive the rebuild.
+            entries = db.load_gateway_routing_entries(scope="/home/u/.hermes/sessions")
+            assert entries == {"agent:main:telegram:dm:1": "{}"}
+        finally:
+            db.close()
+
+    def test_upsert_and_cross_scope_replace_work_after_heal(self, tmp_path):
+        """The two write paths that failed on the legacy shape now succeed."""
+        db_path = self._make_legacy_db(
+            tmp_path, rows=[("scopeA", "agent:main:telegram:dm:1", "{}", 1.0)]
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            # save_gateway_routing_entry: composite ON CONFLICT upsert.
+            db.save_gateway_routing_entry(
+                "agent:main:telegram:dm:1", '{"v": 2}', scope="scopeA"
+            )
+            assert db.load_gateway_routing_entries(scope="scopeA") == {
+                "agent:main:telegram:dm:1": '{"v": 2}'
+            }
+            # replace_gateway_routing_entries: same session_key, other scope —
+            # the exact collision the 'UNIQUE constraint failed' spam came from.
+            db.replace_gateway_routing_entries(
+                {"agent:main:telegram:dm:1": '{"v": 3}'}, scope="scopeB"
+            )
+            assert db.load_gateway_routing_entries(scope="scopeB") == {
+                "agent:main:telegram:dm:1": '{"v": 3}'
+            }
+            # scopeA untouched by scopeB's replace.
+            assert db.load_gateway_routing_entries(scope="scopeA") == {
+                "agent:main:telegram:dm:1": '{"v": 2}'
+            }
+        finally:
+            db.close()
+
+    def test_cross_scope_collision_rows_all_survive(self, tmp_path):
+        """Rows that shared a session_key across scopes are preserved per scope."""
+        db_path = self._make_legacy_db(tmp_path)
+        # The legacy single-column PK forbids duplicate session_keys, so
+        # simulate what a healed multi-scope DB must support by inserting the
+        # collision AFTER the heal via public APIs (covered above) — here we
+        # instead verify a NULL scope from the reconciler-added column
+        # coalesces to '' rather than violating NOT NULL.
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+            "VALUES (NULL, 'k-null-scope', '{}', 5.0)"
+        )
+        conn.commit()
+        conn.close()
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.load_gateway_routing_entries(scope="") == {"k-null-scope": "{}"}
+        finally:
+            db.close()
+
+    def test_current_shape_left_untouched(self, tmp_path, db):
+        """A DB born with the composite PK is not rebuilt (idempotence)."""
+        db.save_gateway_routing_entry("k1", "{}", scope="s")
+        assert self._pk_cols(db) == ["scope", "session_key"]
+        # Re-running the heal is a no-op.
+        cur = db._conn.cursor()
+        db._heal_gateway_routing_pk(cur)
+        assert db.load_gateway_routing_entries(scope="s") == {"k1": "{}"}

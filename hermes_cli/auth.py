@@ -2328,7 +2328,7 @@ def _log_nous_invoke_jwt_selected(
     access_token: Any,
     sequence_id: Optional[str] = None,
 ) -> None:
-    logger.info("Nous inference auth: using NAS invoke JWT")
+    logger.debug("Nous inference auth: using NAS invoke JWT")
     _oauth_trace(
         "nous_invoke_jwt_selected",
         sequence_id=sequence_id,
@@ -4452,7 +4452,16 @@ def _save_xai_oauth_tokens(
     redirect_uri: str = "",
     last_refresh: Optional[str] = None,
     auth_mode: str = "oauth_device_code",
+    set_active: bool = True,
 ) -> None:
+    """Persist xAI OAuth tokens into the auth store.
+
+    When *set_active* is True (default), also promote ``xai-oauth`` to
+    ``active_provider`` — appropriate for intentional model/auth login.
+    Pass ``set_active=False`` for side-tool credential bootstrap (TTS/setup,
+    tools config, dashboard token save, token refresh) so inference routing
+    is unchanged.
+    """
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
@@ -4470,7 +4479,9 @@ def _save_xai_oauth_tokens(
             state["discovery"] = discovery
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
-        _save_provider_state(auth_store, "xai-oauth", state)
+        _store_provider_state(
+            auth_store, "xai-oauth", state, set_active=set_active
+        )
         _save_auth_store(auth_store)
         if write_through_to_root:
             _write_through_xai_oauth_to_global_root(state)
@@ -4808,6 +4819,9 @@ def _refresh_xai_oauth_tokens(
         redirect_uri=redirect_uri,
         last_refresh=refreshed["last_refresh"],
         auth_mode=auth_mode,
+        # Refresh must not flip active_provider — TTS/side tools can refresh
+        # xAI tokens while chat still routes through another provider.
+        set_active=False,
     )
     return updated_tokens
 
@@ -6505,6 +6519,69 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
     return _snapshot_nous_pool_status()
 
 
+def get_nous_auth_status_local() -> Dict[str, Any]:
+    """Refresh-free Nous auth snapshot for read-only display surfaces.
+
+    Unlike :func:`get_nous_auth_status`, this NEVER calls
+    ``resolve_nous_runtime_credentials()`` and therefore never performs an
+    OAuth refresh POST or consumes a single-use refresh token. It reports the
+    persisted auth-store state, classifying the access token with a local
+    invoke-JWT decode only.
+
+    Use this from status panels, doctor checks, and polled dashboard
+    endpoints. Explicit auth actions (login flows, portal operations that
+    need a live credential) should keep using ``get_nous_auth_status()``.
+
+    ``logged_in`` here means "a persisted login exists that the runtime can
+    use or refresh": a currently-usable invoke JWT, or a refresh token that
+    has not been terminally quarantined. It does not prove the refresh token
+    is still accepted server-side — only a live resolve can do that.
+    """
+    try:
+        state = get_provider_auth_state("nous")
+    except Exception:
+        state = None
+
+    if not state:
+        return _snapshot_nous_pool_status()
+
+    access_token = state.get("access_token")
+    jwt_reason = _nous_invoke_jwt_status(
+        access_token,
+        scope=state.get("scope"),
+        expires_at=state.get("expires_at"),
+    )
+    last_err = state.get("last_auth_error")
+    terminal = bool(
+        isinstance(last_err, dict)
+        and last_err.get("relogin_required")
+        and not (access_token or state.get("refresh_token"))
+    )
+    logged_in = (jwt_reason is None) or (
+        bool(state.get("refresh_token")) and not terminal
+    )
+
+    status: Dict[str, Any] = {
+        "logged_in": logged_in,
+        "portal_base_url": state.get("portal_base_url"),
+        "inference_base_url": state.get("inference_base_url"),
+        "access_token": access_token,
+        "access_expires_at": state.get("expires_at"),
+        "agent_key_expires_at": state.get("agent_key_expires_at"),
+        "has_refresh_token": bool(state.get("refresh_token")),
+        "inference_credential_present": bool(
+            access_token or state.get("agent_key")
+        ),
+        "credential_source": "auth_store",
+        "source": "auth_store_local",
+    }
+    if terminal and isinstance(last_err, dict):
+        status["relogin_required"] = True
+        status["error_code"] = last_err.get("code")
+        status["error"] = last_err.get("message") or "re-login required"
+    return status
+
+
 # Enum values reported on the dashboard /api/status as ``nous_session_valid``.
 # NAS's health sweep re-mints the bootstrap session ONLY on "terminal"; "valid"
 # and "unknown" are no-ops. Keep this set small and stable — NAS parses it with
@@ -6526,7 +6603,9 @@ def get_nous_session_validity() -> str:
         non-terminal error). Never triggers a re-mint.
 
     Determinable with NO working token — it reads local auth-store state only,
-    which is exactly the condition a dead hosted box is in.
+    which is exactly the condition a dead hosted box is in. This function is
+    called by the frequently-polled public ``/api/status`` endpoint, so it must
+    never resolve credentials or perform an OAuth refresh.
 
     ANTI-FLAP CONTRACT: only a *terminal* failure maps to "terminal". A normal
     mid-rotation blip, a transient network error, or a merely-expiring token
@@ -6543,34 +6622,29 @@ def get_nous_session_validity() -> str:
     try:
         state = get_provider_auth_state("nous")
     except Exception:
-        state = None
-
-    if state:
-        last_err = state.get("last_auth_error")
-        if isinstance(last_err, dict) and last_err.get("relogin_required"):
-            # Only terminal while there is no usable credential left. If a later
-            # successful login repopulated tokens, the stale marker must not
-            # keep reporting terminal.
-            if not (state.get("access_token") or state.get("refresh_token")):
-                return NOUS_SESSION_TERMINAL
-
-    try:
-        status = get_nous_auth_status()
-    except Exception:
-        # Status computation itself failed — indeterminate, not terminal.
         return NOUS_SESSION_UNKNOWN
 
-    if status.get("logged_in"):
+    if not state:
+        return NOUS_SESSION_UNKNOWN
+
+    last_err = state.get("last_auth_error")
+    if isinstance(last_err, dict) and last_err.get("relogin_required"):
+        # Only terminal while there is no usable credential left. If a later
+        # successful login repopulated tokens, the stale marker must not
+        # keep reporting terminal.
+        if not (state.get("access_token") or state.get("refresh_token")):
+            return NOUS_SESSION_TERMINAL
+
+    if _nous_invoke_jwt_status(
+        state.get("access_token"),
+        scope=state.get("scope"),
+        expires_at=state.get("expires_at"),
+    ) is None:
         return NOUS_SESSION_VALID
 
-    # Not logged in. Distinguish a terminal (relogin-required) failure from a
-    # transient / indeterminate one. Only the former is actionable by NAS.
-    if status.get("relogin_required"):
-        return NOUS_SESSION_TERMINAL
-
-    # No Nous provider state at all, or a non-terminal not-logged-in condition
-    # (e.g. a transient refresh error that did not set relogin_required). Treat
-    # as unknown so a healthy box mid-blip never triggers a re-mint.
+    # Missing, malformed, expired, or merely expiring credentials are not proof
+    # of a terminal session. Runtime inference/keepalive paths own refreshes;
+    # the health endpoint remains side-effect free and reports indeterminate.
     return NOUS_SESSION_UNKNOWN
 
 

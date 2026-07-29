@@ -19,7 +19,8 @@ import {
   focusComposerInput,
   markActiveComposer,
   onComposerFocusRequest,
-  onComposerInsertRequest
+  onComposerInsertRequest,
+  releaseActiveComposer
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
@@ -111,7 +112,17 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const at = useAtCompletions({ cwd, gateway, sessionId })
   const slash = useSlashCompletions({ gateway })
 
-  useEffect(() => () => notifyThreadEditClose(), [])
+  // This is the one composer that routinely unmounts, so it is where the focus
+  // bus leaks: confirming or cancelling an edit tears the composer down while
+  // `'edit'` is still the active target. Release it alongside the thread-scroll
+  // cleanup so keyboard routing falls back to the visible chat composer.
+  useEffect(
+    () => () => {
+      notifyThreadEditClose()
+      releaseActiveComposer('edit')
+    },
+    []
+  )
 
   const focusEditor = useCallback(() => {
     const editor = editorRef.current
@@ -415,7 +426,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         try {
           const uploaded = await uploadComposerAttachment(
             { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
-            { remote, requestGateway, sessionId }
+            { backendCwd: cwd, remote, requestGateway, sessionId }
           )
 
           const ref = attachmentDisplayText(uploaded)

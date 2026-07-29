@@ -472,3 +472,158 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+# ---------------------------------------------------------------------------
+# install_specs — manifest-driven installs (dashboard memory providers etc.)
+#
+# NS-605: the dashboard's memory-provider setup endpoint used to shell out
+# to `uv pip install --python sys.executable`, which fails with a permission
+# error on the sealed hosted venv. install_specs routes those installs
+# through the same environment-aware pipeline as ensure(): venv-scoped on
+# normal installs, redirected to the durable target on immutable images,
+# and cleanly refused (with a reason) when installs are gated off.
+# ---------------------------------------------------------------------------
+
+
+class TestInstallSpecs:
+    def test_empty_specs_is_trivially_ok(self, monkeypatch):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs([])
+        assert result.ok is True
+        assert result.blocked is False
+
+    def test_blank_specs_are_ignored(self, monkeypatch):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs(["", "   "])
+        assert result.ok is True
+
+    @pytest.mark.parametrize("bad", [
+        "pkg; rm -rf /",
+        "-e git+https://evil.example/repo.git",
+        "https://evil.example/pkg.tar.gz",
+        "../../etc/passwd",
+        "pkg @ file:///tmp/x",
+    ])
+    def test_unsafe_specs_are_blocked_before_any_install(self, monkeypatch, bad):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs([bad])
+        assert result.ok is False
+        assert result.blocked is True
+        assert "unsafe spec" in result.reason
+
+    def test_one_unsafe_spec_blocks_the_whole_batch(self, monkeypatch):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs(["honcho-ai==2.2.0", "pkg; rm -rf /"])
+        assert result.blocked is True
+
+    def test_sealed_venv_without_target_reports_immutable_reason(self, monkeypatch):
+        # HERMES_DISABLE_LAZY_INSTALLS=1 with no durable target: never touch
+        # pip, never surface EROFS — report an actionable reason instead.
+        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {}, raising=False
+        )
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.ok is False
+        assert result.blocked is True
+        assert "immutable" in result.reason
+        assert "HERMES_LAZY_INSTALL_TARGET" in result.reason
+
+    def test_config_killswitch_reports_config_reason(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"allow_lazy_installs": False}},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.blocked is True
+        assert "allow_lazy_installs" in result.reason
+
+    def test_sealed_venv_with_target_installs(self, monkeypatch, tmp_path):
+        # The hosted-image configuration: sealed venv + durable target.
+        # install_specs must proceed (the redirect is the safe path).
+        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path / "lazy"))
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {}, raising=False
+        )
+        calls = []
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: (calls.append(specs), ld._InstallResult(True, "ok", ""))[1],
+        )
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.ok is True
+        assert result.blocked is False
+        assert calls == [("honcho-ai==2.2.0",)]
+        # Command display names the durable target so the dashboard shows
+        # where the install actually went.
+        assert str(tmp_path / "lazy") in result.command
+
+    def test_default_env_installs_venv_scoped(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {}, raising=False
+        )
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "installed", ""),
+        )
+        result = ld.install_specs(["mem0ai>=2.0.10,<3"])
+        assert result.ok is True
+        assert "--target" not in result.command
+
+    def test_install_failure_surfaces_stderr(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {}, raising=False
+        )
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(False, "", "ERROR: resolution impossible"),
+        )
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.ok is False
+        assert result.blocked is False
+        assert "resolution impossible" in result.stderr
+
+    def test_never_raises_on_unexpected_error(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {}, raising=False
+        )
+        # Contract: install_specs never raises — even an unexpected installer
+        # crash comes back as a failed result the caller can render.
+        def boom(specs, **kw):
+            raise RuntimeError("disk on fire")
+        monkeypatch.setattr(ld, "_venv_pip_install", boom)
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.ok is False
+        assert "disk on fire" in result.stderr

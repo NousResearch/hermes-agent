@@ -1,7 +1,7 @@
 """Tests for gateway /compress user-facing messaging."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -509,6 +509,67 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
     # Stable gateway session key preserved, identical to a normal gateway turn.
     assert kwargs.get("gateway_session_key") == runner._session_key_for_source(_make_source())
     assert kwargs["gateway_session_key"]
+
+
+@pytest.mark.asyncio
+async def test_compress_command_preserves_persisted_provider_prompt():
+    """Manual /compress must not replace a provider-aware session prompt.
+
+    Its temporary agent intentionally skips memory-provider initialization, so
+    it must reuse the exact persisted prompt. If compression rebuilds instead,
+    the hygiene-only marker makes that fallback stale for the next live turn.
+    """
+    from gateway.run import _GATEWAY_HYGIENE_PLATFORM
+
+    history = _make_history()
+    stored_prompt = (
+        "base prompt\n\n"
+        "<hindsight_memories>\n"
+        "## Personal Memory\n"
+        "- pinned: exact provider content\n"
+        "</hindsight_memories>\n"
+    )
+    runner = _make_runner(history)
+    runner._session_db = MagicMock()
+    runner._session_db.get_session = AsyncMock(
+        return_value={"system_prompt": stored_prompt}
+    )
+
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = "provider-less prompt"
+    agent_instance.platform = "telegram"
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compression_skipped_due_to_lock = False
+
+    def _compress(messages, *_args, **_kwargs):
+        assert messages == history
+        assert agent_instance._cached_system_prompt == stored_prompt
+        assert agent_instance.platform == _GATEWAY_HYGIENE_PLATFORM
+        return list(history), ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    def _estimate(messages, **kwargs):
+        assert messages == history
+        assert kwargs["system_prompt"] == stored_prompt
+        return 100
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        await runner._handle_compress_command(_make_event())
+
+    runner._session_db.get_session.assert_awaited_once_with("sess-1")
+    assert mock_agent.call_args.kwargs["platform"] == "telegram"
+    assert agent_instance._cached_system_prompt == stored_prompt
+    assert agent_instance.platform == _GATEWAY_HYGIENE_PLATFORM
 
 
 @pytest.mark.asyncio

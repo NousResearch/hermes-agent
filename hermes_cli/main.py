@@ -8983,9 +8983,28 @@ def cmd_update(args):
     # writes to a closed stdout.  No-op in gateway mode.  See
     # _install_hangup_protection for rationale.
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
+    # Cross-process mutual exclusion. The dashboard's Update button spawns
+    # this same command detached, and the desktop hands off to the Tauri
+    # updater / install-mode bootstrap — all three mutate one checkout. Two of
+    # them running together rewrite source under a live interpreter and strand
+    # the tree half-updated. Share the marker the Tauri updater and Electron
+    # already use rather than inventing a second lock.
+    from hermes_cli.update_lock import (
+        UPDATE_EXIT_CONCURRENT,
+        UpdateLock,
+        describe_holder,
+    )
+
+    _update_lock = UpdateLock()
+    if not _update_lock.acquire():
+        print(describe_holder(_update_lock.holder))
+        _finalize_update_output(_update_io_state)
+        sys.exit(UPDATE_EXIT_CONCURRENT)
+
     try:
         _cmd_update_impl(args, gateway_mode=gateway_mode)
     finally:
+        _update_lock.release()
         _finalize_update_output(_update_io_state)
 
 

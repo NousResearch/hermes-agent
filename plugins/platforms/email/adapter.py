@@ -228,9 +228,10 @@ def _strip_html(html: str) -> str:
     text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"&nbsp;", " ", text)
-    text = re.sub(r"&amp;", "&", text)
     text = re.sub(r"&lt;", "<", text)
     text = re.sub(r"&gt;", ">", text)
+    # Decode ampersands last so &amp;lt; remains literal &lt;, not markup-like text.
+    text = re.sub(r"&amp;", "&", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 

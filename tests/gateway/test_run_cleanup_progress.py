@@ -1,10 +1,10 @@
-"""Tests for opt-in cleanup of temporary progress bubbles.
+"""Tests for cleanup of temporary progress bubbles.
 
-When ``display.platforms.<plat>.cleanup_progress: true`` is set for a
-platform whose adapter supports message deletion (e.g. Telegram), the
+Telegram enables cleanup by default. Other platforms can opt in with
+``display.platforms.<plat>.cleanup_progress: true``, and Telegram can opt out
+with an explicit ``false``. For adapters that support message deletion, the
 tool-progress bubble, "⏳ Working — N min" heartbeats, and status-callback
-messages sent during a run are deleted after the final response is
-delivered.
+messages sent during a run are deleted after the final response is delivered.
 
 Failed runs skip cleanup so the bubbles remain as breadcrumbs.
 Adapters without ``delete_message`` silently no-op.
@@ -170,7 +170,7 @@ def _install_fakes(
     monkeypatch,
     agent_cls,
     *,
-    cleanup_on: bool,
+    cleanup_on: bool | None,
     cleanup_platform: Platform = Platform.TELEGRAM,
 ):
     """Wire up the module stubs every _run_agent test needs."""
@@ -190,13 +190,17 @@ def _install_fakes(
 
     # Wire the per-platform cleanup_progress flag via the config loader the
     # gateway actually reads (``_load_gateway_config`` returns user config).
-    cfg = {
-        "display": {
-            "platforms": {
-                cleanup_platform.value: {"cleanup_progress": True},
+    cfg = (
+        {}
+        if cleanup_on is None
+        else {
+            "display": {
+                "platforms": {
+                    cleanup_platform.value: {"cleanup_progress": cleanup_on},
+                }
             }
         }
-    } if cleanup_on else {}
+    )
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
     return gateway_run
 
@@ -207,9 +211,8 @@ def _install_fakes(
 
 
 @pytest.mark.asyncio
-async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
-    """Without ``cleanup_progress: true``, firing whatever callback is
-    registered never reaches delete_message."""
+async def test_explicit_telegram_cleanup_opt_out_leaves_bubbles(monkeypatch, tmp_path):
+    """An explicit Telegram ``cleanup_progress: false`` preserves bubbles."""
     adapter = CleanupCaptureAdapter()
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False)
@@ -237,6 +240,37 @@ async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_raw_default_deletes_progress_bubbles(monkeypatch, tmp_path):
+    """Raw Telegram config enables cleanup without a user override."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=None)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-raw-default",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    cb = adapter.pop_post_delivery_callback(session_key)
+    assert callable(cb)
+    await _fire_post_delivery_cb(cb)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+    assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
 
 
 @pytest.mark.asyncio

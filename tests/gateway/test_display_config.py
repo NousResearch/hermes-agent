@@ -231,11 +231,13 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all'; Telegram defaults quiet for mobile."""
+        """Discord defaults to 'all'; Telegram defaults final-answer-first."""
         from gateway.display_config import resolve_display_setting
 
         # Telegram: tier_high transport, but quiet mobile default.
         assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is False
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
@@ -302,23 +304,19 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "signal", "streaming") is False
         assert resolve_display_setting({}, "email", "streaming") is False
 
-    def test_high_tier_streaming_defaults_to_none(self):
-        """High-tier platforms default streaming to None (follow global)."""
+    def test_telegram_raw_config_defaults_to_final_answer_first(self):
+        """Raw gateway config must keep Telegram final-answer-first."""
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "telegram", "streaming") is None
+        assert resolve_display_setting({}, "telegram", "streaming") is False
+        assert resolve_display_setting({}, "telegram", "cleanup_progress") is True
 
     def test_telegram_mobile_chatter_defaults(self):
-        """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
-        but skips the verbose busy-ack iteration counter by default."""
+        """Telegram avoids persistent interim chatter by default."""
         from gateway.display_config import resolve_display_setting
 
-        # Real model voice — keep on. Without this, Telegram users see
-        # "typing..." for the entire turn duration with no feedback.
-        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
-        # Periodic "Working — N min" heartbeat — keep on. Otherwise long
-        # turns appear completely silent.
-        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is False
         # Verbose iteration counter in busy-ack and heartbeat — off by
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
@@ -337,23 +335,22 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
     def test_telegram_mobile_chatter_can_opt_in(self):
-        """Per-platform config can re-enable Telegram busy-ack detail
-        and re-disable the kept-on defaults."""
+        """Explicit per-platform config can opt Telegram into chatter."""
         from gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
                 "platforms": {
                     "telegram": {
-                        "interim_assistant_messages": False,
-                        "long_running_notifications": False,
+                        "interim_assistant_messages": True,
+                        "long_running_notifications": True,
                         "busy_ack_detail": "on",
                     }
                 }
             }
         }
-        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
-        assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is True
+        assert resolve_display_setting(config, "telegram", "long_running_notifications") is True
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 
 
@@ -430,8 +427,8 @@ class TestStreamingPerPlatform:
         from gateway.display_config import resolve_display_setting
 
         config = {}
-        # Telegram has no streaming override in defaults → None
-        result = resolve_display_setting(config, "telegram", "streaming")
+        # Discord has no built-in streaming override → None.
+        result = resolve_display_setting(config, "discord", "streaming")
         assert result is None  # caller should check global StreamingConfig
 
     def test_global_display_streaming_is_cli_only(self):
@@ -440,7 +437,7 @@ class TestStreamingPerPlatform:
 
         for value in (True, False):
             config = {"display": {"streaming": value}}
-            assert resolve_display_setting(config, "telegram", "streaming") is None
+            assert resolve_display_setting(config, "telegram", "streaming") is False
             assert resolve_display_setting(config, "discord", "streaming") is None
 
     def test_explicit_false_disables(self):
@@ -471,14 +468,15 @@ class TestStreamingPerPlatform:
 # ---------------------------------------------------------------------------
 
 class TestCleanupProgress:
-    """``cleanup_progress`` is off by default and resolvable per-platform."""
+    """``cleanup_progress`` defaults per platform and remains configurable."""
 
-    def test_default_off_for_all_platforms(self):
-        """No config set → cleanup_progress resolves to False everywhere."""
+    def test_telegram_defaults_cleanup_on_other_platforms_off(self):
+        """Telegram cleans temporary progress; other platforms preserve it."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("telegram", "discord", "slack", "email"):
+        for plat in ("discord", "slack", "email"):
             assert resolve_display_setting({}, plat, "cleanup_progress") is False
+        assert resolve_display_setting({}, "telegram", "cleanup_progress") is True
 
     def test_global_true_applies_to_all_platforms(self):
         """display.cleanup_progress=true opts in globally."""

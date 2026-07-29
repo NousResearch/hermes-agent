@@ -137,13 +137,15 @@ async function openSidebarSession(page: Page, sidebarText: string, expectedTrans
 }
 
 async function reopenOriginalSession(page: Page): Promise<void> {
-  // A still-running tool has not generated a final title yet, so the sidebar
-  // retains the source prompt as its provisional session title.
-  await openSidebarSession(page, ORIGINAL_PROMPT, ORIGINAL_PROMPT)
+  const sidebar = page.locator('[data-slot="sidebar"] button')
+  const row = sidebar.filter({ hasText: ORIGINAL_PROMPT }).or(sidebar.filter({ hasText: CORRECTED_REPLY })).first()
+  await row.waitFor({ state: 'visible', timeout: 30_000 })
+  await row.click()
+  await waitForTranscriptText(page, ORIGINAL_PROMPT)
 }
 
 async function reopenInferenceSession(page: Page): Promise<void> {
-  const row = page.locator('[data-slot="sidebar"] button').filter({ hasText: INFERENCE_PROMPT }).first()
+  const row = page.locator('[data-slot="sidebar"] button').filter({ hasText: INFERENCE_SWITCH_TRIGGER }).first()
   await row.waitFor({ state: 'visible', timeout: 30_000 })
   await row.click()
   await waitForTranscriptText(page, INFERENCE_PROMPT)

@@ -292,6 +292,140 @@ def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
     )
 
 
+def test_bare_long_value_flag_keeps_space_separated_value(tmp_path: Path) -> None:
+    """``--maxfail 1`` reaches pytest without treating ``1`` as a path."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "--maxfail", "1", "-q")
+    assert proc.returncode == 0, proc.stdout
+    assert "expected one argument" not in proc.stdout
+    assert "under ['1'" not in proc.stdout
+
+
+def test_bare_long_path_value_reaches_pytest(tmp_path: Path) -> None:
+    """Path-valued long options keep their value out of discovery roots."""
+    probe_dir = _make_probe_dir(tmp_path)
+    base_temp = tmp_path / "pytest-base"
+    proc = _run_runner(probe_dir, "--basetemp", str(base_temp), "-q")
+    assert proc.returncode == 0, proc.stdout
+    assert "expected one argument" not in proc.stdout
+    assert f"under ['{base_temp}']" not in proc.stdout
+
+
+def test_pytest_value_flag_catalog_covers_builtins_and_plugins() -> None:
+    """The maintained fallback is complete and installed plugins are discovered."""
+    from scripts.run_tests_parallel import (
+        _PYTEST_OPTIONAL_VALUE_FLAGS_FALLBACK,
+        _PYTEST_VALUE_FLAGS_FALLBACK,
+        _pytest_value_flags,
+    )
+
+    expected = {
+        "--pdbcls",
+        "--lfnf",
+        "--last-failed-no-failures",
+        "--pastebin",
+        "--junitxml",
+        "--junitprefix",
+        "--pythonwarnings",
+        "--doctest-report",
+        "--config-file",
+        "--log-auto-indent",
+        "--log-disable",
+        "--asyncio-mode",
+    }
+    fallback = _PYTEST_VALUE_FLAGS_FALLBACK | _PYTEST_OPTIONAL_VALUE_FLAGS_FALLBACK
+    assert expected - {"--asyncio-mode"} <= fallback
+    required, optional = _pytest_value_flags()
+    assert "--asyncio-mode" in required | optional
+
+
+def test_optional_pytest_value_does_not_swallow_runner_flag(tmp_path: Path) -> None:
+    probe_dir = _make_probe_dir(tmp_path)
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--debug",
+            "--paths",
+            str(probe_dir),
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+            "-q",
+        ],
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "unrecognized arguments: --paths" not in proc.stdout
+
+
+def test_bare_builtin_and_plugin_long_values_reach_pytest(tmp_path: Path) -> None:
+    probe_dir = _make_probe_dir(tmp_path)
+    junit_path = tmp_path / "results.xml"
+    proc = _run_runner(
+        probe_dir,
+        "--pastebin",
+        "failed",
+        "--junitxml",
+        str(junit_path),
+        "--lfnf",
+        "all",
+        "--asyncio-mode",
+        "auto",
+        "-q",
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert junit_path.exists()
+    assert "No test files to run" not in proc.stdout
+
+
+def test_explicit_plugin_values_work_with_autoload_disabled(tmp_path: Path) -> None:
+    probe_dir = _make_probe_dir(tmp_path)
+    env = os.environ.copy()
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--paths",
+            str(probe_dir),
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+            "-p",
+            "pytest_asyncio.plugin",
+            "--asyncio-mode",
+            "auto",
+            "-q",
+        ],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "expected one argument" not in proc.stdout
+    assert "No test files to run" not in proc.stdout
+
+
+def test_explicit_double_dash_still_works(tmp_path: Path) -> None:
+    """The legacy ``--`` separator keeps working alongside bare flags."""
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q", "--", "--tb=short")
+    assert proc.returncode == 0, proc.stdout
+    assert "unrecognized arguments" not in proc.stdout
 
 
 def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:

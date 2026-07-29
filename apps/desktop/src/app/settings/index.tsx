@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { codiconIcon } from '@/components/ui/codicon'
@@ -85,22 +85,29 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // Jump to a section + its sub-view in one navigate. Two sequential setters
   // would each read the same stale `search` and the second would clobber the
   // first's `tab` — so the sub-view never opened on narrow screens.
-  const openSubView = (tab: SettingsViewId, param: string, value: string, fallback: string) => {
-    const params = new URLSearchParams(search)
-    params.set('tab', tab)
+  const openSubView = useCallback(
+    (tab: SettingsViewId, param: string, value: string, fallback: string) => {
+      const params = new URLSearchParams(search)
+      params.set('tab', tab)
 
-    if (value === fallback) {
-      params.delete(param)
-    } else {
-      params.set(param, value)
-    }
+      if (value === fallback) {
+        params.delete(param)
+      } else {
+        params.set(param, value)
+      }
 
-    const qs = params.toString()
-    navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true })
-  }
+      const qs = params.toString()
+      navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true })
+    },
+    [hash, navigate, pathname, search]
+  )
 
-  const openProviderView = (view: ProviderView) => openSubView('providers', 'pview', view, 'accounts')
-  const openKeysView = (view: KeysView) => openSubView('keys', 'kview', view, 'tools')
+  const openProviderView = useCallback(
+    (view: ProviderView) => openSubView('providers', 'pview', view, 'accounts'),
+    [openSubView]
+  )
+
+  const openKeysView = useCallback((view: KeysView) => openSubView('keys', 'kview', view, 'tools'), [openSubView])
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -134,123 +141,124 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }
 
-  const navGroups: OverlayNavGroup[] = [
+  const navGroups: OverlayNavGroup[] = useMemo(() => [
     ...SECTIONS.map(s => {
-      const view = `config:${s.id}` as SettingsViewId
+        const view = `config:${s.id}` as SettingsViewId
 
-      return {
-        active: activeView === view,
-        icon: s.icon,
-        id: view,
-        label: t.settings.sections[s.id] ?? s.label,
-        onSelect: () => setActiveView(view)
+        return {
+          active: activeView === view,
+          icon: s.icon,
+          id: view,
+          label: t.settings.sections[s.id] ?? s.label,
+          onSelect: () => setActiveView(view)
+        }
+      }),
+      {
+        active: activeView === 'notifications',
+        icon: Bell,
+        id: 'notifications',
+        label: t.settings.nav.notifications,
+        onSelect: () => setActiveView('notifications')
+      },
+      {
+        active: activeView === 'billing',
+        icon: BarChart3,
+        id: 'billing',
+        label: t.settings.nav.billing,
+        onSelect: () => setActiveView('billing')
+      },
+      {
+        active: activeView === 'providers',
+        children: [
+          {
+            active: activeView === 'providers' && providerView === 'accounts',
+            icon: codiconIcon('account'),
+            id: 'pview:accounts',
+            label: t.settings.nav.providerAccounts,
+            onSelect: () => openProviderView('accounts')
+          },
+          {
+            active: activeView === 'providers' && providerView === 'keys',
+            icon: KeyRound,
+            id: 'pview:keys',
+            label: t.settings.nav.providerApiKeys,
+            onSelect: () => openProviderView('keys')
+          },
+          {
+            active: activeView === 'providers' && providerView === 'custom-endpoints',
+            icon: Globe,
+            id: 'pview:custom-endpoints',
+            label: t.settings.nav.providerCustomEndpoints,
+            onSelect: () => openProviderView('custom-endpoints')
+          }
+        ],
+        gapBefore: true,
+        icon: Zap,
+        id: 'providers',
+        label: t.settings.nav.providers,
+        onSelect: () => setActiveView('providers')
+      },
+      {
+        active: activeView === 'gateway',
+        icon: Globe,
+        id: 'gateway',
+        label: t.settings.nav.gateway,
+        onSelect: () => setActiveView('gateway')
+      },
+      {
+        active: activeView === 'keybinds',
+        icon: Keyboard,
+        id: 'keybinds',
+        label: t.settings.nav.keybinds,
+        onSelect: () => setActiveView('keybinds')
+      },
+      {
+        active: activeView === 'keys',
+        children: [
+          {
+            active: activeView === 'keys' && keysView === 'tools',
+            icon: Wrench,
+            id: 'kview:tools',
+            label: t.settings.nav.keysTools,
+            onSelect: () => openKeysView('tools')
+          },
+          {
+            active: activeView === 'keys' && keysView === 'settings',
+            icon: Settings2,
+            id: 'kview:settings',
+            label: t.settings.nav.keysSettings,
+            onSelect: () => openKeysView('settings')
+          }
+        ],
+        icon: KeyRound,
+        id: 'keys',
+        label: t.settings.nav.apiKeys,
+        onSelect: () => setActiveView('keys')
+      },
+      {
+        active: activeView === 'plugins',
+        icon: Package,
+        id: 'plugins',
+        label: t.settings.nav.plugins,
+        onSelect: () => setActiveView('plugins')
+      },
+      {
+        active: activeView === 'sessions',
+        icon: Archive,
+        id: 'sessions',
+        label: t.settings.nav.archivedChats,
+        onSelect: () => setActiveView('sessions')
+      },
+      {
+        active: activeView === 'about',
+        gapBefore: true,
+        icon: Info,
+        id: 'about',
+        label: t.settings.nav.about,
+        onSelect: () => setActiveView('about')
       }
-    }),
-    {
-      active: activeView === 'notifications',
-      icon: Bell,
-      id: 'notifications',
-      label: t.settings.nav.notifications,
-      onSelect: () => setActiveView('notifications')
-    },
-    {
-      active: activeView === 'billing',
-      icon: BarChart3,
-      id: 'billing',
-      label: t.settings.nav.billing,
-      onSelect: () => setActiveView('billing')
-    },
-    {
-      active: activeView === 'providers',
-      children: [
-        {
-          active: activeView === 'providers' && providerView === 'accounts',
-          icon: codiconIcon('account'),
-          id: 'pview:accounts',
-          label: t.settings.nav.providerAccounts,
-          onSelect: () => openProviderView('accounts')
-        },
-        {
-          active: activeView === 'providers' && providerView === 'keys',
-          icon: KeyRound,
-          id: 'pview:keys',
-          label: t.settings.nav.providerApiKeys,
-          onSelect: () => openProviderView('keys')
-        },
-        {
-          active: activeView === 'providers' && providerView === 'custom-endpoints',
-          icon: Globe,
-          id: 'pview:custom-endpoints',
-          label: t.settings.nav.providerCustomEndpoints,
-          onSelect: () => openProviderView('custom-endpoints')
-        }
-      ],
-      gapBefore: true,
-      icon: Zap,
-      id: 'providers',
-      label: t.settings.nav.providers,
-      onSelect: () => setActiveView('providers')
-    },
-    {
-      active: activeView === 'gateway',
-      icon: Globe,
-      id: 'gateway',
-      label: t.settings.nav.gateway,
-      onSelect: () => setActiveView('gateway')
-    },
-    {
-      active: activeView === 'keybinds',
-      icon: Keyboard,
-      id: 'keybinds',
-      label: t.settings.nav.keybinds,
-      onSelect: () => setActiveView('keybinds')
-    },
-    {
-      active: activeView === 'keys',
-      children: [
-        {
-          active: activeView === 'keys' && keysView === 'tools',
-          icon: Wrench,
-          id: 'kview:tools',
-          label: t.settings.nav.keysTools,
-          onSelect: () => openKeysView('tools')
-        },
-        {
-          active: activeView === 'keys' && keysView === 'settings',
-          icon: Settings2,
-          id: 'kview:settings',
-          label: t.settings.nav.keysSettings,
-          onSelect: () => openKeysView('settings')
-        }
-      ],
-      icon: KeyRound,
-      id: 'keys',
-      label: t.settings.nav.apiKeys,
-      onSelect: () => setActiveView('keys')
-    },
-    {
-      active: activeView === 'plugins',
-      icon: Package,
-      id: 'plugins',
-      label: t.settings.nav.plugins,
-      onSelect: () => setActiveView('plugins')
-    },
-    {
-      active: activeView === 'sessions',
-      icon: Archive,
-      id: 'sessions',
-      label: t.settings.nav.archivedChats,
-      onSelect: () => setActiveView('sessions')
-    },
-    {
-      active: activeView === 'about',
-      gapBefore: true,
-      icon: Info,
-      id: 'about',
-      label: t.settings.nav.about,
-      onSelect: () => setActiveView('about')
-    }
-  ]
+    ]
+  , [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView])
 
   const navFooter = (
     <>

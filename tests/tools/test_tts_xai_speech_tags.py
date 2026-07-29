@@ -143,7 +143,7 @@ def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
         def raise_for_status(self):
             pass
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, stream=False):
         captured["url"] = url
         captured["headers"] = headers
         return FakeResponse()
@@ -590,7 +590,7 @@ def test_generate_xai_tts_omits_text_normalization_by_default(tmp_path, monkeypa
     fake_response.content = b"mp3"
     fake_response.raise_for_status.return_value = None
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, stream=False):
         captured["json"] = json
         return fake_response
 
@@ -614,7 +614,7 @@ def test_generate_xai_tts_sends_text_normalization_when_enabled(tmp_path, monkey
     fake_response.content = b"mp3"
     fake_response.raise_for_status.return_value = None
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, stream=False):
         captured["json"] = json
         return fake_response
 
@@ -640,7 +640,7 @@ def test_generate_xai_tts_omits_text_normalization_when_explicit_false(
     fake_response.content = b"mp3"
     fake_response.raise_for_status.return_value = None
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, stream=False):
         captured["json"] = json
         return fake_response
 

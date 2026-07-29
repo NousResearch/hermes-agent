@@ -73,6 +73,30 @@ def test_chat_subcommand_accepts_image_flag(monkeypatch):
     }
 
 
+def test_chat_subcommand_accepts_initial_flag(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_chat(args):
+        captured["initial"] = args.initial
+        captured["query"] = args.query
+
+    monkeypatch.setattr(main_mod, "cmd_chat", fake_cmd_chat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "chat", "--initial", "seed this session"],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "initial": "seed this session",
+        "query": None,
+    }
+
+
 def test_continue_worktree_and_skills_flags_work_together(monkeypatch):
     import hermes_cli.main as main_mod
 

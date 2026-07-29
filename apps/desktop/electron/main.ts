@@ -10868,7 +10868,12 @@ ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
 // on-disk plugin door silently breaks (#66899). Electron owns this resolution
 // so it stays valid in every connection mode. Created on demand, like openDir.
 ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => {
-  const dir = path.join(HERMES_HOME, 'desktop-plugins')
+  // Profile-aware: a named Desktop profile gets its own plugin root under
+  // profiles/<name>/, matching the profile-scoped hermes_home the backend
+  // reported before this resolver existed. 'default'/unset pins the global root.
+  const profile = readActiveDesktopProfile()
+  const base = profile && profile !== 'default' ? path.join(HERMES_HOME, 'profiles', profile) : HERMES_HOME
+  const dir = path.join(base, 'desktop-plugins')
 
   try {
     await fs.promises.mkdir(dir, { recursive: true })

@@ -350,8 +350,15 @@ export function watchRuntimePlugins(): void {
     }
 
     try {
-      const { hermes_home } = await getStatus()
-      dirWatchId = (await desktop.watchDirectory(`${hermes_home}/desktop-plugins`)).id
+      // Same Electron-local root as the scanner — never the backend's
+      // hermes_home, which is a remote path in remote mode (#66899).
+      const root = await desktop.desktopPluginsRoot?.()
+
+      if (!root) {
+        return false
+      }
+
+      dirWatchId = (await desktop.watchDirectory(root)).id
 
       return true
     } catch {

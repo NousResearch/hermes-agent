@@ -228,6 +228,16 @@ Thread support: when a user replies inside a thread, Hermes detects the
 `thread.name` and posts its reply in the same thread, so each thread gets a
 separate Hermes session.
 
+### Clarify questions as interactive cards
+
+When the agent asks a multiple-choice clarify question, the adapter renders it
+as a native **Card v2** with one button per choice plus an
+**"Other / type answer"** button, instead of a plain numbered text list.
+Clicking a button answers the question directly (`CARD_CLICKED` events route
+the choice back into the waiting session). If the card fails to send, or the
+question has no fixed choices, the adapter falls back to the standard text
+clarify. No configuration needed.
+
 ---
 
 ## Step 10: Native attachment delivery (optional)

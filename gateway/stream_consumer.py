@@ -19,7 +19,6 @@ import asyncio
 import inspect
 import logging
 import queue
-import re
 import threading
 import time
 from dataclasses import dataclass

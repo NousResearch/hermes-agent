@@ -600,7 +600,7 @@ class AIAgent:
 
             self._session_db = SessionDB()
             return self._session_db
-        except Exception as exc:
+        except Exception:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 

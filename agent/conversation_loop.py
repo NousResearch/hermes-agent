@@ -22,9 +22,7 @@ import os
 import random
 import re
 import ssl
-import threading
 import time
-import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -40,7 +38,6 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.iteration_budget import IterationBudget
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,

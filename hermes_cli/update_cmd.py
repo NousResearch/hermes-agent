@@ -1934,19 +1934,19 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # ".git is missing" would point them at the wrong remediation.
         from hermes_cli.config import format_docker_update_message
         print(format_docker_update_message())
-        _m().sys.exit(1)
+        sys.exit(1)
 
     if method in {"nix", "nixos"}:
         print(recommended_update_command_for_method(method))
-        _m().sys.exit(1)
+        sys.exit(1)
 
     git_dir = _m().PROJECT_ROOT / ".git"
     if not git_dir.exists():
         print("✗ Not a git repository — cannot check for updates.")
-        _m().sys.exit(1)
+        sys.exit(1)
 
     git_cmd = ["git"]
-    if _m().sys.platform == "win32":
+    if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
     # Fetch only the branch we compare against; prefer upstream as the canonical
@@ -1972,15 +1972,33 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     depth_args = ["--depth", "1"] if is_shallow else []
 
     if branch == "main":
-        print("→ Fetching from upstream...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch"] + depth_args + ["upstream", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
+        # Probe locally (~6 ms) whether an 'upstream' remote exists at all
+        # before spending a network fetch on it. Non-fork installs have no
+        # 'upstream' remote, and the old flow burned a failed network attempt
+        # (~0.3-1 s) on every --check before falling back to origin.
+        has_upstream_remote = (
+            subprocess.run(
+                git_cmd + ["remote", "get-url", "upstream"],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).returncode
+            == 0
         )
-        if fetch_result.returncode != 0:
-            # Fallback to origin if upstream doesn't exist
+        fetch_result = None
+        if has_upstream_remote:
+            print("→ Fetching from upstream...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch"] + depth_args + ["upstream", branch],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+        if fetch_result is not None and fetch_result.returncode == 0:
+            upstream_exists = True
+            compare_branch = f"upstream/{branch}"
+        else:
+            # No upstream remote, or the upstream fetch failed — use origin.
             print("→ Fetching from origin...")
             fetch_result = subprocess.run(
                 git_cmd + ["fetch"] + depth_args + ["origin", branch],
@@ -1990,9 +2008,6 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             )
             upstream_exists = False
             compare_branch = f"origin/{branch}"
-        else:
-            upstream_exists = True
-            compare_branch = f"upstream/{branch}"
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
@@ -2015,7 +2030,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             print("✗ Failed to fetch.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
-        _m().sys.exit(1)
+        sys.exit(1)
 
     # Verify the compare ref actually exists before asking rev-list about it.
     # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
@@ -2029,7 +2044,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     )
     if verify_result.returncode != 0:
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
-        _m().sys.exit(1)
+        sys.exit(1)
 
     if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
@@ -3050,7 +3065,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _non_interactive_update = (
         gateway_mode
         or assume_yes
-        or not (_m().sys.stdin.isatty() and _m().sys.stdout.isatty())
+        or not (sys.stdin.isatty() and sys.stdout.isatty())
     )
     discard_local_changes = False
     if _non_interactive_update:
@@ -3079,7 +3094,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir)
             if concurrent:
                 print(_format_concurrent_instances_message(concurrent, scripts_dir))
-                _m().sys.exit(2)
+                sys.exit(2)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
@@ -3111,7 +3126,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            _m().sys.exit(2)
+            sys.exit(2)
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
@@ -3119,18 +3134,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_dir = _m().PROJECT_ROOT / ".git"
 
     if not git_dir.exists():
-        if _m().sys.platform == "win32":
+        if sys.platform == "win32":
             use_zip_update = True
         else:
             print("✗ Not a git repository. Please reinstall:")
             print(
                 "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
-            _m().sys.exit(1)
+            sys.exit(1)
 
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
-    if _m().sys.platform == "win32" and git_dir.exists():
+    if sys.platform == "win32" and git_dir.exists():
         subprocess.run(
             [
                 "git",
@@ -3147,7 +3162,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Build git command once — reused for fork detection and the update itself.
     git_cmd = ["git"]
-    if _m().sys.platform == "win32":
+    if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
@@ -3208,7 +3223,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("✗ Failed to fetch updates from origin.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
-            _m().sys.exit(1)
+            sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
@@ -3265,14 +3280,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"✗ Branch '{branch}' does not exist locally or on origin.")
                     if track_result.stderr.strip():
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
-                    _m().sys.exit(1)
+                    sys.exit(1)
         else:
             auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
 
         prompt_for_restore = (
             auto_stash_ref is not None
             and not assume_yes
-            and (gateway_mode or (_m().sys.stdin.isatty() and _m().sys.stdout.isatty()))
+            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
         # Check if there are updates
@@ -3363,7 +3378,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                 else:
                     _m()._install_python_dependencies_with_optional_fallback(
-                        [_m().sys.executable, "-m", "pip"], group="all"
+                        [sys.executable, "-m", "pip"], group="all"
                     )
                 _m()._clear_update_incomplete_marker()
                 healthy_after, detail_after = _venv_core_imports_healthy()
@@ -3405,8 +3420,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         try:
+            # Merge the ref we already fetched above (→ Fetching updates...)
+            # instead of `git pull`, which performs a SECOND network fetch of
+            # the same branch (~0.5-1.5 s of redundant round-trip per update).
+            # `merge --ff-only origin/<branch>` is byte-identical in effect to
+            # `pull --ff-only origin <branch>` given the fresh tracking ref;
+            # the divergence fallback below is unchanged.
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
                 cwd=_m().PROJECT_ROOT,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -3431,7 +3452,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(
                         f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
                     )
-                    _m().sys.exit(1)
+                    sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -3472,7 +3493,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print()
                     print("  Could not capture pre-pull SHA — recover manually with:")
                     print(f"    cd {_m().PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
-                _m().sys.exit(1)
+                sys.exit(1)
 
             update_succeeded = True
         finally:
@@ -3536,7 +3557,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         uv_bin = ensure_uv()
 
-        pip_cmd = [_m().sys.executable, "-m", "pip"]
+        pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:
             uv_bin = _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
@@ -3559,7 +3580,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
             # Some environments lose pip inside the venv; bootstrap it back with
             # ensurepip before trying the editable install.
-            pip_cmd = [_m().sys.executable, "-m", "pip"]
+            pip_cmd = [sys.executable, "-m", "pip"]
             try:
                 subprocess.run(
                     pip_cmd + ["--version"],
@@ -3569,7 +3590,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             except subprocess.CalledProcessError:
                 subprocess.run(
-                    [_m().sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                     cwd=_m().PROJECT_ROOT,
                     check=True,
                 )
@@ -3639,34 +3660,51 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _m()._desktop_packaged_executable(desktop_dir) is not None or _m()._desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            _desktop_build_cmd = [_m().sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-            # Capture the (very loud) Electron/vite build output into
-            # update.log instead of streaming it to the terminal. On the rare
-            # nonzero exit, retry once after waiting again for the venv — this
-            # covers a still-settling rebuild window the first wait didn't fully
-            # catch — then surface the captured tail so the failure is
-            # debuggable.
-            #
-            # Start the build subprocess with the Hermes-managed Node on PATH:
-            # when `hermes update` runs inside the desktop updater chain
-            # (Desktop → hermes-setup → hermes update), the shell PATH
-            # customizations are lost, so a bare-PATH child would fail with
-            # `node: not found` before cmd_gui can self-heal.
-            from hermes_constants import with_hermes_node_path
-
-            _build_env = with_hermes_node_path()
-            build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
-            if build_result.returncode != 0:
-                build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
-            if build_result.returncode != 0:
-                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
-                tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
-                if tail:
-                    print(tail)
-                from hermes_constants import display_hermes_home as _dhh
-                print(f"  Full build log: {_dhh()}/logs/update.log")
-            else:
+            # Consult the content-hash stamp IN-PROCESS first. The spawned
+            # `hermes desktop --build-only` subprocess re-imports the whole
+            # CLI stack (~1-3 s) just to reach the same _m()._desktop_build_needed
+            # check; when the stamp already says "up to date" we can skip the
+            # spawn entirely. The update path never passes --source, so the
+            # subprocess would run with source_mode=False — mirror that here.
+            # Any error in the pre-check falls through to the subprocess.
+            _skip_desktop_build = False
+            try:
+                _skip_desktop_build = not _m()._desktop_build_needed(
+                    desktop_dir, _m().PROJECT_ROOT, source_mode=False
+                )
+            except Exception:
+                _skip_desktop_build = False
+            if _skip_desktop_build:
                 print("  ✓ Desktop app up to date")
+            else:
+                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+                # Capture the (very loud) Electron/vite build output into
+                # update.log instead of streaming it to the terminal. On the rare
+                # nonzero exit, retry once after waiting again for the venv — this
+                # covers a still-settling rebuild window the first wait didn't fully
+                # catch — then surface the captured tail so the failure is
+                # debuggable.
+                #
+                # Start the build subprocess with the Hermes-managed Node on PATH:
+                # when `hermes update` runs inside the desktop updater chain
+                # (Desktop → hermes-setup → hermes update), the shell PATH
+                # customizations are lost, so a bare-PATH child would fail with
+                # `node: not found` before cmd_gui can self-heal.
+                from hermes_constants import with_hermes_node_path
+
+                _build_env = with_hermes_node_path()
+                build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
+                if build_result.returncode != 0:
+                    build_result = _m()._run_logged_subprocess(_desktop_build_cmd, cwd=_m().PROJECT_ROOT, env=_build_env)
+                if build_result.returncode != 0:
+                    print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                    tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
+                    if tail:
+                        print(tail)
+                    from hermes_constants import display_hermes_home as _dhh
+                    print(f"  Full build log: {_dhh()}/logs/update.log")
+                else:
+                    print("  ✓ Desktop app up to date")
 
         print()
         print("✓ Code updated!")
@@ -3900,6 +3938,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print()
             # Show WHAT changed, not just a count, so the user can make an
             # informed yes/no decision (previously the prompt named nothing).
+            def _print_items(items, label, key, fallback_key=None):
+                if not items:
+                    return
+                print(f"  {label}:")
+                shown = items[:8]
+                for it in shown:
+                    if isinstance(it, dict):
+                        name = it.get(key) or (fallback_key and it.get(fallback_key)) or "?"
+                        desc = (it.get("description") or "").strip()
+                    else:
+                        # Defensive: some callers/mocks pass bare name strings.
+                        name = str(it)
+                        desc = ""
+                    if desc:
+                        print(f"      • {name} — {desc}")
+                    else:
+                        print(f"      • {name}")
+                extra = len(items) - len(shown)
+                if extra > 0:
+                    print(f"      … and {extra} more")
 
             if missing_env:
                 print(
@@ -3924,7 +3982,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     .strip()
                     .lower()
                 )
-            elif not (_m().sys.stdin.isatty() and _m().sys.stdout.isatty()):
+            elif not (sys.stdin.isatty() and sys.stdout.isatty()):
                 print("  ℹ Non-interactive session — applying safe config migrations.")
                 response = "auto"
             else:
@@ -4058,7 +4116,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             if (
                 refresh_cua_driver
-                and _m().sys.platform in ("darwin", "win32", "linux")
+                and sys.platform in ("darwin", "win32", "linux")
                 and shutil.which("cua-driver")
             ):
                 from hermes_cli.tools_config import install_cua_driver
@@ -4117,6 +4175,86 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _wait_for_gateway_exit,
             )
             import signal as _signal
+
+            def _wait_for_service_active(
+                scope_cmd_: list,
+                svc_name_: str,
+                timeout: float = 10.0,
+            ) -> bool:
+                """Poll ``systemctl is-active`` until the unit reports active.
+
+                systemd's Stopped -> Started transition after a graceful exit
+                (or a hard restart) is not instantaneous; a one-shot check
+                races that window and falsely reports the unit as down.
+                Poll every 0.5s up to ``timeout`` seconds before giving up.
+                """
+                deadline = _time.monotonic() + max(timeout, 0.5)
+                while True:
+                    try:
+                        _verify = subprocess.run(
+                            scope_cmd_ + ["is-active", svc_name_],
+                            capture_output=True,
+                            text=True, encoding="utf-8", errors="replace",
+                            timeout=5,
+                        )
+                        if _verify.stdout.strip() == "active":
+                            return True
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        pass
+                    if _time.monotonic() >= deadline:
+                        return False
+                    _time.sleep(0.5)
+
+            def _service_restart_sec(
+                scope_cmd_: list,
+                svc_name_: str,
+                default: float = 0.0,
+            ) -> float:
+                """Read the unit's ``RestartUSec`` (RestartSec) in seconds.
+
+                After a graceful exit-75, systemd waits ``RestartSec`` before
+                respawning the unit.  Callers that poll for ``is-active``
+                must use a timeout >= ``RestartSec`` + transition slack, or
+                they'll give up *during* the cooldown window and wrongly
+                conclude the unit didn't relaunch.
+                """
+                try:
+                    _show = subprocess.run(
+                        scope_cmd_
+                        + [
+                            "show",
+                            svc_name_,
+                            "--property=RestartUSec",
+                            "--value",
+                        ],
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                        timeout=5,
+                    )
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    return default
+                raw = (_show.stdout or "").strip()
+                # systemd emits values like "30s", "100ms", "1min 30s", or
+                # "infinity".  Parse conservatively; on any miss return default.
+                if not raw or raw == "infinity":
+                    return default
+                total = 0.0
+                matched = False
+                for part in raw.split():
+                    for _suf, _mult in (
+                        ("ms", 0.001),
+                        ("us", 0.000001),
+                        ("min", 60.0),
+                        ("s", 1.0),
+                    ):
+                        if part.endswith(_suf):
+                            try:
+                                total += float(part[: -len(_suf)]) * _mult
+                                matched = True
+                            except ValueError:
+                                pass
+                            break
+                return total if matched else default
 
             _manage_cmd_cache: dict = {}
 
@@ -4745,17 +4883,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Code update itself succeeded, but at least one gateway still
             # runs pre-update modules — surface that as a failed update so
             # automation / operators do not treat the fleet as healthy.
-            _m().sys.exit(1)
+            sys.exit(1)
 
     except subprocess.CalledProcessError as e:
-        if _m().sys.platform == "win32":
+        if sys.platform == "win32":
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
             _update_via_zip(args)
         else:
             print(f"✗ Update failed: {e}")
-            _m().sys.exit(1)
+            sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---
 

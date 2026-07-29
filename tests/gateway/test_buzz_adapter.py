@@ -462,6 +462,29 @@ class TestBuzzAdapterSend:
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
 
+    @pytest.mark.asyncio
+    async def test_send_reply_to(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt124", "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "threaded", reply_to="root-event")
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "root-event"
+
+    @pytest.mark.asyncio
+    async def test_send_dm_does_not_create_reply_tree(self):
+        adapter = _make_adapter()
+        adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-dm", "message": ""})
+        adapter._run_cli = cli
+
+        await adapter.send(DM_CHANNEL, "flat reply", reply_to="user-event")
+
+        args, _stdin = cli.calls[0]
+        assert "--reply-to" not in args
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -475,6 +498,21 @@ class TestBuzzAdapterSend:
         assert result.success is True
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
+
+    @pytest.mark.asyncio
+    async def test_send_image_in_dm_does_not_create_reply_tree(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt-dm-image", "message": ""})
+        adapter._run_cli = cli
+
+        await adapter.send_image(DM_CHANNEL, str(img), reply_to="user-event")
+
+        args, _stdin = cli.calls[0]
+        assert "--reply-to" not in args
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

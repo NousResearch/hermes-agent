@@ -681,6 +681,19 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
+    def _reply_target_for_chat(self, chat_id: str, reply_target: Optional[str]) -> Optional[str]:
+        """Keep direct-message conversations flat while preserving channel replies.
+
+        Buzz renders ``--reply-to`` as a nested reply-tree edge.  A DM is
+        already its own conversation, so anchoring every Hermes response to
+        the triggering message creates an ever-deepening tree instead of the
+        expected linear exchange.
+        """
+        state = self._channel_state.get(str(chat_id))
+        if state and state.get("chat_type") == "dm":
+            return None
+        return reply_target
+
     async def send(
         self,
         chat_id: str,
@@ -691,7 +704,10 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        reply_target = self._reply_target_for_chat(
+            chat_id,
+            reply_to or (metadata or {}).get("thread_id"),
+        )
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)
@@ -763,8 +779,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            if reply_to:
-                args += ["--reply-to", str(reply_to)]
+            reply_target = self._reply_target_for_chat(chat_id, reply_to)
+            if reply_target:
+                args += ["--reply-to", str(reply_target)]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)

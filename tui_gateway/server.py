@@ -12616,9 +12616,11 @@ def _(rid, params: dict) -> dict:
         from tools.wake_word import (
             audio_is_silent,
             check_wake_word_requirements,
+            get_input_device_status,
             is_listening,
             load_wake_word_config,
             owns_listener,
+            silent_audio_hint,
         )
         cfg = load_wake_word_config()
         reqs = check_wake_word_requirements(cfg)
@@ -12627,23 +12629,26 @@ def _(rid, params: dict) -> dict:
         owned_by_caller = owns_listener(transport)
         listening = owned_by_caller and is_listening()
         silent = listening and audio_is_silent()
+        input_device = get_input_device_status(cfg)
         hint = reqs.get("hint", "")
+        if input_device.get("error") and not hint:
+            hint = f"Wake-word input device could not be resolved: {input_device['error']}"
         if silent and not hint:
-            hint = ("Microphone delivers only silence — on macOS grant the "
-                    "Hermes backend mic access (System Settings > Privacy & "
-                    "Security > Microphone), then toggle the wake word.")
+            hint = silent_audio_hint(input_device)
         return _ok(rid, {
             "listening": listening,
             "owned_by_caller": owned_by_caller,
             "owner_surface": owner_surface if owner is not None else None,
             "phrase": reqs["phrase"],
             "provider": reqs["provider"],
+            "configured_surface": str(cfg.get("surface") or "auto"),
+            "input_device": input_device,
             "available": reqs["available"],
             "hint": hint,
             # Config truth: clients use this to re-arm after a voice turn
             # ("permanent on") without guessing from runtime listener state.
             "enabled": bool(cfg.get("enabled")),
-            # Armed but deaf (macOS permission failure mode) — see hint.
+            # Armed but deaf despite an open stream; see platform-specific hint.
             "audio_silent": silent,
         })
     except Exception as e:

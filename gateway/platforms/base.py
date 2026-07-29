@@ -3926,10 +3926,11 @@ class BasePlatformAdapter(ABC):
                     safe_url_for_log(image_url),
                     alt_text[:30] if alt_text else "",
                 )
-                if image_url.startswith("file://"):
+                local_path = self._normalize_file_url(image_url)
+                if local_path is not None:
                     img_result = await self.send_image_file(
                         chat_id=chat_id,
-                        image_path=_unquote(image_url[7:]),
+                        image_path=local_path,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
@@ -4008,8 +4009,13 @@ class BasePlatformAdapter(ABC):
             if len(parsed.netloc) == 2 and parsed.netloc[1] == ':':
                 local = parsed.netloc + parsed.path
             else:
-                logger.debug("Rejecting UNC file:// URI: %s", _log_safe_path(url))
-                return None
+                # Percent-encoded path in netloc: file://C%3A%5C...
+                decoded_netloc = urllib.parse.unquote(parsed.netloc)
+                if len(decoded_netloc) >= 2 and decoded_netloc[1] == ':':
+                    local = decoded_netloc + parsed.path
+                else:
+                    logger.debug("Rejecting UNC file:// URI: %s", _log_safe_path(url))
+                    return None
         else:
             local = parsed.path
             if len(local) >= 3 and local[0] == '/' and local[1].isalpha() and local[2] == ':':

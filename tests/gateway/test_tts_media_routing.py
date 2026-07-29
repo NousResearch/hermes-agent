@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import os
 import sys
 
 from gateway.config import Platform, PlatformConfig
@@ -403,19 +404,20 @@ class _RoundtripAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("filename,alt", [
-    ("sub folder/shot.png", "alt"),
-    ("100%25done.png", ""),
-    ("normal.png", ""),
-], ids=["space_path", "literal_percent", "normal_path"])
-async def test_send_multiple_images_roundtrip(tmp_path, filename, alt):
+@pytest.mark.parametrize("filename,alt,prefix", [
+    ("sub folder/shot.png", "alt", "file://"),
+    ("100%25done.png", "", "file://"),
+    ("normal.png", "", "file://"),
+    ("normal.png", "", "FILE://"),
+], ids=["space_path", "literal_percent", "normal_path", "uppercase_scheme"])
+async def test_send_multiple_images_roundtrip(tmp_path, filename, alt, prefix):
     """file:// URI round-trip: send_multiple_images decodes URI to local path
-    and passes it to send_image_file. Parametrized over space/literal%/normal."""
+    and passes it to send_image_file. Parametrized over space/literal%/normal/uppercase."""
     import urllib.parse
 
     adapter = _RoundtripAdapter()
     validated = str((tmp_path / filename).resolve())
-    norm_url = "file://" + urllib.parse.quote(validated, safe="/:\\\\")
+    norm_url = prefix + urllib.parse.quote(validated, safe="/:\\\\")
 
     await adapter.send_multiple_images(
         chat_id="chat-1",
@@ -424,9 +426,12 @@ async def test_send_multiple_images_roundtrip(tmp_path, filename, alt):
 
     adapter.send_image_file.assert_awaited_once()
     _, kwargs = adapter.send_image_file.call_args
-    received_path = kwargs.get("image_path")
-    assert received_path == validated, (
-        f"send_image_file received {received_path!r}, expected {validated!r}"
+    received = kwargs.get("image_path")
+    assert received is not None
+    # _normalize_file_url returns forward-slash paths; compare with
+    # normcase to handle backslash/forward-slash differences.
+    assert os.path.normcase(received) == os.path.normcase(validated), (
+        f"send_image_file received {received!r}, expected {validated!r}"
     )
 
 

@@ -5,6 +5,7 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
+import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -174,6 +175,7 @@ class TestRunBackgroundTask:
         ("bg_qqbot_file", "shot.png", "two_slash"),
         pytest.param("bg_win_file_url", "win_test.png", "three_slash_windows",
                      marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")),
+        ("bg_uppercase_scheme", "normal.png", "uppercase_scheme"),
     ])
     async def test_qqbot_background_task_file_url_routes_to_send_image_file(self, tmp_path, monkeypatch, task_id, filename, uri_spec):
         """Background-task finalizer sees ``file://`` images and routes them
@@ -248,7 +250,8 @@ class TestRunBackgroundTask:
         )
 
         file_url = ("file://" + _urlquote(str(png), safe="/:\\") if uri_spec == "two_slash"
-                    else "file:///" + _urlquote(str(png.resolve()), safe="/:\\\\"))
+                    else "FILE://" + _urlquote(str(png), safe="/:\\") if uri_spec == "uppercase_scheme"
+                    else "file:///" + _urlquote(str(png.resolve()), safe="/:"))
 
         runner._run_in_executor_with_context = AsyncMock(
             return_value={
@@ -275,10 +278,10 @@ class TestRunBackgroundTask:
         _, kwargs = adapter.send_image_file.call_args
         received_path = kwargs.get("image_path")
         assert received_path is not None
-        expected = str(png).replace("/", "\\\\").casefold()
-        got = str(received_path).replace("/", "\\\\").casefold()
-        assert expected in got, (
-            f"decoded image_path mismatch: expected {expected!r}, got {got!r}"
+        # _normalize_file_url returns forward-slash paths; normcase
+        # handles both backslash/forward-slash and case differences.
+        assert os.path.normcase(str(received_path)) == os.path.normcase(str(png)), (
+            f"decoded image_path mismatch: expected {png!r}, got {received_path!r}"
         )
 
 

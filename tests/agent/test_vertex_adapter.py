@@ -97,6 +97,15 @@ def test_build_base_url_regional(vertex_adapter):
     )
 
 
+@pytest.mark.parametrize("region", ["us", "eu"])
+def test_build_base_url_multi_regional(vertex_adapter, region):
+    url = vertex_adapter.build_vertex_base_url("proj", region)
+    assert url == (
+        f"https://aiplatform.{region}.rep.googleapis.com/v1beta1/projects/proj/"
+        f"locations/{region}/endpoints/openapi"
+    )
+
+
 def test_get_vertex_config_uses_adc_and_default_region(vertex_adapter):
     token, base = vertex_adapter.get_vertex_config()
     assert token == "ya29.FAKE"

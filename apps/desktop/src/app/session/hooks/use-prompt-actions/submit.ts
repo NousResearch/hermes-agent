@@ -20,7 +20,14 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $sessions, resolveComposerSessionKey, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import {
+  $sessions,
+  resolveComposerSessionKey,
+  setAwaitingResponse,
+  setBusy,
+  setMessages,
+  touchSessionActivity
+} from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../../types'
@@ -293,7 +300,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
-      const seedOptimistic = (sid: string) =>
+      const seedOptimistic = (sid: string) => {
+        // Recents jump on send — not stream start, not turn resolve.
+        const activity = bubbleText.trim() ? { preview: bubbleText.trim() } : undefined
+        touchSessionActivity(sid, activity)
+
+        if (targetStoredSessionId && targetStoredSessionId !== sid) {
+          touchSessionActivity(targetStoredSessionId, activity)
+        }
+
         updateSessionState(
           sid,
           state => ({
@@ -312,6 +327,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           }),
           targetStoredSessionId
         )
+      }
 
       // After sync rewrites refs, refresh the optimistic message in place so the
       // transcript shows the resolved @file: ref rather than the local path.

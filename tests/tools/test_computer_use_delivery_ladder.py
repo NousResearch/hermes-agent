@@ -39,17 +39,31 @@ def _reset():
 class _FakeSession:
     """Minimal cua-driver session stub returning a canned tool result."""
 
-    def __init__(self, out: Dict[str, Any], capabilities: Optional[set] = None):
+    def __init__(
+        self,
+        out: Dict[str, Any],
+        capabilities: Optional[set] = None,
+        input_properties: Optional[Dict[str, set]] = None,
+    ):
         self._out = out
         self._caps = capabilities or set()
+        self._input_properties = input_properties or {}
         self.last_args: Dict[str, Any] = {}
+        self.calls = []
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0):
         self.last_args = args
+        self.calls.append((name, dict(args)))
         return self._out
 
     def supports_capability(self, capability: str, tool: Optional[str] = None) -> bool:
         return capability in self._caps
+
+    def supports_input_property(self, tool: str, property_name: str) -> bool:
+        return property_name in self._input_properties.get(tool, set())
+
+    def _has_tool(self, name: str) -> bool:
+        return name == "bring_to_front"
 
 
 def _make_backend(session: _FakeSession):
@@ -148,10 +162,14 @@ def test_text_response_surfaces_fields_additively():
     assert payload["code"] == "background_unavailable"
     assert payload["verified"] is False
 
-    # Bare result (old driver) → only ok/action, no None noise.
+    # Bare transport success still requires fresh verification, without None noise.
     r2 = ActionResult(ok=True, action="click")
     payload2 = json.loads(_text_response(r2))
-    assert payload2 == {"ok": True, "action": "click"}
+    assert payload2 == {
+        "ok": True,
+        "action": "click",
+        "verdict": {"decision": "verify_fresh_state"},
+    }
     for k in ("effect", "escalation", "code", "verified", "path", "degraded", "delivery_mode"):
         assert k not in payload2
 
@@ -168,32 +186,34 @@ def test_background_is_default_no_flag_sent():
     assert "delivery_mode" not in sess.last_args
 
 
-def test_foreground_sent_when_capability_present():
+def test_foreground_sent_when_schema_property_present():
     out = {"isError": False, "data": {}, "structuredContent": {"effect": "unverifiable"}}
-    sess = _FakeSession(out, capabilities={"input.delivery_mode"})
+    sess = _FakeSession(out, input_properties={"click": {"delivery_mode"}})
     be = _make_backend(sess)
     res = be.click(element=1, delivery_mode="foreground", bring_to_front=True)
+    assert [name for name, _ in sess.calls] == ["bring_to_front", "click"]
+    assert sess.calls[0][1] == {"pid": 4242, "window_id": 7}
     assert sess.last_args.get("delivery_mode") == "foreground"
-    assert sess.last_args.get("bring_to_front") is True
+    assert "bring_to_front" not in sess.last_args
     assert res.delivery_mode == "foreground"
 
 
 def test_foreground_refused_on_old_driver():
-    """Old driver lacking the capability must NOT silently downgrade — it
+    """A live action schema lacking the property must NOT silently downgrade — it
     returns a structured foreground_unsupported result."""
     out = {"isError": False, "data": {}, "structuredContent": {}}
-    sess = _FakeSession(out, capabilities=set())  # no input.delivery_mode
+    sess = _FakeSession(out)
     be = _make_backend(sess)
     res = be.click(element=1, delivery_mode="foreground")
     assert res.ok is False
     assert res.code == "foreground_unsupported"
     # crucially: no tool call was made with a silent background downgrade
-    assert sess.last_args == {}
+    assert sess.calls == []
 
 
 def test_bad_delivery_mode_rejected():
     out = {"isError": False, "data": {}, "structuredContent": {}}
-    sess = _FakeSession(out, capabilities={"input.delivery_mode"})
+    sess = _FakeSession(out, input_properties={"type_text": {"delivery_mode"}})
     be = _make_backend(sess)
     res = be.type_text("hi", delivery_mode="sideways")
     assert res.ok is False

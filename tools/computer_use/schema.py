@@ -46,6 +46,15 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "list_apps",
                     "list_windows",
                     "focus_app",
+                    "cua_browser_state",
+                    "cua_browser_prepare",
+                    "cua_browser_navigate",
+                    "cua_browser_click",
+                    "cua_browser_type",
+                    "cua_browser_pointer",
+                    "cua_browser_dialog",
+                    "cua_browser_set_input_files",
+                    "cua_browser_download",
                 ],
                 "description": (
                     "Which action to perform. `capture` is free (no side "
@@ -228,25 +237,100 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "`background` (DEFAULT) routes input to the target without "
                     "raising it or stealing focus — the co-work model. "
                     "`foreground` briefly fronts the window, acts, then "
-                    "restores the prior frontmost app. Only escalate to "
-                    "`foreground` when a background attempt did NOT land — i.e. "
-                    "a prior result had `effect: 'suspected_noop'`, "
-                    "`code: 'background_unavailable'`, or "
-                    "`escalation.recommended: 'foreground'`. Do not predict it "
-                    "from the app being Electron/Chromium; react to the "
-                    "returned signal. Foreground is a visible focus change and "
-                    "needs its own approval."
+                    "restores the prior frontmost app. A `confirmed` effect is "
+                    "done. For `unverifiable`, inspect fresh state before any "
+                    "retry even if escalation is recommended. Escalate only "
+                    "after `suspected_noop` or a structured refusal. Do not "
+                    "predict the rung from the app being Electron/Chromium. "
+                    "Foreground is a visible focus change and needs its own "
+                    "approval."
                 ),
             },
             "bring_to_front": {
                 "type": "boolean",
                 "description": (
-                    "Optional, pairs with delivery_mode='foreground'. Keep the "
-                    "target fronted after the action instead of restoring the "
-                    "previous app, to avoid a per-call flash across a short "
-                    "sequence of foreground actions. Default false."
+                    "Optional and only valid with delivery_mode='foreground'. "
+                    "Explicitly invokes cua-driver's standalone bring_to_front "
+                    "tool before the input; it is never passed as an input "
+                    "property. This persistent focus change has a separate "
+                    "approval scope. Default false."
                 ),
             },
+            # ── cua-driver typed browser route ─────────────────────
+            "tab_id": {
+                "type": "string",
+                "description": "Opaque tab capability returned by cua_browser_state.",
+            },
+            "ref": {
+                "type": "string",
+                "description": "Current semantic ref from the latest cua_browser_state snapshot.",
+            },
+            "destination_ref": {
+                "type": "string",
+                "description": "Current destination ref for a typed pointer action.",
+            },
+            "url": {"type": "string", "description": "URL for cua_browser_navigate."},
+            "input_route": {
+                "type": "string",
+                "enum": ["trusted", "dom_event"],
+                "description": (
+                    "Typed-browser trust class. Defaults to trusted. dom_event "
+                    "is an explicit downgrade and is never selected silently."
+                ),
+            },
+            "snapshot_format": {
+                "type": "string",
+                "enum": ["semantic_v2", "dom_refs_v1"],
+                "description": "Typed-browser snapshot format; semantic_v2 is the default.",
+            },
+            "query": {"type": "string", "description": "Optional browser-state query."},
+            "scope_ref": {"type": "string", "description": "Optional current ref to scope a snapshot."},
+            "continuation": {"type": "string", "description": "Continuation minted by the current snapshot."},
+            "profile_mode": {
+                "type": "string",
+                "enum": ["isolated_new", "isolated_named", "existing_profile"],
+                "description": (
+                    "Browser preparation mode. existing_profile always requires "
+                    "the driver's separate interactive grant."
+                ),
+            },
+            "profile_name": {"type": "string", "description": "Name for isolated_named setup."},
+            "allow_launch": {
+                "type": "boolean",
+                "description": "Explicitly allow launch of a driver-owned isolated browser.",
+            },
+            "browser_pointer_action": {
+                "type": "string",
+                "enum": ["hover", "right_click", "double_click", "scroll", "drag"],
+                "description": "Operation for cua_browser_pointer.",
+            },
+            "browser_dialog_action": {
+                "type": "string",
+                "enum": ["inspect", "accept", "dismiss"],
+                "description": "Page JavaScript dialog action; native prompts stay on the native ladder.",
+            },
+            "browser_type_mode": {
+                "type": "string",
+                "enum": ["insert_text", "keystrokes"],
+                "description": "Delivery form for cua_browser_type; defaults to insert_text.",
+            },
+            "dialog_id": {"type": "string", "description": "Opaque page-dialog capability."},
+            "prompt_text": {"type": "string", "description": "Optional text for a page prompt dialog."},
+            "files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Explicit paths for cua_browser_set_input_files.",
+            },
+            "destination_root": {
+                "type": "string",
+                "description": "Approved destination root for cua_browser_download.",
+            },
+            "delta_x": {"type": "number", "description": "Typed pointer horizontal delta."},
+            "delta_y": {"type": "number", "description": "Typed pointer vertical delta."},
+            "x": {"type": "number", "description": "Typed browser viewport x coordinate."},
+            "y": {"type": "number", "description": "Typed browser viewport y coordinate."},
+            "to_x": {"type": "number", "description": "Typed browser drag destination x."},
+            "to_y": {"type": "number", "description": "Typed browser drag destination y."},
             # ── return shape ───────────────────────────────────────
             "capture_after": {
                 "type": "boolean",

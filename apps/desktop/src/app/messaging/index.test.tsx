@@ -7,10 +7,16 @@ import type { MessagingPlatformInfo } from '@/types/hermes'
 
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
+const getPairing = vi.fn()
+const approvePairing = vi.fn()
+const revokePairing = vi.fn()
 const openExternalLink = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  approvePairing: (platformId: string, requestId: string) => approvePairing(platformId, requestId),
   getMessagingPlatforms: () => getMessagingPlatforms(),
+  getPairing: () => getPairing(),
+  revokePairing: (platformId: string, userId: string) => revokePairing(platformId, userId),
   updateMessagingPlatform: (id: string, body: unknown) => updateMessagingPlatform(id, body)
 }))
 
@@ -44,6 +50,7 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
 
 beforeEach(() => {
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })
+  getPairing.mockResolvedValue({ approved: [], pending: [] })
 })
 
 afterEach(() => {
@@ -91,5 +98,74 @@ describe('MessagingView setup-guide link', () => {
     })
 
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
+  })
+})
+
+describe('MessagingView pairing', () => {
+  const pendingUser = {
+    age_minutes: 3,
+    platform: 'teams',
+    request_id: 'a1b2c3d4e5f60718',
+    user_id: '7712345',
+    user_name: 'Bee'
+  }
+
+  it('approves the listed request by its request id, never by a code', async () => {
+    // The whole point of the request-id grant path: the UI can only ever send
+    // the server-side row id, because the one-time code is never returned by
+    // the API. Posting anything derived from the code could not be approved.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+    getPairing.mockResolvedValue({ approved: [], pending: [pendingUser] })
+    approvePairing.mockResolvedValue({ ok: true, user: { user_id: '7712345', user_name: 'Bee' } })
+
+    await renderMessaging()
+
+    const approve = await screen.findByRole('button', { name: 'Approve' })
+    await act(async () => {
+      fireEvent.click(approve)
+    })
+
+    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718'))
+  })
+
+  it('restores the pending row when approval fails', async () => {
+    // Optimistic removal must not silently swallow the request: a failed
+    // approve has to leave the operator something to retry.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+    getPairing.mockResolvedValue({ approved: [], pending: [pendingUser] })
+    approvePairing.mockRejectedValue(new Error('500 boom'))
+
+    await renderMessaging()
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+    })
+
+    expect(await screen.findByRole('button', { name: 'Approve' })).toBeTruthy()
+    expect(screen.getByText('Bee')).toBeTruthy()
+  })
+
+  it('shows no pairing affordance when nobody is waiting', async () => {
+    // Approvals are rare; an always-present empty state would be permanent
+    // chrome on a page that is otherwise about credentials.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+    getPairing.mockResolvedValue({ approved: [], pending: [] })
+
+    await renderMessaging()
+
+    expect((await screen.findAllByText('Microsoft Teams')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.queryByText(/Pending requests/)).toBeNull()
+  })
+
+  it('still renders platforms when the pairing endpoint fails', async () => {
+    // An older backend without the endpoint must not blank the page.
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+    getPairing.mockRejectedValue(new Error('404 not found'))
+
+    await renderMessaging()
+
+    expect((await screen.findAllByText('Microsoft Teams')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 })

@@ -43,6 +43,8 @@ import type {
   OAuthStartResponse,
   OAuthSubmitResponse,
   PaginatedSessions,
+  PairingResponse,
+  PairingUser,
   ProfileCreatePayload,
   ProfileSetupCommand,
   ProfileSoul,
@@ -180,6 +182,8 @@ export type {
   ModelOptionProvider,
   ModelOptionsResponse,
   PaginatedSessions,
+  PairingResponse,
+  PairingUser,
   ProfileCreatePayload,
   ProfileInfo,
   ProfileSetupCommand,
@@ -1159,6 +1163,38 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
+  })
+}
+
+// -- Pairing (who may DM the bot) --------------------------------------------
+// Unknown DMers get a one-time code and land in `pending` until an admin
+// approves them. Approval grants on the row's `request_id`, never on the code:
+// the code is the requester's proof that the channel is theirs and is never
+// returned by the API, while an authenticated admin is only ever identifying
+// a row they can already see.
+
+export function getPairing(): Promise<PairingResponse> {
+  return window.hermesDesktop.api<PairingResponse>({
+    ...profileScoped(),
+    path: '/api/pairing'
+  })
+}
+
+export function approvePairing(platform: string, requestId: string): Promise<{ ok: boolean; user: PairingUser }> {
+  return window.hermesDesktop.api<{ ok: boolean; user: PairingUser }>({
+    ...profileScoped(),
+    path: '/api/pairing/approve',
+    method: 'POST',
+    body: { platform, request_id: requestId }
+  })
+}
+
+export function revokePairing(platform: string, userId: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/pairing/revoke',
+    method: 'POST',
+    body: { platform, user_id: userId }
   })
 }
 

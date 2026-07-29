@@ -4644,12 +4644,23 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
         claim_token = _connect_server_claim.set(None)
     try:
         await server.start(config)
+    except asyncio.CancelledError:
+        # start() already cancels/reaps server._task on external cancellation
+        # (see the comment there) -- awaiting a redundant shutdown() inside a
+        # cancelled context would only risk swallowing the cancellation.
+        raise
     except BaseException:
         # Discovery owns claimed tasks and decides whether a failed start is a
         # live recoverable park or a terminal failure. Standalone probes have
         # no revival owner, so they must reap their failed task locally.
         if claim is None:
-            await server.shutdown()
+            try:
+                await server.shutdown()
+            except Exception as shutdown_exc:  # noqa: BLE001 -- best-effort reap, don't mask the real error
+                logger.debug(
+                    "MCP server '%s' shutdown during orphan-reap failed: %s",
+                    name, shutdown_exc,
+                )
         raise
     finally:
         if claim_token is not None:
@@ -5825,11 +5836,13 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     Returns list of registered tool names.
     """
     connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
-    server: Optional[MCPServerTask] = None
+    # List-based claim (not a ``nonlocal`` rebind): the claim callback runs
+    # inside ``_connect_server`` while this frame is suspended, and appending
+    # keeps type narrowing intact for the module's other ``server`` locals.
+    claimed: List[MCPServerTask] = []
 
     def _claim_server(created: MCPServerTask) -> None:
-        nonlocal server
-        server = created
+        claimed.append(created)
 
     claim_token = _connect_server_claim.set(_claim_server)
     try:
@@ -5838,20 +5851,22 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             timeout=connect_timeout,
         )
     except BaseException:
+        server = claimed[0] if claimed else None
         task = server._task if server is not None else None
         task_cancelling = (
             task.cancelling()
             if task is not None and hasattr(task, "cancelling")
             else 0
         )
-        recoverable_park = (
+        if (
             server is not None
             and server._error is not None
             and task is not None
             and not task.done()
             and not task_cancelling
-        )
-        if recoverable_park:
+        ):
+            # Recoverable park: the run task deliberately stays alive to
+            # self-probe, so adopt it into the registry for shutdown/revival.
             with _lock:
                 _servers[name] = server
         elif server is not None:
@@ -5860,7 +5875,6 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     finally:
         _connect_server_claim.reset(claim_token)
 
-    assert server is not None
     with _lock:
         _server_connecting.discard(name)
         _server_connect_errors.pop(name, None)

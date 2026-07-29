@@ -48,6 +48,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -351,6 +352,30 @@ def _select_capture_target(
     return windows[0]
 
 
+def _wsl_windows_path_to_posix(path: str) -> str:
+    """Translate a Windows absolute manifest command when Hermes runs in WSL.
+
+    Windows cua-driver manifests can report ``C:\\Users\\...\\cua-driver.exe``
+    even though the Hermes process uses POSIX subprocess spawning inside WSL.
+    The same file is reachable through DrvFS as ``/mnt/c/Users/...``.
+    Non-Windows paths and non-WSL hosts are returned unchanged.
+    """
+    if not re.match(r"^[A-Za-z]:[\\/]", path):
+        return path
+    try:
+        from hermes_constants import is_wsl
+
+        if not is_wsl():
+            return path
+    except Exception:
+        return path
+    win = PureWindowsPath(path)
+    drive = (win.drive or "").rstrip(":").lower()
+    if not drive:
+        return path
+    return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:]))
+
+
 def _resolve_mcp_invocation(
     driver_cmd: str,
     *,
@@ -410,6 +435,11 @@ def _resolve_mcp_invocation(
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
         return driver_cmd, _mcp_args_with_overlay_flag(args, driver_cmd=driver_cmd)
+    # A Windows-installed cua-driver can hand a WSL-hosted Hermes an absolute
+    # ``C:\...`` command; translate it to its DrvFS ``/mnt/<drive>/...`` form
+    # BEFORE the path-separator check (backslash is not a separator on POSIX,
+    # so the raw Windows string would otherwise be discarded here).
+    command = _wsl_windows_path_to_posix(command)
     if not _has_path_separator(command):
         # A manifest may legitimately retain the generic ``cua-driver`` name.
         # Under a GUI's thin PATH that would lose the resolved user-local path

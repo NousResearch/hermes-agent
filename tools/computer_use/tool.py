@@ -169,13 +169,28 @@ _always_allow: Dict[str, set] = {}
 
 
 def _cua_permission_mode(session_id: str) -> str:
-    """Map Hermes's explicit approval bypass onto Cua's immutable mode."""
+    """Map Hermes's explicit approval bypass onto Cua's immutable mode.
+
+    Hermes has TWO session-identity namespaces: the tool-dispatch path passes
+    the DB ``session_id`` (``agent.session_id``), while gateway ``/yolo``
+    keys approval state off the gateway ``session_key`` (set per turn via the
+    ``set_current_session_key`` contextvar in tools/approval.py). CLI and TUI
+    use the DB id for both. Checking ONLY ``session_id`` here would make a
+    gateway ``/yolo`` toggle silently invisible to computer_use (works in
+    CLI, dead on messaging platforms), so we consult both namespaces —
+    bypass in either means the user explicitly opted out of approvals for
+    this run. Fails closed on any resolution error.
+    """
     try:
         from tools.approval import (
+            get_current_session_key,
             is_approval_bypass_active_for_session,
         )
 
         if is_approval_bypass_active_for_session(session_id):
+            return "unrestricted"
+        current_key = get_current_session_key(default="")
+        if current_key and is_approval_bypass_active_for_session(current_key):
             return "unrestricted"
     except Exception:
         # Approval state must fail closed if it cannot be resolved.

@@ -37,6 +37,29 @@ def test_any_explicit_hermes_bypass_maps_to_unrestricted_mode():
         assert computer_use._cua_permission_mode("session-a") == "unrestricted"
 
 
+def test_gateway_session_key_yolo_maps_to_unrestricted_mode():
+    """Gateway /yolo keys bypass off the gateway session_key contextvar,
+    not the DB session_id the tool path passes. Mode resolution must consult
+    both namespaces or /yolo is silently dead on messaging platforms."""
+    from tools import approval
+    from tools.computer_use import tool as computer_use
+
+    gateway_key = "agent:main:telegram:private:12345"
+    token = approval.set_current_session_key(gateway_key)
+    try:
+        approval.enable_session_yolo(gateway_key)
+        # Tool dispatch passes the (different) DB session id.
+        assert computer_use._cua_permission_mode("db-sid-xyz") == "unrestricted"
+        approval.disable_session_yolo(gateway_key)
+        assert computer_use._cua_permission_mode("db-sid-xyz") == "standard"
+    finally:
+        approval.disable_session_yolo(gateway_key)
+        try:
+            approval.reset_current_session_key(token)
+        except Exception:
+            approval.set_current_session_key("")
+
+
 def test_mode_change_replaces_only_that_sessions_backend():
     from tools.computer_use import tool as computer_use
 

@@ -536,6 +536,20 @@ class TestPersistence:
         ids = {s["session_id"] for s in listing}
         assert state.session_id in ids
 
+    def test_list_sessions_matches_wsl_unc_paths(self, manager):
+        """A session created from a \\\\wsl.localhost\\ UNC workspace — the form
+        _translate_acp_cwd stores after translate_cwd_for_wsl_backend's UNC
+        translator runs — must still be found when an editor later filters
+        list_sessions() by that same UNC spelling. _normalize_cwd_for_compare
+        used to only try the drive-letter translator, so this filter silently
+        returned zero results for UNC-created sessions."""
+        state = manager.create_session(cwd="/home/user/project")
+        state.history.append({"role": "user", "content": "same project via WSL UNC"})
+
+        listing = manager.list_sessions(cwd=r"\\wsl.localhost\Ubuntu\home\user\project")
+        ids = {s["session_id"] for s in listing}
+        assert state.session_id in ids
+
     def test_list_sessions_prefers_title_then_preview(self, manager):
         state = manager.create_session(cwd="/named")
         state.history.append({"role": "user", "content": "Investigate broken ACP history in Zed"})

@@ -1,9 +1,11 @@
 """Tests for the provider-agnostic streaming TTS backend (tools.tts_streaming)
 and its dispatch through tools.tts_tool_speaker.stream_tts_to_speaker.
 
-No live audio or network: the ElevenLabs/OpenAI SDKs, sounddevice, and the sync
-synth path are all mocked. Covers the registry/resolver, provider availability,
-the chunked-streamer playback path, and the universal per-sentence sync fallback.
+No live audio or external network: the ElevenLabs/OpenAI SDKs, sounddevice, and
+the sync synth path are all mocked, and the xAI wire protocol runs against a
+loopback fake WebSocket server. Covers the registry/resolver, provider
+availability, the chunked-streamer playback path, and the universal per-sentence
+sync fallback.
 """
 
 import os
@@ -254,15 +256,14 @@ def test_xai_streaming_prefers_explicit_api_key(monkeypatch):
     assert tts_tool._xai_requirements() is True
     assert calls and all(c.get("prefer_api_key") is True for c in calls)
 
-    # _async_frames resolves before websockets.connect; an empty key raises first.
+    # stream() resolves before websockets.connect; an empty key raises first.
     calls.clear()
     ws_fake = types.ModuleType("websockets")
     monkeypatch.setitem(sys.modules, "websockets", ws_fake)
     fake.resolve_xai_http_credentials = lambda **kw: calls.append(kw) or {"api_key": ""}
     streamer = ts.XAIStreamer({}, {"voice_id": "v"})
     with pytest.raises(RuntimeError, match="No xAI credentials"):
-        import asyncio
-        asyncio.run(streamer._async_frames("hi").__anext__())
+        list(streamer.stream("hi"))
     assert calls and calls[0].get("prefer_api_key") is True
 
 
@@ -270,6 +271,106 @@ def test_xai_streaming_prefers_explicit_api_key(monkeypatch):
 
 
 # ── xAI WebSocket bridge ─────────────────────────────────────────────────
+
+
+def _fake_xai_server(handler):
+    """Serve ``handler`` on a loopback WS server; return (url, server)."""
+    from websockets.sync.server import serve
+
+    server = serve(handler, "127.0.0.1", 0)
+    port = server.socket.getsockname()[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"ws://127.0.0.1:{port}/tts", server
+
+
+@pytest.mark.parametrize("profile", ["alpha", "beta"])
+def test_xai_stream_preserves_profile_and_delivers_before_completion(monkeypatch, tmp_path, profile):
+    import base64
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / profile
+    home.mkdir()
+    key = f"test-{profile}-key"
+    (home / ".env").write_text(f"XAI_API_KEY={key}\n", encoding="utf-8")
+    monkeypatch.setenv("XAI_API_KEY", "test-process-key")
+    first_delivered = threading.Event()
+    seen = {}
+    pcm = b"\x01\x00" * 30
+
+    def handler(ws):
+        seen["path"] = ws.request.path
+        seen["auth"] = ws.request.headers.get("Authorization")
+        seen["messages"] = [json.loads(ws.recv()), json.loads(ws.recv())]
+        ws.send(json.dumps({"type": "audio.delta", "delta": base64.b64encode(pcm).decode()}))
+        if not first_delivered.wait(timeout=10):
+            return
+        ws.send(json.dumps({"type": "audio.delta", "delta": base64.b64encode(pcm).decode()}))
+        ws.send(json.dumps({"type": "audio.done"}))
+
+    url, server = _fake_xai_server(handler)
+    home_token = set_hermes_home_override(home)
+    secret_token = set_secret_scope(build_profile_secret_scope(home))
+    try:
+        section = {"streaming_url": url, "voice_id": "test-voice", "language": "test-language"}
+        streamer = ts.XAIStreamer({}, section)
+        chunks = streamer.stream("A sentence.")
+        assert next(chunks) == pcm
+        assert seen["auth"] == f"Bearer {key}"
+        first_delivered.set()
+        assert list(chunks) == [pcm]
+        params = parse_qs(urlsplit(seen["path"]).query)
+        assert params["voice"] == [section["voice_id"]]
+        assert params["language"] == [section["language"]]
+        assert params["sample_rate"] == [str(streamer.sample_rate)]
+        assert params["codec"] == ["pcm"]
+        assert seen["messages"] == [
+            {"type": "text.delta", "delta": "A sentence."}, {"type": "text.done"},
+        ]
+    finally:
+        first_delivered.set()
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+        server.shutdown()
+
+
+@pytest.mark.parametrize("outcome", ["error", "byte-cap"])
+def test_xai_stream_reports_errors_and_bounds_received_audio(monkeypatch, outcome):
+    import base64
+    import json
+    from websockets.exceptions import ConnectionClosed
+    import tools.xai_http
+
+    monkeypatch.setattr(tools.xai_http, "resolve_xai_http_credentials", lambda **kw: {"api_key": "test-key"})
+    monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
+    closed = threading.Event()
+
+    def handler(ws):
+        ws.recv()
+        ws.recv()
+        if outcome == "error":
+            ws.send(json.dumps({"type": "error", "message": "example failure"}))
+            return
+        try:
+            while True:
+                ws.send(json.dumps({"type": "audio.delta", "delta": base64.b64encode(b"x" * 64).decode()}))
+        except ConnectionClosed:
+            closed.set()
+
+    url, server = _fake_xai_server(handler)
+    try:
+        streamer = ts.XAIStreamer({}, {"streaming_url": url})
+        if outcome == "error":
+            with pytest.raises(RuntimeError, match="example failure"):
+                list(streamer.stream("A sentence."))
+        else:
+            assert list(streamer.stream("A sentence.")) == [b"x" * 64]
+            assert closed.wait(timeout=10)
+    finally:
+        server.shutdown()
 
 
 # ── 16 MiB per-sentence stream cap ───────────────────────────────────────

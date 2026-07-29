@@ -109,7 +109,9 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
     # Everything else is a filesystem path — including bare relative names
     # like "pic.png" (accepted on main; a path-shape gate here regressed them).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+    from tools.file_tools import _resolve_path_for_task
+
+    p = Path(_resolve_path_for_task(candidate, ctx.task_id or "default"))
     # Confinement decision (see module docstring). Under a non-local backend
     # a path is host-readable ONLY if it lands in a media cache (after
     # translating a container-visible cache path back to its host mount);

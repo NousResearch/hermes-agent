@@ -83,6 +83,26 @@ class TestLocalBackend:
         assert res.origin == "file"
 
     @pytest.mark.asyncio
+    async def test_relative_path_uses_terminal_cwd_not_process_cwd(self, tmp_path, monkeypatch):
+        """Vision sees the same relative path as file and terminal tools."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        workspace = tmp_path / "workspace"
+        image = workspace / "attachments" / "pic.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(PNG)
+        process_cwd = tmp_path / "process"
+        process_cwd.mkdir()
+        monkeypatch.chdir(process_cwd)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        res = await isrc.resolve_image_source(
+            "attachments/pic.png", isrc.ResolveContext())
+
+        assert res.data == PNG
+        assert res.origin == "file"
+
+    @pytest.mark.asyncio
     async def test_unknown_url_scheme_rejected(self, tmp_path, monkeypatch):
         isrc = _reload(monkeypatch, tmp_path / "hermes")
         monkeypatch.setenv("TERMINAL_ENV", "local")

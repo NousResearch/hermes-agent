@@ -13,6 +13,7 @@ anthropic_messages) and assert that every mutated field returns to its
 pre-swap value when the rebuild raises.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -182,12 +183,99 @@ def test_cross_branch_anthropic_to_openai_rebuild_failure_rolls_back():
     assert agent.base_url == "https://api.anthropic.com"
 
 
+def test_anthropic_post_build_failure_closes_new_client_before_inner_restore():
+    agent = _make_agent_openrouter()
+    old_openai_client = agent.client
+    new_anthropic_client = MagicMock(name="NewAnthropicClient")
+    agent._close_openai_client = MagicMock()
+
+    with (
+        patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=new_anthropic_client,
+        ),
+        patch(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            return_value="«redacted:sk-…»",
+        ),
+        patch(
+            "agent.anthropic_adapter._is_oauth_token",
+            side_effect=RuntimeError("oauth classification failed"),
+        ),
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        pytest.raises(RuntimeError, match="oauth classification failed"),
+    ):
+        agent.switch_model(
+            new_model="claude-sonnet-4-5",
+            new_provider="anthropic",
+            api_key="«redacted:sk-…»",
+            base_url="https://api.anthropic.com",
+            api_mode="anthropic_messages",
+        )
+
+    assert agent.client is old_openai_client
+    assert agent._anthropic_client is None
+    new_anthropic_client.close.assert_called_once_with()
+    agent._close_openai_client.assert_not_called()
+
+
+def test_successful_anthropic_to_moa_closes_replaced_client():
+    agent = _make_agent_anthropic()
+    old_anthropic_client = agent._anthropic_client
+    new_moa_client = MagicMock(name="NewMoAClient")
+    agent._close_openai_client = MagicMock()
+
+    with patch("agent.moa_loop.MoAClient", return_value=new_moa_client):
+        agent.switch_model(
+            new_model="default",
+            new_provider="moa",
+            api_key="",
+            base_url="moa://local",
+            api_mode="chat_completions",
+        )
+
+    assert agent.client is new_moa_client
+    assert agent._anthropic_client is None
+    assert agent._anthropic_api_key == ""
+    assert agent._anthropic_base_url is None
+    assert agent._is_anthropic_oauth is False
+    old_anthropic_client.close.assert_called_once_with()
+    agent._close_openai_client.assert_not_called()
+
+
+def test_successful_anthropic_to_openai_closes_replaced_client():
+    agent = _make_agent_anthropic()
+    old_anthropic_client = agent._anthropic_client
+    new_client = MagicMock(name="NewOpenAIClient")
+    agent._create_openai_client = MagicMock(return_value=new_client)
+    agent._close_openai_client = MagicMock()
+
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        agent.switch_model(
+            new_model="x-ai/grok-4",
+            new_provider="openrouter",
+            api_key="or-key-new",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent.client is new_client
+    assert agent._anthropic_client is None
+    assert agent._anthropic_api_key == ""
+    assert agent._anthropic_base_url is None
+    assert agent._is_anthropic_oauth is False
+    old_anthropic_client.close.assert_called_once_with()
+    agent._close_openai_client.assert_not_called()
+
+
 def test_successful_switch_still_works_after_rollback_refactor():
     """Sanity check: the try/except wrapper hasn't broken the happy path."""
     agent = _make_agent_openrouter()
+    old_client = agent.client
 
     new_client = MagicMock(name="NewClient")
     agent._create_openai_client = lambda *_a, **_kw: new_client
+    agent._close_openai_client = MagicMock()
 
     with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
         agent.switch_model(
@@ -202,3 +290,80 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+    agent._close_openai_client.assert_called_once_with(
+        old_client, reason="switch_model_commit", shared=True
+    )
+
+
+def test_late_finalization_failure_restores_nested_state_and_closes_new_client():
+    """Failures after client construction must roll back the whole switch."""
+    agent = _make_agent_openrouter()
+    old_client = agent.client
+    old_transport = MagicMock(name="OldTransport")
+    new_transport = MagicMock(name="NewTransport")
+    old_primary = {
+        "model": "x-ai/grok-4",
+        "client_kwargs": {"default_headers": {"X-Test": "old"}},
+    }
+    agent._transport_cache = {"chat_completions": old_transport}
+    agent._primary_runtime = old_primary
+    agent._fallback_chain = [
+        {"provider": "openrouter", "model": "safe-model", "meta": {"rank": 1}}
+    ]
+    agent._fallback_model = agent._fallback_chain[0]
+    agent.context_compressor = SimpleNamespace(
+        model="x-ai/grok-4", settings={"nested": {"rank": 1}}
+    )
+    agent._use_prompt_caching = True
+    agent._use_native_cache_layout = False
+
+    new_client = MagicMock(name="NewClient")
+    agent._create_openai_client = MagicMock(return_value=new_client)
+    agent._close_openai_client = MagicMock()
+
+    def late_failure(**_kwargs):
+        # Prove the graph snapshot survives nested in-place mutation while
+        # preserving resource identity and fallback shared references.
+        agent._fallback_chain[0]["meta"]["rank"] = 99
+        agent._primary_runtime["client_kwargs"]["default_headers"]["X-Test"] = "mutated"
+        agent.context_compressor.settings["nested"]["rank"] = 99
+        agent._transport_cache = {"new-mode": new_transport}
+        raise RuntimeError("late prompt-policy failure")
+
+    agent._anthropic_prompt_cache_policy = late_failure
+
+    with (
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        pytest.raises(RuntimeError, match="late prompt-policy failure"),
+    ):
+        agent.switch_model(
+            new_model="openai/gpt-5",
+            new_provider="openrouter",
+            api_key="or-key-new",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent.model == "x-ai/grok-4"
+    assert agent.provider == "openrouter"
+    assert agent.api_key == "or-key-original"
+    assert agent.client is old_client
+    assert agent._transport_cache == {"chat_completions": old_transport}
+    assert agent._primary_runtime == {
+        "model": "x-ai/grok-4",
+        "client_kwargs": {"default_headers": {"X-Test": "old"}},
+    }
+    assert agent._fallback_chain == [
+        {"provider": "openrouter", "model": "safe-model", "meta": {"rank": 1}}
+    ]
+    assert agent._fallback_model is agent._fallback_chain[0]
+    assert agent.context_compressor.model == "x-ai/grok-4"
+    assert agent.context_compressor.settings == {"nested": {"rank": 1}}
+    assert agent._cached_system_prompt == "cached"
+    assert agent._use_prompt_caching is True
+    assert agent._use_native_cache_layout is False
+    agent._close_openai_client.assert_called_once_with(
+        new_client, reason="switch_model_rollback", shared=True
+    )
+    new_transport.close.assert_called_once_with()
+    old_transport.close.assert_not_called()

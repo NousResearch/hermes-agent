@@ -21,7 +21,10 @@ def _make_agent(chain):
     agent.api_key = "or-key"
     agent.api_mode = "chat_completions"
     agent.client = MagicMock()
-    agent._client_kwargs = {"api_key": "or-key", "base_url": "https://openrouter.ai/api/v1"}
+    agent._client_kwargs = {
+        "api_key": "or-key",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
     agent.context_compressor = None
     agent._anthropic_api_key = ""
     agent._anthropic_base_url = None
@@ -39,8 +42,12 @@ def _make_agent(chain):
 
 def _switch_to_anthropic(agent):
     with (
-        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-        patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-xyz"),
+        patch(
+            "agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()
+        ),
+        patch(
+            "agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-xyz"
+        ),
         patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
         patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
     ):

@@ -33,6 +33,15 @@ def _make_fake_agent():
     agent._client_kwargs = {"base_url": "https://old.example/v1"}
     agent._config_context_length = 123456
     agent._transport_cache = {}
+    agent._anthropic_prompt_cache_policy = lambda **_kwargs: (False, False)
+    agent._ensure_lmstudio_runtime_loaded = lambda: None
+    agent.context_compressor = None
+    agent._fallback_chain = []
+    agent._fallback_activated = False
+    agent._fallback_index = 0
+    agent._fallback_model = None
+    agent._session_db = None
+    agent._close_openai_client = lambda *_args, **_kwargs: None
     agent.quiet_mode = True
     return agent
 
@@ -57,21 +66,14 @@ def test_switch_to_moa_pins_chat_completions(monkeypatch, incoming_api_mode):
     monkeypatch.setattr(arh, "load_pool", lambda *a, **k: None, raising=False)
 
     agent = _make_fake_agent()
-    try:
-        arh.switch_model(
-            agent,
-            new_model="frontier",
-            new_provider="moa",
-            api_key="moa-virtual-provider",
-            base_url="moa://local",
-            api_mode=incoming_api_mode,
-        )
-    except Exception:
-        # switch_model does post-swap work (compressor, pool, runtime) that may
-        # raise against a fake agent. The runtime-field swap — including the
-        # api_mode pin in the moa branch — happens before any of that, so the
-        # invariant we care about is already set even if a later step blew up.
-        pass
+    arh.switch_model(
+        agent,
+        new_model="frontier",
+        new_provider="moa",
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        api_mode=incoming_api_mode,
+    )
 
     assert agent.provider == "moa"
     assert agent.base_url == "moa://local"

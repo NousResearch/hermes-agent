@@ -115,6 +115,46 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_dashboard_health_surfaces_nonspawnable_assignee_tasks(client, monkeypatch):
+    """Board and dedicated health payloads expose missing-profile work."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(
+        profiles,
+        "profile_exists",
+        lambda name: name == "installed-worker",
+    )
+    conn = kb.connect()
+    try:
+        valid_id = kb.create_task(
+            conn, title="valid task", assignee="installed-worker",
+        )
+        missing_id = kb.create_task(
+            conn, title="missing task", assignee="missing-worker",
+        )
+    finally:
+        conn.close()
+
+    response = client.get("/api/plugins/kanban/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "degraded"
+    signal = data["nonspawnable_assignees"]
+    assert signal["count"] == 1
+    assert signal["tasks"] == [{
+        "task_id": missing_id,
+        "title": "missing task",
+        "assignee": "missing-worker",
+        "task_status": "ready",
+        "error_code": "missing_assignee_profile",
+        "action": "create_profile_or_reassign",
+    }]
+    assert valid_id not in {task["task_id"] for task in signal["tasks"]}
+
+    board = client.get("/api/plugins/kanban/board").json()
+    assert board["health"]["nonspawnable_assignees"] == signal
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

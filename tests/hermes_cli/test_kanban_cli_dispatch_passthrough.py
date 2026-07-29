@@ -94,3 +94,28 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     )
 
 
+def test_cli_dispatch_calls_missing_profile_a_failure(
+    isolated_kanban_home, monkeypatch, capsys,
+):
+    """Operator output must not describe a missing assignee profile as OK."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+    monkeypatch.setattr(
+        kanban_db,
+        "dispatch_once",
+        lambda conn, **kwargs: kanban_db.DispatchResult(
+            skipped_nonspawnable=["t_missing"],
+        ),
+    )
+
+    args = argparse.Namespace(dry_run=False, max=None, failure_limit=2, json=False)
+    kb_cli._cmd_dispatch(args)
+    output = capsys.readouterr().out
+
+    assert "Dispatch failed" in output
+    assert "missing assignee profile" in output
+    assert "OK" not in output
+
+

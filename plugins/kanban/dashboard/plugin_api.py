@@ -503,6 +503,10 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "health": {
+                "nonspawnable_assignees":
+                    kanban_db.nonspawnable_assignee_health(conn),
+            },
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
@@ -1955,6 +1959,21 @@ def get_assignees(board: Optional[str] = Query(None)):
     conn = _conn(board=board)
     try:
         return {"assignees": kanban_db.known_assignees(conn)}
+    finally:
+        conn.close()
+
+
+@router.get("/health")
+def get_health(board: Optional[str] = Query(None)):
+    """Actionable dispatch health for the selected board."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        nonspawnable = kanban_db.nonspawnable_assignee_health(conn)
+        return {
+            "status": nonspawnable["status"],
+            "nonspawnable_assignees": nonspawnable,
+        }
     finally:
         conn.close()
 

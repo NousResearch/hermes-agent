@@ -494,6 +494,149 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_dispatch_missing_profile_emits_durable_failure_event(kanban_home, monkeypatch):
+    """A missing assignee profile must fail loudly without a spawn loop."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="for-missing-profile", assignee="ghost",
+        )
+        result = kb.dispatch_once(conn)
+        events = kb.list_events(conn, task_id)
+        # Frequent ticks must not produce an unbounded duplicate event.
+        kb.dispatch_once(conn)
+        repeated_events = kb.list_events(conn, task_id)
+
+    assert result.skipped_nonspawnable == [task_id]
+    assert not result.spawned
+    failure = events[-1]
+    assert failure.kind == "dispatch_nonspawnable_assignee"
+    assert failure.payload is not None
+    assert failure.payload == {
+        "outcome": "dispatch_failed",
+        "error_code": "missing_assignee_profile",
+        "error": (
+            "Assignee profile 'ghost' does not exist; create that Hermes "
+            "profile or reassign the task to an installed profile."
+        ),
+        "assignee": "ghost",
+        "task_status": "ready",
+        "action": "create_profile_or_reassign",
+    }
+    assert len(repeated_events) == len(events)
+
+
+def test_dispatch_missing_review_profile_emits_failure_event(kanban_home, monkeypatch):
+    """The separately-dispatched review queue gets the same durable signal."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="review for missing profile", assignee="ghost",
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        conn.commit()
+        result = kb.dispatch_once(conn)
+        failure = kb.list_events(conn, task_id)[-1]
+
+    assert result.skipped_nonspawnable == [task_id]
+    assert failure.kind == "dispatch_nonspawnable_assignee"
+    assert failure.payload is not None
+    assert failure.payload["task_status"] == "review"
+    assert failure.payload["error_code"] == "missing_assignee_profile"
+
+
+def test_dispatch_missing_profile_dry_run_does_not_write_event(
+    kanban_home, monkeypatch,
+):
+    """Dry-run remains read-only while reporting the failed candidate."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="dry run", assignee="ghost")
+        before = kb.list_events(conn, task_id)
+        result = kb.dispatch_once(conn, dry_run=True)
+        after = kb.list_events(conn, task_id)
+
+    assert result.skipped_nonspawnable == [task_id]
+    assert after == before
+
+
+def test_dispatch_missing_profile_reassignment_resets_event_dedup(
+    kanban_home, monkeypatch,
+):
+    """Assigning back to the missing profile emits a fresh failure signal."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="reassign", assignee="ghost")
+        kb.dispatch_once(conn)
+        kb.assign_task(conn, task_id, "other-ghost")
+        kb.assign_task(conn, task_id, "ghost")
+        kb.dispatch_once(conn)
+        failures = [
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "dispatch_nonspawnable_assignee"
+        ]
+
+    assert len(failures) == 2
+    assert failures[-1].payload is not None
+    assert failures[-1].payload["assignee"] == "ghost"
+
+
+def test_nonspawnable_assignee_health_reports_only_dispatch_candidates(
+    kanban_home, monkeypatch,
+):
+    """Health degrades for ready/review tasks, not historical assignments."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(
+        profiles,
+        "profile_exists",
+        lambda name: name == "installed-worker",
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="valid", assignee="installed-worker")
+        ready_id = kb.create_task(conn, title="missing ready", assignee="ghost")
+        review_id = kb.create_task(conn, title="missing review", assignee="ghost")
+        done_id = kb.create_task(conn, title="missing done", assignee="ghost")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review_id,))
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (done_id,))
+        conn.commit()
+        health = kb.nonspawnable_assignee_health(conn)
+
+    assert health["status"] == "degraded"
+    assert health["count"] == 2
+    assert {task["task_id"] for task in health["tasks"]} == {
+        ready_id, review_id,
+    }
+    assert all(
+        task["error_code"] == "missing_assignee_profile"
+        and task["action"] == "create_profile_or_reassign"
+        for task in health["tasks"]
+    )
+
+
+def test_nonspawnable_assignee_health_is_ok_when_queue_is_spawnable(
+    kanban_home, monkeypatch,
+):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="valid", assignee="installed-worker")
+        assert kb.nonspawnable_assignee_health(conn) == {
+            "status": "ok",
+            "count": 0,
+            "tasks": [],
+        }
+
+
 
 
 

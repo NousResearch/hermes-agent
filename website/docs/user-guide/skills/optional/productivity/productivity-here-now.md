@@ -1,7 +1,7 @@
 ---
-title: "Here.Now — Publish sites to {slug}"
+title: "Here.Now — Publish sites to {slug}.here.now and store files in Drives"
 sidebar_label: "Here.Now"
-description: "Publish sites to {slug}"
+description: "Publish sites to {slug}.here.now and store files in Drives"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}

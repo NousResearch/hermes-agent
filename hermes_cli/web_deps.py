@@ -56,6 +56,85 @@ def late_attr(name: str) -> Any:
     return getattr(_server(), name)
 
 
+class LateState:
+    """Live proxy for module-level state owned by ``web_server``.
+
+    Extracted routers can't ``from web_server import _mcp_oauth_flows`` —
+    that would freeze the object at import time (breaking tests that mutate
+    or replace it on ``web_server``) and be a circular import besides.  Some
+    of the state is also defined *after* the router's ``include_router``
+    point in web_server's body, so even a late module-import wouldn't see it
+    yet.  This proxy forwards every operation the extracted handlers actually
+    perform — attribute access, item get/set/del, iteration, membership,
+    ``len``/truthiness, ``with``-blocks (locks), and rich comparisons
+    (numeric limits) — to ``web_server.<name>`` resolved at operation time,
+    so mutating or monkeypatching the attribute on ``web_server`` stays
+    authoritative.
+    """
+
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        object.__setattr__(self, "_name", name)
+
+    def _target(self) -> Any:
+        return getattr(_server(), object.__getattribute__(self, "_name"))
+
+    def __getattr__(self, attr: str) -> Any:
+        return getattr(self._target(), attr)
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._target()[key]
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._target()[key] = value
+
+    def __delitem__(self, key: Any) -> None:
+        del self._target()[key]
+
+    def __contains__(self, item: Any) -> bool:
+        return item in self._target()
+
+    def __iter__(self):
+        return iter(self._target())
+
+    def __len__(self) -> int:
+        return len(self._target())
+
+    def __bool__(self) -> bool:
+        return bool(self._target())
+
+    def __enter__(self):
+        return self._target().__enter__()
+
+    def __exit__(self, *exc):
+        return self._target().__exit__(*exc)
+
+    def __eq__(self, other: Any) -> bool:
+        return self._target() == other
+
+    def __ne__(self, other: Any) -> bool:
+        return self._target() != other
+
+    def __lt__(self, other: Any) -> bool:
+        return self._target() < other
+
+    def __le__(self, other: Any) -> bool:
+        return self._target() <= other
+
+    def __gt__(self, other: Any) -> bool:
+        return self._target() > other
+
+    def __ge__(self, other: Any) -> bool:
+        return self._target() >= other
+
+    def __hash__(self) -> int:
+        return hash(self._target())
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<LateState {object.__getattribute__(self, '_name')} -> {self._target()!r}>"
+
+
 # --- Named accessors for the shared server state (call-time reads) ---------
 
 

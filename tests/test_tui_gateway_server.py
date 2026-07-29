@@ -9430,6 +9430,12 @@ def test_prompt_submit_truncate_ordinal_excludes_display_ancestors(monkeypatch, 
     parent_id = db.create_session("parent", "tui")
     db.append_message(parent_id, "user", "pre-compression")
     db.append_message(parent_id, "assistant", "pre-compression reply")
+    db.append_message(
+        parent_id,
+        "user",
+        "background agent finished",
+        display_kind="async_delegation_complete",
+    )
     db.end_session(parent_id, "compression")
     tip_id = db.create_session("tip", "tui", parent_session_id=parent_id)
     db.append_message(tip_id, "user", "summary")
@@ -9498,7 +9504,11 @@ def test_prompt_submit_truncate_ordinal_excludes_display_ancestors(monkeypatch, 
         ] == ["summary", "summary reply"]
         assert [
             message["content"] for message in db.get_messages_as_conversation(parent_id)
-        ] == ["pre-compression", "pre-compression reply"]
+        ] == [
+            "pre-compression",
+            "pre-compression reply",
+            "background agent finished",
+        ]
     finally:
         server._sessions.pop("sid", None)
         db.close()
@@ -9644,19 +9654,23 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
     original_history = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "first reply"},
-        {"role": "user", "content": "second"},
-        {"role": "assistant", "content": "second reply"},
         {
             "role": "user",
             "content": "background agent finished",
             "display_kind": "async_delegation_complete",
         },
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
     ]
     server._sessions["sid"] = _session(agent=_Agent(), history=original_history)
 
     class _StubDb:
         def __init__(self):
             self.replaced = []
+
+        def get_messages_as_conversation(self, session_id, repair_alternation=False):
+            assert repair_alternation is True
+            return list(original_history)
 
         def replace_messages(self, session_id, messages):
             self.replaced.append((session_id, list(messages)))
@@ -9670,8 +9684,8 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         monkeypatch.setattr(server, "_emit", lambda *a: None)
         monkeypatch.setattr(server, "_get_db", lambda: stub_db)
 
-        # ordinal=1 means "truncate before the 2nd-from-last real user turn"
-        # which is "first". The display_kind marker must NOT shift the ordinal.
+        # ordinal=1 means "truncate before the second real user turn".
+        # The display_kind marker between the two turns must NOT become ordinal 1.
         resp = server.handle_request(
             {
                 "id": "1",
@@ -9685,16 +9699,14 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         )
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
-        # With display_kind filter: user_indices = [0, 2] (indices of "first" and "second").
-        # ordinal=1 → user_indices[1] = 2, truncated = history[:2] = [first, first reply].
-        # Without the filter: user_indices = [0, 2, 4] (includes the marker),
-        # ordinal=1 → user_indices[1] = 2, same result by luck — but ordinal=0
-        # would truncate to history[:0] vs history[:0], and higher ordinals shift.
-        assert seen["history"] == original_history[:2], (
-            f"Expected truncation to first 2 messages, got {seen['history']}"
+        # With the filter: user_indices = [0, 3], so the marker remains in the
+        # prefix before the second real turn. Without it user_indices = [0, 2, 3]
+        # and ordinal=1 incorrectly targets the marker.
+        assert seen["history"] == original_history[:3], (
+            f"Expected truncation to first 3 messages, got {seen['history']}"
         )
-        assert stub_db.replaced == [("session-key", original_history[:2])], (
-            f"Expected DB replace with first 2 messages, got {stub_db.replaced}"
+        assert stub_db.replaced == [("session-key", original_history[:3])], (
+            f"Expected DB replace with first 3 messages, got {stub_db.replaced}"
         )
     finally:
         server._sessions.pop("sid", None)

@@ -2424,7 +2424,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         counter = [0]
 
         def _ph(value: str) -> str:
-            key = f"\x00GC{counter[0]}\x00"
+            key = f"\U000F0000{counter[0]}\U000F0000"
             counter[0] += 1
             placeholders[key] = value
             return key
@@ -2473,8 +2473,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Collapse double spaces left over from stripped chars.
         text = re.sub(r"  +", " ", text)
 
-        # Restore protected regions.
-        for key, value in placeholders.items():
+        # Restore protected regions in reverse insertion order so nested
+        # placeholders (e.g. bold wrapping inline code: **`code`**) are
+        # resolved outermost first, then inner.
+        for key, value in reversed(list(placeholders.items())):
             text = text.replace(key, value)
 
         return text

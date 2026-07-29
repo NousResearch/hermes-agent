@@ -1858,6 +1858,50 @@ class TestWebServerEndpoints:
         row = next(s for s in rows if s["id"] == "session-no-cwd")
         assert row["cwd"] is None
 
+    def test_session_detail_stamps_profile_without_query_param(self, monkeypatch):
+        """GET /api/sessions/{id} must carry the owning profile even when the
+        request has no ?profile= (bug: default-profile rows circulated unowned,
+        so multi-profile desktop clients resumed them on the wrong gateway).
+        """
+        from hermes_state import SessionDB
+
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_cron_default_profile", lambda: "default")
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="detail-stamp", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/detail-stamp")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["profile"] == "default"
+        assert data["is_default_profile"] is True
+
+    def test_session_list_stamps_profile_without_query_param(self, monkeypatch):
+        """GET /api/sessions rows must carry the serving profile even when the
+        request is unscoped (sibling of the detail-endpoint stamp gap)."""
+        from hermes_state import SessionDB
+
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_cron_default_profile", lambda: "default")
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="list-stamp", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        row = next(s for s in resp.json()["sessions"] if s["id"] == "list-stamp")
+        assert row["profile"] == "default"
+        assert row["is_default_profile"] is True
+
     def test_get_sessions_forwards_min_messages(self, monkeypatch):
         """The ?min_messages= filter must reach SessionDB.
 

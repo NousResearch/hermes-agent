@@ -20875,8 +20875,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
         _cleanup_adapter = self._adapter_for_source(source) if _cleanup_progress else None
+        # getattr, not attribute access — same duck-typed-adapter guard as the
+        # edit_message check in send_progress_messages below: a fake/minimal
+        # adapter without delete_message means "can't delete", not a crash.
+        _cleanup_delete = getattr(type(_cleanup_adapter), "delete_message", None) if _cleanup_adapter is not None else None
         if _cleanup_adapter is not None and (
-            type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
+            _cleanup_delete is None
+            or _cleanup_delete is BasePlatformAdapter.delete_message
         ):
             # Adapter doesn't support deletion — silently disable.
             _cleanup_progress = False
@@ -21254,7 +21259,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
             # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # getattr, not attribute access: duck-typed adapters (test fakes,
+            # minimal plugin adapters) may not define edit_message at all —
+            # "missing" means the same thing as "base no-op": can't edit.
+            _adapter_edit = getattr(type(adapter), "edit_message", None)
+            if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -22881,6 +22890,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "failed": result.get("failed", False),
+                    # Sibling of the non-empty-response return below (#64686):
+                    # the classifier's failure_reason must survive the
+                    # empty-response normalization path too, or downstream
+                    # consumers (TUI billing surface, transient-failure
+                    # persistence) lose the structured reason exactly when
+                    # the run produced no text.
+                    "failure_reason": result.get("failure_reason"),
                     "partial": result.get("partial", False),
                     "completed": result.get("completed"),
                     "interrupted": result.get("interrupted", False),

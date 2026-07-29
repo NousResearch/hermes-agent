@@ -268,6 +268,45 @@ def test_nonempty_rate_limit_response_preserves_failure_metadata(monkeypatch):
     assert result["failure_reason"] == "rate_limit"
     assert result["completed"] is False
 
+
+class _EmptyRateLimitFailureAgent(_CompressionThenFailureAgent):
+    def run_conversation(self, user_message, conversation_history=None, task_id=None, **_kwargs):
+        return {
+            "final_response": "",
+            "failed": True,
+            "completed": False,
+            "error": "429 Too Many Requests",
+            "failure_reason": "rate_limit",
+            "messages": [
+                *(conversation_history or []),
+                {"role": "user", "content": user_message},
+            ],
+            "api_calls": 3,
+        }
+
+
+def test_empty_rate_limit_response_preserves_failure_metadata(monkeypatch):
+    """Sibling of the non-empty path (#64686): the empty-response return
+    branch in _run_agent must also forward failure_reason, or downstream
+    consumers lose the structured reason exactly when the run produced no
+    text at all."""
+    _install_compression_failure_agent(monkeypatch, _EmptyRateLimitFailureAgent)
+
+    session_store = _SessionStore()
+    runner = _runner(session_store)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="user-1",
+    )
+
+    result = _run_compression_failure_turn(runner, source)
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == "rate_limit"
+    assert result["completed"] is False
+
 class _ProviderSwitchAgent(_CompressionThenFailureAgent):
     created_providers = []
     second_turn_history = None

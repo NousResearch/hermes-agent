@@ -1161,6 +1161,21 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     return cleaned in stop_phrases
 
 
+def voice_stop_hint() -> str:
+    """One-line 'Say "stop" to end the voice chat.' hint for voice-mode start.
+
+    Sources the phrase from ``voice.stop_phrases`` (first entry) so a custom
+    phrase renders correctly; returns "" when stop phrases are disabled
+    (``stop_phrases: []``) so surfaces show no hint at all. Every surface
+    that announces voice-mode start (CLI /voice on, TUI, desktop) uses this
+    one owner instead of hardcoding the wording.
+    """
+    phrases = _load_voice_stop_phrases()
+    if not phrases:
+        return ""
+    return f'Say "{phrases[0]}" to end the voice chat.'
+
+
 # ============================================================================
 # STT dispatch
 # ============================================================================

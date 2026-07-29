@@ -1188,6 +1188,47 @@ def test_voice_toggle_returns_configured_record_key(monkeypatch):
     assert status_resp["result"]["record_key"] == "ctrl+o"
 
 
+def test_voice_toggle_on_carries_stop_hint(monkeypatch):
+    """voice.toggle action=on returns the spoken-stop hint for clients to
+    render — sourced from voice.stop_phrases so a custom phrase shows
+    correctly, and empty when the feature is disabled (stop_phrases: [])."""
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            check_voice_requirements=lambda: {"available": True, "details": ""},
+            voice_stop_hint=lambda: 'Say "halt" to end the voice chat.',
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "0")
+
+    on_resp = server.dispatch(
+        {"id": "voice-on", "method": "voice.toggle", "params": {"action": "on"}}
+    )
+    assert on_resp["result"]["stop_hint"] == 'Say "halt" to end the voice chat.'
+
+    # Disabled stop phrases → empty hint, clients show nothing.
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            check_voice_requirements=lambda: {"available": True, "details": ""},
+            voice_stop_hint=lambda: "",
+        ),
+    )
+    on_resp = server.dispatch(
+        {"id": "voice-on2", "method": "voice.toggle", "params": {"action": "on"}}
+    )
+    assert on_resp["result"]["stop_hint"] == ""
+
+    # off carries no hint text (mode is ending).
+    off_resp = server.dispatch(
+        {"id": "voice-off", "method": "voice.toggle", "params": {"action": "off"}}
+    )
+    assert off_resp["result"]["stop_hint"] == ""
+
+
 def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
     """Round-3 Copilot review regression on #19835.
 

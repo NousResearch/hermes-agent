@@ -7,8 +7,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
-import { notifyError } from '@/store/notifications'
-import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { notify, notifyError } from '@/store/notifications'
+import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import type { ComposerTarget } from '../focus'
@@ -207,6 +207,26 @@ export function useComposerVoice({
       resumeWakeIfPaused()
     }
   }, [pauseWakeForVoice, resumeWakeIfPaused, voiceConversationActive])
+
+  // 'Say "stop" to end the voice chat.' notice when the conversation starts.
+  // Phrase comes from voice.stop_phrases (first entry) so a custom phrase
+  // renders correctly; a null phrase (stop_phrases: []) shows no notice.
+  useEffect(() => {
+    if (!voiceConversationActive) {
+      return
+    }
+
+    const phrase = $voiceStopPhrase.get()
+
+    if (phrase) {
+      notify({
+        id: 'voice-stop-hint',
+        kind: 'info',
+        icon: 'mic',
+        message: t.notifications.voice.sayStopToEnd(phrase)
+      })
+    }
+  }, [t, voiceConversationActive])
 
   useEffect(() => resumeWakeIfPaused, [resumeWakeIfPaused])
 

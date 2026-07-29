@@ -215,6 +215,52 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
         return 1
 
 
+def _shield_stdin_from_children() -> None:
+    """Keep the ACP JSON-RPC stdin out of every child process.
+
+    The host IDE hands this process a pipe as stdin. Any subprocess spawned
+    with ``stdin=None`` inherits that handle — on Windows via the process
+    STD_INPUT_HANDLE, not fd 0 — and MSYS/mingw programs (git, bash) can
+    block on it at startup. When they do, ``subprocess.run(timeout=...)``
+    kills only the ``Git\\cmd``/``Git\\bin`` wrapper; the surviving mingw
+    grandchild keeps the pipe open and the post-kill ``communicate()`` drain
+    (which has no timeout) wedges the calling thread — and with it the whole
+    agent turn. Re-home the transport's stdin onto a private duplicate and
+    point fd 0 plus the Win32 std input handle at the null device so every
+    child inherits NUL instead.
+    """
+    import io
+
+    logger = logging.getLogger(__name__)
+    try:
+        original_fd = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return  # no real stdin (embedded/test harness) — nothing to shield
+    try:
+        private_fd = os.dup(original_fd)
+        os.set_inheritable(private_fd, False)
+        devnull_fd = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(devnull_fd, original_fd)
+        os.close(devnull_fd)
+        if sys.platform == "win32":
+            import ctypes
+            import msvcrt
+
+            STD_INPUT_HANDLE = -10
+            ctypes.windll.kernel32.SetStdHandle(
+                STD_INPUT_HANDLE, msvcrt.get_osfhandle(original_fd)
+            )
+        # The ACP transport reads sys.stdin.buffer; hand it the private copy.
+        sys.stdin = io.TextIOWrapper(
+            io.BufferedReader(io.FileIO(private_fd, "rb")),
+            encoding="utf-8",
+            errors="replace",
+        )
+        logger.info("ACP stdin shielded from child processes (children inherit NUL)")
+    except Exception:
+        logger.warning("Could not shield ACP stdin from child processes", exc_info=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
@@ -235,6 +281,7 @@ def main(argv: list[str] | None = None) -> None:
 
     _setup_logging()
     _load_env()
+    _shield_stdin_from_children()
 
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")

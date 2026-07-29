@@ -88,3 +88,43 @@ def test_main_setup_browser_propagates_browser_failure(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         entry.main(["--setup-browser"])
     assert excinfo.value.code == 1
+
+
+def test_shield_stdin_redirects_fd0_to_devnull(tmp_path):
+    """Children must inherit NUL, not the ACP JSON-RPC pipe (#73693).
+
+    Runs in a subprocess so the fd surgery cannot disturb the test session's
+    own stdin. The child reports what a grandchild would inherit on fd 0,
+    plus whether the transport can still read the original stream.
+    """
+    import subprocess
+    import sys as _sys
+
+    payload = tmp_path / "probe.py"
+    payload.write_text(
+        "import os, sys\n"
+        "from acp_adapter import entry\n"
+        "entry._shield_stdin_from_children()\n"
+        # What a child would inherit on fd 0:
+        "inherited = os.read(0, 16)\n"
+        # What the ACP transport still sees on the re-homed sys.stdin:
+        "transport = sys.stdin.buffer.readline()\n"
+        "print('INHERITED:' + repr(inherited))\n"
+        "print('TRANSPORT:' + repr(transport))\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_sys.executable, str(payload)],
+        input=b"protocol-line\n",
+        capture_output=True,
+        timeout=60,
+    )
+
+    out = result.stdout.decode("utf-8", "replace")
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    # fd 0 now reads EOF (NUL), so nothing a child spawns can consume — or
+    # block on — the protocol stream.
+    assert "INHERITED:b''" in out
+    # The transport keeps the real stdin through the private duplicate.
+    assert r"TRANSPORT:b'protocol-line\n'" in out

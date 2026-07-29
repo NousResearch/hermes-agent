@@ -972,3 +972,101 @@ class TestProbeApiModelsUserAgent:
 
         req = mock_urlopen.call_args[0][0]
         assert req.get_header("X-goog-api-client") is None
+
+
+# -- Regression: #73208 auto-correct must not strip meaningful qualifiers ------
+
+class TestAutoCorrectSupersetGuard:
+    """Regression tests for #73208: when the user's model name is a
+    meaningful superset of the auto-correct candidate (e.g.
+    ``gemini-3.5-flash-lite-preview`` → ``gemini-3.5-flash-preview``),
+    the model-switch pipeline must NOT apply the correction, because
+    the extra segment (``-lite``) is a deliberate qualifier, not a typo.
+
+    The guard lives in ``model_switch.switch_model()``, not in
+    ``validate_requested_model()`` — the validator still returns
+    ``corrected_model`` when ``get_close_matches`` matches at cutoff 0.9;
+    the consumer decides whether to apply it.
+    """
+
+    _BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    @staticmethod
+    def _make_patches():
+        """Return a list of context managers that mock switch_model internals."""
+        from unittest.mock import patch
+        return [
+            patch("hermes_cli.model_switch.resolve_alias", return_value=None),
+            patch("hermes_cli.model_switch.list_provider_models", return_value=[]),
+            patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model),
+            patch("hermes_cli.model_switch.get_model_info", return_value=None),
+            patch("hermes_cli.model_switch.get_model_capabilities", return_value=None),
+            patch("hermes_cli.models.detect_provider_for_model", return_value=None),
+            patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                "api_key": "k", "base_url": TestAutoCorrectSupersetGuard._BASE_URL,
+                "api_mode": "chat_completions",
+            }),
+        ]
+
+    def test_gemini_lite_not_corrected_to_non_lite(self):
+        """gemini-3.5-flash-lite-preview must not be auto-corrected to
+        gemini-3.5-flash-preview — the '-lite' qualifier is intentional."""
+        import contextlib
+        from hermes_cli.model_switch import switch_model
+        from unittest.mock import patch
+
+        validation_with_correction = {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "corrected_model": "gemini-3.5-flash-preview",
+            "message": "Auto-corrected `gemini-3.5-flash-lite-preview` → `gemini-3.5-flash-preview`",
+        }
+
+        patches = [patch("hermes_cli.models.validate_requested_model", return_value=validation_with_correction)] + self._make_patches()
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            result = switch_model(
+                raw_input="gemini-3.5-flash-lite-preview",
+                current_provider="gemini",
+                current_model="gemini-2.5-flash",
+                current_base_url=self._BASE_URL,
+            )
+
+        assert result.success is True
+        # The original model name must be preserved — not the "corrected" one.
+        assert result.new_model == "gemini-3.5-flash-lite-preview"
+
+    def test_real_typo_still_auto_corrected(self):
+        """A genuine typo (no extra segments) should still be auto-corrected.
+
+        E.g. ``gemini-3.5-flash-perview`` → ``gemini-3.5-flash-preview``
+        (``perview`` → ``preview`` is a typo, not a qualifier).
+        """
+        import contextlib
+        from hermes_cli.model_switch import switch_model
+        from unittest.mock import patch
+
+        validation_with_correction = {
+            "accepted": True,
+            "persist": True,
+            "recognized": True,
+            "corrected_model": "gemini-3.5-flash-preview",
+            "message": "Auto-corrected `gemini-3.5-flash-perview` → `gemini-3.5-flash-preview`",
+        }
+
+        patches = [patch("hermes_cli.models.validate_requested_model", return_value=validation_with_correction)] + self._make_patches()
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            result = switch_model(
+                raw_input="gemini-3.5-flash-perview",
+                current_provider="gemini",
+                current_model="gemini-2.5-flash",
+                current_base_url=self._BASE_URL,
+            )
+
+        assert result.success is True
+        # Genuine typo: correction should be applied.
+        assert result.new_model == "gemini-3.5-flash-preview"

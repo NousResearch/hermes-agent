@@ -19,6 +19,9 @@ def _patch_common_status_deps(monkeypatch, status_mod, tmp_path, *, openai_base_
 
     monkeypatch.setattr(status_mod, "get_env_value", _get_env_value, raising=False)
     monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(
+        auth_mod, "get_nous_auth_status_local", lambda: {}, raising=False
+    )
     monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(
         status_mod.subprocess,
@@ -135,7 +138,7 @@ def test_show_status_reports_exhausted_nous_credits(monkeypatch, capsys, tmp_pat
     _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
     monkeypatch.setattr(
         auth_mod,
-        "get_nous_auth_status",
+        "get_nous_auth_status_local",
         lambda: {
             "logged_in": False,
             "access_token": "jwt",

@@ -151,6 +151,25 @@ class TestPruneStaleSessionsLocked:
 
         assert key not in store._entries
 
+    def test_keeps_stale_entry_when_recovery_lookup_raises(self, tmp_path):
+        """Indeterminate recovery must not delete the only routing handle.
+
+        Startup pruning sees an ended parent and tries to repoint it to the
+        latest live gateway child.  If that recovery query raises, deleting the
+        sessions.json entry loses the routing key entirely; keeping it lets the
+        runtime stale guard retry recovery on the next message.
+        """
+        key = "agent:main:telegram:dm:5140768830"
+        db = _db_returning({"sid_parent": {"end_reason": "compression", "id": "sid_parent"}})
+        db.find_latest_gateway_session_for_peer.side_effect = RuntimeError("db busy")
+        store = _make_store_with_db(tmp_path, db)
+        store._entries[key] = _make_entry_with_origin(key, "sid_parent")
+
+        store._prune_stale_sessions_locked()
+
+        assert key in store._entries
+        assert store._entries[key].session_id == "sid_parent"
+
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
         with patch("gateway.session.SessionStore._ensure_loaded"):

@@ -3,6 +3,7 @@ import { useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -21,13 +22,13 @@ import {
 } from '../chrome'
 
 import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
-import { ProjectMenu } from './project-menu'
+import { ProjectContextMenu, ProjectMenu } from './project-menu'
 import type { SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon }: SidebarProjectTree) {
+export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -38,7 +39,7 @@ export function projectIcon({ color, icon }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || 'folder-library'} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
     </SidebarRowLeadGlyph>
   )
 }
@@ -111,30 +112,32 @@ export function ProjectOverviewRow({
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
   )
 
-  return (
-    <div className={cn(dragging && 'relative z-10')} ref={ref} style={style}>
-      <SidebarRowShell
-        actions={
-          <>
-            {onNewSession && (
-              <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
-            )}
-            <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />
-          </>
-        }
-        className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
-        ref={rowRef}
-      >
-        <SidebarRowCluster className="min-w-0 flex-1">
-          {lead}
-          <SidebarRowLink
-            aria-label={s.projects.enter(project.label)}
-            labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
-            onClick={() => onEnter?.(project.id)}
-          >
-            {project.label}
-          </SidebarRowLink>
-          {preview.length > 0 ? (
+  const shell = (
+    <SidebarRowShell
+      actions={
+        <>
+          {/* Home has no folder to start a chat in — the sidebar's own "New
+              session" is that button — and no record to rename or delete. */}
+          {onNewSession && !project.isNoProject && (
+            <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+          )}
+          {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
+        </>
+      }
+      className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      ref={rowRef}
+    >
+      <SidebarRowCluster className="min-w-0 flex-1">
+        {lead}
+        <SidebarRowLink
+          aria-label={s.projects.enter(project.label)}
+          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
+          onClick={() => onEnter?.(project.id)}
+        >
+          {project.label}
+        </SidebarRowLink>
+        {preview.length > 0 ? (
+          <Tip label={s.projects.toggle(project.label)}>
             <button
               aria-label={s.projects.toggle(project.label)}
               className="flex flex-1 items-center self-stretch bg-transparent p-0"
@@ -146,11 +149,24 @@ export function ProjectOverviewRow({
                 open={open}
               />
             </button>
-          ) : (
-            <span className="flex-1" />
-          )}
-        </SidebarRowCluster>
-      </SidebarRowShell>
+          </Tip>
+        ) : (
+          <span className="flex-1" />
+        )}
+      </SidebarRowCluster>
+    </SidebarRowShell>
+  )
+
+  return (
+    <div className={cn(dragging && 'relative z-10')} ref={ref} style={style}>
+      {/* Home has no per-project actions, so it gets no right-click menu. */}
+      {project.isNoProject ? (
+        shell
+      ) : (
+        <ProjectContextMenu isActive={isActive} project={project}>
+          {shell}
+        </ProjectContextMenu>
+      )}
       {open && preview.length > 0 && <SidebarRowNest>{renderRows?.(preview)}</SidebarRowNest>}
     </div>
   )

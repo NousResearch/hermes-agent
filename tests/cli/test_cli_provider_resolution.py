@@ -230,6 +230,47 @@ def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     assert shell.requested_provider == "custom"
 
 
+def test_cli_init_wires_moa_preset_model_to_moa_provider(monkeypatch):
+    # #56828: constructing the CLI with `-m moa:<preset>` (the -Q one-shot
+    # path) must strip the prefix off self.model AND force
+    # requested_provider="moa", so the existing resolve_runtime_provider /
+    # agent_init MoA route runs non-interactively. The unit tests cover
+    # _normalize_moa_model() in isolation; this asserts the __init__ wiring
+    # the sweeper flagged as untested.
+    cli = _import_cli()
+
+    # Neutralize any config/env provider so a failure here can only come from
+    # the moa override, not an ambient default.
+    config_copy = dict(cli.CLI_CONFIG)
+    model_copy = dict(config_copy.get("model", {}))
+    model_copy["provider"] = None
+    config_copy["model"] = model_copy
+    monkeypatch.setattr(cli, "CLI_CONFIG", config_copy)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    shell = cli.HermesCLI(model="moa:strategy", compact=True, max_turns=1)
+
+    assert shell.requested_provider == "moa"
+    assert shell.model == "strategy"
+
+
+def test_cli_init_moa_prefix_overrides_explicit_provider(monkeypatch):
+    # The #56828 regression case: `--provider deepseek -m moa:strategy`
+    # silently dropped MoA because the explicit provider won. __init__ resolves
+    # requested_provider as `_moa_provider_override or provider or ...`, so the
+    # moa: prefix must win over the explicit --provider.
+    cli = _import_cli()
+
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    shell = cli.HermesCLI(
+        model="moa:strategy", provider="deepseek", compact=True, max_turns=1
+    )
+
+    assert shell.requested_provider == "moa"
+    assert shell.model == "strategy"
+
+
 def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     """When provider resolves to openai-codex and no model was explicitly
     chosen, the global config default (e.g. anthropic/claude-opus-4.6) must
@@ -752,11 +793,16 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
             "used_fallback": False,
         },
     )
+    saved_env = {}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved_cfg)
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
     monkeypatch.setattr(
+        "hermes_cli.config.save_env_value",
+        lambda key, value: saved_env.__setitem__(key, value),
+    )
+    monkeypatch.setattr(
         "hermes_cli.main._save_custom_provider",
-        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None: captured_provider.update(
+        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None, key_env="": captured_provider.update(
             {
                 "base_url": base_url,
                 "api_key": api_key,
@@ -764,6 +810,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
                 "context_length": context_length,
                 "name": name,
                 "api_mode": api_mode,
+                "key_env": key_env,
             }
         ),
     )
@@ -784,9 +831,13 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
 
     assert saved_cfg["model"]["provider"] == "custom"
     assert saved_cfg["model"]["base_url"] == "https://codex.example.com/v1"
-    assert saved_cfg["model"]["api_key"] == "test-key"
     assert saved_cfg["model"]["api_mode"] == "codex_responses"
     assert captured_provider["api_mode"] == "codex_responses"
+
+    # The key itself goes to .env; config.yaml only references it (#69449).
+    key_env = captured_provider["key_env"]
+    assert saved_cfg["model"]["api_key"] == f"${{{key_env}}}"
+    assert saved_env[key_env] == "test-key"
 
 
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
@@ -882,3 +933,81 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypatch, tmp_path):
+    """With key_env set the entry must not carry the secret (#69449)."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({}))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    _save_custom_provider(
+        "http://localhost:11434/v1",
+        api_key="sk-secret",
+        name="Ollama",
+        key_env="HERMES_CUSTOM_LOCALHOST_11434_API_KEY",
+    )
+
+    entry = saved["custom_providers"][0]
+    assert entry["key_env"] == "HERMES_CUSTOM_LOCALHOST_11434_API_KEY"
+    assert "api_key" not in entry
+    assert "sk-secret" not in yaml.safe_dump(saved)
+
+
+def test_save_custom_provider_migrates_an_existing_plaintext_entry(monkeypatch, tmp_path):
+    """Re-saving a known URL swaps its inline key for the .env reference."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    existing = {
+        "custom_providers": [
+            {
+                "name": "Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "api_key": "sk-legacy",
+            }
+        ]
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: existing)
+    saved = {}
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    _save_custom_provider(
+        "http://localhost:11434/v1",
+        key_env="HERMES_CUSTOM_LOCALHOST_11434_API_KEY",
+    )
+
+    entry = saved["custom_providers"][0]
+    assert entry["key_env"] == "HERMES_CUSTOM_LOCALHOST_11434_API_KEY"
+    assert "api_key" not in entry
+
+
+def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
+    """Every IP-based local endpoint slugs to a digit-leading name.
+
+    ``save_env_value`` rejects names that don't match
+    ``[A-Za-z_][A-Za-z0-9_]*``, so deriving ``127_0_0_1_8080_API_KEY`` would
+    raise on exactly the local-proxy setups this is meant to protect. The
+    fixed prefix makes the result valid by construction.
+    """
+    import re
+
+    from hermes_cli.config import _ENV_VAR_NAME_RE, custom_endpoint_key_env
+
+    for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
+        assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
+
+
+def test_custom_endpoint_key_env_separates_ports_on_one_host():
+    """Two servers on one machine must not collapse onto one .env slot."""
+    from hermes_cli.config import custom_endpoint_key_env
+
+    assert custom_endpoint_key_env("127.0.0.1_8000") != custom_endpoint_key_env("127.0.0.1_8001")
+    assert custom_endpoint_key_env("acme") == custom_endpoint_key_env("ACME")

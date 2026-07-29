@@ -112,6 +112,53 @@ class TestOpenRouterProfile:
         body = p.build_extra_body()
         assert body == {}
 
+    def test_aux_call_inherits_ambient_conversation_as_sticky_key(self):
+        """Auxiliary calls pass no session_id but must still route stickily.
+
+        Compression, titles, vision, web_extract, session_search and MoA slots
+        funnel through ``agent.auxiliary_client``, which has no session handle.
+        Before the ambient resolution they sent NO sticky key at all and each
+        routed independently of its conversation (#70820).
+        """
+        from agent.portal_tags import (
+            reset_conversation_context,
+            set_conversation_context,
+        )
+
+        p = get_provider_profile("openrouter")
+        token = set_conversation_context("root-conversation")
+        try:
+            assert p.build_extra_body()["session_id"] == "root-conversation"
+            # An explicitly-passed segment id never beats the lineage root.
+            body = p.build_extra_body(session_id="segment-after-rotation")
+            assert body["session_id"] == "root-conversation"
+        finally:
+            reset_conversation_context(token)
+
+    def test_grok_cache_header_inherits_ambient_conversation(self):
+        """The xAI cache-affinity header resolves the same way as the body key."""
+        from agent.portal_tags import (
+            reset_conversation_context,
+            set_conversation_context,
+        )
+
+        p = get_provider_profile("openrouter")
+        token = set_conversation_context("root-conversation")
+        try:
+            _, top_level = p.build_api_kwargs_extras(
+                supports_reasoning=False, model="x-ai/grok-4"
+            )
+            headers = top_level.get("extra_headers", {})
+            assert headers["x-grok-conv-id"] == "root-conversation"
+
+            # Still model-gated: non-Grok models get no affinity header.
+            _, other = p.build_api_kwargs_extras(
+                supports_reasoning=False, model="anthropic/claude-sonnet-4.6"
+            )
+            assert "x-grok-conv-id" not in other.get("extra_headers", {})
+        finally:
+            reset_conversation_context(token)
+
     def test_pareto_min_coding_score_emitted_for_pareto_model(self):
         """min_coding_score → plugins block when model is openrouter/pareto-code."""
         p = get_provider_profile("openrouter")
@@ -424,6 +471,24 @@ class TestNousProfile:
             "tags": nous_portal_tags(),
             "provider": preferences,
         }
+
+    def test_tags_include_conversation_when_session_id(self):
+        from agent.portal_tags import conversation_tag
+        p = get_provider_profile("nous")
+        body = p.build_extra_body(session_id="sess-99")
+        assert conversation_tag("sess-99") in body["tags"]
+
+    def test_extra_body_session_id(self):
+        """Top-level session_id is the provider sticky-routing key — keeps
+        Anthropic cache_control breakpoints pinned to one upstream endpoint."""
+        p = get_provider_profile("nous")
+        body = p.build_extra_body(session_id="sess-99")
+        assert body["session_id"] == "sess-99"
+
+    def test_extra_body_no_session_id(self):
+        p = get_provider_profile("nous")
+        body = p.build_extra_body()
+        assert "session_id" not in body
 
     def test_auth_type(self):
         p = get_provider_profile("nous")

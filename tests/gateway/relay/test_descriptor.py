@@ -46,6 +46,38 @@ def test_from_json_ignores_unknown_keys():
     assert restored == d
 
 
+def test_from_json_normalizes_zero_max_message_length_to_default():
+    """A connector may advertise max_message_length 0 ("no limit"). from_json
+    must normalize it to the documented 4096 default so the receiver never
+    carries a degenerate chunking bound into truncate_message()."""
+    raw = (
+        '{"contract_version": 1, "platform": "x", "label": "X", '
+        '"max_message_length": 0, "supports_draft_streaming": false, '
+        '"supports_edit": false, "supports_threads": false, '
+        '"markdown_dialect": "plain", "len_unit": "chars"}'
+    )
+    d = CapabilityDescriptor.from_json(raw)
+    assert d.max_message_length == 4096
+
+
+def test_from_json_normalizes_negative_max_message_length_to_default():
+    """A buggy/hostile connector sending a negative bound is normalized too."""
+    raw = (
+        '{"contract_version": 1, "platform": "x", "label": "X", '
+        '"max_message_length": -5, "supports_draft_streaming": false, '
+        '"supports_edit": false, "supports_threads": false, '
+        '"markdown_dialect": "plain", "len_unit": "chars"}'
+    )
+    d = CapabilityDescriptor.from_json(raw)
+    assert d.max_message_length == 4096
+
+
+def test_from_json_keeps_a_real_positive_bound():
+    """A normal positive bound is passed through unchanged."""
+    d = CapabilityDescriptor.from_json(_telegram_descriptor(max_message_length=2000).to_json())
+    assert d.max_message_length == 2000
+
+
 def test_from_json_fills_optional_defaults():
     """Optional fields (emoji/platform_hint/pii_safe) fall back to defaults."""
     minimal = (
@@ -64,3 +96,45 @@ def test_module_is_marked_experimental():
     import gateway.relay.descriptor as m
 
     assert "EXPERIMENTAL" in (m.__doc__ or "")
+
+
+# ─────────────── supported_ops (op-level capability discovery, Phase 1) ───────────────
+
+def test_supported_ops_roundtrips_json():
+    d = _telegram_descriptor(supported_ops=("send", "edit", "typing"))
+    restored = CapabilityDescriptor.from_json(d.to_json())
+    assert restored.supported_ops == ("send", "edit", "typing")
+    assert restored == d
+
+
+def test_supports_op_advertised_list_is_authoritative():
+    d = _telegram_descriptor(supported_ops=("send", "typing", "get_chat_info"))
+    assert d.supports_op("send") is True
+    assert d.supports_op("get_chat_info") is True
+    # An advertised list EXCLUDES what it omits — even a legacy op.
+    assert d.supports_op("edit") is False
+
+
+def test_supports_op_legacy_connector_assumes_legacy_set():
+    """An empty supported_ops means the connector predates op discovery: the
+    legacy four ops are assumed supported (old connectors keep working), while
+    NEW ops are not (discovery semantics — never probe by trying)."""
+    d = _telegram_descriptor()  # no supported_ops
+    for op in ("send", "edit", "typing", "follow_up"):
+        assert d.supports_op(op) is True, op
+    assert d.supports_op("get_chat_info") is False
+
+
+def test_from_json_normalizes_malformed_supported_ops():
+    """Non-list shapes and non-string members degrade to the legacy fallback
+    (empty tuple), never raise — malformed input can't break the handshake."""
+    base = (
+        '{"contract_version": 1, "platform": "x", "label": "X", '
+        '"max_message_length": 2000, "supports_draft_streaming": false, '
+        '"supports_edit": true, "supports_threads": false, '
+        '"markdown_dialect": "plain", "len_unit": "chars", '
+    )
+    d = CapabilityDescriptor.from_json(base + '"supported_ops": "send"}')
+    assert d.supported_ops == ()
+    d = CapabilityDescriptor.from_json(base + '"supported_ops": ["send", 7, null, ""]}')
+    assert d.supported_ops == ("send",)

@@ -1,7 +1,7 @@
 """Tests for gateway /compress user-facing messaging."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -70,6 +70,7 @@ async def test_compress_command_reports_noop_without_success_banner():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         assert messages == history
@@ -91,6 +92,50 @@ async def test_compress_command_reports_noop_without_success_banner():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_works_when_auto_compaction_disabled():
+    """compression.enabled: false disables *automatic* compaction only.
+
+    The gateway /compress handler has never gated on the flag — pin that
+    contract (every manual-compress surface must allow manual compression
+    regardless of the auto toggle, #64438) and the force=True cooldown
+    bypass that manual compression relies on."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.compression_enabled = False
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+    # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
+    agent_instance._compression_skipped_due_to_lock = False
+
+    def _estimate(messages, **_kwargs):
+        return 100 if messages == history else 60
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "disabled" not in result.lower()
+    assert "Compressed:" in result
+    agent_instance._compress_context.assert_called_once()
+    assert agent_instance._compress_context.call_args.kwargs.get("force") is True
+
+
+@pytest.mark.asyncio
 async def test_compress_command_explains_when_token_estimate_rises():
     history = _make_history()
     compressed = [
@@ -107,6 +152,7 @@ async def test_compress_command_explains_when_token_estimate_rises():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         if messages == history:
@@ -157,6 +203,7 @@ async def test_compress_command_appends_warning_when_compression_aborts():
     )
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         if messages == history:
@@ -219,6 +266,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     )
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         if messages == history:
@@ -277,6 +325,7 @@ async def test_compress_command_passes_session_db_and_persists_rotated_session()
         return compressed, ""
 
     agent_instance._compress_context.side_effect = _compress
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         if messages == history:
@@ -343,6 +392,7 @@ async def test_compress_command_does_not_repoint_session_when_transcript_write_f
         return compressed, ""
 
     agent_instance._compress_context.side_effect = _compress
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         return 100
@@ -398,6 +448,7 @@ async def test_compress_command_in_place_skips_destructive_rewrite():
     agent_instance._last_compaction_in_place = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     def _estimate(messages, **_kwargs):
         if messages == history:
@@ -440,6 +491,7 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
@@ -460,6 +512,67 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
 
 
 @pytest.mark.asyncio
+async def test_compress_command_preserves_persisted_provider_prompt():
+    """Manual /compress must not replace a provider-aware session prompt.
+
+    Its temporary agent intentionally skips memory-provider initialization, so
+    it must reuse the exact persisted prompt. If compression rebuilds instead,
+    the hygiene-only marker makes that fallback stale for the next live turn.
+    """
+    from gateway.run import _GATEWAY_HYGIENE_PLATFORM
+
+    history = _make_history()
+    stored_prompt = (
+        "base prompt\n\n"
+        "<hindsight_memories>\n"
+        "## Personal Memory\n"
+        "- pinned: exact provider content\n"
+        "</hindsight_memories>\n"
+    )
+    runner = _make_runner(history)
+    runner._session_db = MagicMock()
+    runner._session_db.get_session = AsyncMock(
+        return_value={"system_prompt": stored_prompt}
+    )
+
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = "provider-less prompt"
+    agent_instance.platform = "telegram"
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compression_skipped_due_to_lock = False
+
+    def _compress(messages, *_args, **_kwargs):
+        assert messages == history
+        assert agent_instance._cached_system_prompt == stored_prompt
+        assert agent_instance.platform == _GATEWAY_HYGIENE_PLATFORM
+        return list(history), ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    def _estimate(messages, **kwargs):
+        assert messages == history
+        assert kwargs["system_prompt"] == stored_prompt
+        return 100
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        await runner._handle_compress_command(_make_event())
+
+    runner._session_db.get_session.assert_awaited_once_with("sess-1")
+    assert mock_agent.call_args.kwargs["platform"] == "telegram"
+    assert agent_instance._cached_system_prompt == stored_prompt
+    assert agent_instance.platform == _GATEWAY_HYGIENE_PLATFORM
+
+
+@pytest.mark.asyncio
 async def test_compress_command_overrides_stale_resolver_identity():
     """If the resolver already supplies platform/gateway_session_key, the
     construction must (a) not raise "got multiple values for keyword argument",
@@ -475,6 +588,7 @@ async def test_compress_command_overrides_stale_resolver_identity():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     # Resolver injects a WRONG platform and a stale session key.
     runtime = {"api_key": "test-key", "platform": "discord", "gateway_session_key": "stale-key"}
@@ -539,3 +653,32 @@ async def test_compress_command_passes_tool_messages_to_compressor():
     # Assistant tool_calls stubs (content=None) must survive too, or the
     # tool message would dangle without its call.
     assert any(m.get("tool_calls") for m in passed), "assistant tool_calls stub dropped"
+
+
+@pytest.mark.asyncio
+async def test_compress_command_surfaces_lock_skip():
+    """When _compress_context skips due to a concurrent lock, the gateway
+    handler must surface a clear message, not the misleading no-op text."""
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = "pid=99999"
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Compression already in progress" in result
+    assert "pid=99999" in result
+    assert "No changes from compression" not in result

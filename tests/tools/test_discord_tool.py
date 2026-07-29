@@ -1268,7 +1268,11 @@ class TestModelToolsIntegration:
         mock_req.return_value = {"flags": 0}
 
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True)
+        # skip_tool_search_assembly: this test exercises the dynamic schema
+        # rebuild; under tiered disclosure the discord tools defer behind the
+        # bridge, but the rebuilt schema is what tool_describe serves.
+        tools = get_tool_definitions(enabled_toolsets=["hermes-discord"], quiet_mode=True,
+                                     skip_tool_search_assembly=True)
         discord_admin_tool = next(
             (t for t in tools if t.get("function", {}).get("name") == "discord_admin"),
             None,

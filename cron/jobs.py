@@ -39,13 +39,27 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, atomic_write_text
 
-try:
-    from croniter import croniter
-    HAS_CRONITER = True
-except ImportError:
-    HAS_CRONITER = False
+# ``croniter`` compiles ~15 ms of regexes at import and only matters for
+# 5-field cron expressions. Resolve lazily; ``HAS_CRONITER`` stays a module
+# attribute (tests monkeypatch it, and a monkeypatched value wins because
+# ``_ensure_croniter`` only probes while it's still None).
+croniter = None
+HAS_CRONITER: Optional[bool] = None
+
+
+def _ensure_croniter() -> bool:
+    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
+    global croniter, HAS_CRONITER
+    if HAS_CRONITER is None:
+        try:
+            from croniter import croniter as _croniter
+            croniter = _croniter
+            HAS_CRONITER = True
+        except ImportError:
+            HAS_CRONITER = False
+    return bool(HAS_CRONITER)
 
 # =============================================================================
 # Configuration
@@ -115,12 +129,42 @@ _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
 )
 
 
+# Import-time snapshot of the compatibility constants, so deliberate
+# re-pointing of the module surface (monkeypatched CRON_DIR/JOBS_FILE/
+# OUTPUT_DIR — the documented escape hatch existing tests/embedders use)
+# is distinguishable from the constants merely being stale.
+_IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+
+
 def _current_cron_store() -> _CronStorePaths:
-    """Return paths pinned to this execution context's profile."""
+    """Return paths pinned to this execution context's profile.
+
+    Precedence, most explicit first:
+
+    1. an active use_cron_store() override (ContextVar);
+    2. deliberately re-pointed module constants — if CRON_DIR/JOBS_FILE/
+       OUTPUT_DIR no longer match their import-time values, someone chose
+       the documented process-wide compatibility surface; honor it;
+    3. the ACTIVE profile home, resolved fresh via get_hermes_home()
+       (context-local override, then the HERMES_HOME env var) — so a test
+       or embedder that re-points HERMES_HOME after this module was
+       imported reads/writes ITS OWN store, not whatever jobs.json the
+       import happened to freeze (the filed incident: fixtures that patched
+       the env too late silently rewrote the user's real jobs file);
+    4. the import-time constants (home unchanged since import — the common
+       path, returned unchanged).
+    """
     override = _cron_store_override.get()
     if override is not None:
         return override
-    return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    if live_constants != _IMPORT_STORE:
+        return live_constants
+    home = get_hermes_home().resolve()
+    if home == HERMES_DIR:
+        return live_constants
+    cron_dir = home / "cron"
+    return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 
 @contextlib.contextmanager
@@ -445,6 +489,44 @@ def _secure_file(path: Path):
         pass
 
 
+def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
+    """Restore a rewritten file's previous owner (POSIX, privileged writer only).
+
+    The atomic-write pattern (mkstemp + replace) makes the rewritten file owned
+    by the *writer's* euid. When a root shell runs a state-writing cron CLI
+    command (``docker exec hermes hermes cron create ...`` — ``docker exec``
+    defaults to root) against a store owned by the unprivileged gateway user,
+    the replace flips ``jobs.json`` to ``root:root`` mode 600 and the gateway's
+    ticker (uid 1000) is silently locked out of every subsequent tick (#68483).
+
+    Root can always hand ownership back, so do exactly that: when the euid is 0
+    and the pre-replace owner differs, chown the new file to the previous
+    uid/gid. Unprivileged writers are a no-op (their own rewrite already heals
+    a root-owned file back to their uid, and they couldn't chown anyway).
+    No-op on Windows. Best-effort: a failure must never break the save.
+    """
+    if before is None or os.name != "posix":
+        return
+    geteuid = getattr(os, "geteuid", None)
+    getegid = getattr(os, "getegid", None)
+    if geteuid is None or getegid is None:
+        return
+    try:
+        euid = geteuid()
+        if euid != 0:
+            return  # unprivileged writer — nothing to (or we could) restore
+        if (before.st_uid, before.st_gid) == (euid, getegid()):
+            return  # already ours before the rewrite — nothing changed
+        os.chown(path, before.st_uid, before.st_gid)
+    except OSError as e:
+        logger.warning(
+            "Could not restore ownership of %s to uid=%s gid=%s after rewrite: %s "
+            "— if the gateway runs as a different user, its cron ticker may now "
+            "be locked out (see issue #68483).",
+            path, before.st_uid, before.st_gid, e,
+        )
+
+
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()
@@ -517,7 +599,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if len(parts) >= 5 and all(
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
-        if not HAS_CRONITER:
+        if not _ensure_croniter():
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
         # Validate cron expression
         try:
@@ -670,7 +752,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
         grace = period_seconds // 2
         return max(MIN_GRACE, min(grace, MAX_GRACE))
 
-    if kind == "cron" and HAS_CRONITER:
+    if kind == "cron" and _ensure_croniter():
         expr = schedule.get("expr")
         if expr:
             try:
@@ -723,7 +805,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         expr = schedule.get("expr")
         if not expr:
             return None
-        if not HAS_CRONITER:
+        if not _ensure_croniter():
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
@@ -756,15 +838,22 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 def _atomic_write_epoch(path: Path) -> None:
     """Atomically write the current epoch time to ``path``.
 
-    Uses the same tmpfile + ``atomic_replace`` pattern as ``save_jobs`` so a
-    concurrent reader in another process (``hermes cron status``) never sees a
-    torn/truncated file. Best-effort: failures are swallowed by callers.
+    Delegates to :func:`utils.atomic_write_text` (tmpfile + fsync +
+    ``atomic_replace``, same pattern as ``save_jobs``) so a concurrent reader
+    in another process (``hermes cron status``) never sees a torn/truncated
+    file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".hb_")
+    atomic_write_text(path, str(time.time()), tmp_prefix=".hb_")
+
+
+def _atomic_write_counter(path: Path, value: int) -> None:
+    """Atomically persist a non-negative integer counter."""
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".count_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
+            f.write(str(max(0, value)))
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, path)
@@ -786,15 +875,20 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     (both fresh) — a ticker stuck failing every tick would otherwise keep the
     plain heartbeat fresh and falsely report healthy (#32612, #32895).
 
+    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
+    scoped to the active profile's store — critical under multiplex_profiles
+    where each profile needs its own liveness signal (#69377).
+
     Best-effort: a write failure must never disrupt the tick loop.
     """
+    store = _current_cron_store()
     try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+        _atomic_write_epoch(store.cron_dir / "ticker_heartbeat")
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+            _atomic_write_epoch(store.cron_dir / "ticker_last_success")
         except Exception:
             pass
 
@@ -812,13 +906,104 @@ def get_ticker_heartbeat_age() -> Optional[float]:
 
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
+
+    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
+    scoped to the active profile — critical under multiplex_profiles where
+    ``hermes cron status`` must report per-profile liveness (#69377).
     """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+    store = _current_cron_store()
+    return _epoch_file_age(store.cron_dir / "ticker_heartbeat")
 
 
 def get_ticker_success_age() -> Optional[float]:
-    """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
+    """Seconds since the ticker last completed a tick WITHOUT raising, or None.
+
+    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
+    scoped to the active profile — critical under multiplex_profiles where
+    ``hermes cron status`` must report per-profile liveness (#69377).
+    """
+    store = _current_cron_store()
+    return _epoch_file_age(store.cron_dir / "ticker_last_success")
+
+
+def record_catch_up_occurrence() -> None:
+    """Increment the profile-local stale-schedule catch-up counter, best effort."""
+    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    try:
+        try:
+            value = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            value = 0
+        _atomic_write_counter(path, max(0, value) + 1)
+    except Exception:
+        pass
+
+
+def record_ticker_error(message: str) -> None:
+    """Persist the most recent tick failure so other processes can surface it.
+
+    The ticker thread lives inside the gateway process; ``hermes cron
+    status``/``list`` run in a separate process and previously could only
+    infer "ticks may be failing" from marker staleness, with no clue WHY.
+    A root-owned ``jobs.json`` (#68483) failed every tick for ~14h with the
+    reason visible only in the gateway's errors.log. Writing the last error
+    next to the heartbeat markers gives the CLI something concrete to show.
+
+    Best-effort: a write failure must never disrupt the tick loop.
+    """
+    store = _current_cron_store()
+    path = store.cron_dir / "ticker_last_error"
+    try:
+        ensure_dirs()
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), suffix=".tmp", prefix=".terr_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(f"{time.time()}\n{message.strip()}\n")
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def get_catch_up_occurrence_count() -> int:
+    """Return the profile-local stale-schedule catch-up count."""
+    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    try:
+        return max(0, int(path.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def clear_ticker_error() -> None:
+    """Remove the last-tick-error marker after a successful tick. Best-effort."""
+    store = _current_cron_store()
+    try:
+        (store.cron_dir / "ticker_last_error").unlink()
+    except OSError:
+        pass
+
+
+def get_ticker_last_error() -> Optional[str]:
+    """Return the most recent recorded tick error message, or None."""
+    store = _current_cron_store()
+    try:
+        raw = (store.cron_dir / "ticker_last_error").read_text(encoding="utf-8")
+    except Exception:
+        return None
+    lines = raw.splitlines()
+    if len(lines) < 2:
+        return None
+    message = "\n".join(lines[1:]).strip()
+    return message or None
 
 
 # =============================================================================
@@ -835,13 +1020,16 @@ def load_jobs() -> List[Dict[str, Any]]:
     _strict_retry = False  # track whether we used the strict=False fallback
 
     try:
-        with open(jobs_file, 'r', encoding='utf-8') as f:
+        # utf-8-sig: Windows Notepad / PowerShell 5.1 Set-Content -Encoding UTF8
+        # write a leading BOM; json.load under plain utf-8 raises
+        # JSONDecodeError("Unexpected UTF-8 BOM") and takes down cron.
+        with open(jobs_file, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         _strict_retry = True
         try:
-            with open(jobs_file, 'r', encoding='utf-8') as f:
+            with open(jobs_file, 'r', encoding='utf-8-sig') as f:
                 data = json.loads(f.read(), strict=False)
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
@@ -878,6 +1066,19 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
+    # Snapshot the current owner BEFORE the atomic replace so a privileged
+    # writer (root CLI in Docker) can hand ownership back to the gateway user
+    # afterwards instead of locking its ticker out (#68483). When the file is
+    # being created for the first time, inherit the cron dir's owner — in the
+    # Docker image that is the PUID/PGID gateway user who must be able to
+    # read the store on the next tick.
+    try:
+        _stat_before = os.stat(jobs_file)
+    except OSError:
+        try:
+            _stat_before = os.stat(jobs_file.parent)
+        except OSError:
+            _stat_before = None
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -886,6 +1087,7 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
             os.fsync(f.fileno())
         atomic_replace(tmp_path, jobs_file)
         _secure_file(jobs_file)
+        _preserve_file_ownership(jobs_file, _stat_before)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -946,20 +1148,25 @@ def _resolve_default_model_snapshot() -> Optional[str]:
     or resolution fails (fail-open — caller treats ``None`` as "no snapshot").
     """
     try:
-        import yaml
-        from hermes_cli.config import _expand_env_vars
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
 
         cfg_path = get_hermes_home() / "config.yaml"
         if not cfg_path.exists():
             return None
-        with cfg_path.open(encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        cfg = read_user_config_raw(cfg_path)
         try:
             from hermes_cli import managed_scope
             cfg = managed_scope.apply_managed_overlay(cfg)
         except Exception:
             pass
         cfg = _expand_env_vars(cfg)
+        # Mirror run_job's precedence: the explicit cron-fleet default
+        # (cron.model) beats the global chat model for unpinned cron jobs.
+        cron_cfg = cfg.get("cron") or {}
+        if isinstance(cron_cfg, dict):
+            cron_model = cron_cfg.get("model")
+            if isinstance(cron_model, str) and cron_model.strip():
+                return cron_model.strip()
         model_cfg = cfg.get("model") or {}
         if isinstance(model_cfg, str):
             return model_cfg.strip() or None
@@ -1286,6 +1493,14 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     jobs = [_normalize_job_record(j) for j in load_jobs()]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
+    try:
+        from cron.executions import latest_executions
+
+        latest = latest_executions([job.get("id", "") for job in jobs])
+    except Exception:
+        latest = {}
+    for job in jobs:
+        job["latest_execution"] = latest.get(job.get("id", ""))
     return jobs
 
 
@@ -1566,6 +1781,50 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
+def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
+    """Leave an operator-visible trace when a wedged one-shot is removed.
+
+    A finite one-shot whose dispatch was claimed (``repeat.completed`` >=
+    ``repeat.times``) but which never reached ``mark_job_run`` (``last_run_at``
+    is null) was interrupted mid-run — scheduler restart, gateway kill, or a
+    non-Exception escape (#73973). The recovery guards remove such jobs so
+    they stop appearing due, but a silent removal leaves the user with no
+    output, no error, and no job record. Write a small diagnostic file into
+    the job's output directory so the removal is observable and debuggable.
+
+    Best-effort: diagnostics must never break the removal itself.
+    """
+    if job.get("last_run_at") is not None:
+        return  # a prior run was recorded — normal completion race, not a wedge
+    try:
+        repeat = job.get("repeat") or {}
+        claim = job.get("run_claim") or {}
+        text = (
+            "# Cron job removed without producing output\n\n"
+            f"- job id: {job.get('id')}\n"
+            f"- name: {job.get('name')}\n"
+            f"- dispatch claimed: {repeat.get('completed', '?')}/{repeat.get('times', '?')}\n"
+            f"- run claimed at: {claim.get('at', 'unknown')} by {claim.get('by', 'unknown')}\n"
+            f"- removed at: {_hermes_now().isoformat()}\n\n"
+            "This one-shot job's dispatch was claimed, but the run never "
+            "completed (`last_run_at` was never written) — the scheduler "
+            "process was most likely killed or restarted mid-execution. The "
+            "job has been removed to stop it re-firing; recreate it to run "
+            "again.\n"
+        )
+        save_job_output(job.get("id", ""), text)
+        logger.warning(
+            "Job '%s': removed without a completed run — diagnostic written to "
+            "its output directory",
+            job.get("name", job.get("id", "?")),
+        )
+    except Exception as e:
+        logger.debug(
+            "Failed to write wedged-oneshot diagnostic for job %r: %s",
+            job.get("id"), e,
+        )
+
+
 def claim_dispatch(job_id: str) -> bool:
     """Atomically claim a finite one-shot job dispatch BEFORE execution.
 
@@ -1603,6 +1862,9 @@ def claim_dispatch(job_id: str) -> bool:
                 # Clean up so it stops appearing as due on every tick.
                 jobs.pop(i)
                 save_jobs(jobs)
+                # If the claimed run never completed (#73973), leave an
+                # operator-visible diagnostic instead of vanishing silently.
+                _write_wedged_oneshot_diagnostic(job)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
                     job.get("name", job.get("id", "?")),
@@ -2031,6 +2293,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
+                        record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot
@@ -2075,6 +2338,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     raw_jobs.remove(rj)
                                     needs_save = True
                                     break
+                            # The claimed run never completed here by
+                            # definition (last_run_at unwritten is what made
+                            # the entry look due) — leave an operator-visible
+                            # diagnostic instead of vanishing silently (#73973).
+                            _write_wedged_oneshot_diagnostic(job)
                             continue
 
                 # Durably claim a one-shot for the DURATION of its run before

@@ -45,6 +45,42 @@ def test_record_discovered_repos_replace_drops_stale_rows(conn):
     assert rows == {"/www/alpha": "fresh"}
 
 
+def test_discovery_policy_change_clears_only_discovered_rows(conn):
+    project_id = pdb.create_project(conn, name="Explicit", folders=["/www/explicit"])
+    pdb.record_discovered_repos(
+        conn, [("/www/scanned", "scanned")], policy_key="policy-a"
+    )
+
+    assert pdb.reconcile_discovered_repos_policy(conn, "policy-b") is True
+    assert pdb.list_discovered_repos(conn) == []
+    assert pdb.get_project(conn, project_id) is not None
+    assert pdb.get_discovery_policy_key(conn) == "policy-b"
+
+
+def test_default_policy_adopts_unversioned_cache_without_clearing(conn):
+    pdb.record_discovered_repos(conn, [("/www/scanned", "scanned")])
+
+    assert (
+        pdb.reconcile_discovered_repos_policy(
+            conn, "default-policy", preserve_unversioned=True
+        )
+        is False
+    )
+    assert [row["root"] for row in pdb.list_discovered_repos(conn)] == [
+        "/www/scanned"
+    ]
+    assert pdb.get_discovery_policy_key(conn) == "default-policy"
+
+
+def test_clear_discovered_repos_records_policy_atomically(conn):
+    pdb.record_discovered_repos(conn, [("/www/scanned", "scanned")])
+
+    pdb.clear_discovered_repos(conn, policy_key="disabled")
+
+    assert pdb.list_discovered_repos(conn) == []
+    assert pdb.get_discovery_policy_key(conn) == "disabled"
+
+
 def test_create_get_list(conn):
     pid = pdb.create_project(conn, name="Hermes Agent", folders=["/tmp/hermes"])
     proj = pdb.get_project(conn, pid)
@@ -160,9 +196,14 @@ def test_per_profile_isolation(tmp_path):
     b = pdb.connect(db_path=tmp_path / "b" / "projects.db")
     try:
         pdb.create_project(a, name="Only In A", folders=["/a"])
+        pdb.record_discovered_repos(a, [("/a/scanned", "scanned")])
 
         assert [p.slug for p in pdb.list_projects(a)] == ["only-in-a"]
         assert pdb.list_projects(b) == []
+        assert [row["root"] for row in pdb.list_discovered_repos(a)] == [
+            "/a/scanned"
+        ]
+        assert pdb.list_discovered_repos(b) == []
     finally:
         a.close()
         b.close()

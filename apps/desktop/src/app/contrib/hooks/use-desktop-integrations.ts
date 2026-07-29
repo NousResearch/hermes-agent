@@ -1,9 +1,18 @@
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
+import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import {
+  $sessions,
+  getRememberedRoute,
+  getRememberedSessionId,
+  rememberedSessionProfile,
+  setRememberedRoute,
+  setRememberedSessionId
+} from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isSecondaryWindow } from '@/store/windows'
@@ -62,12 +71,17 @@ export function useDesktopIntegrations({
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
   // you don't want to boot into a modal.
   useEffect(() => {
+    const routeProfile = rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
+
     if (routedSessionId) {
-      setRememberedSessionId(routedSessionId)
+      setRememberedSessionId(routedSessionId, routeProfile)
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
-      setRememberedRoute(locationPathname)
+      // Keyed by the same owner as the id above: a session route embeds a
+      // session id, so remembering it globally would restore another profile's
+      // conversation on cold start.
+      setRememberedRoute(locationPathname, routeProfile)
     }
   }, [locationPathname, routedSessionId])
 
@@ -76,6 +90,7 @@ export function useDesktopIntegrations({
   // Restore once on cold start — only when the renderer booted at the default
   // route (a hidden-then-shown window keeps its own route). Prefer the full
   // remembered route (covers pages); fall back to the last session id.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
       restoredRef.current = true
@@ -84,7 +99,8 @@ export function useDesktopIntegrations({
     }
 
     restoredRef.current = true
-    const route = getRememberedRoute()
+    const activeProfile = $activeGatewayProfile.get()
+    const route = getRememberedRoute(activeProfile)
 
     if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
       navigate(route, { replace: true })
@@ -92,7 +108,7 @@ export function useDesktopIntegrations({
       return
     }
 
-    const last = getRememberedSessionId()
+    const last = getRememberedSessionId(activeProfile)
 
     if (last) {
       navigate(sessionRoute(last), { replace: true })
@@ -100,17 +116,24 @@ export function useDesktopIntegrations({
   }, [locationPathname, navigate])
 
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
-      setRememberedSessionId(null)
+    if (!resumeExhaustedSessionId) {
+      return
+    }
+
+    const owner = rememberedSessionProfile($sessions.get(), resumeExhaustedSessionId, $activeGatewayProfile.get())
+
+    if (getRememberedSessionId(owner) === resumeExhaustedSessionId) {
+      setRememberedSessionId(null, owner)
     }
   }, [resumeExhaustedSessionId])
 
-  // Native-notification click -> jump to the session (runtime id translated to
-  // the stored id the chat route is keyed by); action buttons resolve in place.
+  // Native-notification click -> jump to the session WHERE IT ALREADY IS (open
+  // tile / main) instead of forcing main. Runtime id is translated to the
+  // stored id the chat route is keyed by; action buttons resolve in place.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current)))
+        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate)
       }
     })
 
@@ -155,10 +178,12 @@ export function useDesktopIntegrations({
   // OS-standard window close, esp. secondary windows). The Win/Linux keyboard
   // path is the `view.closeTab` keybind (use-keybinds), sharing closeActiveTab.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(() => void closeActiveTab())
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(
+      () => void closeActiveTab(id => navigate(sessionRoute(id)))
+    )
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {

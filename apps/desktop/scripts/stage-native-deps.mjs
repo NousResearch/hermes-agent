@@ -19,7 +19,8 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  rmSync
+  rmSync,
+  writeFileSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
@@ -27,6 +28,30 @@ import { isMain } from './utils.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(here, '..')
 const require = createRequire(import.meta.url)
+
+function makeExecutable(filePath) {
+  chmodSync(filePath, 0o755)
+}
+
+function patchUnixTerminalAsarPaths(destRoot) {
+  const filePath = join(destRoot, 'lib', 'unixTerminal.js')
+  if (!existsSync(filePath)) return
+
+  const source = readFileSync(filePath, 'utf8')
+  const patched = source
+    .replace(
+      "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
+      "helperPath = helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked');"
+    )
+    .replace(
+      "helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
+      "helperPath = helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked');"
+    )
+
+  if (patched !== source) {
+    writeFileSync(filePath, patched)
+  }
+}
 
 /**
  * Locate node-pty's package root via real module resolution, so this
@@ -75,7 +100,11 @@ function copyBuildRelease(srcDir, destDir) {
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name))
+      const destFile = join(destDir, entry.name)
+      cpSync(join(srcDir, entry.name), destFile)
+      if (entry.name === 'spawn-helper') {
+        makeExecutable(destFile)
+      }
     }
   }
 }
@@ -220,6 +249,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
 
   // lib/**/*.js — the JS surface node-pty's `main` points into.
   copyGlobByExt(join(srcRoot, 'lib'), join(destRoot, 'lib'), ['.js'])
+  patchUnixTerminalAsarPaths(destRoot)
 
   // prebuilds/<platform>-<arch>/* — the prebuild-install payload for the
   // *target* we're packaging, not necessarily the host running this script.
@@ -239,8 +269,9 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
-        chmodSync(join(destPrebuild, entry.name), 0o775)
+        const destFile = join(destPrebuild, entry.name)
+        cpSync(join(prebuildDir, entry.name), destFile)
+        makeExecutable(destFile)
       }
     }
   }

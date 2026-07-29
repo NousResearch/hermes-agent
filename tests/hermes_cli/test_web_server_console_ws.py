@@ -74,7 +74,6 @@ def test_console_ws_runs_read_only_command(console_client):
     with console_client.websocket_connect(_url()) as conn:
         ready = conn.receive_json()
         assert ready["type"] == "ready"
-        assert ready["context"] == "local"
         assert ready["prompt"] == "hermes> "
 
         conn.send_json({"type": "input", "line": "help"})
@@ -100,20 +99,6 @@ def test_console_ws_confirmed_command_executes_after_confirmation(console_client
         _recv_until(conn, "complete", status="ok")
 
     assert load_config()["display"]["interface"] == "cli"
-
-
-def test_console_ws_uses_hosted_context_for_opt_data_policy(console_client, monkeypatch):
-    monkeypatch.setattr(web_server, "_default_hermes_root_is_opt_data", lambda: True)
-
-    with console_client.websocket_connect(_url()) as conn:
-        ready = conn.receive_json()
-        assert ready["type"] == "ready"
-        assert ready["context"] == "hosted"
-
-        conn.send_json({"type": "input", "line": "profile create nope"})
-
-        error = _recv_until(conn, "error")
-        assert "hosted Hermes Console" in error["message"]
 
 
 def test_console_ws_cancel_returns_to_prompt(console_client, monkeypatch):

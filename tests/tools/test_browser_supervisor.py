@@ -6,10 +6,24 @@ Exercises the supervisor end-to-end against a real local Chrome
 works, since mock-CDP unit tests can only prove the happy paths we
 thought to model.
 
-Run manually:
-    scripts/run_tests.sh tests/tools/test_browser_supervisor.py
+These tests spawn a **real Chrome process** on the machine running them.
+They are therefore opt-in, twice over:
 
-Automated: skipped in CI unless ``HERMES_E2E_BROWSER=1`` is set.
+* ``@pytest.mark.integration`` — excluded by the default
+  ``addopts = "-m 'not integration'"`` in ``pyproject.toml``, so a bare
+  ``pytest`` cannot launch a browser on a developer's desktop by accident.
+* ``HERMES_E2E_BROWSER=1`` — the env gate this docstring has always claimed.
+  It previously existed only in this prose: nothing read the variable, and
+  the sole real gate was "is a Chrome binary on PATH", which is true on most
+  desktops and on ``ubuntu-latest``. Now it is enforced.
+
+Run manually:
+    HERMES_E2E_BROWSER=1 scripts/run_tests.sh -m integration \\
+        tests/tools/test_browser_supervisor.py
+
+(``scripts/run_tests.sh`` runs under ``env -i`` and forwards
+``HERMES_E2E_BROWSER`` explicitly; ``-m integration`` overrides the default
+marker filter.)
 """
 
 from __future__ import annotations
@@ -17,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -25,10 +40,17 @@ import time
 import pytest
 
 
-pytestmark = pytest.mark.skipif(
-    not shutil.which("google-chrome") and not shutil.which("chromium"),
-    reason="Chrome/Chromium not installed",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.environ.get("HERMES_E2E_BROWSER", "").strip() != "1",
+        reason="real-browser E2E: set HERMES_E2E_BROWSER=1 to opt in",
+    ),
+    pytest.mark.skipif(
+        not shutil.which("google-chrome") and not shutil.which("chromium"),
+        reason="Chrome/Chromium not installed",
+    ),
+]
 
 
 def _find_chrome() -> str:

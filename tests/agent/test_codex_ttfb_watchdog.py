@@ -316,6 +316,206 @@ def test_event_idle_kills_after_first_event_then_silence(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+def test_wait_notice_handles_infinite_local_stale_timeout():
+    """After the first SSE event, a local endpoint's infinite wall-clock
+    timeout must not reach ``int()``; report the finite idle watchdog instead."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=float("inf"),
+        ttfb_enabled=True,
+        ttfb_timeout=120.0,
+        last_event_ts=130.0,
+        call_start=100.0,
+        idle_enabled=True,
+        idle_timeout=60.0,
+        elapsed=30.0,
+    )
+
+    assert recovery == "; auto-reconnect at 90s"
+
+
+def test_wait_notice_reports_ttfb_before_first_event():
+    """Before the first SSE event, the finite TTFB cutoff is the recovery."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=float("inf"),
+        ttfb_enabled=True,
+        ttfb_timeout=120.0,
+        last_event_ts=None,
+        call_start=100.0,
+        idle_enabled=True,
+        idle_timeout=60.0,
+        elapsed=30.0,
+    )
+
+    assert recovery == "; auto-reconnect at 120s"
+
+
+@pytest.mark.parametrize(
+    "stale_timeout",
+    [float("inf"), float("-inf"), float("nan")],
+)
+def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
+    stale_timeout,
+):
+    """A disabled watchdog must not be advertised as a future reconnect."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=stale_timeout,
+        ttfb_enabled=False,
+        ttfb_timeout=float("nan"),
+        last_event_ts=None,
+        call_start=100.0,
+        idle_enabled=False,
+        idle_timeout=float("nan"),
+        elapsed=30.0,
+    )
+
+    assert recovery == ""
+
+
+def test_wait_notice_omits_elapsed_idle_deadline():
+    """An idle watchdog that already expired must not claim future recovery."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=float("inf"),
+        ttfb_enabled=True,
+        ttfb_timeout=120.0,
+        last_event_ts=100.0,
+        call_start=100.0,
+        idle_enabled=True,
+        idle_timeout=30.0,
+        elapsed=60.0,
+    )
+
+    assert recovery == ""
+
+
+def test_wait_notice_does_not_skip_elapsed_stale_deadline_for_later_idle():
+    """An already-due watchdog wins; do not advertise a later deadline."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=30.0,
+        ttfb_enabled=True,
+        ttfb_timeout=120.0,
+        last_event_ts=130.0,
+        call_start=100.0,
+        idle_enabled=True,
+        idle_timeout=60.0,
+        elapsed=60.0,
+    )
+
+    assert recovery == ""
+
+
+def test_moa_heartbeat_survives_infinite_stale_timeout(monkeypatch):
+    """The full 100-poll MoA heartbeat must leave a healthy call running."""
+    from agent import chat_completion_helpers as h
+
+    notices: list[str] = []
+    response = SimpleNamespace(ok=True)
+    agent = SimpleNamespace(
+        platform="desktop",
+        api_mode="chat_completions",
+        provider="moa",
+        _consecutive_stale_streams=0,
+        _interrupt_requested=False,
+        _compute_non_stream_stale_timeout=lambda _kwargs: float("inf"),
+        _touch_activity=lambda _message: None,
+        _emit_wait_notice=notices.append,
+    )
+
+    class HeartbeatThread:
+        """Keep the synthetic worker alive through one heartbeat."""
+
+        def __init__(self, *, target, daemon):
+            self._polls = 0
+            self._target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            self._polls += 1
+            if self._polls == 101:
+                self._target()
+                return False
+            return True
+
+    monkeypatch.setattr(h.threading, "Thread", HeartbeatThread)
+    monkeypatch.setattr(
+        h,
+        "_dispatch_nonstreaming_api_request",
+        lambda *_args, **_kwargs: response,
+    )
+
+    result = h.interruptible_api_call(agent, {"model": "openai-xai-wide"})
+
+    assert result is response
+    assert len(notices) == 1
+    assert "waiting on openai-xai-wide" in notices[0]
+    assert "auto-reconnect" not in notices[0]
+
+
+def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
+    """Status construction is fail-open even if its formatter breaks."""
+    from agent import chat_completion_helpers as h
+
+    response = SimpleNamespace(ok=True)
+    agent = SimpleNamespace(
+        platform="desktop",
+        api_mode="chat_completions",
+        provider="moa",
+        _consecutive_stale_streams=0,
+        _interrupt_requested=False,
+        _compute_non_stream_stale_timeout=lambda _kwargs: float("inf"),
+        _touch_activity=lambda _message: None,
+        _emit_wait_notice=lambda _message: None,
+    )
+
+    class HeartbeatThread:
+        def __init__(self, *, target, daemon):
+            self._polls = 0
+            self._target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            self._polls += 1
+            if self._polls == 101:
+                self._target()
+                return False
+            return True
+
+    monkeypatch.setattr(h.threading, "Thread", HeartbeatThread)
+    monkeypatch.setattr(
+        h,
+        "_dispatch_nonstreaming_api_request",
+        lambda *_args, **_kwargs: response,
+    )
+    monkeypatch.setattr(
+        h,
+        "_codex_wait_notice_recovery",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad display state")),
+    )
+
+    result = h.interruptible_api_call(agent, {"model": "openai-xai-wide"})
+
+    assert result is response
+
+
 def test_ttfb_disabled_via_env_zero(tmp_path, monkeypatch):
     """Setting HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 disables the TTFB watchdog;
     a no-event stall then falls through to the (here, 60s) stale timeout, so a

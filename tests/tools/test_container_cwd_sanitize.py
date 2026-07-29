@@ -211,7 +211,7 @@ class TestFileOpsCwdSanitizedAtCallSite:
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})
         monkeypatch.setattr(ft, "_file_ops_cache", {})
-        monkeypatch.setattr(ft, "_last_known_cwd", {})
+        monkeypatch.setattr(tt, "_session_cwd", {})
 
         task_id = "sess-fileops-host-cwd"
         tt.register_task_env_overrides(task_id, {"cwd": override_cwd})

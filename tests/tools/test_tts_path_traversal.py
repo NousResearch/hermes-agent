@@ -58,3 +58,44 @@ def test_output_path_relative_no_dotdot_passes_guard(tmp_path, monkeypatch):
     ))
     error = result.get("error", "")
     assert "traversal" not in error.lower()
+
+
+def test_output_path_rejects_hermes_oauth_store(tmp_path, monkeypatch):
+    """TTS output_path must not bypass the shared protected-file write guard."""
+    import agent.file_safety as file_safety
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
+
+    target = hermes_home / ".anthropic_oauth.json"
+    result = json.loads(text_to_speech_tool(
+        text="hello",
+        output_path=str(target),
+    ))
+
+    assert result["success"] is False
+    assert "protected credential" in result["error"]
+    assert not target.exists()
+
+
+def test_output_path_rejects_mcp_token_directory(tmp_path, monkeypatch):
+    """TTS output_path must not write synthesized audio over MCP token files."""
+    import agent.file_safety as file_safety
+
+    hermes_home = tmp_path / "hermes-home"
+    token_dir = hermes_home / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: hermes_home)
+
+    target = token_dir / "server.mp3"
+    result = json.loads(text_to_speech_tool(
+        text="hello",
+        output_path=str(target),
+    ))
+
+    assert result["success"] is False
+    assert "protected credential" in result["error"]
+    assert not target.exists()

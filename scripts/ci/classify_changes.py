@@ -14,6 +14,7 @@ Lanes:
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
+* ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
 
 Docker is not a lane — it builds on push-to-main and release only,
@@ -31,6 +32,7 @@ must never skip one a change could break:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -88,6 +90,11 @@ def _is_ci_review(p: str) -> bool:
     return os.path.basename(p).startswith("eslint.config.")
 
 
+def ci_review_files(files: list[str]) -> list[str]:
+    """Return the CI-sensitive paths that need maintainer review."""
+    return sorted({f.strip() for f in files if f.strip() and _is_ci_review(f.strip())})
+
+
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
@@ -98,6 +105,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),
+        "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
     }
@@ -108,6 +116,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["site"] = True
         ret["scan"] = True
         ret["deps"] = True
+        ret["npm_lock"] = True
         ret["ci_review"] = True
 
         # explicitly skip mcp catalog here. it's not needed unless those files are modified.
@@ -116,8 +125,12 @@ def classify(files: list[str]) -> dict[str, bool]:
 
 
 def main() -> int:
-    lanes = classify(sys.stdin.read().splitlines())
-    out = "\n".join(f"{k}={str(v).lower()}" for k, v in lanes.items())
+    files = sys.stdin.read().splitlines()
+    lanes = classify(files)
+    out = "\n".join([
+        *(f"{key}={str(value).lower()}" for key, value in lanes.items()),
+        f"ci_review_files={json.dumps(ci_review_files(files))}",
+    ])
     if dest := os.environ.get("GITHUB_OUTPUT"):
         with open(dest, "a", encoding="utf-8") as fh:
             fh.write(out + "\n")

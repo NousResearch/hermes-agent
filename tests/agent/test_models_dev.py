@@ -1,11 +1,17 @@
 """Tests for agent.models_dev — models.dev registry integration."""
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
     fetch_models_dev,
     get_model_capabilities,
+    get_provider_info,
     lookup_models_dev_context,
 )
 
@@ -164,6 +170,20 @@ class TestLookupModelsDevContext:
 
 
 class TestFetchModelsDev:
+    @pytest.fixture(autouse=True)
+    def _reset_fetch_state(self):
+        import agent.models_dev as md
+
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+        md._models_dev_retry_after = 0
+        md._models_dev_refresh_in_flight = False
+        yield
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+        md._models_dev_retry_after = 0
+        md._models_dev_refresh_in_flight = False
+
     @patch("agent.models_dev.requests.get")
     def test_fetch_success(self, mock_get):
         mock_resp = MagicMock()
@@ -208,6 +228,20 @@ class TestFetchModelsDev:
         assert result == SAMPLE_REGISTRY
 
     @patch("agent.models_dev.requests.get")
+    def test_stale_in_memory_cache_returns_without_foreground_network(self, mock_get):
+        """Expired in-memory data should not block foreground resolution."""
+        import agent.models_dev as md
+        md._models_dev_cache = SAMPLE_REGISTRY
+        md._models_dev_cache_time = 0
+
+        with patch.object(md, "_start_background_refresh_models_dev") as mock_refresh:
+            result = fetch_models_dev()
+
+        mock_get.assert_not_called()
+        mock_refresh.assert_called_once()
+        assert result == SAMPLE_REGISTRY
+
+    @patch("agent.models_dev.requests.get")
     def test_fresh_disk_cache_skips_network(self, mock_get):
         """When in-mem cache is empty but disk cache exists and is fresh by
         mtime (< TTL), fetch_models_dev returns disk data without ever
@@ -234,27 +268,20 @@ class TestFetchModelsDev:
         assert md._models_dev_cache == SAMPLE_REGISTRY
 
     @patch("agent.models_dev.requests.get")
-    def test_stale_disk_cache_falls_through_to_network(self, mock_get):
-        """When the disk cache is OLDER than TTL, we must hit the network
-        (and only fall back to the stale disk data if network fails)."""
+    def test_stale_disk_cache_returns_without_foreground_network(self, mock_get):
+        """#35838: stale disk cache should not wait on models.dev timeout."""
         import agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = SAMPLE_REGISTRY
-        mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
-
-        # Disk cache exists but is older than the TTL — must NOT short-circuit.
         with patch.object(md, "_disk_cache_age_seconds",
                           return_value=md._MODELS_DEV_CACHE_TTL + 60), \
              patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
-             patch.object(md, "_save_disk_cache"):
+             patch.object(md, "_start_background_refresh_models_dev") as mock_refresh:
             result = fetch_models_dev()
 
-        mock_get.assert_called_once()
+        mock_get.assert_not_called()
+        mock_refresh.assert_called_once()
         assert "anthropic" in result
 
     @patch("agent.models_dev.requests.get")
@@ -302,6 +329,198 @@ class TestFetchModelsDev:
 
         mock_get.assert_called_once()
         assert "anthropic" in result
+
+    @patch("agent.models_dev.requests.get")
+    def test_stale_cache_failure_enters_backoff_and_suppresses_retry(self, mock_get):
+        import agent.models_dev as md
+
+        mock_get.side_effect = OSError("models.dev unreachable")
+        md._models_dev_cache = SAMPLE_REGISTRY
+        md._models_dev_cache_time = time.time() - md._MODELS_DEV_CACHE_TTL - 1
+
+        with patch.object(
+            md,
+            "_disk_cache_age_seconds",
+            return_value=md._MODELS_DEV_CACHE_TTL + 60,
+        ), patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
+            first = fetch_models_dev()
+            # Join the background refresh worker so its failure backoff is
+            # observable and requests.get stays patched for its lifetime.
+            for worker in threading.enumerate():
+                if worker.name == "models-dev-refresh":
+                    worker.join(timeout=5)
+                    assert not worker.is_alive()
+
+        assert first == SAMPLE_REGISTRY
+        assert not md._models_dev_refresh_in_flight
+        assert md._models_dev_retry_after > time.time()
+        mock_get.assert_called_once()
+
+        # A subsequent stale-cache hit inside the backoff window must not
+        # spawn another refresh worker (in_flight is set synchronously
+        # before the worker thread starts, so False proves no spawn).
+        md._models_dev_cache_time = time.time() - md._MODELS_DEV_CACHE_TTL - 1
+        second = fetch_models_dev()
+        assert second == SAMPLE_REGISTRY
+        assert not md._models_dev_refresh_in_flight
+        mock_get.assert_called_once()
+
+    @patch("agent.models_dev.requests.get")
+    def test_background_refresh_success_commits_registry(self, mock_get):
+        """The bg worker must save disk + swap mem cache + clear backoff."""
+        import agent.models_dev as md
+
+        response = MagicMock()
+        response.json.return_value = SAMPLE_REGISTRY
+        mock_get.return_value = response
+
+        md._models_dev_cache = {"stale": {}}
+        md._models_dev_cache_time = 0
+        md._models_dev_retry_after = time.time() - 1
+
+        with patch.object(md, "_save_disk_cache") as mock_save:
+            # Run the worker synchronously — deterministic, no thread.
+            md._models_dev_refresh_in_flight = True
+            md._background_refresh_models_dev()
+
+        mock_save.assert_called_once_with(SAMPLE_REGISTRY)
+        assert md._models_dev_cache == SAMPLE_REGISTRY
+        assert md._models_dev_cache_time > 0
+        assert md._models_dev_retry_after == 0
+        assert not md._models_dev_refresh_in_flight
+
+    @patch("agent.models_dev.requests.get")
+    def test_missing_cache_failure_enters_backoff(self, mock_get):
+        import agent.models_dev as md
+
+        mock_get.side_effect = OSError("models.dev unreachable")
+        with patch.object(md, "_disk_cache_age_seconds", return_value=None), patch.object(
+            md, "_load_disk_cache", return_value={}
+        ):
+            first = fetch_models_dev()
+            second = fetch_models_dev()
+
+        assert first == {}
+        assert second == {}
+        assert md._models_dev_retry_after > time.time()
+        mock_get.assert_called_once()
+
+    @patch("agent.models_dev.requests.get")
+    def test_concurrent_refreshes_share_one_network_request(self, mock_get):
+        import agent.models_dev as md
+
+        request_started = threading.Event()
+        release_request = threading.Event()
+        response = MagicMock()
+        response.json.return_value = SAMPLE_REGISTRY
+
+        def blocking_get(*_args, **_kwargs):
+            request_started.set()
+            assert release_request.wait(timeout=5)
+            return response
+
+        mock_get.side_effect = blocking_get
+        with patch.object(md, "_disk_cache_age_seconds", return_value=None), patch.object(
+            md, "_save_disk_cache"
+        ), ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(fetch_models_dev) for _ in range(6)]
+            assert request_started.wait(timeout=2)
+            release_request.set()
+            results = [future.result(timeout=5) for future in futures]
+
+        assert results == [SAMPLE_REGISTRY] * 6
+        mock_get.assert_called_once()
+
+    @patch("agent.models_dev.requests.get")
+    def test_force_refresh_bypasses_failure_backoff(self, mock_get):
+        import agent.models_dev as md
+
+        response = MagicMock()
+        response.json.return_value = SAMPLE_REGISTRY
+        mock_get.side_effect = [OSError("models.dev unreachable"), response]
+
+        with patch.object(md, "_disk_cache_age_seconds", return_value=None), patch.object(
+            md, "_load_disk_cache", return_value={}
+        ), patch.object(md, "_save_disk_cache"):
+            assert fetch_models_dev() == {}
+            assert fetch_models_dev(force_refresh=True) == SAMPLE_REGISTRY
+
+        assert mock_get.call_count == 2
+        assert md._models_dev_retry_after == 0
+
+    @pytest.mark.parametrize(
+        ("cache", "cache_time", "disk_data", "expected"),
+        [
+            (SAMPLE_REGISTRY, lambda md: time.time(), {}, SAMPLE_REGISTRY),
+            (
+                SAMPLE_REGISTRY,
+                lambda md: time.time() - md._MODELS_DEV_CACHE_TTL - 1,
+                {},
+                SAMPLE_REGISTRY,
+            ),
+            ({}, lambda _md: 0, {}, {}),
+        ],
+        ids=["fresh-memory", "stale-memory", "missing"],
+    )
+    @patch("agent.models_dev.requests.get")
+    def test_network_disabled_never_fetches(
+        self, mock_get, cache, cache_time, disk_data, expected
+    ):
+        import agent.models_dev as md
+
+        md._models_dev_cache = cache
+        md._models_dev_cache_time = cache_time(md)
+        with patch.object(md, "_load_disk_cache", return_value=disk_data):
+            result = fetch_models_dev(allow_network=False)
+
+        assert result == expected
+        mock_get.assert_not_called()
+
+    @patch("agent.models_dev.requests.get")
+    def test_network_disabled_loads_stale_disk_cache(self, mock_get):
+        import agent.models_dev as md
+
+        with patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
+            result = fetch_models_dev(allow_network=False)
+
+        assert result == SAMPLE_REGISTRY
+        mock_get.assert_not_called()
+
+    @patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY)
+    def test_provider_info_propagates_network_disabled(self, mock_fetch):
+        info = get_provider_info("anthropic", allow_network=False)
+
+        assert info is not None
+        mock_fetch.assert_called_once_with(allow_network=False)
+
+    @patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY)
+    def test_provider_info_default_preserves_zero_argument_fetch(self, mock_fetch):
+        """Default path must stay a zero-arg call: many test sites monkeypatch
+        fetch_models_dev with zero-arg lambdas."""
+        info = get_provider_info("anthropic")
+
+        assert info is not None
+        mock_fetch.assert_called_once_with()
+
+    def test_provider_definition_propagates_network_disabled(self):
+        from hermes_cli.providers import get_provider
+
+        with patch(
+            "agent.models_dev.get_provider_info", return_value=None
+        ) as mock_provider_info:
+            get_provider("anthropic", allow_network=False)
+
+        mock_provider_info.assert_called_once_with(
+            "anthropic", allow_network=False
+        )
+
+    def test_default_route_lookup_is_cache_only(self):
+        from agent.agent_init import _provider_default_routes
+
+        with patch("hermes_cli.providers.get_provider", return_value=None) as mock_get:
+            _provider_default_routes("anthropic")
+
+        mock_get.assert_called_once_with("anthropic", allow_network=False)
 
 
 # ---------------------------------------------------------------------------

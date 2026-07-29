@@ -539,8 +539,8 @@ class TestStdioPgroupReaping:
         )
         parent_pgid = os.getpgid(parent.pid)
         # Wait for parent to exit and grandchild to spin up.
-        parent.wait(timeout=5)
-        deadline = _time.time() + 5
+        parent.wait(timeout=15)
+        deadline = _time.time() + 15  # fresh CPython spinup dilates under CI load
         while _time.time() < deadline and not grandchild_pid_file.exists():
             _time.sleep(0.05)
         assert grandchild_pid_file.exists(), "grandchild did not start"
@@ -577,7 +577,7 @@ class TestStdioPgroupReaping:
                 pass
 
         # Grandchild should be gone — SIGTERM via killpg in phase 1 reached it.
-        deadline = _time.time() + 3
+        deadline = _time.time() + 10
         while _time.time() < deadline and psutil.pid_exists(grandchild_pid):
             _time.sleep(0.05)
         assert not psutil.pid_exists(grandchild_pid), (

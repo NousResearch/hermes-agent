@@ -287,6 +287,21 @@ if [ -d "$HERMES_HOME/cron" ]; then
     chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
+# Always ensure logs/gateways is hermes-owned (#45258). Formerly healed by
+# restartable gateway log/run chown — removed due to symlink TOCTOU
+# (CWE-59/367). The targeted data-volume chown above only runs when the
+# top-level $HERMES_HOME is mis-owned, so a warm volume with hermes-owned
+# HERMES_HOME but root-owned logs/gateways would otherwise leave
+# s6-setuidgid hermes mkdir failing with Permission denied. Non-recursive:
+# profile leaf dirs are each created/owned by their own log/run as hermes.
+if [ -d "$HERMES_HOME/logs/gateways" ]; then
+    if refuse_symlinked_path "chown" "$HERMES_HOME/logs/gateways"; then
+        :
+    else
+        chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true
+    fi
+fi
+
 # Always reset ownership of pairing data on every boot, same docker-exec/
 # root-write reason as profiles/ and cron/. `docker exec <container>
 # hermes pairing approve …` defaults to uid=0 and writes 0600 root-owned
@@ -452,11 +467,12 @@ fi
 # the credential is replaced. An orchestrator that manages the container can
 # supply a freshly-issued session via HERMES_AUTH_JSON_REBOOTSTRAP (distinct
 # from the create-only *_BOOTSTRAP var); this helper swaps ONLY the
-# providers.nous entry, and ONLY when the on-disk entry is provably terminal.
-# Every other case (healthy, rotating, absent, or unparseable auth.json) is a
-# no-op, so it is safe to leave the env set across restarts and never risks
-# clobbering a good/rotated token. Runs as its own stdlib-only subprocess (no
-# app imports) and always exits 0.
+# providers.nous entry when the on-disk entry is provably terminal OR the
+# orchestrator seed has a later obtained_at timestamp. The latter covers the
+# stop/update/start sequence where NAS already revoked the still-healthy-looking
+# local session. Older/incomparable seeds remain no-ops, so leaving the env set
+# cannot roll a healthy rotated token backward. Runs as its own stdlib-only
+# subprocess (no app imports) and always exits 0.
 if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
     if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
         :

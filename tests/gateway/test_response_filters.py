@@ -1,4 +1,5 @@
 from gateway.response_filters import (
+    is_autonomous_silence_response,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
 )
@@ -25,3 +26,21 @@ def test_blank_and_prose_mentions_are_not_silence():
 def test_failed_agent_result_never_counts_as_intentional_silence():
     assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY")
     assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
+
+
+def test_autonomous_silence_accepts_marker_with_own_line_note():
+    """The loose rule for cron/webhook lanes: marker + explanation suppresses."""
+    assert is_autonomous_silence_response("[SILENT]")
+    assert is_autonomous_silence_response("[SILENT]\n\nNothing new this tick.")
+    assert is_autonomous_silence_response("2 deals filtered\n\n[SILENT]")
+    assert is_autonomous_silence_response("no_reply\nduplicate inbound, already handled")
+    assert is_autonomous_silence_response("[SILENT] No changes detected")
+
+
+def test_autonomous_silence_still_delivers_mid_sentence_mentions():
+    assert not is_autonomous_silence_response(
+        "I considered staying [SILENT] but this one moved money, so: refunded $240."
+    )
+    assert not is_autonomous_silence_response("Silent retry succeeded; all good.")
+    assert not is_autonomous_silence_response("")
+    assert not is_autonomous_silence_response(None)

@@ -41,6 +41,7 @@ from gateway.run import (
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
+    build_resume_recovery_note,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -152,32 +153,9 @@ def _simulate_note_injection(
 
     if is_resume_pending:
         reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
-        reason_phrase = (
-            "a gateway restart"
-            if reason == "restart_timeout"
-            else "a gateway shutdown"
-            if reason == "shutdown_timeout"
-            else "a gateway interruption"
-        )
-        if message:
-            resume_guidance = (
-                "Address the user's NEW message below FIRST and focus "
-                "on what the user is asking now."
-            )
-        else:
-            resume_guidance = (
-                "Report to the user that the session was restored "
-                "successfully and ask what they would like to do next."
-            )
-        message = (
-            f"[System note: The previous turn was interrupted by "
-            f"{reason_phrase}; the gateway is now back online. "
-            f"Any restart/shutdown command in the history has already "
-            f"run — do NOT re-execute or verify it. {resume_guidance} "
-            f"Do NOT re-execute old tool calls — skip any unfinished "
-            f"work from the conversation history.]"
-            + (f"\n\n{message}" if message else "")
-        )
+        # Real production note builder — extracted to module scope in
+        # gateway/run.py so tests exercise the actual strings.
+        message = build_resume_recovery_note(reason, message)
     elif has_fresh_tool_tail:
         message = (
             "[System note: A new message has arrived. The conversation "
@@ -196,23 +174,7 @@ def _simulate_note_injection(
         and getattr(resume_entry, "resume_pending", False)
     ):
         sn_reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
-        sn_reason_phrase = (
-            "a gateway restart"
-            if sn_reason == "restart_timeout"
-            else "a gateway shutdown"
-            if sn_reason == "shutdown_timeout"
-            else "a gateway interruption"
-        )
-        message = (
-            f"[System note: The previous turn was interrupted by "
-            f"{sn_reason_phrase}; the gateway is now back online. "
-            f"Any restart/shutdown command in the history has already "
-            f"run — do NOT re-execute or verify it. Report to the user "
-            f"that the session was restored successfully and ask what "
-            f"they would like to do next. Do NOT re-execute old tool "
-            f"calls — skip any unfinished work from the conversation "
-            f"history.]"
-        )
+        message = build_resume_recovery_note(sn_reason, "")
     return message
 
 
@@ -520,6 +482,34 @@ class TestResumePendingSystemNote:
             resume_entry=entry,
         )
         assert "gateway shutdown" in result
+
+    def test_empty_message_interactive_note_asks_what_next(self):
+        """Interactive platforms: the startup auto-resume turn reports the
+        restore and asks the (present) human what to do next."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "session was restored" in note
+        assert "ask what they would like to do next" in note
+        assert "skip any unfinished work" in note
+
+    def test_empty_message_noninteractive_note_continues_task(self):
+        """Non-interactive platforms (webhook, API server): nobody can answer
+        'what next?', so the resumed turn must complete the interrupted work
+        instead of acknowledging (#57056)."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=False)
+        assert "CONTINUE the interrupted task" in note
+        assert "session was restored" not in note
+        assert "ask what they would like to do next" not in note
+        # Must not tell the model to skip the unfinished work it should finish.
+        assert "skip any unfinished work" not in note
+        # But still guards against re-running already-recorded tool calls.
+        assert "already appear in the history" in note
+
+    def test_new_message_guidance_identical_regardless_of_interactivity(self):
+        """A real NEW user message always wins — same guidance either way."""
+        a = build_resume_recovery_note("restart_timeout", "do the thing", interactive=True)
+        b = build_resume_recovery_note("restart_timeout", "do the thing", interactive=False)
+        assert a == b
+        assert "NEW message" in a
 
     def test_resume_pending_fires_without_tool_tail(self):
         """Key improvement over PR #9934: the restart-resume note fires
@@ -1947,3 +1937,188 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     # No leaked sentinel and no orphaned queued event.
     assert session_key not in runner._running_agents
     assert session_key not in getattr(adapter, "_pending_messages", {})
+
+
+# ---------------------------------------------------------------------------
+# Startup-restore inbound gate must be BOUNDED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_gate_releases_when_resume_turn_outlives_timeout(
+    monkeypatch,
+):
+    """A single slow boot-resume turn must not hold the inbound gate shut.
+
+    While ``_startup_restore_in_progress`` is set, every inbound message is
+    QUEUED instead of answered.  The gate is opened by
+    ``_finish_startup_restore``, which waits on the synthetic boot
+    auto-resume turns.  Without a bound, one pathologically long resumed
+    turn holds the gate — and therefore every channel's inbound queue —
+    for the entire duration of that turn.
+    """
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0.05")
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._background_tasks = set()
+
+    seen: list[str] = []
+    never_finishes = asyncio.Event()
+
+    async def slow_resume_turn() -> None:
+        await never_finishes.wait()
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    slow_task = asyncio.create_task(slow_resume_turn())
+    runner._startup_restore_tasks = [slow_task]
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+    assert runner._startup_restore_queue == [inbound]
+
+    # The gate must release on the bound even though the resume turn is
+    # still running.
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+
+    assert seen == ["inbound:hello"], (
+        "startup-restore gate never released: queued inbound was not drained "
+        "while a slow boot-resume turn was still running"
+    )
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
+    # The slow turn is NOT cancelled — it finishes in the background.
+    assert not slow_task.done()
+
+    never_finishes.set()
+    await slow_task
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_gate_still_waits_for_a_prompt_resume_turn(
+    monkeypatch,
+):
+    """The bound must not truncate a normal-speed resume turn.
+
+    Feature preservation: with the default (generous) timeout, a resume turn
+    that completes promptly is still fully awaited before the gate opens, so
+    the queued inbound lands behind a finished turn.
+    """
+    monkeypatch.delenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", raising=False)
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._background_tasks = set()
+
+    seen: list[str] = []
+    resume_done = asyncio.Event()
+
+    async def resume_turn() -> None:
+        await resume_done.wait()
+        seen.append("resume-finished")
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    runner._startup_restore_tasks = [asyncio.create_task(resume_turn())]
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert seen == [], "gate opened before the resume turn finished"
+
+    resume_done.set()
+    await finish_task
+    assert seen == ["resume-finished", "inbound:hello"]
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_drain_timeout_zero_restores_unbounded_wait(
+    monkeypatch,
+):
+    """A non-positive bound opts back into the historical wait-forever gate."""
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "0")
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._background_tasks = set()
+
+    seen: list[str] = []
+    resume_done = asyncio.Event()
+
+    async def resume_turn() -> None:
+        await resume_done.wait()
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+    runner._startup_restore_tasks = [asyncio.create_task(resume_turn())]
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+    assert await runner._handle_message(inbound) is None
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    await asyncio.sleep(0.15)
+    assert seen == [], "unbounded gate released early"
+
+    resume_done.set()
+    await finish_task
+    assert seen == ["inbound:hello"]
+
+
+def test_startup_restore_drain_timeout_reads_config_bridged_env(monkeypatch):
+    """The bound is a config.yaml knob bridged to an internal env var."""
+    from gateway.run import (
+        _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT,
+        _startup_restore_drain_timeout_secs,
+    )
+
+    monkeypatch.delenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", raising=False)
+    assert (
+        _startup_restore_drain_timeout_secs()
+        == _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT
+    )
+
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "12.5")
+    assert _startup_restore_drain_timeout_secs() == 12.5
+
+    # A malformed value must fall back to the default, never raise.
+    monkeypatch.setenv("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT", "not-a-number")
+    assert (
+        _startup_restore_drain_timeout_secs()
+        == _STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT
+    )
+
+
+def test_startup_restore_drain_timeout_is_a_documented_config_key():
+    """agent.gateway_startup_restore_drain_timeout ships in DEFAULT_CONFIG."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert (
+        "gateway_startup_restore_drain_timeout" in DEFAULT_CONFIG["agent"]
+    ), "the bound must be a config.yaml knob, not an undocumented env var"

@@ -158,6 +158,19 @@ class TestDetectLocalServerTypeCache:
         model_metadata._endpoint_probe_path_cache[key] = (
             val, _time.monotonic() - model_metadata._ENDPOINT_PROBE_TTL_SECONDS - 1,
         )
+        # Age the disk L2 entry too. Its TTL (300s) is much shorter than the
+        # in-proc TTL (1h), so in real time-flow it always expires first —
+        # this test compresses both expiries into one instant.
+        import json as _json
+        _disk = model_metadata._local_probe_disk_cache_path()
+        if _disk.exists():
+            _data = _json.loads(_disk.read_text(encoding="utf-8"))
+            for _entry in _data.values():
+                if isinstance(_entry, dict):
+                    _entry["ts"] = (
+                        _time.time() - model_metadata._LOCAL_PROBE_DISK_TTL_SECONDS - 1
+                    )
+            _disk.write_text(_json.dumps(_data), encoding="utf-8")
 
         lmstudio_resp = MagicMock()
         lmstudio_resp.status_code = 200

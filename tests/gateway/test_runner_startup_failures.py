@@ -156,6 +156,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
             self.adapters = {}
 
         async def start(self):
+            assert self._platform_lock_takeover_on_start is False
             return True
 
         async def stop(self):
@@ -191,6 +192,7 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
             self.adapters = {}
 
         async def start(self):
+            assert self._platform_lock_takeover_on_start is True
             return True
 
         async def stop(self):
@@ -508,6 +510,60 @@ async def test_runner_exits_with_ex_config_on_nonretryable_startup_error(monkeyp
     assert runner.exit_code == GATEWAY_FATAL_CONFIG_EXIT_CODE
     state = read_runtime_status()
     assert state["gateway_state"] == "startup_failed"
+
+
+@pytest.mark.asyncio
+async def test_runner_stays_alive_on_mixed_retryable_and_nonretryable_errors(
+    monkeypatch, tmp_path, caplog
+):
+    """Mixed startup failures — one platform fatally misconfigured, another
+    merely transiently failing — must NOT exit with EX_CONFIG (NS-609).
+
+    Real-world shape: WhatsApp enabled but never paired (non-retryable
+    ``whatsapp_not_paired``) while Telegram hits a startup TimedOut
+    (retryable). Exiting 78 here either takes the gateway permanently down
+    (supervisors honoring the exit-78 contract) or crash-loops it (anything
+    else) — and in both cases Telegram never gets its retry even though
+    nothing is wrong with its config. The gateway must stay alive in
+    degraded mode, park the fatal platform, and queue the retryable one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    def _make_adapter(platform, platform_config):
+        if platform == Platform.DISCORD:
+            return _NonRetryableFailureAdapter()
+        return _RetryableFailureAdapter()
+
+    monkeypatch.setattr(runner, "_create_adapter", _make_adapter)
+
+    import logging
+    with caplog.at_level(logging.ERROR):
+        ok = await runner.start()
+
+    # Gateway stays alive — no clean-exit request, no EX_CONFIG.
+    assert ok is True
+    assert runner.should_exit_cleanly is False
+    assert runner.exit_code is None
+    state = read_runtime_status()
+    assert state["gateway_state"] in {"degraded", "running"}
+    # The retryable platform is queued for reconnection…
+    assert Platform.TELEGRAM in runner._failed_platforms
+    assert state["platforms"]["telegram"]["state"] == "retrying"
+    # …while the misconfigured one is parked as fatal, not retried.
+    assert Platform.DISCORD not in runner._failed_platforms
+    assert state["platforms"]["discord"]["state"] == "fatal"
+    # The fatal side is still surfaced loudly for the operator.
+    assert any(
+        "fatally misconfigured" in record.message
+        for record in caplog.records
+    ), "Expected an error log calling out the parked platform(s)"
 
 
 @pytest.mark.asyncio

@@ -127,7 +127,7 @@ class TestTextToSpeechToolTruncation:
         text = "A" * 5000
         captured_text = {}
 
-        def fake_openai(t, out, cfg):
+        def fake_openai(t, out, cfg, **_kw):
             captured_text["text"] = t
             with open(out, "wb") as f:
                 f.write(b"\x00")
@@ -175,7 +175,7 @@ class TestTextToSpeechToolTruncation:
         text = "C" * 500
         captured_text = {}
 
-        def fake_openai(t, out, cfg):
+        def fake_openai(t, out, cfg, **_kw):
             captured_text["text"] = t
             with open(out, "wb") as f:
                 f.write(b"\x00")

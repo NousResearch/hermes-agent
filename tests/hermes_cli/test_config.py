@@ -15,6 +15,7 @@ from hermes_cli.config import (
     get_compatible_custom_providers,
     _explicit_config_paths,
     _normalize_max_turns_config,
+    is_provider_enabled,
     load_config,
     load_env,
     migrate_config,
@@ -607,6 +608,210 @@ class TestSaveEnvValueSecure:
             assert parsed["ANTHROPIC_TOKEN"] == token
             assert load_env()["ANTHROPIC_TOKEN"] == token
 
+    def test_save_env_value_quotes_values_with_internal_spaces(self, tmp_path):
+        """Internal spaces must be quoted so shell-sourcing does not word-split.
+
+        Sibling of installer #57247: core writer left
+        TERMINAL_SSH_KEY=/Users/.../Application Support/... unquoted.
+        python-dotenv still parsed it; ``set -a; . file`` failed.
+        """
+        import subprocess
+        from dotenv import dotenv_values
+
+        path = "/Users/paulo/Library/Application Support/hermes/keys/id_ed25519"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", path)
+
+            env_path = tmp_path / ".env"
+            content = env_path.read_text(encoding="utf-8")
+            assert f'TERMINAL_SSH_KEY="{path}"' in content
+
+            parsed = dotenv_values(str(env_path))
+            assert parsed["TERMINAL_SSH_KEY"] == path
+            assert load_env()["TERMINAL_SSH_KEY"] == path
+
+            # Shell source must round-trip (this is what the bug broke).
+            r = subprocess.run(
+                [
+                    "env",
+                    "-i",
+                    "sh",
+                    "-c",
+                    f"set -a; . '{env_path}'; set +a; "
+                    f'printf "%s" "$TERMINAL_SSH_KEY"',
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert r.returncode == 0, r.stderr
+            assert r.stderr == ""
+            assert r.stdout == path
+
+    def test_save_env_value_quotes_values_with_tabs(self, tmp_path):
+        """Tabs trigger quoting; round-trip via dotenv and shell source."""
+        import subprocess
+        from dotenv import dotenv_values
+
+        value = "left\tright"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TABBY_KEY", None)
+            save_env_value("TABBY_KEY", value)
+
+            env_path = tmp_path / ".env"
+            content = env_path.read_text(encoding="utf-8")
+            assert f'TABBY_KEY="{value}"' in content
+
+            parsed = dotenv_values(str(env_path))
+            assert parsed["TABBY_KEY"] == value
+            assert load_env()["TABBY_KEY"] == value
+
+            r = subprocess.run(
+                [
+                    "env",
+                    "-i",
+                    "sh",
+                    "-c",
+                    f"set -a; . '{env_path}'; set +a; "
+                    f'printf "%s" "$TABBY_KEY"',
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert r.returncode == 0, r.stderr
+            assert r.stderr == ""
+            assert r.stdout == value
+
+    def test_save_env_value_spaced_path_is_idempotent(self, tmp_path):
+        """Saving the same spaced value twice must not grow quotes."""
+        path = "/Users/me/Application Support/key"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", path)
+            first = (tmp_path / ".env").read_text(encoding="utf-8")
+            save_env_value("TERMINAL_SSH_KEY", path)
+            second = (tmp_path / ".env").read_text(encoding="utf-8")
+
+            assert first == second
+            assert first.count('TERMINAL_SSH_KEY="') == 1
+            assert '""' not in first
+            assert f'TERMINAL_SSH_KEY="{path}"' in first
+
+    def test_save_env_value_readback_resave_is_idempotent(self, tmp_path):
+        """hermes setup path: dotenv unquotes, then re-save must not grow quotes."""
+        from dotenv import dotenv_values
+
+        path = "/Users/me/Application Support/key"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", path)
+            first = (tmp_path / ".env").read_text(encoding="utf-8")
+
+            # Real read-back boundary (what setup uses via get_env_value/dotenv).
+            read_back = dotenv_values(str(tmp_path / ".env"))["TERMINAL_SSH_KEY"]
+            assert read_back == path
+            save_env_value("TERMINAL_SSH_KEY", read_back)
+            second = (tmp_path / ".env").read_text(encoding="utf-8")
+
+            assert first == second
+            assert f'TERMINAL_SSH_KEY="{path}"' in second
+
+    def test_save_env_value_strips_newlines_before_quoting(self, tmp_path):
+        """save_env_value strips \\n/\\r before _quote_env_value; result is one line.
+
+        Pins the boundary so any(c.isspace()) never quotes multi-line dotenv
+        values through this writer (newlines never reach the quoter).
+        """
+        from dotenv import dotenv_values
+
+        raw = "line1\nline2\rline3"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("MULTI_KEY", None)
+            save_env_value("MULTI_KEY", raw)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            # Single KEY= line, no embedded raw newlines in the value payload.
+            lines = [ln for ln in content.splitlines() if ln.startswith("MULTI_KEY=")]
+            assert len(lines) == 1
+            assert "\n" not in lines[0]
+            assert "\r" not in lines[0]
+            # Newlines stripped -> "line1line2line3" has no whitespace -> unquoted.
+            assert lines[0] == "MULTI_KEY=line1line2line3"
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["MULTI_KEY"] == "line1line2line3"
+
+    def test_save_env_value_simple_values_stay_unquoted(self, tmp_path):
+        """No quoting churn: plain values remain bare; untouched lines unchanged."""
+        env_path = tmp_path / ".env"
+        # Pre-existing lines: one simple, one already correctly bare.
+        env_path.write_text(
+            "KEEP_SIMPLE=plainvalue\n"
+            "OTHER_KEY=foo123\n",
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("NEW_KEY", None)
+            os.environ.pop("KEEP_SIMPLE", None)
+            save_env_value("NEW_KEY", "bar-simple")
+
+            content = env_path.read_text(encoding="utf-8")
+            # Newly written simple value is unquoted.
+            assert "NEW_KEY=bar-simple\n" in content
+            assert 'NEW_KEY="' not in content
+            # Untouched pre-existing simple lines are not re-quoted.
+            assert "KEEP_SIMPLE=plainvalue\n" in content
+            assert "OTHER_KEY=foo123\n" in content
+            assert 'KEEP_SIMPLE="' not in content
+            assert 'OTHER_KEY="' not in content
+
+    def test_save_env_value_does_not_requote_untouched_spaced_lines(self, tmp_path):
+        """Mass-requote guard: rewriting another key leaves legacy spaced
+        lines as-is (fix only applies when that key is saved again).
+        """
+        env_path = tmp_path / ".env"
+        legacy = (
+            "TERMINAL_SSH_KEY=/Users/me/Application Support/key\n"
+            "PLAIN=ok\n"
+        )
+        env_path.write_text(legacy, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("PLAIN", None)
+            save_env_value("PLAIN", "ok2")
+
+            content = env_path.read_text(encoding="utf-8")
+            # Legacy spaced line not re-serialized by this write.
+            assert (
+                "TERMINAL_SSH_KEY=/Users/me/Application Support/key\n" in content
+            )
+            assert 'TERMINAL_SSH_KEY="' not in content
+            assert "PLAIN=ok2\n" in content
+
+    def test_save_env_value_already_quoted_input_is_not_double_wrapped_idempotently(
+        self, tmp_path
+    ):
+        """Callers pass raw values; if a value literally contains quote
+        characters, escaping+wrap is the dialect (#57249). Re-saving the
+        same raw value is stable (no quote growth). load_env round-trips.
+        """
+        # User-typed value that already includes surrounding quotes as data.
+        raw = '"/Users/me/Application Support/key"'
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TERMINAL_SSH_KEY", None)
+            save_env_value("TERMINAL_SSH_KEY", raw)
+            first = (tmp_path / ".env").read_text(encoding="utf-8")
+            save_env_value("TERMINAL_SSH_KEY", raw)
+            second = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert first == second
+            # One outer wrap layer only (escaped inner quotes, not nested wraps).
+            line = [
+                ln for ln in first.splitlines() if ln.startswith("TERMINAL_SSH_KEY=")
+            ][0]
+            assert line.startswith('TERMINAL_SSH_KEY="')
+            assert line.endswith('"')
+            assert line.count('TERMINAL_SSH_KEY="') == 1
+            # Escaping dialect end-to-end: load sees the raw input, not stripped quotes.
+            assert load_env()["TERMINAL_SSH_KEY"] == raw
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
@@ -726,23 +931,20 @@ class TestSaveConfigAtomicity:
 
             # Read raw YAML to verify it's valid and correct
             config_path = tmp_path / "config.yaml"
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77
 
 
 class TestSanitizeEnvLines:
-    """Tests for .env file corruption repair."""
+    """Tests for semantics-preserving .env line normalization."""
 
-    def test_splits_concatenated_keys(self):
-        """Two KEY=VALUE pairs jammed on one line get split."""
+    def test_preserves_known_key_spelling_inside_value(self):
+        """Known KEY= text in a value is data, not a second assignment."""
         lines = ["ANTHROPIC_API_KEY=sk-ant-xxxOPENAI_BASE_URL=https://api.openai.com/v1\n"]
         result = _sanitize_env_lines(lines)
-        assert result == [
-            "ANTHROPIC_API_KEY=sk-ant-xxx\n",
-            "OPENAI_BASE_URL=https://api.openai.com/v1\n",
-        ]
+        assert result == lines
 
     def test_preserves_clean_file(self):
         """A well-formed .env file passes through unchanged (modulo trailing newlines)."""
@@ -766,15 +968,30 @@ class TestSanitizeEnvLines:
         result = _sanitize_env_lines(lines)
         assert result == ["FOO_BAR=baz\n"]
 
-    def test_three_concatenated_keys(self):
-        """Three known keys on one line all get separated."""
+    def test_migrate_reports_normalized_line_formatting(self, capsys):
+        latest_version = DEFAULT_CONFIG["_config_version"]
+        with (
+            patch("hermes_cli.config.sanitize_env_file", return_value=2),
+            patch(
+                "hermes_cli.config.check_config_version",
+                return_value=(latest_version, latest_version),
+            ),
+            patch("hermes_cli.config.read_raw_config", return_value={}),
+            patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
+            patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
+            patch("hermes_cli.config.get_missing_skill_config_vars", return_value=[]),
+        ):
+            migrate_config(interactive=False)
+
+        assert capsys.readouterr().out == (
+            "  ✓ Normalized .env line formatting (2 line(s) changed)\n"
+        )
+
+    def test_multiple_known_key_spellings_inside_value_remain_opaque(self):
+        """Repeated known KEY= text cannot synthesize assignments."""
         lines = ["FAL_KEY=111FIRECRAWL_API_KEY=222GITHUB_TOKEN=333\n"]
         result = _sanitize_env_lines(lines)
-        assert result == [
-            "FAL_KEY=111\n",
-            "FIRECRAWL_API_KEY=222\n",
-            "GITHUB_TOKEN=333\n",
-        ]
+        assert result == lines
 
     def test_value_with_equals_sign_not_split(self):
         """A value containing '=' shouldn't be falsely split (lowercase in value)."""
@@ -783,19 +1000,15 @@ class TestSanitizeEnvLines:
         assert result == lines
 
     def test_unknown_keys_not_split(self):
-        """Unknown key names on one line are NOT split (avoids false positives)."""
+        """Unknown key names on one line remain opaque value data."""
         lines = ["CUSTOM_VAR=value123OTHER_THING=value456\n"]
         result = _sanitize_env_lines(lines)
-        # Unknown keys stay on one line — no false split
-        assert len(result) == 1
+        assert result == lines
 
-    def test_value_ending_with_digits_still_splits(self):
-        """Concatenation is detected even when value ends with digits."""
+    def test_value_ending_with_digits_remains_opaque(self):
         lines = ["OPENROUTER_API_KEY=sk-or-v1-abc123OPENAI_BASE_URL=https://api.openai.com/v1\n"]
         result = _sanitize_env_lines(lines)
-        assert len(result) == 2
-        assert result[0].startswith("OPENROUTER_API_KEY=")
-        assert result[1].startswith("OPENAI_BASE_URL=")
+        assert result == lines
 
     def test_glm_suffix_collision_not_split(self):
         """GLM_API_KEY / GLM_BASE_URL must not be mangled by LM_API_KEY / LM_BASE_URL suffixes (#17138)."""
@@ -806,13 +1019,10 @@ class TestSanitizeEnvLines:
         result = _sanitize_env_lines(lines)
         assert result == lines, f"GLM_* lines were corrupted by suffix collision: {result}"
 
-    def test_suffix_collision_does_not_break_real_concatenation(self):
-        """A genuine concatenation that happens to start with a suffix-superset key still splits."""
+    def test_suffix_superset_value_remains_opaque(self):
         lines = ["GLM_API_KEY=glmLM_API_KEY=lm-key\n"]
         result = _sanitize_env_lines(lines)
-        assert len(result) == 2
-        assert result[0].startswith("GLM_API_KEY=")
-        assert result[1].startswith("LM_API_KEY=")
+        assert result == lines
 
     def test_value_embedding_known_key_not_split(self):
         """A single valid line whose value embeds a known KEY= (e.g. a URL with
@@ -831,8 +1041,18 @@ class TestSanitizeEnvLines:
         result = _sanitize_env_lines(lines)
         assert result == lines, f"leading text was dropped: {result}"
 
-    def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
-        """save_env_value sanitizes corrupted lines when writing a new key."""
+    def test_load_env_does_not_synthesize_variable_from_value(self, tmp_path):
+        """The loader must preserve assignment boundaries from the file."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("OPENAI_API_KEY=fixtureGITHUB_TOKEN=inert\n")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            env = load_env()
+
+        assert env == {"OPENAI_API_KEY": "fixtureGITHUB_TOKEN=inert"}
+
+    def test_save_env_value_preserves_existing_value_semantics(self, tmp_path):
+        """Writing another key must not reinterpret an existing value."""
         env_file = tmp_path / ".env"
         env_file.write_text(
             "ANTHROPIC_API_KEY=sk-antOPENAI_BASE_URL=https://api.openai.com/v1\n"
@@ -844,13 +1064,11 @@ class TestSanitizeEnvLines:
             content = env_file.read_text()
             lines = content.strip().split("\n")
 
-            # Corrupted line should be split, new key added
-            assert "ANTHROPIC_API_KEY=sk-ant" in lines
-            assert "OPENAI_BASE_URL=https://api.openai.com/v1" in lines
+            assert "ANTHROPIC_API_KEY=sk-antOPENAI_BASE_URL=https://api.openai.com/v1" in lines
+            assert "OPENAI_BASE_URL=https://api.openai.com/v1" not in lines
             assert "MESSAGING_CWD=/tmp" in lines
 
-    def test_sanitize_env_file_returns_fix_count(self, tmp_path):
-        """sanitize_env_file reports how many entries were fixed."""
+    def test_sanitize_env_file_does_not_rewrite_value_semantics(self, tmp_path):
         env_file = tmp_path / ".env"
         env_file.write_text(
             "FAL_KEY=good\n"
@@ -858,12 +1076,13 @@ class TestSanitizeEnvLines:
         )
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             fixes = sanitize_env_file()
-            assert fixes > 0
+            assert fixes == 0
 
-            # Verify file is now clean
             content = env_file.read_text()
-            assert "OPENROUTER_API_KEY=val\n" in content
-            assert "FIRECRAWL_API_KEY=val2\n" in content
+            assert content == (
+                "FAL_KEY=good\n"
+                "OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n"
+            )
 
     def test_sanitize_env_file_noop_on_clean_file(self, tmp_path):
         """No changes when file is already clean."""
@@ -1198,6 +1417,22 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["base_url"] == "https://api.openai.com/v1"
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
+
+    def test_disabled_provider_is_excluded_from_compatibility_projection(self):
+        """Compatibility fallback must not resurrect a disabled modern entry."""
+        compatible = get_compatible_custom_providers(
+            {
+                "providers": {
+                    "route-key": {
+                        "name": "Route Key",
+                        "api": "https://disabled.example/v1",
+                        "enabled": False,
+                    }
+                }
+            }
+        )
+
+        assert compatible == []
 
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""
@@ -2036,3 +2271,149 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+class TestIsProviderEnabled:
+    """``is_provider_enabled`` gates ``providers.<name>`` blocks for the
+    model picker, ``/models`` listings and the runtime resolver. Default
+    must be ``True`` so existing configs keep working untouched."""
+
+    def test_missing_flag_defaults_to_enabled(self):
+        assert is_provider_enabled({"name": "Anthropic"}) is True
+
+    def test_empty_block_defaults_to_enabled(self):
+        assert is_provider_enabled({}) is True
+
+    def test_explicit_true_is_enabled(self):
+        assert is_provider_enabled({"enabled": True}) is True
+
+    def test_explicit_false_hides_it(self):
+        assert is_provider_enabled({"enabled": False}) is False
+
+    @pytest.mark.parametrize("raw", ["false", "False", "FALSE", "0", "no", "off"])
+    def test_yaml_string_falsy_values_hide_it(self, raw):
+        # YAML can hand us a string for a value when the user quotes it.
+        assert is_provider_enabled({"enabled": raw}) is False
+
+    @pytest.mark.parametrize("raw", ["true", "True", "yes", "on", "1", "anything-else"])
+    def test_yaml_string_truthy_values_keep_it_enabled(self, raw):
+        assert is_provider_enabled({"enabled": raw}) is True
+
+    def test_non_dict_input_defaults_to_enabled(self):
+        # Malformed entries (None, list, string) don't disappear silently —
+        # the gate stays open and the existing validation paths will flag
+        # them.
+        assert is_provider_enabled(None) is True
+        assert is_provider_enabled([]) is True
+        assert is_provider_enabled("oops") is True
+
+
+class TestProviderEnabledRuntimeGate:
+    """Verify ``resolve_runtime_provider`` honours ``enabled: false`` for
+    both custom-defined and built-in provider names. Smoke test only —
+    full runtime resolution has its own fixture-heavy tests; here we
+    only assert the early-exit raises a typed error."""
+
+    def test_disabled_custom_provider_raises_valueerror(self, tmp_path, monkeypatch):
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "my-fork": {
+                    "name": "my-fork",
+                    "base_url": "http://127.0.0.1:9999",
+                    "api_key": "not-needed",
+                    "enabled": False,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Bust the in-process config cache so the override picks up.
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with pytest.raises(ValueError, match="disabled"):
+            resolve_runtime_provider(requested="my-fork")
+
+    def test_disabled_builtin_provider_raises_valueerror(self, tmp_path, monkeypatch):
+        # `openrouter` is a built-in name with its own resolution path —
+        # the gate must fire BEFORE that path runs.
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "openrouter": {
+                    "name": "OpenRouter",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "enabled": False,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with pytest.raises(ValueError, match="disabled"):
+            resolve_runtime_provider(requested="openrouter")
+
+    def test_enabled_provider_does_not_raise(self, tmp_path, monkeypatch):
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "claude-agent-sdk": {
+                    "name": "Claude Agent SDK",
+                    "base_url": "http://127.0.0.1:3456",
+                    "api_key": "not-needed",
+                    "enabled": True,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        # Don't assert success — built-in resolution needs more state.
+        # We only assert this path doesn't hit the disabled-gate.
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        try:
+            resolve_runtime_provider(requested="claude-agent-sdk")
+        except ValueError as e:
+            assert "disabled" not in str(e).lower()
+        except Exception:
+            pass  # any non-ValueError is fine; we only gate the disabled path
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_CONFIG must not carry a duplicate "kanban" key
+# ---------------------------------------------------------------------------
+
+def test_default_config_kanban_block_not_dropped_by_duplicate_key():
+    """DEFAULT_CONFIG previously declared ``"kanban"`` twice, so Python kept
+    only the second literal and silently dropped the first — losing the
+    ``auto_subscribe_on_create`` default. Both sets of defaults must survive.
+    """
+    kanban = DEFAULT_CONFIG["kanban"]
+    # From the first (dropped) block:
+    assert kanban.get("auto_subscribe_on_create") is True
+    # From the second block:
+    assert "dispatch_in_gateway" in kanban
+    assert "auto_decompose" in kanban
+
+
+def test_default_config_has_no_duplicate_top_level_keys():
+    """Guard against any duplicate key silently shadowing a default."""
+    import ast
+    import hermes_cli.config as cfg_mod
+
+    src = open(cfg_mod.__file__, encoding="utf-8").read()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
+            if "model" in keys and "kanban" in keys:  # the DEFAULT_CONFIG literal
+                dupes = {k for k in keys if keys.count(k) > 1}
+                assert not dupes, f"duplicate DEFAULT_CONFIG keys: {sorted(dupes)}"

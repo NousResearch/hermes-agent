@@ -32,6 +32,26 @@ class TestDoctorPlatformHints:
         assert doctor._python_install_cmd() == "uv pip install"
         assert doctor._system_package_install_cmd("ripgrep") == "sudo apt install ripgrep"
 
+    def test_sqlite_upgrade_hint_recreates_docker_containers(self, monkeypatch):
+        monkeypatch.setattr(doctor, "detect_install_method", lambda _root: "docker")
+
+        hint = doctor._sqlite_upgrade_hint()
+
+        assert "docker pull nousresearch/hermes-agent:latest" in hint
+        assert "recreate all Hermes containers" in hint
+        assert "hermes update" not in hint
+
+    def test_sqlite_upgrade_hint_keeps_git_runtime_repair(self):
+        hint = doctor._sqlite_upgrade_hint("git")
+
+        assert "run `hermes update`" in hint
+
+    def test_sqlite_upgrade_hint_uses_nix_package_manager(self):
+        hint = doctor._sqlite_upgrade_hint("nix")
+
+        assert "Nix source that installed it" in hint
+        assert "hermes update" not in hint
+
 
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
@@ -122,6 +142,30 @@ class TestDoctorEnvFileEncoding:
 
         # Run doctor. If the .env read still uses locale encoding, this
         # raises UnicodeDecodeError and the test fails.
+        with pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+
+
+    def test_doctor_reads_invalid_utf8_env_via_latin1_fallback(
+        self, monkeypatch, tmp_path
+    ):
+        """cp1252/latin-1 .env with ASCII provider hints must not abort doctor."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        env_path = hermes_home / ".env"
+        # 0xff is invalid UTF-8; latin-1 decodes it. Keep an ASCII provider key
+        # so the scan still reports a configured endpoint/key.
+        env_path.write_bytes(b"OPENAI_API_KEY=sk-test\xff\n")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
         with pytest.raises(SystemExit):
             doctor_mod.run_doctor(Namespace(fix=False))
 
@@ -310,7 +354,7 @@ class TestDoctorMemoryProviderSection:
         # Stub auth checks to avoid real API calls
         try:
             from hermes_cli import auth as _auth_mod
-            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
             monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
             monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
         except Exception:
@@ -417,7 +461,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -455,7 +499,7 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -495,7 +539,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
     try:
         from hermes_cli import auth as _auth_mod
 
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
     except Exception:
@@ -517,6 +561,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
         ("nvidia", "qwen/qwen3.5-122b-a10b"),
+        ("moa", "anthropic/claude-sonnet-4.6"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -544,7 +589,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -591,7 +636,7 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -638,7 +683,7 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_auth_status", lambda provider: {"logged_in": True})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
@@ -678,7 +723,7 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -695,6 +740,80 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "system dependency not met" in out
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
     assert "npm install -g agent-browser && agent-browser install" in out
+
+
+def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
+    """Set up run_doctor with node present, agent-browser only in the
+    Hermes-managed node bin (~/.hermes/node/bin), not on PATH or in
+    PROJECT_ROOT/node_modules. Returns the captured stdout."""
+    home = tmp_path / ".hermes"
+    (home / "node" / "bin").mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    managed_ab = home / "node" / "bin" / "agent-browser"
+    managed_ab.write_text("#!/bin/sh\n", encoding="utf-8")
+    managed_ab.chmod(0o755)
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)  # no node_modules/agent-browser here
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.delenv("PREFIX", raising=False)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    # node on PATH, agent-browser is NOT on PATH (only in the managed bin).
+    # The managed-dir rung resolves via shutil.which(..., path=<dir>) so
+    # Windows picks the .cmd shim — mirror that shape here.
+    def _fake_which(cmd, path=None):
+        if path is not None:
+            if cmd == "agent-browser" and str(managed_ab.parent) == str(path):
+                return str(managed_ab)
+            return None
+        return "/usr/bin/node" if cmd in {"node", "npm"} else None
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", _fake_which)
+    # agent_browser_runnable is imported into doctor's namespace
+    monkeypatch.setattr(
+        doctor_mod,
+        "agent_browser_runnable",
+        lambda path: runnable and str(path) == str(managed_ab),
+    )
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
+def test_run_doctor_detects_agent_browser_in_managed_node_bin(monkeypatch, tmp_path):
+    # Regression for #53192: `hermes acp --setup-browser` installs into
+    # ~/.hermes/node/bin/agent-browser, which isn't on PATH; doctor must still
+    # report it installed instead of "agent-browser not installed".
+    out = _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable=True)
+    assert "agent-browser not installed" not in out
+    assert "agent-browser found but not runnable" not in out
+    assert "✓ agent-browser" in out
+
+
+def test_run_doctor_managed_agent_browser_not_runnable_still_warns(monkeypatch, tmp_path):
+    # A present-but-unrunnable managed binary must fall through to the existing
+    # warning, not be reported as OK.
+    out = _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable=False)
+    assert "agent-browser not installed" in out
 
 
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
@@ -718,7 +837,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -767,7 +886,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except ImportError:
@@ -826,7 +945,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except ImportError:
@@ -986,7 +1105,7 @@ def _run_doctor_with_healthy_oauth_fallback(
 
     from hermes_cli import auth as _auth_mod
 
-    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
     monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
     monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: minimax_oauth_status)
     _xai_status = xai_oauth_status if xai_oauth_status is not None else {}
@@ -1117,7 +1236,7 @@ class TestDoctorXaiOAuthStatus:
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", xai_auth_fn)
@@ -1191,7 +1310,7 @@ class TestDoctorXaiOAuthStatus:
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
@@ -1222,7 +1341,7 @@ class TestDoctorXaiOAuthStatus:
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
@@ -1282,7 +1401,7 @@ class TestDoctorCodexCliHintPlacement:
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": codex_logged_in})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
@@ -1488,3 +1607,171 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     assert "build-time tooling" in out
     assert "known npm bug" in out
     assert "lockfile bump" in out
+
+
+class TestDoctorDeprecatedConfigAndEnv:
+    """Doctor must surface deprecated/legacy config keys and env vars with
+    modern replacements as non-failing warnings — without auto-migrating.
+    """
+
+    def test_collect_deprecated_config_keys_flags_legacy(self):
+        raw = {
+            "display": {"tool_progress_overrides": {"telegram": "all"}},
+            "delegation": {"max_async_children": 5, "max_concurrent_children": 3},
+            "compression": {"summary_model": "gpt-4o-mini", "enabled": True},
+        }
+        findings = doctor_mod.collect_deprecated_config_keys(raw)
+        paths = {legacy for legacy, _ in findings}
+        assert "display.tool_progress_overrides" in paths
+        assert "delegation.max_async_children" in paths
+        assert "compression.summary_model" in paths
+        by_key = dict(findings)
+        assert by_key["display.tool_progress_overrides"] == "display.platforms"
+        assert by_key["delegation.max_async_children"] == (
+            "delegation.max_concurrent_children"
+        )
+        assert by_key["compression.summary_model"] == "auxiliary.compression"
+
+    def test_collect_deprecated_config_keys_clean(self):
+        raw = {
+            "display": {"platforms": {"telegram": {"tool_progress": "all"}}},
+            "delegation": {"max_concurrent_children": 3},
+            "compression": {"enabled": True},
+        }
+        assert doctor_mod.collect_deprecated_config_keys(raw) == []
+
+    def test_collect_deprecated_env_vars(self):
+        env = {
+            "HERMES_TOOL_PROGRESS": "true",
+            "TERMINAL_CWD": "/tmp/proj",
+            "QQ_HOME_CHANNEL": "12345",
+            "OPENAI_API_KEY": "sk-test",  # not deprecated
+        }
+        findings = doctor_mod.collect_deprecated_env_vars(env)
+        names = {n for n, _ in findings}
+        assert "HERMES_TOOL_PROGRESS" in names
+        assert "TERMINAL_CWD" in names
+        assert "QQ_HOME_CHANNEL" in names
+        assert "OPENAI_API_KEY" not in names
+        by_name = dict(findings)
+        assert "display.tool_progress" in by_name["HERMES_TOOL_PROGRESS"]
+        assert "terminal.cwd" in by_name["TERMINAL_CWD"]
+        assert by_name["QQ_HOME_CHANNEL"] == "QQBOT_HOME_CHANNEL"
+
+    def test_collect_deprecated_env_vars_ignores_empty(self):
+        assert doctor_mod.collect_deprecated_env_vars({"TERMINAL_CWD": "  "}) == []
+        assert doctor_mod.collect_deprecated_env_vars({}) == []
+        assert doctor_mod.collect_deprecated_env_vars(None) == []
+
+    def _run_doctor_with_config(self, monkeypatch, tmp_path, *, config_yaml: str, env_text: str = ""):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        env_body = env_text if env_text else "OPENAI_API_KEY=sk-test\n"
+        (hermes_home / ".env").write_text(env_body, encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(doctor_mod, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Clear process-level legacy env so tests only see the on-disk .env.
+        for k in (
+            "HERMES_TOOL_PROGRESS",
+            "HERMES_TOOL_PROGRESS_MODE",
+            "TERMINAL_CWD",
+            "MESSAGING_CWD",
+            "QQ_HOME_CHANNEL",
+            "QQ_HOME_CHANNEL_NAME",
+        ):
+            monkeypatch.delenv(k, raising=False)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue(), hermes_home
+
+    def test_doctor_warns_on_tool_progress_overrides_and_max_async_children(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = """\
+display:
+  tool_progress_overrides:
+    telegram: all
+delegation:
+  max_async_children: 8
+  max_concurrent_children: 3
+"""
+        out, hermes_home = self._run_doctor_with_config(monkeypatch, tmp_path, config_yaml=cfg)
+        assert "Deprecated: display.tool_progress_overrides" in out
+        assert "display.platforms" in out
+        assert "Deprecated: delegation.max_async_children" in out
+        assert "max_concurrent_children" in out
+        # Warn-only: must not mutate config.
+        on_disk = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+        assert "tool_progress_overrides" in on_disk
+        assert "max_async_children" in on_disk
+
+    def test_doctor_warns_on_compression_summary_and_legacy_env(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = """\
+compression:
+  summary_model: gpt-4o-mini
+  summary_provider: openai
+"""
+        env = (
+            "OPENAI_API_KEY=sk-test\n"
+            "HERMES_TOOL_PROGRESS=true\n"
+            "TERMINAL_CWD=/old/path\n"
+            "QQ_HOME_CHANNEL=999\n"
+        )
+        out, _ = self._run_doctor_with_config(
+            monkeypatch, tmp_path, config_yaml=cfg, env_text=env
+        )
+        assert "Deprecated: compression.summary_model" in out
+        assert "auxiliary.compression" in out
+        assert "Deprecated: HERMES_TOOL_PROGRESS" in out
+        assert "display.tool_progress" in out
+        assert "Deprecated: TERMINAL_CWD" in out
+        assert "terminal.cwd" in out
+        assert "Deprecated: QQ_HOME_CHANNEL" in out
+        assert "QQBOT_HOME_CHANNEL" in out
+
+    def test_doctor_clean_config_has_no_deprecated_warning(self, monkeypatch, tmp_path):
+        cfg = """\
+display:
+  platforms:
+    telegram:
+      tool_progress: all
+delegation:
+  max_concurrent_children: 3
+compression:
+  enabled: true
+terminal:
+  cwd: /project
+"""
+        out, _ = self._run_doctor_with_config(monkeypatch, tmp_path, config_yaml=cfg)
+        assert "Deprecated: display.tool_progress_overrides" not in out
+        assert "Deprecated: delegation.max_async_children" not in out
+        assert "Deprecated: compression.summary_model" not in out
+        assert "Deprecated: HERMES_TOOL_PROGRESS" not in out
+        assert "Deprecated: TERMINAL_CWD" not in out
+        assert "Deprecated: QQ_HOME_CHANNEL" not in out
+        assert "No deprecated config keys or env vars" in out
+
+    def test_report_does_not_count_as_blocking_issue(self, monkeypatch, tmp_path, capsys):
+        """report_deprecated_config_and_env is warn-only — no issues list mutation."""
+        findings = doctor_mod.report_deprecated_config_and_env(
+            {"delegation": {"max_async_children": 2}},
+            {"HERMES_TOOL_PROGRESS_MODE": "verbose"},
+        )
+        out = capsys.readouterr().out
+        assert len(findings) == 2
+        assert "Deprecated: delegation.max_async_children" in out
+        assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
+        assert "⚠" in out or "Deprecated" in out

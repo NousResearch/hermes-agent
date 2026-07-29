@@ -1,14 +1,14 @@
 ---
-title: "Honcho"
+title: "Honcho — Configure and troubleshoot Honcho memory for Hermes"
 sidebar_label: "Honcho"
-description: "Configure and use Honcho memory with Hermes -- cross-session user modeling, multi-profile peer isolation, observation config, dialectic reasoning, session su..."
+description: "Configure and troubleshoot Honcho memory for Hermes"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Honcho
 
-Configure and use Honcho memory with Hermes -- cross-session user modeling, multi-profile peer isolation, observation config, dialectic reasoning, session summaries, and context budget enforcement. Use when setting up Honcho, troubleshooting memory, managing profiles with Honcho peers, or tuning observation, recall, and dialectic settings.
+Configure and troubleshoot Honcho memory for Hermes.
 
 ## Skill metadata
 

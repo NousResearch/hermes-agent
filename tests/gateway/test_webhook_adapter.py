@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import socket
 import time
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -164,6 +165,52 @@ class TestValidateSignature:
         adapter = _make_adapter()
         req = _mock_request(headers={})  # no sig headers at all
         assert adapter._validate_signature(req, b"{}", "my-secret") is False
+
+    def test_non_ascii_signature_headers_reject_without_raising(self):
+        """The signature headers are attacker-controlled on a public, unauth
+        endpoint. A non-ASCII byte in one must be rejected (False), not crash
+        the handler: hmac.compare_digest raises TypeError on a non-ASCII str."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        hostile = "ské-not-a-valid-signature"
+        for header in (
+            "X-Hub-Signature-256",
+            "X-Gitlab-Token",
+            "X-Webhook-Signature",
+        ):
+            req = _mock_request(headers={header: hostile})
+            # Must return False, never raise.
+            assert adapter._validate_signature(req, body, secret) is False
+
+    def test_non_ascii_generic_v2_signature_rejected(self):
+        """V2 branch (timestamp-bound) also rejects a non-ASCII signature."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": "ské-bad",
+            "X-Webhook-Timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "secret") is False
+
+    def test_non_ascii_svix_signature_rejected(self):
+        """The Svix branch also runs its `v1,<sig>` comparison through the
+        hardened helper: a valid svix-id + fresh timestamp reaches the compare,
+        and a non-ASCII signature must reject rather than raise."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "svix-id": "msg_2xabc",
+            "svix-timestamp": str(int(time.time())),  # inside the replay window
+            "svix-signature": "v1,ské-not-a-valid-base64-sig",
+        })
+        assert adapter._validate_signature(req, b'{"x":1}', "shh-secret") is False
+
+    def test_non_ascii_secret_still_validates_a_matching_token(self):
+        """A non-ASCII configured secret must still match its exact GitLab
+        token value byte for byte (bytes comparison keeps this working)."""
+        adapter = _make_adapter()
+        secret = "gl-tökén-välue"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert adapter._validate_signature(req, b"{}", secret) is True
 
     def test_validate_no_secret_allows_all(self):
         """When the secret is empty/falsy, the validator is never even called
@@ -1250,6 +1297,117 @@ class TestSessionIsolation:
 
 
 # ===================================================================
+# Silence-marker suppression
+# ===================================================================
+
+
+class TestWebhookSilenceSuppression:
+    """A webhook route that answers ``[SILENT]`` must deliver nothing.
+
+    Webhook routes are autonomous lanes with nobody waiting on the other end,
+    so a subscription prompt tells the agent to reply ``[SILENT]`` on a tick
+    that produced no story.  Models routinely append a sentence saying WHY they
+    stayed quiet, and the live gateway's exact-whole-response rule then treats
+    that as a real report — which is how a Helper support lane ended up
+    repeatedly messaging its owner to say it had nothing to say.
+    """
+
+    def _adapter_with_mock_target(self):
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+        adapter.gateway_runner = mock_runner
+
+        chat_id = "webhook:helper-events:d-1"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "-100123"},
+        }
+        adapter._delivery_info_created[chat_id] = time.time()
+        return adapter, mock_target, chat_id
+
+    @pytest.mark.asyncio
+    async def test_bare_marker_is_not_delivered(self):
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(chat_id, "[SILENT]")
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marker_followed_by_prose_is_not_delivered(self):
+        """The regression this suppression exists for.
+
+        The agent explains its own silence on the lines after the marker.  The
+        strict interactive rule reads that as substantive prose and delivers the
+        whole thing, marker included.
+        """
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "[SILENT]\n\nThe new inbound was the same email quoted back a second "
+            "time, on a ticket we already answered. Nothing new to reply to, so I "
+            "closed it; it reopens by itself if they write back.",
+        )
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_marker_on_the_last_line_is_not_delivered(self):
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(chat_id, "Nothing to report this tick.\n\n[SILENT]")
+
+        assert result.success is True
+        target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_report_is_still_delivered(self):
+        """Suppression must not swallow an actual story."""
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "Refunded $240 to the buyer and replied; the seller had already agreed.",
+        )
+
+        assert result.success is True
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_report_mentioning_the_marker_mid_sentence_is_delivered(self):
+        """A report that merely quotes a marker is not a silence request."""
+        adapter, target, chat_id = self._adapter_with_mock_target()
+
+        result = await adapter.send(
+            chat_id,
+            "I considered staying [SILENT] but this one moved money, so: refunded "
+            "$240 and replied to the buyer.",
+        )
+
+        assert result.success is True
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_suppression_precedes_log_delivery(self):
+        """A `log` route also suppresses, so the two lanes behave the same."""
+        adapter = _make_adapter()
+        chat_id = "webhook:helper-events:d-log"
+        adapter._delivery_info[chat_id] = {"deliver": "log", "deliver_extra": {}}
+        adapter._delivery_info_created[chat_id] = time.time()
+
+        result = await adapter.send(chat_id, "[SILENT]\n\nnothing happened")
+
+        assert result.success is True
+
+
+# ===================================================================
 # Delivery info cleanup
 # ===================================================================
 
@@ -1525,3 +1683,246 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
+
+
+class TestDualStackBind:
+    """The default bind host must serve BOTH IPv4 and IPv6.
+
+    Regression guard for the hosted-agent webhook reachability bug: Fly.io 6PN
+    (the private network the edge router reverse-proxies webhook traffic over)
+    is IPv6-only — an agent's ``<app>.internal`` name resolves to an ``fdaa:…``
+    address. The adapter used to default to ``host="0.0.0.0"`` (IPv4 only), so
+    the router's dial to ``<app>.internal:8644`` hit an address nothing was
+    listening on → connection refused → public webhooks unreachable.
+
+    The fix is ``DEFAULT_HOST = None`` (dual-stack). ``"::"`` is NOT a valid
+    substitute: on hosts with the ``bindv6only`` sysctl set (verified on Fly
+    machines) it yields an IPv6-ONLY socket, which would then break the IPv4
+    loopback health check and the AF_INET port-conflict probe.
+    """
+
+    def test_default_host_is_none_for_dual_stack(self):
+        """The module default is None (bind all families), not 0.0.0.0/::."""
+        from gateway.platforms.webhook import DEFAULT_HOST
+        assert DEFAULT_HOST is None
+
+    def test_missing_host_key_resolves_to_none(self):
+        """Config with no host key → dual-stack (None), not a literal string."""
+        cfg = PlatformConfig(enabled=True, extra={"port": 0, "routes": {}})
+        adapter = WebhookAdapter(cfg)
+        assert adapter._host is None
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_empty_host_normalises_to_none(self, empty):
+        """An explicit empty-string/null host means dual-stack, not host=''.
+
+        Guards the old footgun where host='' was passed straight to TCPSite
+        AND treated as non-loopback — now it collapses to the None default.
+        """
+        adapter = _make_adapter(host=empty, port=0)
+        assert adapter._host is None
+
+    def test_pinned_host_is_preserved(self):
+        """A user can still pin a specific bind host via config.extra.host."""
+        adapter = _make_adapter(host="127.0.0.1", port=0)
+        assert adapter._host == "127.0.0.1"
+
+    @pytest.mark.asyncio
+    async def test_default_bind_serves_both_families(self):
+        """Binding the real server with the default host opens v4 AND v6 sockets.
+
+        This is the behavioural proof: with host=None, asyncio.create_server
+        opens a listening socket per resolved family, so both 127.0.0.1 (v4)
+        and ::1 (v6) are reachable — exactly what 6PN needs. Uses a real bind
+        on an OS-assigned port (no mock) and inspects the runner's addresses.
+        """
+        # Build config WITHOUT a host key so the real DEFAULT_HOST (None)
+        # applies — _make_adapter's helper injects host="0.0.0.0" by default,
+        # which would mask the dual-stack default under test here.
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": 0,
+                "routes": {"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        assert adapter._host is None
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is True
+            # runner.addresses lists one bound address per listening socket.
+            # An IPv6 sockaddr is a 4-tuple (host, port, flowinfo, scopeid);
+            # an IPv4 sockaddr is a 2-tuple (host, port). With the dual-stack
+            # default we expect BOTH — that is precisely what makes the adapter
+            # reachable over 6PN (v6) AND on the loopback health check (v4).
+            addrs = list(adapter._runner.addresses)  # type: ignore[union-attr]
+            has_v6 = any(len(a) == 4 for a in addrs)
+            has_v4 = any(len(a) == 2 for a in addrs)
+            assert has_v4, f"IPv4 bind missing — got {addrs}"
+            assert has_v6, (
+                f"IPv6 bind missing (the 6PN reachability bug) — got {addrs}"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_default_bind_rejects_existing_ipv6_listener(self):
+        """A specific IPv6 listener must block the wildcard dual-stack bind."""
+        blocker = await asyncio.start_server(
+            lambda _reader, _writer: None,
+            host="::1",
+            port=0,
+            family=socket.AF_INET6,
+            reuse_address=False,
+        )
+        port = blocker.sockets[0].getsockname()[1]
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": port,
+                "routes": {
+                    "r1": {"secret": "real-secret-abc123", "prompt": "x"}
+                },
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                result = await adapter.connect()
+            assert result is False
+            assert adapter._runner is None
+            assert adapter.is_connected is False
+        finally:
+            await adapter.disconnect()
+            blocker.close()
+            await blocker.wait_closed()
+
+# Regression coverage for #72041: profile-bound webhook authentication
+class TestMultiplexProfileWebhookAuthentication:
+    @staticmethod
+    def _configure_profiles(adapter, tmp_path, monkeypatch):
+        runner = MagicMock()
+        runner.config.multiplex_profiles = True
+        adapter.gateway_runner = runner
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", tmp_path),
+                ("worker", tmp_path / "profiles" / "worker"),
+                ("other", tmp_path / "profiles" / "other"),
+            ],
+        )
+
+    @staticmethod
+    def _app(adapter):
+        app = _create_app(adapter)
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}",
+            adapter._handle_webhook,
+        )
+        return app
+
+    @staticmethod
+    def _headers(body: bytes, secret: str):
+        return {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": _github_signature(body, secret),
+            # Stop after successful authentication without dispatching an
+            # agent run; the route accepts only pull_request events.
+            "X-GitHub-Event": "push",
+        }
+
+    @pytest.mark.asyncio
+    async def test_route_secret_is_bound_to_named_profile(
+        self, tmp_path, monkeypatch
+    ):
+        route_secret = "worker-route-secret-abc123"
+        adapter = _make_adapter(
+            routes={
+                "gh": {
+                    "profile": "worker",
+                    "secret": route_secret,
+                    "events": ["pull_request"],
+                    "prompt": "PR: {action}",
+                }
+            },
+            host="127.0.0.1",
+        )
+        self._configure_profiles(adapter, tmp_path, monkeypatch)
+        body = b'{"action":"opened"}'
+        headers = self._headers(body, route_secret)
+
+        async with TestClient(TestServer(self._app(adapter))) as cli:
+            accepted = await cli.post(
+                "/p/worker/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert accepted.status == 200
+            assert (await accepted.json())["status"] == "ignored"
+
+            wrong_profile = await cli.post(
+                "/p/other/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert wrong_profile.status == 404
+
+            default_profile = await cli.post(
+                "/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert default_profile.status == 404
+
+    @pytest.mark.asyncio
+    async def test_unbound_route_remains_default_profile_only(
+        self, tmp_path, monkeypatch
+    ):
+        route_secret = "default-route-secret-abc123"
+        adapter = _make_adapter(
+            routes={
+                "gh": {
+                    "secret": route_secret,
+                    "events": ["pull_request"],
+                    "prompt": "PR: {action}",
+                }
+            },
+            host="127.0.0.1",
+        )
+        self._configure_profiles(adapter, tmp_path, monkeypatch)
+        body = b'{"action":"opened"}'
+        headers = self._headers(body, route_secret)
+
+        async with TestClient(TestServer(self._app(adapter))) as cli:
+            accepted = await cli.post(
+                "/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert accepted.status == 200
+            assert (await accepted.json())["status"] == "ignored"
+
+            named_profile = await cli.post(
+                "/p/worker/webhooks/gh",
+                data=body,
+                headers=headers,
+            )
+            assert named_profile.status == 404
+
+
+
+def test_route_profile_validation_fails_closed():
+    assert WebhookAdapter._route_allows_profile({}, None) is True
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "worker"}, "worker"
+    ) is True
+    assert WebhookAdapter._route_allows_profile(
+        {"profile": "worker"}, "other"
+    ) is False
+    for malformed in (None, "", "   ", 123, ["worker"]):
+        assert WebhookAdapter._route_allows_profile(
+            {"profile": malformed}, "worker"
+        ) is False

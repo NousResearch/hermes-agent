@@ -195,6 +195,39 @@ def test_desired_state_running_autostarts_even_if_runtime_failed(tmp_path: Path)
     assert not (scandir / "gateway-resilient" / "down").exists()
 
 
+def test_multiplex_boot_keeps_named_running_profile_registered_down(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the root/default s6 slot may own a multiplex gateway process."""
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "true")
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _seed_default_root(tmp_path, state="running")
+    profile = _make_profile(
+        tmp_path,
+        "resilient",
+        state="running",
+        desired_state="running",
+    )
+    persisted_state = (profile / "gateway_state.json").read_text()
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert actions == [
+        ReconcileAction(
+            profile="default", prior_state="running", action="started",
+        ),
+        ReconcileAction(
+            profile="resilient", prior_state="running", action="registered",
+        ),
+    ]
+    assert not (scandir / "gateway-default" / "down").exists()
+    assert (scandir / "gateway-resilient" / "down").exists()
+    assert (profile / "gateway_state.json").read_text() == persisted_state
+
+
 def test_desired_state_stopped_blocks_legacy_running_runtime(tmp_path: Path) -> None:
     """Explicit stop must survive a stale legacy runtime state of running."""
     scandir = tmp_path / "run-service"; scandir.mkdir()
@@ -1061,3 +1094,83 @@ def test_main_ignores_removed_skip_reconcile_env_var(
     assert rc == 0
     # Reconcile still ran despite the stale env var.
     assert (scandir / "gateway-worker").exists()
+
+
+# ---------------------------------------------------------------------------
+# prior_exit annotation (NS-608 — unclean-shutdown forensics)
+# ---------------------------------------------------------------------------
+
+
+def _write_lifecycle_sentinel(profile_dir: Path, payload: dict) -> None:
+    state_dir = profile_dir / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "gateway.lifecycle.json").write_text(json.dumps(payload))
+
+
+def test_reconcile_log_annotates_unclean_prior_exit(tmp_path: Path) -> None:
+    """A profile whose lifecycle sentinel still says phase=running at
+    container boot died uncleanly (OOM / SIGKILL / VM death) — the
+    container-boot.log line must say so (NS-608)."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    crashed = _make_profile(tmp_path, "crashy", state="running")
+    _write_lifecycle_sentinel(crashed, {
+        "phase": "running", "pid": 2**22 + 999, "start_time": 1000.0,
+    })
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    (crashy,) = [a for a in actions if a.profile == "crashy"]
+    assert crashy.prior_exit == "unclean"
+    log = (tmp_path / "logs" / "container-boot.log").read_text()
+    assert "profile=crashy" in log
+    assert "prior_exit=unclean" in log
+
+
+def test_reconcile_log_annotates_clean_prior_exit(tmp_path: Path) -> None:
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    stopped = _make_profile(tmp_path, "tidy", state="stopped")
+    _write_lifecycle_sentinel(stopped, {
+        "phase": "exited", "pid": 12345, "exit_code": 0,
+        "exit_reason": "graceful_shutdown",
+    })
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    (tidy,) = [a for a in actions if a.profile == "tidy"]
+    assert tidy.prior_exit == "clean"
+    log = (tmp_path / "logs" / "container-boot.log").read_text()
+    assert "prior_exit=clean" in log
+
+
+def test_reconcile_log_prior_exit_unknown_without_sentinel(tmp_path: Path) -> None:
+    """No lifecycle sentinel (fresh profile, pre-upgrade volume) →
+    prior_exit=unknown, and reconciliation is unaffected."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "fresh", state="running")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    (fresh,) = [a for a in actions if a.profile == "fresh"]
+    assert fresh.prior_exit == "unknown"
+    assert fresh.action == "started"
+
+
+def test_default_root_prior_exit_annotated(tmp_path: Path) -> None:
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _seed_default_root(tmp_path, state="running")
+    _write_lifecycle_sentinel(tmp_path, {
+        "phase": "running", "pid": 2**22 + 999, "start_time": 1000.0,
+    })
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    (default,) = [a for a in actions if a.profile == "default"]
+    assert default.prior_exit == "unclean"

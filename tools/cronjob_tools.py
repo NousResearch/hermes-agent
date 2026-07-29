@@ -174,16 +174,22 @@ def _strip_cron_safe_constructs(prompt: str) -> str:
 
     Allows the bundled GitHub skill fallback without opening a blanket
     exemption for arbitrary Authorization-header exfiltration.
+
+    Uses ``re.sub`` so EVERY occurrence is scrubbed, not just the first — a
+    cron job that loads 2+ GitHub skills (e.g. github-issues +
+    github-pr-workflow + github-code-review) contains several such blocks,
+    and the old ``re.search`` + single ``str.replace`` left the rest to trip
+    the exfil_curl_auth_header detector on every run. The trailing
+    ``[^\\n]*`` also consumes the rest of the URL path so no dangling
+    fragment remains.
     """
-    github_auth_header = re.search(
+    return re.sub(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)',
+        r'\s+["\']?https://api\.github\.com(?:/|\b)[^\n]*',
+        'curl https://api.github.com/user',
         prompt,
-        re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
-    if github_auth_header:
-        return prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
-    return prompt
 
 
 def _check_invisible_unicode(prompt: str) -> str:
@@ -371,48 +377,6 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
     return normalized
 
 
-
-
-def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
-    """Resolve a model override object into (provider, model) for job storage.
-
-    If provider is omitted, pins the current main provider from config so the
-    job doesn't drift when the user later changes their default via hermes model.
-
-    Returns (provider_str_or_none, model_str_or_none).
-    """
-    if not model_obj or not isinstance(model_obj, dict):
-        return (None, None)
-    model_name = (model_obj.get("model") or "").strip() or None
-    provider_name = (model_obj.get("provider") or "").strip() or None
-    # Bare "custom" is usually an incomplete spec — the canonical form is
-    # "custom:<name>" matching a custom_providers entry, and LLMs frequently
-    # supply the bare type because the schema does not advertise the
-    # ":<name>" suffix. It is only a problem when it can't resolve at runtime:
-    # a user may literally name a ``providers.custom`` (or custom_providers
-    # "custom") entry, in which case the job should keep ``provider="custom"``
-    # and run against that endpoint. Only when no such entry exists do we treat
-    # the bare value as "no provider supplied" and pin the current main
-    # provider below — otherwise pinning to ``model.provider`` (e.g. codex)
-    # silently hijacks a job that meant to use the configured custom endpoint.
-    if provider_name == "custom":
-        try:
-            from hermes_cli.runtime_provider import has_named_custom_provider
-            if not has_named_custom_provider("custom"):
-                provider_name = None
-        except Exception:
-            provider_name = None
-    if model_name and not provider_name:
-        # Pin to the current main provider so the job is stable
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            model_cfg = cfg.get("model", {})
-            if isinstance(model_cfg, dict):
-                provider_name = model_cfg.get("provider") or None
-        except Exception:
-            pass  # Best-effort; provider stays None
-    return (provider_name, model_name)
 
 
 def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
@@ -842,6 +806,12 @@ def cronjob(
             # _execute_job_now advances next_run_at and blocks a concurrent tick
             # from double-firing.
             exec_result = _execute_job_now(job)
+            # A claimed direct run advances next_run_at and may race the
+            # external one-shot for the same occurrence. If Chronos loses that
+            # claim, its consumed fire cannot re-arm itself; reconcile from the
+            # winning direct path after the run has persisted its final state.
+            if exec_result.get("claimed", False):
+                _notify_provider_jobs_changed_safe()
             # Re-read so the response reflects the post-run last_run_at/last_status.
             result = _format_job(get_job(job_id) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
@@ -1022,21 +992,6 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "items": {"type": "string"},
                 "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
             },
-            "model": {
-                "type": "object",
-                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
-                "properties": {
-                    "provider": {
-                        "type": "string",
-                        "description": "Provider name (e.g. 'openrouter', 'anthropic', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). Omit to use and pin the current provider."
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
-                    }
-                },
-                "required": ["model"]
-            },
             "script": {
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
@@ -1120,7 +1075,7 @@ registry.register(
     name="cronjob",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
-    handler=lambda args, **kw: (lambda _mo=_resolve_model_override(args.get("model")): cronjob(
+    handler=lambda args, **kw: cronjob(
         action=args.get("action", ""),
         job_id=args.get("job_id"),
         prompt=args.get("prompt"),
@@ -1131,9 +1086,11 @@ registry.register(
         include_disabled=args.get("include_disabled", True),
         skill=args.get("skill"),
         skills=args.get("skills"),
-        model=_mo[1],
-        provider=_mo[0] or args.get("provider"),
-        base_url=args.get("base_url"),
+        # model / provider / base_url are intentionally NOT read from the
+        # agent's arguments: per-job inference pins are user-owned (dashboard,
+        # `hermes cron create/edit --model`, or hand-edited jobs). The agent
+        # must not be able to point unattended spend at a different model.
+        # Programmatic callers of cronjob() itself retain the parameters.
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),
@@ -1141,7 +1098,7 @@ registry.register(
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
         task_id=kw.get("task_id"),
-    ))(),
+    ),
     check_fn=check_cronjob_requirements,
     emoji="⏰",
 )

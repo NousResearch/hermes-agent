@@ -19,6 +19,7 @@ if _spec is None or _spec.loader is None:
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 classify = _mod.classify
+ci_review_files = _mod.ci_review_files
 
 DEFAULT = {
     "python": True,
@@ -27,12 +28,13 @@ DEFAULT = {
     "site": True,
     "scan": True,
     "deps": True,
+    "npm_lock": True,
     "mcp_catalog": False,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, mcp_catalog=False, docker_meta=False, ci_review=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, npm_lock=False, mcp_catalog=False, docker_meta=False, ci_review=False) -> dict[str, bool]:
     return {
         "python": python,
         "frontend": frontend,
@@ -40,6 +42,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, mcp
         "site": site,
         "scan": scan,
         "deps": deps,
+        "npm_lock": npm_lock,
         "mcp_catalog": mcp_catalog,
         "ci_review": ci_review,
     }
@@ -53,7 +56,8 @@ CASES = {
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
-    "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True)),
+    "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
+    "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
     "website → site": (["website/docs/intro.md"], _lanes(site=True)),
     # SKILL.md reads like docs, but the skill-doc tests read skills/, so a
     # skill edit must still run Python.
@@ -127,3 +131,15 @@ CASES = {
 @pytest.mark.parametrize("files,expected", CASES.values(), ids=CASES.keys())
 def test_classify(files, expected):
     assert classify(files) == expected
+
+
+def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
+    assert ci_review_files([
+        "apps/desktop/src/app.tsx",
+        ".github/workflows/ci.yml",
+        "apps/desktop/eslint.config.mjs",
+        ".github/workflows/ci.yml",
+    ]) == [
+        ".github/workflows/ci.yml",
+        "apps/desktop/eslint.config.mjs",
+    ]

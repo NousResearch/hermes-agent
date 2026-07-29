@@ -53,6 +53,7 @@ def _make_adapter():
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._send_read_receipts = False
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -591,6 +592,8 @@ class TestHttpSessionLifecycle:
             ["taskkill", "/PID", "12345", "/T"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         mock_proc.terminate.assert_not_called()

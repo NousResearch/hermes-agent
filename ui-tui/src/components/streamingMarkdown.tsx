@@ -1,32 +1,32 @@
 // StreamingMd — incremental markdown renderer for in-flight assistant text.
 //
-// Naive approach (render <Md text={full}/>) re-tokenizes the entire message
-// on every stream delta. At 20-char batches over a 3 KB response that's 150
-// full re-parses.
+// Rendering <Md text={full}/> per delta re-tokenizes the whole message every
+// time (O(total) × deltas). The prior stable-prefix split fixed the per-delta
+// cost but not the per-block cliff: each advanced boundary re-tokenized the
+// entire prefix from scratch — O(blocks²) — plus an O(total) fence rescan.
 //
-// This splits `text` at the last stable top-level block boundary (blank
-// line outside a fenced code span) into:
-//   stablePrefix — passed to an inner <Md>, memoized on its exact text
-//                  value. During the turn, the prefix only grows monotonically,
-//                  so its memo key matches the previous render and React
-//                  reuses the cached subtree — zero re-tokenization.
-//   unstableSuffix — the in-flight block(s). A separate <Md> re-parses just
-//                    this tail on every delta (O(unstable length) vs.
-//                    O(total length)).
+// This is fully incremental. A forward scanner keeps fence/math state + scan
+// position in a ref across deltas, so each delta touches only newly-arrived
+// complete lines. Settled top-level blocks (split on "\n\n" outside a fence)
+// are frozen into an append-only array, each its own <Md> memoized on text
+// that never changes — every block tokenizes exactly once. Only the in-flight
+// tail re-parses per delta (O(tail)).
 //
-// The boundary is stored in a ref so it only advances — idempotent under
-// StrictMode double-render. Component unmounts between turns (isStreaming
-// flips off → message moves to history and renders via <Md> directly), so
-// the ref resets naturally.
+// Invariants that keep it correct:
+//   · Only newline-terminated lines are scanned; a partial trailing line may
+//     yet become a fence opener, so it stays in the tail.
+//   · Blank-line boundaries can't be retroactively merged (a setext underline
+//     only binds the contiguous line above it, never across a committed "\n\n").
+//   · An unmatched `$$` / `\[` opener is treated as open forever — more
+//     conservative than markdown.tsx's full-text fallback, because a committed
+//     block is frozen and can't be un-decided once the closer streams in.
+//   · State only advances (idempotent under StrictMode). The component
+//     unmounts between turns; if `text` stops extending `scanned` (turn reuse,
+//     or boundedLiveRenderText front-trimming a huge reply) the scanner resets
+//     and <Md>'s LRU absorbs the re-parse.
 //
-// Layout: the two <Md> subtrees MUST render stacked (column). The parent
-// container in messageLine.tsx is a default `flexDirection: 'row'` Box
-// (Ink's default), so returning a bare Fragment of two <Md> siblings
-// laid them out side-by-side — producing the "two jumbled columns while
-// streaming" rendering bug. Wrapping in a flexDirection="column" Box
-// here localizes the fix to the streaming path; the non-streaming <Md>
-// already returns its own column Box, so its single-child case was never
-// affected.
+// Layout: the <Md> subtrees MUST stack in a column — the messageLine.tsx
+// parent is a default row Box, so bare siblings render side-by-side.
 
 import { Box } from '@hermes/ink'
 import { memo, useRef } from 'react'
@@ -35,133 +35,125 @@ import type { Theme } from '../theme.js'
 
 import { Md } from './markdown.js'
 
-// Count ``` / ~~~ AND `$$` / `\[…\]` fence toggles in `s` up to `end`. Odd
-// = currently inside a fenced block; splitting the prefix there would
-// orphan the fence and let the unstable suffix re-render as broken
-// markdown. Math fences only toggle when the code fence is closed so
-// snippets like ` ```\n$$x$$\n``` ` (math example inside a code block)
-// don't double-count. A `$$x$$` line that opens AND closes on its own
-// produces zero net toggles; that's `len >= 4` plus `endsDollar`.
-//
-// NB: this is INTENTIONALLY more conservative than `markdown.tsx`'s
-// parser, which falls back to paragraph rendering when an `$$` opener
-// has no matching closer. The renderer can do that safely because it
-// always sees the full text on every call. The streaming chunker
-// cannot — once a chunk is committed to the monotonic stable prefix it
-// is frozen, so prematurely deciding "this `$$` is just prose" would
-// permanently commit a paragraph rendering that becomes wrong the
-// instant the closer streams in. Treating any unmatched `$$` opener
-// as still-open keeps the boundary parked behind it until the closer
-// arrives (or the stream ends and the non-streaming `<Md>` takes over,
-// at which point the renderer's fallback kicks in correctly).
-const fenceOpenAt = (s: string, end: number) => {
-  let codeOpen = false
-  let mathOpen = false
-  let mathOpener: '$$' | '\\[' | null = null
-  let i = 0
+export interface StreamScanState {
+  /** Settled top-level block strings, in order. Append-only. */
+  blocks: string[]
+  /** Inside an unclosed ``` / ~~~ fence at the scan position. */
+  codeOpen: boolean
+  /** Non-null inside an unclosed display-math block at the scan position. */
+  mathOpener: '$$' | '\\[' | null
+  /** Prefix whose complete lines have been scanned (kept as text so the reset
+   *  guard can confirm the scanned region — and thus fence state — still holds). */
+  scanned: string
+  /** Length of the committed prefix (blocks.join('').length). */
+  settledLen: number
+}
 
-  while (i < end) {
-    const nl = s.indexOf('\n', i)
-    const lineEnd = nl < 0 || nl > end ? end : nl
-    const line = s.slice(i, lineEnd).trim()
+export const createScanState = (): StreamScanState => ({
+  blocks: [],
+  codeOpen: false,
+  mathOpener: null,
+  scanned: '',
+  settledLen: 0
+})
 
-    if (/^(?:`{3,}|~{3,})/.test(line)) {
-      codeOpen = !codeOpen
-    } else if (!codeOpen) {
-      if (!mathOpen && /^\$\$/.test(line)) {
-        const isSingleLine = line.length >= 4 && /\$\$$/.test(line)
+// Fold one complete line into the fence/math state: ``` / ~~~ toggle the code
+// fence; `$$` / `\[` open display math unless the line also closes it; closers
+// count only against a pending opener; math inside an open code fence is inert.
+const applyLine = (state: StreamScanState, line: string) => {
+  if (/^(?:`{3,}|~{3,})/.test(line)) {
+    state.codeOpen = !state.codeOpen
 
-        if (!isSingleLine) {
-          mathOpen = true
-          mathOpener = '$$'
-        }
-      } else if (!mathOpen && /^\\\[/.test(line)) {
-        const isSingleLine = /\\\]$/.test(line)
+    return
+  }
 
-        if (!isSingleLine) {
-          mathOpen = true
-          mathOpener = '\\['
-        }
-      } else if (mathOpen && mathOpener === '$$' && /\$\$$/.test(line)) {
-        mathOpen = false
-        mathOpener = null
-      } else if (mathOpen && mathOpener === '\\[' && /\\\]$/.test(line)) {
-        mathOpen = false
-        mathOpener = null
-      }
+  if (state.codeOpen) {
+    return
+  }
+
+  if (!state.mathOpener) {
+    if (/^\$\$/.test(line) && !(line.length >= 4 && /\$\$$/.test(line))) {
+      state.mathOpener = '$$'
+    } else if (/^\\\[/.test(line) && !/\\\]$/.test(line)) {
+      state.mathOpener = '\\['
+    }
+  } else if (state.mathOpener === '$$' && /\$\$$/.test(line)) {
+    state.mathOpener = null
+  } else if (state.mathOpener === '\\[' && /\\\]$/.test(line)) {
+    state.mathOpener = null
+  }
+}
+
+// Consume newly-arrived complete lines, committing a settled block at every
+// "\n\n" outside a fence. Whitespace-only runs stay with the next block, never
+// committed as empty <Md>s. Mutates `state`; re-calling with the same text is
+// a no-op (idempotent).
+export const advanceScan = (text: string, state: StreamScanState) => {
+  const start = state.scanned.length
+
+  let i = start
+
+  while (i < text.length) {
+    const nl = text.indexOf('\n', i)
+
+    if (nl < 0) {
+      break // partial trailing line — could still open a fence; keep in tail
     }
 
-    if (nl < 0 || nl >= end) {
-      break
+    if (nl === i) {
+      // Second half of a "\n\n" outside any fence → prior text is a block.
+      if (i > 0 && !state.codeOpen && !state.mathOpener) {
+        const block = text.slice(state.settledLen, nl + 1)
+
+        if (/\S/.test(block)) {
+          state.blocks.push(block)
+          state.settledLen = nl + 1
+        }
+      }
+    } else {
+      applyLine(state, text.slice(i, nl).trim())
     }
 
     i = nl + 1
   }
 
-  return codeOpen || mathOpen
+  if (i > start) {
+    state.scanned += text.slice(start, i)
+  }
 }
 
-// Find the last "\n\n" boundary before `end` that is OUTSIDE a fenced code
-// block. Returns the index AFTER the second newline (start of the next
-// block), or -1 if no safe boundary exists yet.
+// Index just past the last committed boundary, or -1 if nothing has settled.
+// Thin wrapper over the scanner for boundary-semantics tests.
 export const findStableBoundary = (text: string) => {
-  let idx = text.length
+  const state = createScanState()
 
-  while (idx > 0) {
-    const boundary = text.lastIndexOf('\n\n', idx - 1)
+  advanceScan(text, state)
 
-    if (boundary < 0) {
-      return -1
-    }
-
-    // Boundary candidate: end of stable prefix is boundary + 2 (start of
-    // next block). Check fence balance up to that point.
-    const splitAt = boundary + 2
-
-    if (!fenceOpenAt(text, splitAt)) {
-      return splitAt
-    }
-
-    idx = boundary
-  }
-
-  return -1
+  return state.settledLen > 0 ? state.settledLen : -1
 }
 
 export const StreamingMd = memo(function StreamingMd({ cols, compact, t, text }: StreamingMdProps) {
-  const stablePrefixRef = useRef('')
+  const scanRef = useRef<StreamScanState>(createScanState())
 
-  // Reset if the text no longer starts with our recorded prefix (defensive;
-  // normally the component unmounts between turns so this shouldn't trigger).
-  if (!text.startsWith(stablePrefixRef.current)) {
-    stablePrefixRef.current = ''
+  let state = scanRef.current
+
+  // Reset if `text` no longer extends the scanned prefix (turn reuse, or a
+  // front-trim), which would invalidate the persisted fence state.
+  if (!text.startsWith(state.scanned)) {
+    state = scanRef.current = createScanState()
   }
 
-  const boundary = findStableBoundary(text)
+  advanceScan(text, state)
 
-  // Only advance the prefix — never retreat. The boundary math looks at the
-  // FULL text each call; if it returns a larger index than before, we grow
-  // the cached prefix. Monotonic growth makes the memo key stable across
-  // deltas (identical string → same <Md> subtree → no re-render).
-  if (boundary > stablePrefixRef.current.length) {
-    stablePrefixRef.current = text.slice(0, boundary)
-  }
-
-  const stablePrefix = stablePrefixRef.current
-  const unstableSuffix = text.slice(stablePrefix.length)
-
-  if (!stablePrefix) {
-    return <Md cols={cols} compact={compact} t={t} text={unstableSuffix} />
-  }
-
-  if (!unstableSuffix) {
-    return <Md cols={cols} compact={compact} t={t} text={stablePrefix} />
-  }
+  const tail = text.slice(state.settledLen)
 
   return (
     <Box flexDirection="column">
-      <Md cols={cols} compact={compact} t={t} text={stablePrefix} />
-      <Md cols={cols} compact={compact} t={t} text={unstableSuffix} />
+      {state.blocks.map((block, i) => (
+        <Md cols={cols} compact={compact} key={i} t={t} text={block} />
+      ))}
+
+      {tail ? <Md cols={cols} compact={compact} t={t} text={tail} /> : null}
     </Box>
   )
 })

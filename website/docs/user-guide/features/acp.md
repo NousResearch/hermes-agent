@@ -1,12 +1,13 @@
 ---
 sidebar_position: 11
-title: "ACP Editor Integration"
-description: "Use Hermes Agent inside ACP-compatible editors such as VS Code, Zed, and JetBrains"
+title: "ACP Host Integration"
+description: "Use Hermes Agent inside ACP-compatible editors and collaboration platforms"
 ---
 
-# ACP Editor Integration
+# ACP Host Integration
 
-Hermes Agent can run as an ACP server, letting ACP-compatible editors talk to Hermes over stdio and render:
+Hermes Agent can run as an ACP server, letting ACP-compatible hosts talk to
+Hermes over stdio. Editors can render:
 
 - chat messages
 - tool activity
@@ -15,7 +16,10 @@ Hermes Agent can run as an ACP server, letting ACP-compatible editors talk to He
 - approval prompts
 - streamed thinking / response chunks
 
-ACP is a good fit when you want Hermes to behave like an editor-native coding agent instead of a standalone CLI or messaging bot.
+Other hosts can use the same protocol to route collaboration events into
+Hermes. ACP is a good fit when you want Hermes to keep its existing identity,
+provider setup, memory, skills, and tools while another application owns the
+conversation transport.
 
 ## What Hermes exposes in ACP mode
 
@@ -33,10 +37,10 @@ It intentionally excludes things that do not fit typical editor UX, such as mess
 
 ## Installation
 
-Install Hermes normally, then add the ACP extra:
+Install Hermes normally, then add the ACP extra from the install checkout:
 
 ```bash
-pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
 ```
 
 This installs the `agent-client-protocol` dependency and enables:
@@ -44,14 +48,6 @@ This installs the `agent-client-protocol` dependency and enables:
 - `hermes acp`
 - `hermes-acp`
 - `python -m acp_adapter`
-
-For Zed registry installs, Zed launches Hermes through the official ACP Registry entry. That entry uses a `uvx` distribution that runs:
-
-```bash
-uvx --from 'hermes-agent[acp]==<version>' hermes-acp
-```
-
-Make sure `uv` is available on `PATH` before using the registry install path.
 
 ## Launching the ACP server
 
@@ -89,7 +85,7 @@ hermes acp --setup-browser           # interactive (prompts before ~400 MB downl
 hermes acp --setup-browser --yes     # accept the download non-interactively
 ```
 
-This is the standalone command. The Zed registry's terminal-auth flow (`hermes acp --setup`) also offers the browser bootstrap as a follow-up question after model selection, so most users never need to run `--setup-browser` directly.
+This is the standalone command. The terminal-auth flow (`hermes acp --setup`) also offers the browser bootstrap as a follow-up question after model selection, so most users never need to run `--setup-browser` directly.
 
 What it does:
 
@@ -99,7 +95,81 @@ What it does:
 
 The bootstrap is idempotent — re-running it is fast and skips work that's already done.
 
-## Editor setup
+## Host setup
+
+### Buzz channels (relay bridge)
+
+[Buzz](https://github.com/block/buzz) is a Nostr-based collaboration platform
+for people and agents. Its `buzz-acp` harness connects Buzz channels to any ACP
+agent over stdio:
+
+```text
+Buzz relay <-- WebSocket --> buzz-acp <-- ACP over stdio --> Hermes Agent
+```
+
+This is a transport integration, not a second Hermes installation. The
+subprocess launched by `buzz-acp` uses the same Hermes configuration,
+credentials, memory, skills, and state as `hermes` on that host.
+
+(This is distinct from [Buzz Desktop's managed runtime](#buzz-desktop), which
+spawns Hermes locally as a preset harness. The relay bridge is for joining Buzz
+*channels* as an agent identity, typically on a server.)
+
+Prerequisites:
+
+- Complete the ACP installation and `hermes acp --check` above.
+- Build `buzz-acp` and the `buzz` CLI from the
+  [Buzz repository](https://github.com/block/buzz)
+  (`cargo build --release -p buzz-acp`).
+- Mint a dedicated Nostr keypair for Hermes (`buzz-admin generate-key`) and
+  register it as a relay member (`buzz-admin add-member`). Every agent needs
+  its own identity — do not reuse a human keypair.
+- Add that identity to the intended Buzz channels.
+
+Start a bridge with:
+
+```bash
+export BUZZ_RELAY_URL="wss://community.example.com"
+export BUZZ_PRIVATE_KEY="..."
+export BUZZ_API_TOKEN="..."
+export BUZZ_ACP_AGENT_COMMAND="hermes"
+export BUZZ_ACP_AGENT_ARGS="acp"
+
+buzz-acp
+```
+
+`BUZZ_API_TOKEN` is needed only when the relay enforces token authentication.
+Do not commit or paste the private key or API token.
+
+For a persistent server deployment, run `buzz-acp` under a service manager as
+the same operating-system user that owns the intended Hermes home. Setup,
+key generation, channel discovery, and per-agent options are documented in the
+[buzz-acp README](https://github.com/block/buzz/tree/main/crates/buzz-acp).
+
+The bridge discovers every Buzz channel where the Hermes identity is a member
+and automatically subscribes when it is added to another channel. Buzz channel
+membership therefore remains the access boundary; Hermes does not need a
+separate channel list in its own configuration.
+
+To expose Hermes ACP activity in the owner's Buzz Desktop, add:
+
+```bash
+export BUZZ_ACP_RELAY_OBSERVER="true"
+```
+
+This publishes encrypted kind `24200` observer frames addressed to the agent's
+owner (Buzz's NIP-AO). Desktop renders the live lifecycle, tool, response, and
+usage stream in the agent's **Activity log**. The relay treats these frames as
+ephemeral, so Desktop must be online before the turn starts; its local observer
+archive is the durable owner-side history.
+
+Headless bridges answer ACP permission requests themselves because no editor
+is present to show approval dialogs — see
+[Keep Buzz agents owner-only](#keep-buzz-agents-owner-only). Treat the bridge
+as privileged automation: use a dedicated operating-system account, restrict
+which Buzz users can prompt the agent (`buzz-acp` supports an owner-only
+respond gate via `BUZZ_ACP_AGENT_OWNER`), and grant membership only in channels
+where Hermes is expected to work.
 
 ### VS Code
 
@@ -126,19 +196,10 @@ If you want to define Hermes manually, add it through VS Code settings under `ac
 
 ### Zed
 
-Zed v0.221.x and newer installs external agents through the official ACP Registry.
+Configure Hermes as a custom agent server in Zed settings:
 
 1. Open the Agent Panel.
-2. Click **Add Agent**, or run the `zed: acp registry` command.
-3. Search for **Hermes Agent**.
-4. Install it and start a new Hermes external-agent thread.
-
-Prerequisites:
-
-- Configure Hermes provider credentials first with `hermes model`, or set them in `~/.hermes/.env` / `~/.hermes/config.yaml`.
-- Install `uv` so the registry launcher can run `uvx --from 'hermes-agent[acp]==<version>' hermes-acp`.
-
-For local development before the registry entry is available, use a custom agent server in Zed settings:
+2. Add a custom agent server with the following configuration:
 
 ```json
 {
@@ -152,32 +213,57 @@ For local development before the registry entry is available, use a custom agent
 }
 ```
 
+3. Start a new Hermes external-agent thread.
+
+Prerequisites:
+
+- Configure Hermes provider credentials first with `hermes model`, or set them in `~/.hermes/.env` / `~/.hermes/config.yaml`.
+
 ### JetBrains
 
-Use an ACP-compatible plugin and point it at:
+Use an ACP-compatible plugin and point it at `hermes acp` or `hermes-acp`.
 
-```text
-/path/to/hermes-agent/acp_registry
+### Buzz Desktop
+
+[Buzz](https://github.com/block/buzz) ships Hermes Agent as a preset runtime.
+With Hermes installed the normal way, Buzz discovers it automatically —
+open **Settings → Runtimes** and Hermes appears under your runtimes.
+
+If discovery fails (older installs), make sure the ACP launcher resolves on a
+login-shell PATH:
+
+```bash
+command -v hermes-acp || command -v hermes
 ```
 
-## Registry manifest
+Recent installs write both `hermes` and `hermes-acp` launchers into
+`~/.local/bin`; running `hermes update` adds the `hermes-acp` launcher to
+older installs. As a manual fallback, configure Buzz's agent command as
+`hermes` with args `["acp"]`.
 
-The source copy of Hermes' official ACP Registry metadata lives at:
+#### Keep Buzz agents owner-only
 
-```text
-acp_registry/agent.json
-acp_registry/icon.svg
-```
+Buzz creates every agent with **Who can talk to this agent** set to `Owner only`.
+Leave it there when the runtime is Hermes.
 
-The upstream registry PR copies those files into the top-level `hermes-agent/` directory in `agentclientprotocol/registry`.
+Two behaviors combine on this path. The `hermes-acp` toolset includes `terminal`
+and `execute_code`, and Buzz's ACP bridge answers Hermes' permission requests
+itself with `allow_once` rather than surfacing them. A Hermes agent in Buzz
+therefore runs shell commands on the host without prompting. I asked one to run
+`rm -rf` against a scratch directory and it deleted it, no prompt anywhere.
 
-The registry entry uses a `uvx` distribution that points directly at the `hermes-agent` PyPI release:
+Selecting `Anyone` hands that same shell access to every author who can reach
+the channel. Buzz does not warn when you pick it.
 
-```text
-uvx --from 'hermes-agent[acp]==<version>' hermes-acp
-```
+Neither of the obvious mitigations works today:
 
-The registry CI verifies that the pinned version exists on PyPI, so the manifest's `version` and uvx `package` pin must always match `pyproject.toml`. `scripts/release.py` keeps them in lockstep automatically.
+- `approvals.mode: manual` does make Hermes raise the permission request, but
+  Buzz auto-approves it and the command still runs.
+- `platform_toolsets.acp` does not narrow the ACP toolset, so it cannot be used
+  to drop `terminal`.
+
+`!shutdown` from the owner stops the agent in any mode, and Buzz ignores that
+command from everyone else.
 
 ## Configuration and credentials
 
@@ -188,7 +274,29 @@ ACP mode uses the same Hermes configuration as the CLI:
 - `~/.hermes/skills/`
 - `~/.hermes/state.db`
 
-Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run registry clients; this opens Hermes' interactive model/provider setup.
+Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run ACP clients; this opens Hermes' interactive model/provider setup.
+
+## Host integration
+
+These variables are set by an **ACP host process** (an editor or another agent
+harness) on the Hermes subprocess it spawns. They are not user configuration —
+do not set them by hand in `.env` or `config.yaml`.
+
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `HERMES_ACP_SKIP_CONFIGURED_MCP` | `1` | Skip starting the **globally configured** MCP servers from `config.yaml` before the ACP JSON-RPC loop begins. |
+
+Hermes normally starts every MCP server configured in `config.yaml` before it
+enters the ACP JSON-RPC loop. A host that owns MCP itself — passing the
+session's servers explicitly through `session/new` — does not need that global
+startup, and an unrelated slow or interactive MCP server would otherwise delay
+`initialize`. Setting the marker to exactly `1` lets such a host skip it.
+
+Only the global `config.yaml` discovery is skipped. **MCP servers supplied by
+the ACP session through `session/new` are still registered**, so a host loses
+no capability it asked for. Any other value (unset, empty, `0`, `false`) keeps
+the default behavior, so an unrelated truthy-looking string cannot silently
+disable MCP.
 
 ## Session behavior
 
@@ -216,6 +324,11 @@ Dangerous terminal commands can be routed back to the editor as approval prompts
 - allow always
 - deny
 
+Whether you actually see a prompt is up to the host. A host is free to answer the
+request programmatically instead of showing it to you, in which case these
+options exist on the wire but never reach a human. Buzz Desktop does this, so
+treat that path as unattended execution regardless of your `approvals` setting.
+
 On timeout or error, the approval bridge denies the request.
 
 ### Session-scoped edit auto-approval
@@ -239,11 +352,9 @@ The ACP bridge maps these options onto Hermes' internal approval semantics — `
 
 Check:
 
-- In Zed, open the ACP Registry with `zed: acp registry` and search for **Hermes Agent**.
-- For manual/local development, verify the custom `agent_servers` command points to `hermes acp`.
+- For manual/local development, verify the host command points to `hermes acp`.
 - Hermes is installed and on your PATH.
-- The ACP extra is installed (`pip install -e '.[acp]'`).
-- `uv` is installed if launching from the official Zed registry entry.
+- The ACP extra is installed (`cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'`).
 
 ### ACP starts but immediately errors
 
@@ -264,14 +375,11 @@ ACP mode uses Hermes' existing provider setup. Configure credentials with:
 hermes model
 ```
 
-or by editing `~/.hermes/.env`. Registry clients can also trigger Hermes' terminal auth flow, which runs the same interactive provider/model setup.
-
-### Zed registry launcher cannot find uv
-
-Install `uv` from the official uv installation docs, then retry the Hermes Agent thread from Zed.
+or by editing `~/.hermes/.env`. The terminal auth flow (`hermes acp --setup`) can also trigger the interactive provider/model setup.
 
 ## See also
 
+- [Buzz ACP harness](https://github.com/block/buzz/tree/main/crates/buzz-acp)
 - [ACP Internals](../../developer-guide/acp-internals.md)
 - [Provider Runtime Resolution](../../developer-guide/provider-runtime.md)
 - [Tools Runtime](../../developer-guide/tools-runtime.md)

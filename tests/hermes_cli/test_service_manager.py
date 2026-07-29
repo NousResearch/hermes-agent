@@ -1103,36 +1103,252 @@ def test_s6_stop_tolerates_marker_write_failure(monkeypatch, s6_scandir):
     assert any(cmd[0] == "s6-svc" and "-d" in cmd for cmd in svc_calls)
 
 
-def test_s6_log_run_chowns_gateways_parent(s6_scandir, fake_subprocess_run) -> None:
-    """The log/run script must chown the logs/gateways/ parent, not just the leaf.
+def _log_run_setup_fragment(rendered: str) -> str:
+    """Keep mkdir/rm setup from ``_render_log_run``; stop before ``s6-log``."""
+    keep: list[str] = []
+    for line in rendered.splitlines(keepends=True):
+        if line.startswith("#!/") or "shellcheck" in line:
+            continue
+        if "s6-log" in line:
+            break
+        keep.append(line)
+    return "#!/bin/sh\n" + "".join(keep)
 
-    Regression guard for #45258: `mkdir -p` creates the gateways/ parent
-    root-owned on a root-context boot, and a leaf-only chown leaves it that
-    way. Every profile registered later then runs its log service as the
-    dropped hermes user and s6-log crash-loops on `mkdir: Permission denied`.
+
+def test_s6_log_run_creates_leaf_as_hermes_without_chown(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """log/run must not root-chown/unlink volume paths; create leaf as hermes.
+
+    #45258 parent ownership is stage2's job (``logs/gateways`` seeded as
+    hermes). Restartable log/run must not pathname-chown or pathname-rm a
+    hermes-writable tree from root — that is a symlink TOCTOU hole.
     """
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway("coder")
 
     log_text = (s6_scandir / "gateway-coder" / "log" / "run").read_text()
 
-    parent_chown = 'chown hermes:hermes "$HERMES_HOME/logs/gateways"'
-    assert parent_chown in log_text, (
-        "log/run must chown the logs/gateways parent so profiles added "
-        f"after a root-context boot can create their leaf dirs. Saw: {log_text!r}"
+    assert not any(line.lstrip().startswith("chown ") for line in log_text.splitlines()), (
+        "restartable log/run must not invoke chown on hermes-writable paths; "
+        f"saw: {log_text!r}"
     )
-    # Non-recursive on purpose: sibling profile leaf dirs are each managed
-    # by their own log/run; a recursive parent chown would race them.
-    assert 'chown -R hermes:hermes "$HERMES_HOME/logs/gateways"' not in log_text
+    assert 's6-setuidgid hermes mkdir -p "$log_dir"' in log_text
+    assert 's6-setuidgid hermes rm -f "$log_dir/lock"' in log_text
+    assert 'else\n  mkdir -p "$log_dir"\n  rm -f "$log_dir/lock"\nfi\n' in log_text
+    # Lock cleanup must not remain a bare root-context pathname op after fi.
+    after_fi = log_text.split("fi\n", 1)[-1]
+    assert 'rm -f "$log_dir/lock"' not in after_fi
 
-    # Ordering: mkdir creates the parent, then the parent chown repairs its
-    # ownership, then the leaf chown — all before s6-log execs.
-    mkdir_idx = log_text.index('mkdir -p "$log_dir"')
-    parent_idx = log_text.index(parent_chown)
-    leaf_idx = log_text.index('chown -R hermes:hermes "$log_dir"')
+    mkdir_as_hermes_idx = log_text.index('s6-setuidgid hermes mkdir -p "$log_dir"')
+    rm_as_hermes_idx = log_text.index('s6-setuidgid hermes rm -f "$log_dir/lock"')
     exec_idx = log_text.index("s6-log 1 ")
-    assert mkdir_idx < parent_idx < leaf_idx < exec_idx
+    assert mkdir_as_hermes_idx < rm_as_hermes_idx < exec_idx
 
-    # The parent path must be a runtime env expansion, never a baked-in
-    # absolute path (same contract as the log_dir itself).
+    # Runtime path expansion, never a baked-in absolute path.
     assert '/opt/data/logs/gateways"' not in log_text
+
+
+def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None:
+    """Symlinked ``$log_dir`` must not redirect root chown/rm to the referent."""
+    import os
+    import stat
+    import subprocess
+    import threading
+    import time
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("POSIX symlink + /bin/sh required")
+
+    hermes_home = tmp_path / "hermes"
+    gateways = hermes_home / "logs" / "gateways"
+    gateways.mkdir(parents=True)
+    leaf = gateways / "coder"
+    leaf.mkdir()
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "marker").write_text("keep", encoding="utf-8")
+    (victim / "lock").write_text("keep-lock", encoding="utf-8")
+    before = victim.stat()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    recorder = tmp_path / "chown_calls.txt"
+    (bin_dir / "chown").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{recorder.as_posix()}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    # Pretend we are root so the script takes the s6-setuidgid setup path.
+    # Mark the drop so fake rm can refuse unlink outside HERMES_HOME the way
+    # a real hermes uid cannot delete a foreign root-owned lock.
+    (bin_dir / "id").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-u" ]; then echo 0; exit 0; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "s6-setuidgid").write_text(
+        "#!/bin/sh\n"
+        "shift\n"
+        'HERMES_TEST_DROPPED=1 exec "$@"\n',
+        encoding="utf-8",
+    )
+    real_rm = "/bin/rm"
+    (bin_dir / "rm").write_text(
+        "#!/bin/sh\n"
+        # Privilege-dropped: no-op. Models that hermes cannot unlink a foreign
+        # root-owned lock outside the volume; avoids a realpath/rm TOCTOU in
+        # the test double itself. Root-context: real rm — a residual bare
+        # ``rm -f "$log_dir/lock"`` would delete victim/lock via the symlink.
+        'if [ -n "$HERMES_TEST_DROPPED" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        f'exec {real_rm} "$@"\n',
+        encoding="utf-8",
+    )
+    for name in ("chown", "id", "s6-setuidgid", "rm"):
+        p = bin_dir / name
+        p.chmod(p.stat().st_mode | stat.S_IXUSR)
+
+    script_path = tmp_path / "log_run_setup.sh"
+    script_path.write_text(
+        _log_run_setup_fragment(S6ServiceManager._render_log_run("coder")),
+        encoding="utf-8",
+    )
+    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
+
+    stop = threading.Event()
+
+    def _clear_leaf() -> None:
+        if leaf.is_symlink():
+            leaf.unlink()
+        elif leaf.is_dir():
+            leaf.rmdir()
+        elif leaf.exists():
+            leaf.unlink()
+
+    def _swap_race() -> None:
+        # Alternate leaf between a real dir and a symlink to the victim while
+        # the setup fragment runs — proves there is no privileged chown/rm
+        # window to win, unlike a check-then-use preflight.
+        while not stop.is_set():
+            try:
+                _clear_leaf()
+                leaf.symlink_to(victim)
+                time.sleep(0.001)
+                _clear_leaf()
+                leaf.mkdir()
+            except OSError:
+                pass
+            time.sleep(0.001)
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+    env["PATH"] = f"{bin_dir.as_posix()}{os.pathsep}{env.get('PATH', '')}"
+
+    racer = threading.Thread(target=_swap_race, daemon=True)
+    racer.start()
+    try:
+        for _ in range(40):
+            proc = subprocess.run(
+                ["/bin/sh", str(script_path)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert proc.returncode == 0, (proc.stdout, proc.stderr)
+            assert (victim / "lock").is_file(), "symlinked leaf must not let root unlink victim/lock"
+    finally:
+        stop.set()
+        racer.join(timeout=2)
+
+    assert not recorder.exists() or recorder.read_text(encoding="utf-8").strip() == ""
+    after = victim.stat()
+    assert after.st_uid == before.st_uid
+    assert after.st_gid == before.st_gid
+    assert (victim / "marker").read_text(encoding="utf-8") == "keep"
+    assert (victim / "lock").read_text(encoding="utf-8") == "keep-lock"
+
+
+def test_s6_log_run_mkdir_as_hermes_on_real_dirs(tmp_path) -> None:
+    """Root-context setup creates ``$log_dir`` via ``s6-setuidgid hermes mkdir``."""
+    import os
+    import stat
+    import subprocess
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("POSIX /bin/sh required")
+
+    hermes_home = tmp_path / "hermes"
+    (hermes_home / "logs" / "gateways").mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    setuid_recorder = tmp_path / "setuidgid_calls.txt"
+    chown_recorder = tmp_path / "chown_calls.txt"
+
+    (bin_dir / "id").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-u" ]; then echo 0; exit 0; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "s6-setuidgid").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{setuid_recorder.as_posix()}"\n'
+        "shift\n"
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "chown").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{chown_recorder.as_posix()}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    for name in ("id", "s6-setuidgid", "chown"):
+        p = bin_dir / name
+        p.chmod(p.stat().st_mode | stat.S_IXUSR)
+
+    script_path = tmp_path / "log_run_setup.sh"
+    script_path.write_text(
+        _log_run_setup_fragment(S6ServiceManager._render_log_run("coder")),
+        encoding="utf-8",
+    )
+    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR)
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+    env["PATH"] = f"{bin_dir.as_posix()}{os.pathsep}{env.get('PATH', '')}"
+
+    proc = subprocess.run(
+        ["/bin/sh", str(script_path)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+
+    setuid_calls = setuid_recorder.read_text(encoding="utf-8").strip().splitlines()
+    assert any(
+        c.split()[:3] == ["hermes", "mkdir", "-p"] and "gateways/coder" in c
+        for c in setuid_calls
+    ), setuid_calls
+    assert any(
+        c.split()[:3] == ["hermes", "rm", "-f"] and c.rstrip().endswith("/lock")
+        for c in setuid_calls
+    ), setuid_calls
+    assert (hermes_home / "logs" / "gateways" / "coder").is_dir()
+    assert (
+        not chown_recorder.exists()
+        or chown_recorder.read_text(encoding="utf-8").strip() == ""
+    )

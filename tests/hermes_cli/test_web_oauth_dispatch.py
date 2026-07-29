@@ -20,6 +20,7 @@ The fix:
 These tests pin the corrected behavior.
 """
 import asyncio
+import json
 import time
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -665,6 +666,19 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
     monkeypatch.delenv("XAI_BASE_URL", raising=False)
 
+    # Existing chat provider must not be overwritten by dashboard OAuth.
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "openrouter",
+                "providers": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
     # Prior `hermes auth remove xai-oauth` left the source suppressed.
     auth_mod.suppress_credential_source("xai-oauth", "device_code")
     assert auth_mod.is_source_suppressed("xai-oauth", "device_code") is True
@@ -707,6 +721,10 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     # The interactive dashboard login cleared the suppression marker.
     assert auth_mod.is_source_suppressed("xai-oauth", "device_code") is False
 
+    after = json.loads(auth_path.read_text(encoding="utf-8"))
+    assert after["active_provider"] == "openrouter"
+    assert after["providers"]["xai-oauth"]["tokens"]["access_token"] == "xai-dashboard-access"
+
     # The credential pool has exactly one entry, seeded from the
     # singleton as ``device_code`` — no parallel ``manual:dashboard_*``
     # duplicate sharing the single-use refresh token.
@@ -717,6 +735,61 @@ def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path
     assert not any(
         getattr(e, "source", "").startswith("manual:dashboard") for e in entries
     )
+
+
+def test_xai_dashboard_poller_marks_active_when_unset(tmp_path, monkeypatch):
+    """First dashboard xAI login may set active_provider when none is set yet."""
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps({"version": 1, "providers": {}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_oauth_discovery",
+        lambda *a, **k: {"token_endpoint": "https://auth.x.ai/token"},
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_oauth_poll_device_token",
+        lambda client, **kwargs: {
+            "access_token": "xai-dashboard-first",
+            "refresh_token": "rt-first",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        },
+    )
+
+    session_id = "xai-dashboard-first-active-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "device_code",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "device_code": "device-code",
+        "interval": 5,
+        "expires_at": time.time() + 600,
+    }
+    try:
+        ws._xai_device_poller(session_id)
+        assert ws._oauth_sessions[session_id]["status"] == "approved"
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+    after = json.loads(auth_path.read_text(encoding="utf-8"))
+    assert after["active_provider"] == "xai-oauth"
+    assert after["providers"]["xai-oauth"]["tokens"]["access_token"] == "xai-dashboard-first"
 
 
 def test_unknown_pkce_provider_rejected_cleanly():
@@ -794,7 +867,7 @@ def test_status_hardcoded_branch_wins_over_generic_fallback():
     import hermes_cli.web_server as ws
 
     with patch(
-        "hermes_cli.auth.get_nous_auth_status",
+        "hermes_cli.auth.get_nous_auth_status_local",
         return_value={"logged_in": True, "portal_base_url": "https://portal.test"},
     ):
         out = ws._resolve_provider_status("nous", None)

@@ -278,6 +278,7 @@ class TestStopWithoutStart:
         assert voice.stop_and_transcribe() is None
 
 
+@pytest.mark.real_audio_playback
 class TestSpeakTextGuards:
     @pytest.mark.parametrize("text", ["", "   ", "\n\t  "])
     def test_empty_text_is_noop(self, text):
@@ -288,6 +289,50 @@ class TestSpeakTextGuards:
 
         # Should simply return None without raising.
         assert speak_text(text) is None
+
+    def test_speak_text_uses_returned_tts_file_path(self, monkeypatch):
+        import hermes_cli.voice as voice
+        from tools import tts_tool
+
+        played = []
+        returned_path = "/tmp/hermes_voice/actual.flac"
+
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda **_kwargs: f'{{"success": true, "file_path": "{returned_path}"}}',
+        )
+        monkeypatch.setattr(voice.os, "makedirs", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(voice.os.path, "isfile", lambda path: path == returned_path)
+        monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
+        monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+
+        assert voice.speak_text("Hello world") is None
+        assert played == [returned_path]
+
+    def test_speak_text_prefers_requested_mp3_over_returned_ogg(self, monkeypatch):
+        import hermes_cli.voice as voice
+        from tools import tts_tool
+
+        played = []
+        requested_paths = []
+
+        def fake_tts(**kwargs):
+            requested_path = kwargs["output_path"]
+            requested_paths.append(requested_path)
+            ogg_path = requested_path.rsplit(".", 1)[0] + ".ogg"
+            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+        monkeypatch.setattr(voice.os, "makedirs", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(voice.os.path, "isfile", lambda _path: True)
+        monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
+        monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+
+        assert voice.speak_text("Hello world") is None
+        assert played == requested_paths
 
 
 class TestContinuousAPI:
@@ -379,6 +424,7 @@ class TestContinuousLoopSimulation:
         monkeypatch.setattr(voice, "_continuous_on_status", None)
         monkeypatch.setattr(voice, "_continuous_on_silent_limit", None)
         monkeypatch.setattr(voice, "_continuous_auto_restart", True, raising=False)
+        monkeypatch.setattr(voice, "_voice_busy_probe", None, raising=False)
         monkeypatch.setattr(voice, "_play_beep", lambda *_, **__: None)
 
         class FakeRecorder:
@@ -679,6 +725,162 @@ class TestContinuousLoopSimulation:
         assert voice.is_continuous_active() is False
         assert fake_recorder.cancelled >= 1
 
+    def test_silent_cycles_do_not_count_while_agent_busy(self, fake_recorder, monkeypatch):
+        """Agent mid-turn: silent cycles must NOT count toward the no-speech
+        limit — a multi-minute tool run would otherwise end the voice chat
+        while the user is correctly waiting quietly."""
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": ""},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: True)
+
+        silent_limit_fired = []
+
+        voice.start_continuous(
+            on_transcript=lambda _t: None,
+            on_silent_limit=lambda: silent_limit_fired.append(True),
+        )
+
+        # Way past the 3-strike limit while the agent is busy.
+        for _ in range(6):
+            fake_recorder.last_callback()
+
+        assert silent_limit_fired == []
+        assert voice.is_continuous_active() is True
+        assert voice._continuous_no_speech_count == 0
+
+        # Agent finishes → strikes count again, limit fires as before.
+        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: False)
+        for _ in range(3):
+            fake_recorder.last_callback()
+        assert silent_limit_fired == [True]
+        assert voice.is_continuous_active() is False
+
+    def test_silent_cycles_do_not_count_while_tts_playing(self, fake_recorder, monkeypatch):
+        """TTS speaking: the user is listening, not ignoring the mic."""
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": ""},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+        # Keep the TTS-wait re-arm path from blocking: _tts_playing cleared
+        # means "playing"; use a tiny wait timeout via a fake event-like shim.
+        monkeypatch.setattr(voice, "_voice_busy_probe", None)
+
+        class _FakePlaying:
+            def is_set(self):
+                return False
+
+            def wait(self, timeout=None):
+                return True
+
+        monkeypatch.setattr(voice, "_tts_playing", _FakePlaying())
+
+        silent_limit_fired = []
+        voice.start_continuous(
+            on_transcript=lambda _t: None,
+            on_silent_limit=lambda: silent_limit_fired.append(True),
+        )
+        for _ in range(4):
+            fake_recorder.last_callback()
+
+        assert silent_limit_fired == []
+        assert voice._continuous_no_speech_count == 0
+        voice.stop_continuous()
+
+    def test_stop_phrase_still_ends_chat_during_busy_hold(self, fake_recorder, monkeypatch):
+        """The hold suppresses the silence counter only — a spoken stop
+        phrase must still end the voice chat instantly."""
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": "stop"},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+        monkeypatch.setattr(voice, "is_voice_stop_phrase", lambda _t: True)
+        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: True)
+
+        stop_fired = []
+        voice.start_continuous(
+            on_transcript=lambda _t: None,
+            on_stop_phrase=lambda t: stop_fired.append(t),
+        )
+        fake_recorder.last_callback()
+
+        assert stop_fired == ["stop"]
+        assert voice.is_continuous_active() is False
+
+    def test_broken_busy_probe_fails_open(self, fake_recorder, monkeypatch):
+        """A raising probe must not make the voice chat immortal — silent
+        cycles count as if no probe were registered."""
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": ""},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        def _boom():
+            raise RuntimeError("probe broken")
+
+        monkeypatch.setattr(voice, "_voice_busy_probe", _boom)
+
+        silent_limit_fired = []
+        voice.start_continuous(
+            on_transcript=lambda _t: None,
+            on_silent_limit=lambda: silent_limit_fired.append(True),
+        )
+        for _ in range(3):
+            fake_recorder.last_callback()
+
+        assert silent_limit_fired == [True]
+        assert voice.is_continuous_active() is False
+
+    def test_force_transcribe_silent_cycle_held_while_busy(self, fake_recorder, monkeypatch):
+        """The single-shot (auto_restart=False, force_transcribe) strike path
+        honors the busy hold too — desktop/TUI clients drive that loop."""
+        import hermes_cli.voice as voice
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=False):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        monkeypatch.setattr(voice.threading, "Thread", ImmediateThread)
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": ""},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+        monkeypatch.setattr(voice, "_voice_busy_probe", lambda: True)
+
+        silent_limit_fired = []
+        for _ in range(4):
+            voice.start_continuous(
+                on_transcript=lambda _t: None,
+                on_silent_limit=lambda: silent_limit_fired.append(True),
+                auto_restart=False,
+            )
+            voice.stop_continuous(force_transcribe=True)
+
+        assert silent_limit_fired == []
+        assert voice._continuous_no_speech_count == 0
+
     def test_stop_during_transcription_discards_restart(self, fake_recorder, monkeypatch):
         """User hits Ctrl+B mid-transcription: the in-flight transcript must
         still fire (it's a real utterance), but the loop must NOT restart."""
@@ -707,3 +909,126 @@ class TestContinuousLoopSimulation:
         # The in-flight transcript was suppressed because we stopped mid-flight
         assert transcripts == []
         assert voice.is_continuous_active() is False
+
+
+class TestBeepsEnabledTruthyStrings:
+    """voice.beep_enabled quoted in YAML ("false"/"off") must disable beeps —
+    bool("false") is True, so the gate must use utils.is_truthy_value (#49883)."""
+
+    def _enabled_with(self, monkeypatch, value):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"voice": {"beep_enabled": value}},
+        )
+        return voice._beeps_enabled()
+
+    def test_quoted_false_string_disables(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, "false") is False
+
+    def test_quoted_off_string_disables(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, "off") is False
+
+    def test_quoted_true_string_enables(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, "true") is True
+
+    def test_real_booleans_pass_through(self, monkeypatch):
+        assert self._enabled_with(monkeypatch, True) is True
+        assert self._enabled_with(monkeypatch, False) is False
+
+    def test_missing_key_defaults_true(self, monkeypatch):
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"voice": {}})
+        assert voice._beeps_enabled() is True
+
+
+@pytest.mark.real_audio_playback
+class TestSpeakTextStreamingDispatch:
+    """speak_text routes through the generic streaming dispatcher (#58930)
+    when a chunked streaming provider resolves — one dispatcher, zero
+    parallel streaming implementations."""
+
+    def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
+        import hermes_cli.voice as voice
+        import tools.tts_streaming as ts
+        from tools import tts_tool
+
+        streamed = []
+
+        def fake_stream(text_queue, stop_event, done_event, *a, **k):
+            while True:
+                item = text_queue.get()
+                if item is None:
+                    break
+                streamed.append(item)
+            done_event.set()
+
+        monkeypatch.setattr(
+            ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()
+        )
+        monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", fake_stream)
+
+        synced = []
+        monkeypatch.setattr(
+            tts_tool, "text_to_speech_tool", lambda **kw: synced.append(kw) or "{}"
+        )
+
+        assert voice.speak_text("Hello streaming world") is None
+        assert streamed == ["Hello streaming world"]
+        assert synced == [], "sync whole-file path must be skipped when streaming"
+
+    def test_no_streamer_falls_back_to_sync_path(self, monkeypatch):
+        import hermes_cli.voice as voice
+        import tools.tts_streaming as ts
+        from tools import tts_tool
+
+        monkeypatch.setattr(
+            ts, "resolve_streaming_provider", lambda cfg, preferred=None: None
+        )
+        played = []
+        returned_path = "/tmp/hermes_voice/fallback.mp3"
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda **_kw: f'{{"success": true, "file_path": "{returned_path}"}}',
+        )
+        monkeypatch.setattr(voice.os, "makedirs", lambda *a, **k: None)
+        monkeypatch.setattr(voice.os.path, "isfile", lambda p: p == returned_path)
+        monkeypatch.setattr(voice.os.path, "getsize", lambda _p: 1000)
+        monkeypatch.setattr(voice.os, "unlink", lambda _p: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda p: played.append(p))
+
+        assert voice.speak_text("Hello sync world") is None
+        assert played == [returned_path]
+
+    def test_streaming_failure_falls_back_to_sync_path(self, monkeypatch):
+        import hermes_cli.voice as voice
+        import tools.tts_streaming as ts
+        from tools import tts_tool
+
+        monkeypatch.setattr(
+            ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()
+        )
+
+        def broken_stream(text_queue, stop_event, done_event, *a, **k):
+            raise RuntimeError("audio device exploded")
+
+        monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", broken_stream)
+
+        played = []
+        returned_path = "/tmp/hermes_voice/recovered.mp3"
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda **_kw: f'{{"success": true, "file_path": "{returned_path}"}}',
+        )
+        monkeypatch.setattr(voice.os, "makedirs", lambda *a, **k: None)
+        monkeypatch.setattr(voice.os.path, "isfile", lambda p: p == returned_path)
+        monkeypatch.setattr(voice.os.path, "getsize", lambda _p: 1000)
+        monkeypatch.setattr(voice.os, "unlink", lambda _p: None)
+        monkeypatch.setattr(voice, "play_audio_file", lambda p: played.append(p))
+
+        assert voice.speak_text("Recover me") is None
+        assert played == [returned_path]

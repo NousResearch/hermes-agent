@@ -5,6 +5,7 @@ import os
 from types import SimpleNamespace
 from unittest import mock
 
+import httpx
 import pytest
 
 from gateway.config import PlatformConfig
@@ -139,14 +140,23 @@ class TestIsVoiceContentType:
     def test_audio_content_type(self):
         assert self._fn("audio/mp3", "file.mp3") is True
 
-    def test_voice_extension(self):
+    def test_voice_extension_fallback_when_content_type_empty(self):
+        """content_type='' with audio extension → True (extension fallback)."""
         assert self._fn("", "file.silk") is True
 
     def test_non_voice(self):
         assert self._fn("image/jpeg", "photo.jpg") is False
 
-    def test_audio_extension_amr(self):
+    def test_audio_extension_amr_fallback_when_content_type_empty(self):
+        """content_type='' with .amr extension → True (extension fallback)."""
         assert self._fn("", "recording.amr") is True
+
+    def test_file_upload_with_audio_extension(self):
+        """content_type='file' is never voice, even with audio extension."""
+        assert self._fn("file", "song.mp3") is False
+        assert self._fn("file", "audio-30251.instrumental..wav") is False
+        assert self._fn("file", "recording.silk") is False
+        assert self._fn("file", "voice.amr") is False
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +214,73 @@ class TestVoiceAttachmentSSRFProtection:
         connected_explicit = asyncio.run(adapter.connect(is_reconnect=True))
         assert connected_default is False
         assert connected_explicit is False
+
+
+# ---------------------------------------------------------------------------
+# Voice attachment temp-file cleanup
+# ---------------------------------------------------------------------------
+
+class TestVoiceAttachmentTempCleanup:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def _setup_download_mocks(self, adapter, content=b"RIFFmock-wav-audio-data"):
+        response = mock.Mock()
+        response.content = content
+        response.headers = {"content-type": "audio/wav"}
+        response.raise_for_status = mock.Mock()
+
+        adapter._http_client = mock.AsyncMock()
+        adapter._http_client.get = mock.AsyncMock(return_value=response)
+
+    def test_temp_wav_cleaned_up_on_stt_failure(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        self._setup_download_mocks(adapter)
+        seen = {}
+
+        async def _raise_transport_error(path):
+            seen["wav_path"] = path
+            raise httpx.TransportError("boom")
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=True):
+            adapter._call_stt = mock.AsyncMock(side_effect=_raise_transport_error)
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "https://cdn.qq.com/voice.silk",
+                    "audio/silk",
+                    "voice.silk",
+                    voice_wav_url="https://cdn.qq.com/voice.wav",
+                )
+            )
+
+        assert transcript is None
+        assert "wav_path" in seen
+        assert not os.path.exists(seen["wav_path"])
+
+    def test_temp_wav_cleaned_up_on_stt_success(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        self._setup_download_mocks(adapter)
+        seen = {}
+
+        async def _return_transcript(path):
+            seen["wav_path"] = path
+            return "hello from qq voice"
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=True):
+            adapter._call_stt = mock.AsyncMock(side_effect=_return_transcript)
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "https://cdn.qq.com/voice.silk",
+                    "audio/silk",
+                    "voice.silk",
+                    voice_wav_url="https://cdn.qq.com/voice.wav",
+                )
+            )
+
+        assert transcript == "hello from qq voice"
+        assert "wav_path" in seen
+        assert not os.path.exists(seen["wav_path"])
 
 
 # ---------------------------------------------------------------------------

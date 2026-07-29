@@ -190,4 +190,41 @@ describe('subagent store', () => {
         .sort()
     ).toEqual(['c', 'd'])
   })
+
+  // Regression test for #73728: backend terminal statuses like `timeout` and
+  // `error` were normalised to `running`, making timed-out subagents immortal
+  // in the active status stack. `cancelled`/`canceled` must also map to
+  // `interrupted`.
+  it('normalises backend terminal statuses to recognised SubagentStatus values', () => {
+    upsertSubagent('s1', { goal: 'a', status: 'running', subagent_id: 'a', task_index: 0 })
+    upsertSubagent('s1', { goal: 'b', status: 'running', subagent_id: 'b', task_index: 1 })
+    upsertSubagent('s1', { goal: 'c', status: 'running', subagent_id: 'c', task_index: 2 })
+    upsertSubagent('s1', { goal: 'd', status: 'running', subagent_id: 'd', task_index: 3 })
+
+    // Emit terminal events with backend-native status strings
+    upsertSubagent('s1', { status: 'timeout', subagent_id: 'a', task_index: 0, summary: 'timed out' }, false, 'subagent.complete')
+    upsertSubagent('s1', { status: 'error', subagent_id: 'b', task_index: 1, summary: 'errored' }, false, 'subagent.complete')
+    upsertSubagent('s1', { status: 'cancelled', subagent_id: 'c', task_index: 2 }, false, 'subagent.complete')
+    upsertSubagent('s1', { status: 'canceled', subagent_id: 'd', task_index: 3 }, false, 'subagent.complete')
+
+    const items = listFor('s1')
+    const byId = Object.fromEntries(items.map(i => [i.id, i]))
+
+    // timeout → failed
+    expect(byId['a']?.status).toBe('failed')
+    expect(byId['a']?.currentTool).toBeUndefined()
+
+    // error → failed
+    expect(byId['b']?.status).toBe('failed')
+
+    // cancelled → interrupted
+    expect(byId['c']?.status).toBe('interrupted')
+
+    // canceled → interrupted
+    expect(byId['d']?.status).toBe('interrupted')
+
+    // All four are terminal — prune should remove them all
+    pruneFinishedSessionSubagents('s1')
+    expect(listFor('s1')).toHaveLength(0)
+  })
 })

@@ -1621,9 +1621,11 @@ class AIAgent:
         """Detect Ollama-hosted GLM models affected by stop misreports.
 
         Ollama can misreport truncated output as finish_reason='stop'.
-        Detection relies on explicit Ollama signatures:
+        Detection relies on explicit local-Ollama signatures:
         - Port 11434 (Ollama default)
         - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+          but NOT ``ollama.com`` (Ollama Cloud), which reports stop
+          correctly and was the source of #60928's false truncation
         - provider explicitly set to "ollama"
 
         Crucially it does NOT match arbitrary local/private endpoints
@@ -1635,7 +1637,9 @@ class AIAgent:
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
-        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
+        if ":11434" in self._base_url_lower:
+            return True
+        if "ollama" in self._base_url_lower and "ollama.com" not in self._base_url_lower:
             return True
         return provider_lower == "ollama"
 

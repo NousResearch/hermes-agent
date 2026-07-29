@@ -64,19 +64,29 @@ def _active_cron_provider_name() -> str:
 
 
 def _warn_if_gateway_not_running() -> None:
-    """Warn that scheduled jobs won't fire unless the gateway is running.
+    """Warn that scheduled jobs won't fire unless a ticker is running.
 
-    The cron ticker only runs inside the gateway (``_start_cron_ticker`` in
-    gateway/run.py); there is no standalone cron daemon. Without a running
-    gateway, ``next_run_at`` passes but jobs never fire and ``last_run_at``
-    stays null — the most common cron support report (#51038). Surfacing this
-    at create/list time, when the user is right there, prevents it.
+    The built-in cron ticker runs inside either the gateway
+    (``_start_cron_ticker`` in gateway/run.py) OR the desktop dashboard
+    backend (``_start_desktop_cron_ticker`` in hermes_cli/web_server.py,
+    started when ``HERMES_DESKTOP=1``). There is no standalone cron daemon.
+    Without ANY running ticker, ``next_run_at`` passes but jobs never fire
+    and ``last_run_at`` stays null — the most common cron support report
+    (#51038). Surfacing this at create/list time, when the user is right
+    there, prevents it.
 
     An external provider (e.g. Chronos) fires jobs via a NAS-mediated webhook,
     NOT the in-process ticker, so a momentarily-absent gateway process does not
     mean jobs won't fire — the warning would be a false alarm. Stay quiet for
     any non-builtin provider; the gateway-process heuristic only speaks to the
     built-in ticker's trigger.
+
+    A fresh ticker heartbeat means a ticker IS running somewhere — most
+    commonly the desktop backend, whose ``hermes serve`` process is invisible
+    to ``find_gateway_pids`` (it matches only ``gateway run`` argv). In that
+    case the "gateway is not running" warning is itself a false alarm and
+    must be suppressed (issue #53119): the ticker is alive and jobs ARE
+    firing.
     """
     try:
         if _active_cron_provider_name() != "builtin":
@@ -86,8 +96,19 @@ def _warn_if_gateway_not_running() -> None:
 
         if find_gateway_pids():
             return
+
+        # No gateway process — but the desktop backend runs its own ticker
+        # thread that is invisible to find_gateway_pids. A fresh heartbeat
+        # means a ticker IS alive, so jobs will fire; the warning would be
+        # a false positive. Mirror cron_status's staleness threshold so the
+        # two views agree on what "alive" means.
+        from cron.jobs import get_ticker_heartbeat_age, TICKER_INTERVAL_SECONDS
+
+        hb_age = get_ticker_heartbeat_age()
+        if hb_age is not None and hb_age <= TICKER_INTERVAL_SECONDS * 3 + 20:
+            return
     except Exception:
-        # If we can't determine gateway state, stay quiet rather than nag.
+        # If we can't determine ticker state, stay quiet rather than nag.
         return
 
     print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))

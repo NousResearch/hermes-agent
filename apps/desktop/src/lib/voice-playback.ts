@@ -20,6 +20,36 @@ let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
 
+// A shared, lazily-created AudioContext used only to nudge the browser's
+// autoplay state out of "suspended". A wake-word-started voice turn has no
+// preceding user gesture, so the first HTMLAudioElement.play() can be rejected
+// with NotAllowedError. resume()-ing a context is the documented way to recover
+// once the app is allowed to make sound; on Electron chat windows the
+// no-user-gesture-required policy means this is already unlocked, so this is a
+// cheap no-op fallback for other surfaces.
+let unlockCtx: AudioContext | null = null
+
+async function unlockAutoplay(): Promise<void> {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const Ctor =
+    window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
+  if (!Ctor) {
+    return
+  }
+
+  if (!unlockCtx) {
+    unlockCtx = new Ctor()
+  }
+
+  if (unlockCtx.state === 'suspended') {
+    await unlockCtx.resume()
+  }
+}
+
 function currentState(
   status: VoicePlaybackState['status'],
   options?: VoicePlaybackOptions,
@@ -243,6 +273,14 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     if (frame.type === 'start') {
       streamRate = frame.sample_rate || 24_000
       context = new AudioContext()
+      // Autoplay policy can hand back a suspended context when playback wasn't
+      // started by a user gesture (e.g. a wake-word-started voice turn). Resume
+      // it so the first reply is audible instead of silently buffering. Electron
+      // chat windows also set autoplayPolicy: no-user-gesture-required, but the
+      // dashboard-embedded surface relies on this resume.
+      if (context.state === 'suspended') {
+        void context.resume().catch(() => undefined)
+      }
       nextStartAt = 0
     } else if (frame.type === 'end') {
       finishWhenDrained()
@@ -371,7 +409,19 @@ async function playSpeechDataUrl(
     audio.addEventListener('error', onError, { once: true })
     audio.addEventListener('timeupdate', armStall)
     armStall()
-    void audio.play().catch(onError)
+    // A wake-word-started turn has no user gesture, so the autoplay policy can
+    // reject the first play() with NotAllowedError. Electron chat windows set
+    // autoplayPolicy: no-user-gesture-required to prevent this, but retry once
+    // after resuming a shared AudioContext as a fallback for other surfaces
+    // (dashboard-embedded) so the first reply isn't silently dropped.
+    void audio.play().catch(async () => {
+      try {
+        await unlockAutoplay()
+        await audio.play()
+      } catch {
+        onError()
+      }
+    })
   })
 
   if (!isCurrent()) {

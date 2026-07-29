@@ -958,6 +958,10 @@ def _close_sessions_for_transport(
 
 
 def _shutdown_sessions() -> None:
+    try:
+        _release_gateway_wake_owner()
+    except Exception:
+        pass
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:
@@ -17628,6 +17632,7 @@ def _(rid, params: dict) -> dict:
 
 _voice_sid_lock = threading.Lock()
 _voice_event_sid: str = ""
+_voice_wake_owner: "Optional[Transport]" = None
 
 
 def _voice_emit(event: str, payload: dict | None = None) -> None:
@@ -17639,6 +17644,14 @@ def _voice_emit(event: str, payload: dict | None = None) -> None:
     with _voice_sid_lock:
         sid = _voice_event_sid
     _emit(event, sid, payload)
+
+
+def _resume_voice_wake() -> None:
+    global _voice_wake_owner
+    with _voice_sid_lock:
+        owner, _voice_wake_owner = _voice_wake_owner, None
+    if owner is not None:
+        _wake_resume_if_owner(owner)
 
 
 def _voice_mode_enabled() -> bool:
@@ -17794,6 +17807,340 @@ def _voice_record_key() -> str:
     return str(record_key) if isinstance(record_key, str) and record_key else "ctrl+b"
 
 
+# ── Wake word ("Hey Hermes") ──────────────────────────────────────────────
+# The detector is process-global (one mic), like voice. The first eligible
+# transport to call wake.start owns it until stop, disconnect, or stream failure.
+# On detection we emit wake.detected; the client opens a new session and starts
+# its own voice capture. The detector yields the mic to gateway voice.record
+# (pause/resume below) and to the desktop's browser mic (wake.pause/resume RPCs).
+_wake_lock = threading.Lock()
+_wake_owner_transport: "Optional[Transport]" = None
+_wake_owner_surface = ""
+
+
+def _wake_owner_snapshot():
+    with _wake_lock:
+        return _wake_owner_transport, _wake_owner_surface
+
+
+def _release_wake_for_transport(transport: "Transport") -> bool:
+    """Release the wake lease iff ``transport`` is the current gateway owner."""
+    global _wake_owner_transport, _wake_owner_surface
+    with _wake_lock:
+        if _wake_owner_transport is not transport:
+            return False
+        _wake_owner_transport = None
+        _wake_owner_surface = ""
+    try:
+        from tools.wake_word import stop_listening
+
+        stop_listening(owner=transport)
+    except Exception as e:
+        logger.debug("wake stop failed: %s", e)
+    return True
+
+
+def _release_gateway_wake_owner() -> bool:
+    owner, _surface = _wake_owner_snapshot()
+    return owner is not None and _release_wake_for_transport(owner)
+
+
+_wake_resume_retry_lock = threading.Lock()
+_wake_resume_retry_active = False
+
+
+def _wake_resume_if_owner(owner: "Transport", *, retry_seconds: float = 15.0,
+                          retry_interval: float = 1.0) -> bool:
+    """Resume the wake detector for ``owner``; self-heal a busy microphone.
+
+    Reopening the mic right after a voice turn can fail while the capture
+    device is still being released (browser WebRTC tracks release async).
+    The CLI covers this with its idle watchdog; the gateway had nothing, so
+    one failed resume left the listener silently dead until the user toggled
+    it by hand — despite ``wake_word.enabled: true``. On an exception (mic
+    open failure) we retry in a background thread until it sticks, the lease
+    changes hands, or ``retry_seconds`` elapses. ``False`` from
+    ``resume_listening`` (lease gone / different owner) is final — never
+    retried, so this can't steal another surface's mic.
+    """
+    from tools.wake_word import resume_listening
+
+    try:
+        return resume_listening(owner=owner)
+    except Exception as e:
+        logger.debug("wake resume failed (will retry): %s", e)
+
+    global _wake_resume_retry_active
+    with _wake_resume_retry_lock:
+        if _wake_resume_retry_active:
+            return False
+        _wake_resume_retry_active = True
+
+    def _retry() -> None:
+        global _wake_resume_retry_active
+        deadline = time.monotonic() + retry_seconds
+        try:
+            while time.monotonic() < deadline:
+                time.sleep(retry_interval)
+                try:
+                    if resume_listening(owner=owner):
+                        logger.info("wake: detector resumed after retry")
+                        return
+                except Exception:
+                    continue
+                # False — detector gone or lease moved: stop, don't fight it.
+                return
+            logger.warning(
+                "wake: could not resume detector after voice turn "
+                "(microphone still busy?) — toggle the wake word to re-arm"
+            )
+        finally:
+            with _wake_resume_retry_lock:
+                _wake_resume_retry_active = False
+
+    threading.Thread(target=_retry, daemon=True, name="wake-resume-retry").start()
+    return False
+
+
+def _persist_wake_enabled(enabled: bool) -> bool:
+    """Write ``wake_word.enabled`` to config.yaml.
+
+    Only called for explicit user gestures (the desktop ear toggle, ``/wake
+    on|off``) — never from passive auto-arm paths, so a mic can't become
+    persistently enabled without a deliberate click.
+    """
+    try:
+        from cli import save_config_value
+
+        return bool(save_config_value("wake_word.enabled", enabled))
+    except Exception as e:
+        logger.warning("wake: failed to persist wake_word.enabled=%s: %s", enabled, e)
+        return False
+
+
+@method("wake.start")
+def _(rid, params: dict) -> dict:
+    """Arm the wake-word listener for the calling surface ("tui" | "gui").
+
+    Idempotent and gated: returns ``{started: False, reason}`` when the wake
+    word is disabled, scoped to another surface, or its deps/mic aren't ready.
+
+    ``persist: true`` marks an explicit user gesture (toggle click, /wake on):
+    when the feature is disabled in config, it flips ``wake_word.enabled`` on
+    and saves it before arming, so the choice sticks for future sessions.
+    Passive auto-arm callers omit it and keep getting the config-gated refusal.
+    """
+    surface = str(params.get("surface") or "auto").strip().lower()
+    persist = bool(params.get("persist"))
+    transport = current_transport() or _stdio_transport
+    try:
+        from tools.wake_word import (
+            WakeWordInUse,
+            check_wake_word_requirements,
+            load_wake_word_config,
+            owns_listener,
+            start_listening,
+            wake_phrase,
+            wake_surface_enabled,
+        )
+    except Exception as e:
+        return _err(rid, 5026, f"wake module unavailable: {e}")
+
+    cfg = load_wake_word_config()
+    # Requirements first: a gesture on an unarmed-able setup (no STT/TTS, no
+    # mic, missing key) must refuse WITHOUT flipping wake_word.enabled — else
+    # config says on while nothing can ever arm, and auto-arm paths churn.
+    reqs = check_wake_word_requirements(cfg)
+    if not reqs["available"]:
+        logger.warning("wake.start(%s): not available — %s", surface, reqs.get("hint"))
+        return _ok(rid, {
+            "started": False,
+            "reason": "unavailable",
+            "hint": reqs.get("hint") or "",
+        })
+    enabled_persisted = False
+    if persist and not cfg.get("enabled"):
+        enabled_persisted = _persist_wake_enabled(True)
+        if enabled_persisted:
+            cfg = dict(cfg)
+            cfg["enabled"] = True
+    if not wake_surface_enabled(surface, cfg):
+        # Distinguish "feature off in config" (reason: disabled — a persist:true
+        # retry can turn it on) from "scoped to a different surface" (reason:
+        # disabled_for_surface — respects an explicit wake_word.surface choice,
+        # which persist does NOT override).
+        reason = "disabled" if not cfg.get("enabled") else "disabled_for_surface"
+        logger.info("wake.start(%s): %s (enabled=%s, surface=%s)",
+                    surface, reason, cfg.get("enabled"), cfg.get("surface"))
+        return _ok(rid, {"started": False, "reason": reason})
+
+    existing_owner, existing_surface = _wake_owner_snapshot()
+    if existing_owner is not None and (
+        _transport_is_dead(existing_owner) or not owns_listener(existing_owner)
+    ):
+        _release_wake_for_transport(existing_owner)
+        existing_owner = None
+        existing_surface = ""
+    if existing_owner is not None and existing_owner is not transport:
+        return _ok(rid, {
+            "started": False,
+            "reason": "owned",
+            "owner_surface": existing_surface,
+        })
+
+    sid = str(params.get("session_id") or "")
+    phrase = wake_phrase(cfg)
+    new_session = bool(cfg.get("start_new_session", True))
+
+    def _on_detect() -> None:
+        from tools.wake_word import get_last_match, owns_listener, pause_listening
+
+        if not pause_listening(owner=transport):
+            return
+        if not owns_listener(transport):
+            return
+        if _transport_is_dead(transport):
+            _release_wake_for_transport(transport)
+            return
+        # Multi-phrase engines report WHICH phrase fired and the profile it
+        # belongs to, so one listener can wake any enrolled profile. Falls
+        # back to the owner's configured phrase / no profile for
+        # single-phrase engines.
+        matched_phrase, matched_profile = get_last_match() or (phrase, "")
+        logger.info("wake.detected: emitting to sid=%r (transport=%s, profile=%r)",
+                    sid, type(transport).__name__, matched_profile)
+        token = bind_transport(transport)
+        try:
+            _emit("wake.detected", sid, {
+                "phrase": matched_phrase or phrase,
+                "profile": matched_profile or None,
+                "start_new_session": new_session,
+            })
+        finally:
+            reset_transport(token)
+
+    try:
+        start_listening(_on_detect, owner=transport, config=cfg)
+    except WakeWordInUse:
+        return _ok(rid, {
+            "started": False,
+            "reason": "owned",
+            "owner_surface": existing_surface or None,
+        })
+    except Exception as e:
+        logger.warning("wake.start(%s): failed to start listener: %s", surface, e)
+        return _err(rid, 5026, str(e))
+    global _wake_owner_transport, _wake_owner_surface
+    with _wake_lock:
+        _wake_owner_transport = transport
+        _wake_owner_surface = surface
+    logger.info("wake.start(%s): listening for %r (%s)", surface, reqs["phrase"], reqs["provider"])
+    return _ok(rid, {
+        "started": True,
+        "phrase": reqs["phrase"],
+        "provider": reqs["provider"],
+        "owner_surface": surface,
+        "enabled_persisted": enabled_persisted,
+    })
+
+
+@method("wake.stop")
+def _(rid, params: dict) -> dict:
+    """Stop this surface's listener.
+
+    ``persist: true`` (explicit user gesture) also writes
+    ``wake_word.enabled: false`` to config.yaml so auto-arm stays off in
+    future sessions — the toggle is the config, not just the live listener.
+    """
+    transport = current_transport() or _stdio_transport
+    stopped = _release_wake_for_transport(transport)
+    disabled_persisted = False
+    if bool(params.get("persist")):
+        try:
+            from tools.wake_word import load_wake_word_config
+
+            currently_enabled = bool(load_wake_word_config().get("enabled"))
+        except Exception:
+            currently_enabled = True
+        if currently_enabled:
+            disabled_persisted = _persist_wake_enabled(False)
+    return _ok(rid, {
+        "stopped": stopped,
+        "reason": None if stopped else "not_owner",
+        "disabled_persisted": disabled_persisted,
+    })
+
+
+@method("wake.pause")
+def _(rid, params: dict) -> dict:
+    """Release the mic (e.g. while the desktop's browser captures audio)."""
+    transport = current_transport() or _stdio_transport
+    try:
+        from tools.wake_word import pause_listening
+
+        paused = pause_listening(owner=transport)
+        logger.info("wake.pause: detector paused=%s", paused)
+    except Exception as e:
+        logger.debug("wake.pause failed: %s", e)
+        paused = False
+    return _ok(rid, {
+        "paused": paused,
+        "reason": None if paused else "not_owner",
+    })
+
+
+@method("wake.resume")
+def _(rid, params: dict) -> dict:
+    """Reclaim the mic after a pause; no-op if the listener isn't armed."""
+    transport = current_transport() or _stdio_transport
+    resumed = _wake_resume_if_owner(transport)
+    logger.info("wake.resume: detector resumed=%s", resumed)
+    return _ok(rid, {
+        "resumed": resumed,
+        "reason": None if resumed else "not_owner",
+    })
+
+
+@method("wake.status")
+def _(rid, params: dict) -> dict:
+    try:
+        from tools.wake_word import (
+            audio_is_silent,
+            check_wake_word_requirements,
+            is_listening,
+            load_wake_word_config,
+            owns_listener,
+        )
+        cfg = load_wake_word_config()
+        reqs = check_wake_word_requirements(cfg)
+        transport = current_transport() or _stdio_transport
+        owner, owner_surface = _wake_owner_snapshot()
+        owned_by_caller = owns_listener(transport)
+        listening = owned_by_caller and is_listening()
+        silent = listening and audio_is_silent()
+        hint = reqs.get("hint", "")
+        if silent and not hint:
+            hint = ("Microphone delivers only silence — on macOS grant the "
+                    "Hermes backend mic access (System Settings > Privacy & "
+                    "Security > Microphone), then toggle the wake word.")
+        return _ok(rid, {
+            "listening": listening,
+            "owned_by_caller": owned_by_caller,
+            "owner_surface": owner_surface if owner is not None else None,
+            "phrase": reqs["phrase"],
+            "provider": reqs["provider"],
+            "available": reqs["available"],
+            "hint": hint,
+            # Config truth: clients use this to re-arm after a voice turn
+            # ("permanent on") without guessing from runtime listener state.
+            "enabled": bool(cfg.get("enabled")),
+            # Armed but deaf (macOS permission failure mode) — see hint.
+            "audio_silent": silent,
+        })
+    except Exception as e:
+        return _err(rid, 5026, str(e))
+
+
 @method("voice.toggle")
 def _(rid, params: dict) -> dict:
     """CLI parity for the ``/voice`` slash command.
@@ -17906,9 +18253,15 @@ def _(rid, params: dict) -> dict:
     captures emit ``voice.transcript`` with ``no_speech_limit=True``.
     """
     action = params.get("action", "start")
+    wake_paused = False
 
     if action not in {"start", "stop"}:
         return _err(rid, 4019, f"unknown voice action: {action}")
+
+    transport = current_transport() or _stdio_transport
+    wake_owner, _surface = _wake_owner_snapshot()
+    if wake_owner is not None and wake_owner is not transport:
+        return _ok(rid, {"status": "busy", "reason": "wake_owned"})
 
     try:
         if action == "start":
@@ -17916,7 +18269,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4015, "voice mode is off — enable with /voice on")
 
             with _voice_sid_lock:
-                global _voice_event_sid
+                global _voice_event_sid, _voice_wake_owner
                 _voice_event_sid = params.get("session_id") or _voice_event_sid
 
             from hermes_cli.voice import start_continuous
@@ -17942,6 +18295,32 @@ def _(rid, params: dict) -> dict:
                 if isinstance(duration, (int, float)) and not isinstance(duration, bool)
                 else 3.0
             )
+            # Hand the mic to STT if the wake-word detector holds it; resume
+            # once a terminal capture event fires (one-shot transcript / silence
+            # limit), so wake-triggered and manual captures both coexist.
+            try:
+                from tools.wake_word import pause_listening
+
+                wake_paused = pause_listening(owner=transport)
+            except Exception:
+                wake_paused = False
+            if wake_paused:
+                with _voice_sid_lock:
+                    _voice_wake_owner = transport
+
+            def _on_transcript(t):
+                _voice_emit("voice.transcript", {"text": t})
+                _resume_voice_wake()
+
+            def _on_silent():
+                _voice_emit("voice.transcript", {"no_speech_limit": True})
+                _resume_voice_wake()
+
+            def _on_status(state):
+                _voice_emit("voice.status", {"state": state})
+                if state == "idle":
+                    _resume_voice_wake()
+
             # voice.max_recording_seconds — hard cap on a single recording's
             # length. Same guard as the silence params: non-numeric / bool /
             # missing falls back to the documented 120 default, while an
@@ -17953,17 +18332,16 @@ def _(rid, params: dict) -> dict:
                 else 120.0
             )
             started = start_continuous(
-                on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
-                on_status=lambda s: _voice_emit("voice.status", {"state": s}),
-                on_silent_limit=lambda: _voice_emit(
-                    "voice.transcript", {"no_speech_limit": True}
-                ),
+                on_transcript=_on_transcript,
+                on_status=_on_status,
+                on_silent_limit=_on_silent,
                 silence_threshold=safe_threshold,
                 silence_duration=safe_duration,
                 auto_restart=False,
                 max_recording_seconds=safe_max_rec,
             )
             if started is False:
+                _resume_voice_wake()
                 return _ok(rid, {"status": "busy"})
             return _ok(rid, {"status": "recording"})
 
@@ -17974,12 +18352,17 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.voice import stop_continuous
 
         stop_continuous(force_transcribe=True)
+        _resume_voice_wake()
         return _ok(rid, {"status": "stopped"})
     except ImportError:
+        if wake_paused or action == "stop":
+            _resume_voice_wake()
         return _err(
             rid, 5025, "voice module not available — install audio dependencies"
         )
     except Exception as e:
+        if wake_paused or action == "stop":
+            _resume_voice_wake()
         return _err(rid, 5025, str(e))
 
 

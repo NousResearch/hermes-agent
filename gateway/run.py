@@ -11155,6 +11155,252 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         return switched
 
+    # ------------------------------------------------------------------
+    # Mid-run (busy-session) slash command dispatch — "Guard 2".
+    #
+    # Replaces the historical hand-written per-command if-chain: each
+    # command's mid-run behavior is declared on its CommandDef
+    # (busy_policy / busy_handler in hermes_cli/commands.py) and resolved
+    # here through a single handler table. Reply strings are byte-identical
+    # to the old chain.
+    # ------------------------------------------------------------------
+
+    # Command-specific mid-run reject texts (busy_policy == "reject" with a
+    # busy_handler naming an entry here). All other rejected commands get
+    # the generic catch-all text in _dispatch_busy_slash_command.
+    _BUSY_REJECT_TEXT: Dict[str, str] = {
+        "model": "Agent is running — wait or /stop first, then switch models.",
+        "codex-runtime": ("Agent is running — wait or /stop first, then "
+                          "change runtime."),
+        "moa": "Agent is running — wait or /stop first, then run /moa.",
+    }
+
+    async def _dispatch_busy_slash_command(
+        self, event: MessageEvent, cmd_def, quick_key: str, source,
+    ):
+        """Dispatch a recognized slash command while an agent is running.
+
+        Resolution order:
+          1. ``busy_handler`` — special mid-run variant (e.g. /goal's
+             control-verb whitelist, /queue's FIFO enqueue, /model's
+             custom reject text).
+          2. ``busy_policy == "dispatch"`` — the command's normal handler.
+          3. Catch-all busy-reject text. Rejecting is required rather than
+             falling through to interrupt + discard: commands like /model,
+             /reasoning, /voice, /insights, /title, /resume, /retry,
+             /undo, /compress, /usage, /reload-mcp, /sethome, /reset (all
+             registered as Discord slash commands) would interrupt the
+             agent AND get silently discarded by the slash-command safety
+             net, producing a zero-char response. See #5057, #6252, #10370.
+        """
+        name = cmd_def.name
+        policy = getattr(cmd_def, "busy_policy", "reject")
+        handler_key = getattr(cmd_def, "busy_handler", None)
+
+        if handler_key:
+            special = {
+                "start": self._busy_start_command,
+                "stop": self._busy_stop_command,
+                "new": self._busy_new_command,
+                "queue": self._busy_queue_command,
+                "steer": self._busy_steer_command,
+                "egress": self._busy_egress_command,
+                "goal": self._busy_goal_command,
+            }.get(handler_key)
+            if special is not None:
+                return await special(event, quick_key, source)
+            reject_text = self._BUSY_REJECT_TEXT.get(handler_key)
+            if reject_text is not None:
+                return reject_text
+
+        if policy in ("dispatch", "interrupt_then_dispatch"):
+            plain = {
+                "status": self._handle_status_command,
+                "context": self._handle_context_command,
+                "restart": self._handle_restart_command,
+                "approve": self._handle_approve_command,
+                "deny": self._handle_deny_command,
+                "agents": self._handle_agents_command,
+                "background": self._handle_background_command,
+                "kanban": self._handle_kanban_command,
+                "subgoal": self._handle_subgoal_command,
+                "yolo": self._handle_yolo_command,
+                "verbose": self._handle_verbose_command,
+                "footer": self._handle_footer_command,
+                "help": self._handle_help_command,
+                "commands": self._handle_commands_command,
+                "profile": self._handle_profile_command,
+                "update": self._handle_update_command,
+                "version": self._handle_version_command,
+            }.get(name)
+            if plain is not None:
+                return await plain(event)
+            logger.warning(
+                "busy_policy=%s for /%s has no mid-run handler — "
+                "falling back to busy-reject", policy, name,
+            )
+
+        # Catch-all: any other recognized slash command reached the
+        # running-agent guard. Reject gracefully rather than falling
+        # through to interrupt + discard.
+        return (
+            f"⏳ Agent is running — `/{name}` can't run "
+            f"mid-turn. Wait for the current response or `/stop` first."
+        )
+
+    async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
+        # Telegram sends /start for bot launches/deep-links. Treat it as a
+        # platform ping, not a user command: no help dump, no agent
+        # interrupt, no queued text.
+        logger.info("Ignoring /start platform ping for active session %s", quick_key)
+        return ""
+
+    async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
+        from hermes_cli.proxy_cli import format_status_text
+
+        return format_status_text()
+
+    async def _busy_stop_command(self, event: MessageEvent, quick_key: str, source):
+        # /stop must hard-kill the session when an agent is running.
+        # A soft interrupt (agent.interrupt()) doesn't help when the agent
+        # is truly hung — the executor thread is blocked and never checks
+        # _interrupt_requested.  Force-clean _running_agents so the session
+        # is unlocked and subsequent messages are processed normally.
+        await self._interrupt_and_clear_session(
+            quick_key,
+            source,
+            interrupt_reason=_INTERRUPT_REASON_STOP,
+            invalidation_reason="stop_command",
+        )
+        logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
+        return EphemeralReply(t("gateway.stop.stopped"))
+
+    async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
+        # /reset and /new must bypass the running-agent guard so they
+        # actually dispatch as commands instead of being queued as user
+        # text (which would be fed back to the agent with the same
+        # broken history — #2170).  Interrupt the agent first, then
+        # clear the adapter's pending queue so the stale "/reset" text
+        # doesn't get re-processed as a user message after the
+        # interrupt completes.
+        # Clear any pending messages so the old text doesn't replay
+        await self._interrupt_and_clear_session(
+            quick_key,
+            source,
+            interrupt_reason=_INTERRUPT_REASON_RESET,
+            invalidation_reason="new_command",
+        )
+        # Clean up the running agent entry so the reset handler
+        # doesn't think an agent is still active.
+        return await self._handle_reset_command(event)
+
+    async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
+        # /queue <prompt> — queue without interrupting.
+        # Semantics: each /queue invocation produces its own full agent
+        # turn, processed in FIFO order after the current run (and any
+        # earlier /queue items) finishes.  Messages are NOT merged.
+        queued_text = event.get_command_args().strip()
+        # Preserve media/reply payloads: a /queue carrying a photo,
+        # document, or reply context is valid even with no prompt text
+        # (e.g. "/queue" as the caption of an image). Dropping these
+        # fields silently lost the attachment when the queued turn ran.
+        has_media = bool(getattr(event, "media_urls", None))
+        if not queued_text and not has_media:
+            return "Usage: /queue <prompt>"
+        adapter = self._adapter_for_source(source)
+        if adapter:
+            queued_event = MessageEvent(
+                text=queued_text,
+                message_type=event.message_type if has_media else MessageType.TEXT,
+                source=event.source,
+                raw_message=event.raw_message,
+                message_id=event.message_id,
+                media_urls=list(getattr(event, "media_urls", []) or []),
+                media_types=list(getattr(event, "media_types", []) or []),
+                reply_to_message_id=event.reply_to_message_id,
+                reply_to_text=event.reply_to_text,
+                reply_to_author_id=event.reply_to_author_id,
+                reply_to_author_name=event.reply_to_author_name,
+                reply_to_is_own_message=event.reply_to_is_own_message,
+                auto_skill=event.auto_skill,
+                channel_prompt=event.channel_prompt,
+                channel_context=event.channel_context,
+                internal=event.internal,
+                timestamp=event.timestamp,
+            )
+            self._enqueue_fifo(quick_key, queued_event, adapter)
+        depth = self._queue_depth(quick_key, adapter=self._adapter_for_source(source))
+        if depth <= 1:
+            return "Queued for the next turn."
+        return f"Queued for the next turn. ({depth} queued)"
+
+    async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
+        # /steer <prompt> — inject mid-run after the next tool call.
+        # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
+        # iterations inside the same agent run, by appending to the
+        # last tool result's content. No interrupt, no new user turn,
+        # no role-alternation violation.
+        steer_text = event.get_command_args().strip()
+        if not steer_text:
+            return "Usage: /steer <prompt>"
+        running_agent = self._running_agents.get(quick_key)
+        if running_agent is _AGENT_PENDING_SENTINEL:
+            # Agent hasn't started yet — queue as turn-boundary fallback.
+            adapter = self._adapter_for_source(source)
+            if adapter:
+                queued_event = MessageEvent(
+                    text=steer_text,
+                    message_type=MessageType.TEXT,
+                    source=event.source,
+                    message_id=event.message_id,
+                    channel_prompt=event.channel_prompt,
+                    channel_context=event.channel_context,
+                )
+                adapter._pending_messages[quick_key] = queued_event
+            return "Agent still starting — /steer queued for the next turn."
+        if running_agent and hasattr(running_agent, "steer"):
+            try:
+                accepted = running_agent.steer(steer_text)
+            except Exception as exc:
+                logger.warning("Steer failed for session %s: %s", quick_key, exc)
+                return f"⚠️ Steer failed: {exc}"
+            if accepted:
+                preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
+                return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+            return "Steer rejected (empty payload)."
+        # Running agent is missing or lacks steer() — fall back to queue.
+        adapter = self._adapter_for_source(source)
+        if adapter:
+            queued_event = MessageEvent(
+                text=steer_text,
+                message_type=MessageType.TEXT,
+                source=event.source,
+                message_id=event.message_id,
+                channel_prompt=event.channel_prompt,
+                channel_context=event.channel_context,
+            )
+            adapter._pending_messages[quick_key] = queued_event
+        return "No active agent — /steer queued for the next turn."
+
+    async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
+        # /goal is safe mid-run for status/pause/clear/wait (inspection
+        # and control-plane only — doesn't interrupt the running turn).
+        # Setting a new goal text mid-run is rejected with the same
+        # "wait or /stop" message as /model so we don't race a second
+        # continuation prompt against the current turn.
+        _goal_arg = (event.get_command_args() or "").strip().lower()
+        _goal_verb = _goal_arg.split(None, 1)[0] if _goal_arg else ""
+        # Exact-match control verbs (unchanged semantics), plus the
+        # wait/unwait barrier verbs which take a pid argument.
+        _is_control = (
+            not _goal_arg
+            or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
+            or _goal_verb == "wait"
+        )
+        if _is_control:
+            return await self._handle_goal_command(event)
+        return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -11568,19 +11814,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
-                return await self._handle_status_command(event)
-
-            if event.get_command() in {"context", "ctx"}:
-                return await self._handle_context_command(event)
-
-            # Resolve the command once for all early-intercept checks below.
-            from hermes_cli.commands import (
-                ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
-                resolve_command as _resolve_cmd_inner,
-            )
+            # Resolve the command once; every command's mid-run behavior is
+            # declared on its CommandDef (busy_policy / busy_handler in
+            # hermes_cli/commands.py) and dispatched through the single
+            # resolver _dispatch_busy_slash_command below — no per-command
+            # if-chain here.
+            from hermes_cli.commands import resolve_command as _resolve_cmd_inner
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+            # /status and /context are intentionally pre-gate so users
+            # always see session state.
+            if _cmd_def_inner and _cmd_def_inner.name == "status":
+                return await self._handle_status_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "context":
+                return await self._handle_context_command(event)
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -11593,252 +11841,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
 
-            # Telegram sends /start for bot launches/deep-links. Treat it as a
-            # platform ping, not a user command: no help dump, no agent
-            # interrupt, no queued text.
-            if _cmd_def_inner and _cmd_def_inner.name == "start":
-                logger.info("Ignoring /start platform ping for active session %s", _quick_key)
-                return ""
-
-            if _cmd_def_inner and _cmd_def_inner.name == "restart":
-                return await self._handle_restart_command(event)
-
-            if _cmd_def_inner and _cmd_def_inner.name == "egress":
-                from hermes_cli.proxy_cli import format_status_text
-
-                return format_status_text()
-
-            # /stop must hard-kill the session when an agent is running.
-            # A soft interrupt (agent.interrupt()) doesn't help when the agent
-            # is truly hung — the executor thread is blocked and never checks
-            # _interrupt_requested.  Force-clean _running_agents so the session
-            # is unlocked and subsequent messages are processed normally.
-            if _cmd_def_inner and _cmd_def_inner.name == "stop":
-                await self._interrupt_and_clear_session(
-                    _quick_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_STOP,
-                    invalidation_reason="stop_command",
-                )
-                logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
-                return EphemeralReply(t("gateway.stop.stopped"))
-
-            # /reset and /new must bypass the running-agent guard so they
-            # actually dispatch as commands instead of being queued as user
-            # text (which would be fed back to the agent with the same
-            # broken history — #2170).  Interrupt the agent first, then
-            # clear the adapter's pending queue so the stale "/reset" text
-            # doesn't get re-processed as a user message after the
-            # interrupt completes.
-            if _cmd_def_inner and _cmd_def_inner.name == "new":
-                # Clear any pending messages so the old text doesn't replay
-                await self._interrupt_and_clear_session(
-                    _quick_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_RESET,
-                    invalidation_reason="new_command",
-                )
-                # Clean up the running agent entry so the reset handler
-                # doesn't think an agent is still active.
-                return await self._handle_reset_command(event)
-
-            # /queue <prompt> — queue without interrupting.
-            # Semantics: each /queue invocation produces its own full agent
-            # turn, processed in FIFO order after the current run (and any
-            # earlier /queue items) finishes.  Messages are NOT merged.
-            if event.get_command() in {"queue", "q"}:
-                queued_text = event.get_command_args().strip()
-                # Preserve media/reply payloads: a /queue carrying a photo,
-                # document, or reply context is valid even with no prompt text
-                # (e.g. "/queue" as the caption of an image). Dropping these
-                # fields silently lost the attachment when the queued turn ran.
-                has_media = bool(getattr(event, "media_urls", None))
-                if not queued_text and not has_media:
-                    return "Usage: /queue <prompt>"
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    queued_event = MessageEvent(
-                        text=queued_text,
-                        message_type=event.message_type if has_media else MessageType.TEXT,
-                        source=event.source,
-                        raw_message=event.raw_message,
-                        message_id=event.message_id,
-                        media_urls=list(getattr(event, "media_urls", []) or []),
-                        media_types=list(getattr(event, "media_types", []) or []),
-                        reply_to_message_id=event.reply_to_message_id,
-                        reply_to_text=event.reply_to_text,
-                        reply_to_author_id=event.reply_to_author_id,
-                        reply_to_author_name=event.reply_to_author_name,
-                        reply_to_is_own_message=event.reply_to_is_own_message,
-                        auto_skill=event.auto_skill,
-                        channel_prompt=event.channel_prompt,
-                        channel_context=event.channel_context,
-                        internal=event.internal,
-                        timestamp=event.timestamp,
-                    )
-                    self._enqueue_fifo(_quick_key, queued_event, adapter)
-                depth = self._queue_depth(_quick_key, adapter=self._adapter_for_source(source))
-                if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
-
-            # /steer <prompt> — inject mid-run after the next tool call.
-            # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
-            # iterations inside the same agent run, by appending to the
-            # last tool result's content. No interrupt, no new user turn,
-            # no role-alternation violation.
-            if _cmd_def_inner and _cmd_def_inner.name == "steer":
-                steer_text = event.get_command_args().strip()
-                if not steer_text:
-                    return "Usage: /steer <prompt>"
-                running_agent = self._running_agents.get(_quick_key)
-                if running_agent is _AGENT_PENDING_SENTINEL:
-                    # Agent hasn't started yet — queue as turn-boundary fallback.
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        queued_event = MessageEvent(
-                            text=steer_text,
-                            message_type=MessageType.TEXT,
-                            source=event.source,
-                            message_id=event.message_id,
-                            channel_prompt=event.channel_prompt,
-                            channel_context=event.channel_context,
-                        )
-                        adapter._pending_messages[_quick_key] = queued_event
-                    return "Agent still starting — /steer queued for the next turn."
-                if running_agent and hasattr(running_agent, "steer"):
-                    try:
-                        accepted = running_agent.steer(steer_text)
-                    except Exception as exc:
-                        logger.warning("Steer failed for session %s: %s", _quick_key, exc)
-                        return f"⚠️ Steer failed: {exc}"
-                    if accepted:
-                        preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
-                    return "Steer rejected (empty payload)."
-                # Running agent is missing or lacks steer() — fall back to queue.
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    queued_event = MessageEvent(
-                        text=steer_text,
-                        message_type=MessageType.TEXT,
-                        source=event.source,
-                        message_id=event.message_id,
-                        channel_prompt=event.channel_prompt,
-                        channel_context=event.channel_context,
-                    )
-                    adapter._pending_messages[_quick_key] = queued_event
-                return "No active agent — /steer queued for the next turn."
-
-            # /model must not be used while the agent is running.
-            if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
-
-            # /codex-runtime must not be used while the agent is running.
-            # Switching mid-turn would split a turn across two transports.
-            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
-
-            # /approve and /deny must bypass the running-agent interrupt path.
-            # The agent thread is blocked on a threading.Event inside
-            # tools/approval.py — sending an interrupt won't unblock it.
-            # Route directly to the approval handler so the event is signalled.
-            if _cmd_def_inner and _cmd_def_inner.name in {"approve", "deny"}:
-                if _cmd_def_inner.name == "approve":
-                    return await self._handle_approve_command(event)
-                return await self._handle_deny_command(event)
-
-            # /agents (/tasks alias) should be query-only and never interrupt.
-            if _cmd_def_inner and _cmd_def_inner.name == "agents":
-                return await self._handle_agents_command(event)
-
-            # /background must bypass the running-agent guard — it starts a
-            # parallel task and must never interrupt the active conversation.
-            # /btw is an alias of /background and resolves to the same canonical
-            # name, so this branch handles both commands.
-            if _cmd_def_inner and _cmd_def_inner.name == "background":
-                return await self._handle_background_command(event)
-
-            # /kanban must bypass the guard. It writes to a profile-agnostic
-            # DB (kanban.db), not to the running agent's state. In fact
-            # /kanban unblock is often the only way to free a worker that
-            # has blocked waiting for a peer — letting that be dispatched
-            # mid-run is the whole point of the board.
-            if _cmd_def_inner and _cmd_def_inner.name == "kanban":
-                return await self._handle_kanban_command(event)
-
-            # /goal is safe mid-run for status/pause/clear/wait (inspection
-            # and control-plane only — doesn't interrupt the running turn).
-            # Setting a new goal text mid-run is rejected with the same
-            # "wait or /stop" message as /model so we don't race a second
-            # continuation prompt against the current turn.
-            if _cmd_def_inner and _cmd_def_inner.name == "goal":
-                _goal_arg = (event.get_command_args() or "").strip().lower()
-                _goal_verb = _goal_arg.split(None, 1)[0] if _goal_arg else ""
-                # Exact-match control verbs (unchanged semantics), plus the
-                # wait/unwait barrier verbs which take a pid argument.
-                _is_control = (
-                    not _goal_arg
-                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
-                    or _goal_verb == "wait"
-                )
-                if _is_control:
-                    return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
-
-            if _cmd_def_inner and _cmd_def_inner.name == "moa":
-                return "Agent is running — wait or /stop first, then run /moa."
-
-            # /subgoal is safe mid-run — it only modifies the goal's
-            # subgoals list, which the judge reads at the next turn
-            # boundary. No race with the running turn.
-            if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
-                return await self._handle_subgoal_command(event)
-
-            # Session-level toggles that are safe to run mid-agent —
-            # /yolo can unblock a pending approval prompt, /verbose cycles
-            # the tool-progress display mode for the ongoing stream.
-            # Both modify session state without needing agent interaction
-            # and must not be queued (the safety net would discard them).
-            # /fast and /reasoning are config-only and take effect next
-            # message, so they fall through to the catch-all busy response
-            # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "footer"}:
-                if _cmd_def_inner.name == "yolo":
-                    return await self._handle_yolo_command(event)
-                if _cmd_def_inner.name == "verbose":
-                    return await self._handle_verbose_command(event)
-                if _cmd_def_inner.name == "footer":
-                    return await self._handle_footer_command(event)
-
-            # Gateway-handled info/control commands with dedicated
-            # running-agent handlers.
-            if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
-                if _cmd_def_inner.name == "help":
-                    return await self._handle_help_command(event)
-                if _cmd_def_inner.name == "commands":
-                    return await self._handle_commands_command(event)
-                if _cmd_def_inner.name == "profile":
-                    return await self._handle_profile_command(event)
-                if _cmd_def_inner.name == "update":
-                    return await self._handle_update_command(event)
-                if _cmd_def_inner.name == "version":
-                    return await self._handle_version_command(event)
-
-            # Catch-all: any other recognized slash command reached the
-            # running-agent guard. Reject gracefully rather than falling
-            # through to interrupt + discard. Without this, commands
-            # like /model, /reasoning, /voice, /insights, /title,
-            # /resume, /retry, /undo, /compress, /usage,
-            # /reload-mcp, /sethome, /reset (all registered as Discord
-            # slash commands) would interrupt the agent AND get
-            # silently discarded by the slash-command safety net,
-            # producing a zero-char response. See #5057, #6252, #10370.
+            # Any recognized slash command: dispatch according to its
+            # declared busy_policy (dispatch / interrupt_then_dispatch /
+            # reject). Unrecognized commands and plain text fall through
+            # to the interrupt/queue logic below.
             if _cmd_def_inner:
-                return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
+                return await self._dispatch_busy_slash_command(
+                    event, _cmd_def_inner, _quick_key, source,
                 )
 
             if event.message_type == MessageType.PHOTO:

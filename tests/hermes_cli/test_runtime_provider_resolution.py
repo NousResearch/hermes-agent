@@ -1566,6 +1566,20 @@ def test_minimax_default_url_uses_anthropic_messages(monkeypatch):
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
 
 
+def test_minimax_cn_default_url_uses_anthropic_messages(monkeypatch):
+    """MiniMax-CN should keep its Anthropic-compatible default transport."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-cn")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-minimax-cn-key")
+    monkeypatch.delenv("MINIMAX_CN_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-cn")
+
+    assert resolved["provider"] == "minimax-cn"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimaxi.com/anthropic"
+
+
 def test_minimax_v1_url_uses_chat_completions(monkeypatch):
     """MiniMax with /v1 base URL should use chat_completions (user override for regions where /anthropic 404s)."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")

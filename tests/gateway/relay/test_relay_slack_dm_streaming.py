@@ -342,6 +342,48 @@ async def test_media_caller_metadata_not_mutated():
 
 
 # ---------------------------------------------------------------------------
+# Operator flags coerce exactly as the native Slack adapter's do.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (False, False),
+        ("false", False),
+        ("False", False),
+        (" no ", False),
+        ("off", False),
+        ("0", False),
+        (True, True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("1", True),
+    ],
+)
+def test_relay_slack_flags_coerce_like_native(raw, expected):
+    """A YAML-quoted "false" must turn these knobs OFF, matching native's
+    str().strip().lower() predicate. A bare bool() would read any non-empty
+    string as True and silently ignore the operator's off switch."""
+    adapter, _stub = _wire("D1", "dm")
+    adapter.config.extra = {
+        "slack": {
+            "reply_in_thread": raw,
+            "dm_top_level_threads_as_sessions": raw,
+        }
+    }
+    assert adapter._effective_reply_in_thread() is expected
+    assert adapter._dm_top_level_threads_as_sessions() is expected
+
+
+def test_relay_slack_flags_default_true_when_absent():
+    """Both knobs default ON when the operator sets nothing."""
+    adapter, _stub = _wire("D1", "dm")
+    adapter.config.extra = {}
+    assert adapter._effective_reply_in_thread() is True
+    assert adapter._dm_top_level_threads_as_sessions() is True
+
+
+# ---------------------------------------------------------------------------
 # The status clear targets the same thread the heartbeat set.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio

@@ -731,6 +731,10 @@ platforms:
 Resolution: nested `extra.<platform>` object wins → legacy flat key on
 `extra` honored as fallback → default. Source of truth:
 `RelayAdapter._effective_reply_in_thread` (`gateway/relay/adapter.py`).
+Values coerce exactly as the native Slack adapter's do — `1/true/yes/on`
+(case-insensitive, whitespace-trimmed) are ON, anything else is OFF — so a
+YAML-quoted `"false"` turns a knob off rather than being read as a truthy
+string.
 
 Current controls (Slack):
 
@@ -744,6 +748,13 @@ Typing/status frames always carry the triggering-ts anchor when one is known
 thread-scoped, and in flat mode the send-side anchor strip guarantees the
 status anchor can never leak into reply placement. Semantics of the native
 key: see `website/docs/user-guide/messaging/slack.md`.
+
+Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
+(`send_media`) alike — through one choke point
+(`RelayAdapter._apply_slack_thread_anchor`). Media frames egress via the same
+connector-side Slack sender, which threads on `metadata.thread_id` only, so an
+attachment resolves its anchor identically to a text reply: promoted into
+metadata in thread-per-message mode, stripped in flat mode.
 
 Changes take effect on gateway restart; no connector involvement.
 

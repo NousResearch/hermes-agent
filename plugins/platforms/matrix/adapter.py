@@ -3335,6 +3335,21 @@ class MatrixAdapter(BasePlatformAdapter):
         is_direct = bool(getattr(content, "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
 
+        # mautrix's MembershipEventDispatcher fires InternalEventType.INVITE
+        # for *any* m.room.member state event with membership=invite that
+        # appears in a synced room's timeline/state — not just invites
+        # targeting this bot. In shared/bridged rooms we've already joined,
+        # bridge bots routinely invite other ghost users (Discord/Signal
+        # puppets) into the room, and those state events land here too.
+        # Without checking state_key against our own mxid, we log a
+        # spurious "rejecting invite ... from unauthorized user <bridge
+        # bot>" for every such invite, even though nothing was actually
+        # offered to us and there's nothing to reject.
+        state_key = str(getattr(event, "state_key", "") or "")
+        our_mxid = str(getattr(self._client, "mxid", "") or "")
+        if our_mxid and state_key and state_key != our_mxid:
+            return
+
         # Only auto-join when the inviter is authorized. Without this, any
         # federated Matrix user could invite the bot into arbitrary rooms,
         # exposing its presence and metadata. Mirrors the allow-list gate

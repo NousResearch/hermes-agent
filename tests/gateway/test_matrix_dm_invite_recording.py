@@ -42,12 +42,14 @@ def _make_invite_event(
     room_id="!dm_room:example.org",
     sender="@alice:example.org",
     is_direct=True,
+    state_key=None,
 ):
-    """Create a fake invite event with is_direct in content."""
+    """Create a fake membership invite event."""
     content = SimpleNamespace(is_direct=is_direct)
     return SimpleNamespace(
         room_id=room_id,
         sender=sender,
+        state_key=state_key if state_key is not None else sender,
         content=content,
     )
 
@@ -138,5 +140,84 @@ class TestRecordDMRoom:
 
         adapter._client.set_account_data.assert_not_awaited()
         assert adapter._dm_rooms.get("!room:example.org") is True
+
+
+class TestOnInviteIgnoresForeignMemberEvents:
+    @pytest.mark.asyncio
+    async def test_foreign_invite_state_key_is_ignored_silently(self, caplog):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.mxid = "@neo:sppun.com"
+        adapter._join_room_by_id = AsyncMock(return_value=True)
+        adapter._record_dm_room = AsyncMock()
+
+        event = _make_invite_event(
+            room_id="!shared:sppun.com",
+            sender="@discordbot:sppun.com",
+            state_key="@discord_1234:sppun.com",
+            is_direct=False,
+        )
+        await adapter._on_invite(event)
+
+        adapter._join_room_by_id.assert_not_called()
+        adapter._record_dm_room.assert_not_awaited()
+        assert "rejecting invite" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_invite_targeting_us_still_runs_allowlist_gate(self, caplog):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.mxid = "@neo:sppun.com"
+        adapter._join_room_by_id = AsyncMock(return_value=True)
+
+        event = _make_invite_event(
+            room_id="!room:sppun.com",
+            sender="@stranger:evil.example",
+            state_key="@neo:sppun.com",
+            is_direct=False,
+        )
+        await adapter._on_invite(event)
+
+        adapter._join_room_by_id.assert_not_called()
+        assert "rejecting invite" in caplog.text
+        assert "@stranger:evil.example" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_real_invite_still_joins_when_authorized(self):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.mxid = "@neo:sppun.com"
+        adapter._join_room_by_id = AsyncMock(return_value=True)
+        adapter._record_dm_room = AsyncMock()
+
+        event = _make_invite_event(
+            room_id="!dm:sppun.com",
+            sender="@alice:example.org",
+            state_key="@neo:sppun.com",
+            is_direct=True,
+        )
+        await adapter._on_invite(event)
+        await TestOnInviteRecordsDM._drain_invite_tasks(adapter)
+
+        adapter._join_room_by_id.assert_awaited_once_with("!dm:sppun.com")
+
+    @pytest.mark.asyncio
+    async def test_missing_client_mxid_does_not_suppress_gate(self):
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter._client.mxid = ""
+        adapter._join_room_by_id = AsyncMock(return_value=True)
+        adapter._record_dm_room = AsyncMock()
+
+        event = _make_invite_event(
+            room_id="!dm:sppun.com",
+            sender="@alice:example.org",
+            state_key="@neo:sppun.com",
+            is_direct=True,
+        )
+        await adapter._on_invite(event)
+        await TestOnInviteRecordsDM._drain_invite_tasks(adapter)
+
+        adapter._join_room_by_id.assert_awaited_once_with("!dm:sppun.com")
 
 

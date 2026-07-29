@@ -127,6 +127,23 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_terminal_nonzero_exit_is_reported_as_error(self):
+        result = json.dumps({"output": "", "exit_code": 1, "error": None})
+        with (
+            patch("model_tools.registry.dispatch", return_value=result),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            assert handle_function_call("terminal", {"command": "false"}) == result
+
+        kwargs_by_hook = {
+            hook.args[0]: hook.kwargs for hook in mock_invoke_hook.call_args_list
+        }
+        for hook_name in ("post_tool_call", "transform_tool_result"):
+            assert kwargs_by_hook[hook_name]["status"] == "error"
+            assert kwargs_by_hook[hook_name]["error_type"] == "tool_error"
+            assert kwargs_by_hook[hook_name]["error_message"] == "exit 1"
+
     def test_no_listener_skips_post_and_transform_emit(self):
         """When no plugin is registered for post_tool_call /
         transform_tool_result, the emit path must short-circuit on
@@ -200,6 +217,75 @@ class TestHandleFunctionCall:
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
         assert pre_call[1]["middleware_trace"] == expected_trace
         assert post_call[1]["middleware_trace"] == expected_trace
+
+    def test_registry_exception_emits_terminal_tool_hook(self, monkeypatch):
+        from hermes_cli import lifecycle
+
+        hook_calls = []
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "post_tool_call")
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda name, **kwargs: hook_calls.append((name, kwargs)) or [],
+        )
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        result = json.loads(
+            handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="tool-1",
+            )
+        )
+
+        assert "error" in result
+        [post_call] = [call for call in hook_calls if call[0] == "post_tool_call"]
+        assert post_call[1]["status"] == "error"
+        assert post_call[1]["error_type"] == "RuntimeError"
+        assert post_call[1]["duration_ms"] >= 0
+
+    def test_acp_edit_denial_emits_blocked_terminal_tool_hook(self, monkeypatch):
+        from hermes_cli import lifecycle
+
+        hook_calls = []
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(lifecycle, "has_hook", lambda name: name == "post_tool_call")
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda name, **kwargs: hook_calls.append((name, kwargs)) or [],
+        )
+        monkeypatch.setattr(
+            "acp_adapter.edit_approval.maybe_require_edit_approval",
+            lambda *_args, **_kwargs: json.dumps({"error": "Edit approval denied"}),
+        )
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("denied edit must not dispatch")
+            ),
+        )
+
+        result = json.loads(
+            handle_function_call(
+                "write_file",
+                {"path": "private.txt", "content": "private"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="tool-1",
+            )
+        )
+
+        assert result == {"error": "Edit approval denied"}
+        [post_call] = [call for call in hook_calls if call[0] == "post_tool_call"]
+        assert post_call[1]["status"] == "blocked"
+        assert post_call[1]["error_type"] == "edit_approval_denied"
 
 
 # =========================================================================

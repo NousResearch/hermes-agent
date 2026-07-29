@@ -64,6 +64,12 @@
           },
           {
             "$ref": "#/$defs/task_finished_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_call_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_approval_counter"
           }
         ]
       }
@@ -73,6 +79,31 @@
     "uuid": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "tool_latency_bucket": {
+      "enum": [
+        "100ms_to_250ms",
+        "10s_to_30s",
+        "1s_to_2s",
+        "250ms_to_500ms",
+        "2s_to_5s",
+        "500ms_to_1s",
+        "5s_to_10s",
+        "gte_30s",
+        "lt_100ms",
+        "unknown"
+      ]
+    },
+    "tool_retry_bucket": {
+      "enum": [
+        "0",
+        "1",
+        "2",
+        "3_to_5",
+        "6_to_10",
+        "gte_11",
+        "unknown"
+      ]
     },
     "model_call_counter": {
       "type": "object",
@@ -109,6 +140,134 @@
               "minLength": 1,
               "maxLength": 64,
               "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_call_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_call.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approval_outcome",
+            "latency_bucket",
+            "outcome",
+            "retry_count_bucket",
+            "tool_category"
+          ],
+          "properties": {
+            "approval_outcome": {
+              "enum": [
+                "approved",
+                "denied",
+                "not_required",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "latency_bucket": {
+              "$ref": "#/$defs/tool_latency_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "blocked",
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/tool_retry_bucket"
+            },
+            "tool_category": {
+              "enum": [
+                "browser",
+                "code_execution",
+                "communication",
+                "computer_use",
+                "delegation",
+                "file",
+                "home_automation",
+                "mcp",
+                "media",
+                "memory",
+                "other",
+                "planning",
+                "project",
+                "scheduler",
+                "skill",
+                "terminal",
+                "unknown",
+                "web"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_approval_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_approval.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attribution",
+            "outcome"
+          ],
+          "properties": {
+            "attribution": {
+              "enum": [
+                "tool_call",
+                "unattributed"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "approved",
+                "denied",
+                "timed_out",
+                "unknown"
+              ]
             }
           }
         },

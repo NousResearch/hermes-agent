@@ -1054,6 +1054,18 @@ class CodexAppServerSession:
             )
 
     def _decide_exec_approval(self, params: dict) -> str:
+        """Decide a Codex exec approval request.
+
+        This is protocol-level routing only — it carries NO Hermes
+        approval-mode/timeout logic. The Hermes-side resolution happens
+        upstream: ``agent/codex_runtime.py`` derives
+        ``auto_approve_exec`` from the canonical
+        ``tools.approval.is_approval_bypass_active()`` (which reads
+        ``approvals.mode`` via ``tools.approval._get_approval_mode``),
+        and ``self._approval_callback`` itself runs the shared approval
+        gate (mode + ``approvals.timeout``) in ``tools/approval.py``.
+        Keep it that way — do not re-read approval config here.
+        """
         if self._routing.auto_approve_exec:
             return "accept"
         command = params.get("command") or ""
@@ -1077,6 +1089,12 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        """Decide a Codex apply_patch approval request.
+
+        Protocol-level routing only; Hermes approval-mode/timeout
+        resolution is delegated to ``tools/approval.py`` upstream — see
+        the docstring on ``_decide_exec_approval``.
+        """
         if self._routing.auto_approve_apply_patch:
             return "accept"
         if self._approval_callback is not None:
@@ -1231,6 +1249,11 @@ def _approval_choice_to_codex_decision(choice: str) -> str:
     Codex expects 'accept', 'acceptForSession', 'decline', or 'cancel'
     (verified against codex-rs/app-server-protocol/src/protocol/v2/item.rs
     on codex 0.130.0).
+
+    This mapping is Codex-protocol-semantic and intentionally lives here,
+    NOT in tools/approval.py: the Hermes approval mode/timeout resolution
+    and the choice itself come from the shared core (tools/approval.py);
+    only the wire-value translation is local.
     """
     if choice in {"once",}:
         return "accept"

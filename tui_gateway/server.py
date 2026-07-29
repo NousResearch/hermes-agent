@@ -3575,14 +3575,23 @@ _APPROVAL_MODES = frozenset({"manual", "smart", "off"})
 
 
 def _load_approval_mode() -> str:
-    from hermes_cli.config import DEFAULT_CONFIG, _deep_merge
-    from tools.approval import _normalize_approval_mode
+    """Resolve the effective ``approvals.mode`` for the TUI surface.
 
-    raw_cfg = _load_cfg()
-    cfg = _deep_merge(DEFAULT_CONFIG, raw_cfg if isinstance(raw_cfg, dict) else {})
-    approvals = cfg.get("approvals")
-    raw = approvals.get("mode") if isinstance(approvals, dict) else None
-    mode = _normalize_approval_mode(raw)
+    Delegates to the canonical resolver in ``tools.approval``
+    (``_get_approval_mode``) so mode resolution cannot drift per surface —
+    the same normalization, defaults, and config precedence the approval
+    gate itself uses (see ``tools/approval.py``).
+
+    Previously this re-read the config raw via ``_load_cfg`` +
+    ``_deep_merge(DEFAULT_CONFIG, ...)`` and normalized locally, which
+    could disagree with the gate's own view of the mode (e.g. the
+    canonical ``hermes_cli.config.load_config`` path applies managed-scope
+    overlays and ``${VAR}`` env expansion that the TUI's raw YAML read did
+    not fully mirror).
+    """
+    from tools.approval import _get_approval_mode
+
+    mode = _get_approval_mode()
     return mode if mode in _APPROVAL_MODES else "manual"
 
 

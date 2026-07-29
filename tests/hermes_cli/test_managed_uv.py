@@ -39,6 +39,18 @@ def _runtime_info(
     )
 
 
+def _RRR(status):
+    """not-applicable RuntimeRepairResult for tests that neutralize the
+    repair hook. ensure_uv()/update_managed_uv() invoke runtime repair as a
+    side effect; unmocked, it probes the REAL checkout's venv/.venv — on CI
+    the repo .venv links vulnerable SQLite, so repair fires for real and
+    re-invokes _install_uv (uv-refresh retry), breaking call-count asserts.
+    """
+    from hermes_cli.managed_uv import RuntimeRepairResult
+
+    return RuntimeRepairResult(status)
+
+
 def _make_runtime_install(
     tmp_path: Path,
     *,
@@ -101,6 +113,7 @@ class TestEnsureUv:
 
     def test_installs_if_missing(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("hermes_cli.managed_uv._install_uv") as mock_install:
             # Simulate the installer creating the binary
             def fake_install(target):
@@ -166,6 +179,7 @@ class TestEnsureUvUpdateBoundary:
     def test_success_usable_as_single_value(self, tmp_path):
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("hermes_cli.managed_uv.platform.system", return_value="Linux"):
             from hermes_cli.managed_uv import ensure_uv
             uv_bin = ensure_uv()
@@ -175,6 +189,7 @@ class TestEnsureUvUpdateBoundary:
     def test_success_unpacks_as_legacy_two_tuple(self, tmp_path):
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("hermes_cli.managed_uv.platform.system", return_value="Linux"):
             from hermes_cli.managed_uv import ensure_uv
             uv_bin, fresh = ensure_uv()  # old: uv_bin, fresh_bootstrap = ensure_uv()
@@ -183,6 +198,7 @@ class TestEnsureUvUpdateBoundary:
 
     def test_failure_unpacks_without_raising(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("hermes_cli.managed_uv.platform.system", return_value="Linux"), \
              patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
             from hermes_cli.managed_uv import ensure_uv
@@ -221,6 +237,7 @@ class TestEnsureUvWindowsSafe:
         # On (mocked) Windows the managed binary is uv.exe.
         _make_executable(tmp_path / "bin" / "uv.exe")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("hermes_cli.managed_uv.platform.system", return_value="Windows"):
             from hermes_cli.managed_uv import _UvResult, ensure_uv
             uv_bin = ensure_uv()
@@ -280,6 +297,7 @@ class TestUpdateManagedUv:
         _os.utime(stamp, (old, old))
 
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
             update_managed_uv()
@@ -847,3 +865,46 @@ class TestRepairRetriesAfterUvRefresh:
         assert "replacement environment" in result.detail
         assert len(attempts) == 2
         assert sentinel.read_text(encoding="utf-8") == "live"
+
+class TestDefaultLiveVenv:
+    """_default_live_venv() must cover BOTH install layouts (venv/ and .venv/).
+
+    Historically repair hardcoded venv/, so uv-default/.venv checkouts got
+    'not-applicable' on every hermes update and stayed on journal_mode=DELETE
+    (2,600x slower state.db appends) while the WAL warning promised repair.
+    """
+
+    def _checkout(self, tmp_path, *dirs):
+        root = tmp_path / "checkout"
+        root.mkdir()
+        (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        for d in dirs:
+            bin_dir = root / d / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "python").write_text("py", encoding="utf-8")
+        return root
+
+    def test_dot_venv_only_is_targeted(self, tmp_path):
+        from hermes_cli.managed_uv import _default_live_venv
+
+        root = self._checkout(tmp_path, ".venv")
+        assert _default_live_venv(root) == root / ".venv"
+
+    def test_managed_venv_takes_precedence(self, tmp_path):
+        from hermes_cli.managed_uv import _default_live_venv
+
+        root = self._checkout(tmp_path, "venv", ".venv")
+        assert _default_live_venv(root) == root / "venv"
+
+    def test_neither_layout_keeps_not_applicable(self, tmp_path):
+        from hermes_cli.managed_uv import (
+            _default_live_venv,
+            repair_vulnerable_runtime,
+        )
+
+        root = self._checkout(tmp_path)
+        # Neither venv nor .venv has an interpreter -> repair is not applicable.
+        assert _default_live_venv(root) == root / "venv"
+        result = repair_vulnerable_runtime("uv", project_root=root)
+        assert result.status == "not-applicable"
+

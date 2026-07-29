@@ -1669,7 +1669,8 @@ describe('usePromptActions submit / queue drain semantics', () => {
       []
 
     const requestGateway = vi.fn(
-      async (method: string) => (method === 'session.resume' ? { session_id: 'rt-session-b' } : {}) as never
+      async (method: string, _params?: Record<string, unknown>) =>
+        (method === 'session.resume' ? { session_id: 'rt-session-b' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -1696,6 +1697,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: 'rt-session-b',
         text: 'queued for B mid-switch'
       },
@@ -1717,7 +1719,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // Same window, but B's runtime binding is already known centrally — the
     // drain should adopt the authoritative binding directly (no resume
     // round-trip) rather than trusting the leftover foreground id.
-    const requestGateway = vi.fn(async () => ({}) as never)
+    const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}) as never)
 
     let handle: HarnessHandle | null = null
     render(
@@ -1739,6 +1741,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
       {
+        queued: true,
         session_id: 'rt-session-b-live',
         text: 'queued for B, B already re-bound'
       },
@@ -1751,6 +1754,41 @@ describe('usePromptActions submit / queue drain semantics', () => {
           method !== 'prompt.submit' || (params as { session_id?: string }).session_id !== 'rt-session-a'
       )
     ).toBe(true)
+  })
+
+  it('a NON-queue explicit target keeps its runtime id even with no central binding recorded', async () => {
+    // The scoping invariant for the check above. A slash skill dispatch into a
+    // fresh ⌘T tab passes the same shape a stale drain does — sessionId and
+    // storedSessionId differ, and the tab has no central binding yet — but its
+    // two ids were resolved in the same tick, so the explicit target IS
+    // authoritative. Validating this caller against the (empty) binding would
+    // null the target and silently drop the kickoff into nowhere.
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('kickoff for the tab', {
+      sessionId: 'rt-tab',
+      storedSessionId: 'stored-tab'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'rt-tab',
+        text: 'kickoff for the tab'
+      },
+      1_800_000
+    )
   })
 
   it('a fromQueue drain with null runtime id does NOT land in the foreground session (cross-session leak guard)', async () => {

@@ -155,6 +155,7 @@ export const fr: Translations = {
       noSpeechDetected: 'Aucune parole détectée',
       playbackFailed: 'Échec de la lecture vocale',
       recordingFailed: "Échec de l'enregistrement vocal",
+      sayStopToEnd: phrase => `Dites « ${phrase} » pour terminer la conversation vocale.`,
       transcriptionFailed: 'Échec de la transcription vocale',
       transcriptionUnavailable: "La transcription vocale n'est pas encore disponible.",
       tryRecordingAgain: 'Essayez de réenregistrer.',

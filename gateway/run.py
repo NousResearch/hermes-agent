@@ -15373,6 +15373,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    @_contextmanager
+    def _profile_config_scope_for_source(self, source: SessionSource):
+        """Yield the config owned by an inbound source's routed profile.
+
+        Secondary adapters already wrap their entire handler in
+        ``_profile_runtime_scope``. Sources routed through a primary/shared
+        adapter do not, so command access checks and persistent command writes
+        must install that same scope explicitly.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            yield self.config
+            return
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            yield load_gateway_config()
+
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str
     ) -> Optional[str]:
@@ -15390,7 +15407,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        with self._profile_config_scope_for_source(source) as source_config:
+            policy = _policy_for_source(source_config, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(

@@ -3656,10 +3656,11 @@ class GatewaySlashCommandsMixin:
         # This mutates profile-wide security policy. The central slash gate can
         # allow selected commands to non-admin users, so enforce admin again at
         # this side-effect boundary. Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
-            return "Only gateway admins can change the persistent approval mode."
-        result = run_approval_mode_command(requested)
+        with self._profile_config_scope_for_source(event.source) as source_config:
+            policy = policy_for_source(source_config, event.source)
+            if requested and not policy.is_admin(event.source.user_id):
+                return "Only gateway admins can change the persistent approval mode."
+            result = run_approval_mode_command(requested)
         # Approval checks load config dynamically; do not evict the cached agent
         # or alter its system prompt/tool schema (prompt-cache prefix is sacred).
         return result.message

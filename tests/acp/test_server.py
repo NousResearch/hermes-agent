@@ -1372,6 +1372,52 @@ class TestPrompt:
         assert state.agent.thinking_callback is None
 
     @pytest.mark.asyncio
+    async def test_queued_prompt_survives_drain_echo_failure(self, agent):
+        """A client disconnect during the post-turn drain's user-message echo
+        must not lose the queued text — the queued turn still runs.
+
+        The drain pops the queued prompt and THEN echoes it via
+        conn.session_update. If that echo raises (e.g. ConnectionResetError
+        from a client that went away mid-turn), the exception must not escape
+        before ``await self.prompt(...)`` runs the popped text: the message
+        would be neither run nor re-queued — permanently lost.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        queued_text = "follow-up typed while the first turn was running"
+
+        calls = []
+
+        def _run(**kwargs):
+            calls.append(kwargs["user_message"])
+            if len(calls) == 1:
+                # A prompt arrives mid-turn: the busy path queues it.
+                with state.runtime_lock:
+                    state.queued_prompts.append(queued_text)
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+
+        mock_conn = MagicMock(spec=acp.Client)
+
+        async def _session_update(session_id, update):
+            # The drain echo is the only UserMessageChunk this turn sends.
+            if isinstance(update, UserMessageChunk):
+                raise ConnectionResetError("client went away")
+
+        mock_conn.session_update = AsyncMock(side_effect=_session_update)
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="kick off")],
+            session_id=new_resp.session_id,
+        )
+
+        assert len(calls) == 2, "queued text was LOST when the drain echo raised"
+        assert queued_text in calls[1]
+        assert state.queued_prompts == []
+
+    @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
         """After a prompt, session history should be updated."""
         new_resp = await agent.new_session(cwd=".")

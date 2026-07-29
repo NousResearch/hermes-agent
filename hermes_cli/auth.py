@@ -2009,6 +2009,15 @@ def resolve_provider(
         if pid in {"copilot", "lmstudio"}:
             continue
         for env_var in pconfig.api_key_env_vars:
+            # CLAUDE_CODE_OAUTH_TOKEN is written by Claude Code's own login,
+            # not by a user configuring Hermes — ambient presence must not
+            # auto-route inference onto the Anthropic HTTP lane. Same doctrine
+            # as is_provider_explicitly_configured's exclusion above (#7156)
+            # and the copilot/lmstudio skips: implicit credentials don't pick
+            # providers. Explicit `model.provider: anthropic` still uses the
+            # token via normal credential resolution.
+            if env_var == "CLAUDE_CODE_OAUTH_TOKEN":
+                continue
             if has_usable_secret(os.getenv(env_var, "")):
                 # An exported API key now wins over a logged-in OAuth provider
                 # (the #29285 fix). Surface that so a user who deliberately uses
@@ -2050,10 +2059,19 @@ def resolve_provider(
     except ImportError:
         pass  # boto3 not installed — skip Bedrock auto-detection
 
+    _implicit_hint = ""
+    if has_usable_secret(os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")):
+        # The token was seen and deliberately not auto-selected (above) —
+        # say so, or the refusal just looks broken to the one user who has it.
+        _implicit_hint = (
+            " CLAUDE_CODE_OAUTH_TOKEN was detected but is never auto-selected"
+            " (it belongs to Claude Code's own login); set `model.provider:"
+            " anthropic` explicitly to use it for inference."
+        )
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
         "provider and model, or set an API key (OPENROUTER_API_KEY, "
-        "OPENAI_API_KEY, etc.) in ~/.hermes/.env.",
+        "OPENAI_API_KEY, etc.) in ~/.hermes/.env." + _implicit_hint,
         code="no_provider_configured",
     )
 

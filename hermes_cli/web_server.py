@@ -7501,7 +7501,11 @@ async def get_model_options(
             # Keep the profile override inside the worker thread so the full
             # sync picker build (config load, pricing, refresh probes) runs
             # off the event loop under the requested profile.
-            with _profile_scope(profile):
+            # Use _config_profile_scope (contextvar only, no skill-module
+            # lock) — the payload build can block for 15s on a models.dev
+            # cache miss, and _profile_scope's RLock held across that block
+            # starves concurrent /api/config and freezes the server (#58576).
+            with _config_profile_scope(profile):
                 return build_model_options_payload(
                     load_picker_context(),
                     explicit_only=bool(explicit_only),

@@ -4009,13 +4009,8 @@ class BasePlatformAdapter(ABC):
             if len(parsed.netloc) == 2 and parsed.netloc[1] == ':':
                 local = parsed.netloc + parsed.path
             else:
-                # Percent-encoded path in netloc: file://C%3A%5C...
-                decoded_netloc = urllib.parse.unquote(parsed.netloc)
-                if len(decoded_netloc) >= 2 and decoded_netloc[1] == ':':
-                    local = decoded_netloc + parsed.path
-                else:
-                    logger.debug("Rejecting UNC file:// URI: %s", _log_safe_path(url))
-                    return None
+                logger.debug("Rejecting UNC file:// URI: %s", _log_safe_path(url))
+                return None
         else:
             local = parsed.path
             if len(local) >= 3 and local[0] == '/' and local[1].isalpha() and local[2] == ':':

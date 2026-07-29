@@ -633,6 +633,11 @@ async def test_post_stream_dedup_substring_safe(tmp_path, monkeypatch):
     assert all(u.startswith("file://") for u in uris)
 
 
+def test_normalize_file_url_drive_relative_rejected():
+    """file://C%3Arelative.png has authority C%3A and MUST be rejected."""
+    assert BasePlatformAdapter._normalize_file_url("file://C%3Arelative.png") is None
+
+
 @pytest.mark.asyncio
 async def test_post_stream_dedup_file_url_media_same_file(tmp_path, monkeypatch):
     """MEDIA local path + file:// URI for the same file deliver once."""

@@ -199,3 +199,60 @@ def test_t_resolves_real_string_in_source_checkout():
     regressions independent of packaging."""
     assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
     assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"
+
+
+# ---------------------------------------------------------------------------
+# Newline consistency -- picker_title and other multi-line keys must contain
+# actual newline characters (\n), not the literal two-character sequence
+# backslash-n (\\n).  A double-escaped \\n in a YAML double-quoted string
+# produces a literal backslash + 'n' in the parsed value, which renders as
+# visible "\n" text on platforms like Telegram instead of a line break.
+# ---------------------------------------------------------------------------
+
+_PICKER_TITLE_KEYS = [
+    "gateway.fast.picker_title",
+    "gateway.reasoning.picker_title",
+]
+
+
+@pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
+@pytest.mark.parametrize("key", _PICKER_TITLE_KEYS)
+def test_picker_title_has_real_newlines(lang: str, key: str):
+    """picker_title values must contain actual newlines, not literal \\n.
+
+    Regression: several locales had ``\\\\n`` in the YAML source (double-escaped),
+    which YAML parses as the two-character sequence ``\\n`` rather than a
+    newline.  The English catalog uses ``\\n`` (single escape) correctly.
+    """
+    flat = _flatten(_load_raw(lang))
+    value = flat.get(key, "")
+    assert value, f"{lang}.yaml missing key {key}"
+    # Must contain at least one real newline
+    assert "\n" in value, (
+        f"{lang}.yaml key={key!r}: no real newline found. "
+        f"Value starts with: {value[:80]!r}"
+    )
+    # Must NOT contain the literal two-char sequence backslash-n
+    literal_bs_n = chr(92) + "n"
+    assert literal_bs_n not in value, (
+        f"{lang}.yaml key={key!r}: contains literal backslash-n (double-escaped). "
+        f"Value starts with: {value[:80]!r}"
+    )
+
+
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+@pytest.mark.parametrize("key", _PICKER_TITLE_KEYS)
+def test_picker_title_newline_count_matches_english(lang: str, key: str):
+    """The number of newlines in picker_title must match the English catalog.
+
+    If en.yaml has 4 newlines and a translation has 0, the picker renders as
+    a single unreadable line.  This catches both the double-escape bug and
+    accidental newline stripping during translation.
+    """
+    en_flat = _flatten(_load_raw("en"))
+    lang_flat = _flatten(_load_raw(lang))
+    en_count = en_flat[key].count("\n")
+    lang_count = lang_flat.get(key, "").count("\n")
+    assert lang_count == en_count, (
+        f"{lang}.yaml key={key!r}: {lang_count} newlines vs English {en_count}"
+    )

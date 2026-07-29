@@ -7,6 +7,7 @@ conversation history.
 
 from __future__ import annotations
 
+import json
 import unicodedata
 from typing import Any
 
@@ -22,6 +23,10 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "NO_REPLY",
     "NO REPLY",
 })
+
+_MAX_SILENCE_MARKER_LENGTH = 64
+_MAX_JSON_SILENCE_ENVELOPE_LENGTH = 256
+_JSON_WHITESPACE = frozenset(" \t\r\n")
 
 
 def _canonical_silence_candidate(text: str) -> str:
@@ -53,6 +58,126 @@ def _canonical_silence_candidates(text: str) -> tuple[str, ...]:
     return (exact, fallback)
 
 
+def _is_json_silence_envelope(text: str) -> bool:
+    stripped = text.strip(" \t\r\n")
+    if (
+        not stripped.startswith("{")
+        or not stripped.endswith("}")
+        or len(text) > _MAX_JSON_SILENCE_ENVELOPE_LENGTH
+    ):
+        return False
+    try:
+        pairs = json.loads(stripped, object_pairs_hook=lambda items: items)
+    except (TypeError, ValueError):
+        return False
+    return pairs == [("action", SILENT_REPLY_TOKEN)]
+
+
+def _skip_json_whitespace(text: str, index: int) -> int:
+    while index < len(text) and text[index] in _JSON_WHITESPACE:
+        index += 1
+    return index
+
+
+def _match_json_string_prefix(
+    text: str,
+    index: int,
+    expected: str,
+) -> tuple[str, int]:
+    """Match a JSON string that must decode to ``expected``."""
+    if index >= len(text):
+        return "partial", index
+    if text[index] != '"':
+        return "invalid", index
+    index += 1
+    expected_index = 0
+    simple_escapes = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            if expected_index != len(expected):
+                return "invalid", index
+            return "complete", index + 1
+        if expected_index >= len(expected) or ord(char) < 0x20:
+            return "invalid", index
+        if char != "\\":
+            if char != expected[expected_index]:
+                return "invalid", index
+            expected_index += 1
+            index += 1
+            continue
+
+        if index + 1 >= len(text):
+            return "partial", index
+        escape = text[index + 1]
+        if escape != "u":
+            decoded = simple_escapes.get(escape)
+            if decoded != expected[expected_index]:
+                return "invalid", index
+            expected_index += 1
+            index += 2
+            continue
+
+        expected_hex = f"{ord(expected[expected_index]):04x}"
+        available = text[index + 2 : index + 6]
+        if any(char not in "0123456789abcdefABCDEF" for char in available):
+            return "invalid", index
+        if not expected_hex.startswith(available.lower()):
+            return "invalid", index
+        if len(available) < 4:
+            return "partial", index
+        expected_index += 1
+        index += 6
+    return "partial", index
+
+
+def _could_be_json_silence_envelope(text: str) -> bool:
+    """Return whether a bounded prefix can still become the exact envelope."""
+    if len(text) > _MAX_JSON_SILENCE_ENVELOPE_LENGTH:
+        return False
+    index = _skip_json_whitespace(text, 0)
+    if index >= len(text) or text[index] != "{":
+        return False
+    index = _skip_json_whitespace(text, index + 1)
+    if index >= len(text):
+        return True
+
+    state, index = _match_json_string_prefix(text, index, "action")
+    if state == "partial":
+        return True
+    if state == "invalid":
+        return False
+    index = _skip_json_whitespace(text, index)
+    if index >= len(text):
+        return True
+    if text[index] != ":":
+        return False
+    index = _skip_json_whitespace(text, index + 1)
+    if index >= len(text):
+        return True
+
+    state, index = _match_json_string_prefix(text, index, SILENT_REPLY_TOKEN)
+    if state == "partial":
+        return True
+    if state == "invalid":
+        return False
+    index = _skip_json_whitespace(text, index)
+    if index >= len(text):
+        return True
+    if text[index] != "}":
+        return False
+    return _skip_json_whitespace(text, index + 1) == len(text)
+
+
 def is_intentional_silence_response(response: Any) -> bool:
     """Return True only when ``response`` is exactly a silence marker.
 
@@ -65,9 +190,14 @@ def is_intentional_silence_response(response: Any) -> bool:
     stripped = response.strip()
     if not stripped:
         return False
-    if len(stripped) > 64:
+    if _is_json_silence_envelope(response):
+        return True
+    if len(stripped) > _MAX_SILENCE_MARKER_LENGTH:
         return False
-    return any(candidate in LIVE_GATEWAY_SILENT_MARKERS for candidate in _canonical_silence_candidates(stripped))
+    return any(
+        candidate in LIVE_GATEWAY_SILENT_MARKERS
+        for candidate in _canonical_silence_candidates(stripped)
+    )
 
 
 def is_autonomous_silence_response(response: Any) -> bool:
@@ -91,6 +221,9 @@ def is_autonomous_silence_response(response: Any) -> bool:
     stripped = response.strip()
     if not stripped:
         return False
+
+    if _is_json_silence_envelope(response):
+        return True
 
     def _is_token(line: str) -> bool:
         return _canonical_silence_candidate(line) in LIVE_GATEWAY_SILENT_MARKERS
@@ -139,7 +272,11 @@ def is_partial_silence_marker(text: Any) -> bool:
     if not isinstance(text, str):
         return False
     stripped = text.strip()
-    if not stripped or len(stripped) > 64:
+    if not stripped:
+        return False
+    if _could_be_json_silence_envelope(text):
+        return True
+    if len(stripped) > _MAX_SILENCE_MARKER_LENGTH:
         return False
     for candidate in _canonical_silence_candidates(stripped):
         if candidate and any(marker.startswith(candidate) for marker in LIVE_GATEWAY_SILENT_MARKERS):

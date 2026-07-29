@@ -50,6 +50,11 @@ PARTIAL_POSITIVE = [
     "[SILENT]",
     "SILENT",
     "sil",
+    "{",
+    '{"action"',
+    '{"action": "NO_',
+    '{"action":"\\u004e\\u004f_',
+    '{\n  "action": "NO_REPLY"\n}',
 ]
 
 # Buffers that have already diverged from every marker → stream normally.
@@ -63,6 +68,14 @@ PARTIAL_NEGATIVE = [
     "The NO_REPLY token means silence",      # marker mentioned mid-prose
     "x" * 65,                                # over the 64-char cap
     "silence is golden",                     # 'SILENCE...' is not a marker prefix
+    '{"action":"NO_REPLY","reason"',
+    '{"message"',
+    '{"action":"NOPE',
+    '{"action":null',
+    '\u00a0{"action":"NO_REPLY"}',
+    '{"action":"NO_REPLY"}\u2028',
+    '{"message":"NO_REPLY"}',
+    (" " * 257) + '{"action":"NO_REPLY"}',
 ]
 
 
@@ -122,6 +135,39 @@ def _sent_and_edited(adapter):
 
 
 class TestStreamedSilenceSuppression:
+    @pytest.mark.asyncio
+    async def test_json_no_reply_envelope_is_fully_suppressed(self):
+        """A one-key JSON silence envelope never reaches the platform."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta('{\n  "action": "NO_REPLY"\n}')
+        consumer.finish()
+        await consumer.run()
+
+        assert _sent_and_edited(adapter) == []
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
+    async def test_json_no_reply_unicode_escape_stream_is_fully_suppressed(self):
+        """An escaped action value stays hidden while its JSON is incomplete."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta('{"action":"\\u004e\\u004f_')
+        consumer.on_delta('REPLY"}')
+        consumer.finish()
+        await consumer.run()
+
+        assert _sent_and_edited(adapter) == []
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
     @pytest.mark.asyncio
     async def test_no_reply_only_stream_is_fully_suppressed(self):
         """A stream whose entire content is NO_REPLY sends nothing visible."""

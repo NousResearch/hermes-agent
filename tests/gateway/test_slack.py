@@ -1273,6 +1273,25 @@ class TestBangPrefixCommands:
 
 
     @pytest.mark.asyncio
+    async def test_bang_autoreset_reaches_normal_thread_command_handler(self, adapter):
+        adapter.config.extra["require_mention"] = False
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+        evt = self._make_event(
+            "!autoreset daily 08:07",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/autoreset daily 08:07"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.source.chat_id == "C123"
+        assert msg_event.source.chat_type == "group"
+        assert msg_event.source.thread_id == "1111111111.000001"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "authored_text", ["!queue  --flag  value  ", "/queue  --flag  value  "]
     )

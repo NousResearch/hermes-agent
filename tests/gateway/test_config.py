@@ -22,6 +22,7 @@ from gateway.config import (
     SessionResetPolicy,
     StreamingConfig,
     _apply_env_overrides,
+    _validate_gateway_config,
     load_gateway_config,
     persist_home_channel,
 )
@@ -170,25 +171,82 @@ class TestGetConnectedPlatforms:
 
 class TestSessionResetPolicy:
     def test_roundtrip(self):
-        policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120,
+        policy = SessionResetPolicy(mode="idle", at_hour=6, at_minute=37,
+                                    idle_minutes=120,
                                     bg_process_max_age_hours=48)
         d = policy.to_dict()
         restored = SessionResetPolicy.from_dict(d)
         assert restored.mode == "idle"
         assert restored.at_hour == 6
+        assert restored.at_minute == 37
         assert restored.idle_minutes == 120
         assert restored.bg_process_max_age_hours == 48
 
+    def test_defaults(self):
+        policy = SessionResetPolicy()
+        assert policy.mode == "none"
+        assert policy.at_hour == 4
+        assert policy.at_minute == 0
+        assert policy.idle_minutes == 1440
+        assert policy.bg_process_max_age_hours == 24
 
     def test_from_dict_treats_null_values_as_defaults(self):
         restored = SessionResetPolicy.from_dict(
-            {"mode": None, "at_hour": None, "idle_minutes": None,
+            {"mode": None, "at_hour": None, "at_minute": None, "idle_minutes": None,
              "bg_process_max_age_hours": None}
         )
         assert restored.mode == "none"
         assert restored.at_hour == 4
+        assert restored.at_minute == 0
         assert restored.idle_minutes == 1440
         assert restored.bg_process_max_age_hours == 24
+
+    def test_from_dict_coerces_quoted_false_notify(self):
+        restored = SessionResetPolicy.from_dict({"notify": "false"})
+        assert restored.notify is False
+
+    def test_from_dict_malformed_section_falls_back_to_defaults(self):
+        restored = SessionResetPolicy.from_dict("oops")
+        assert restored.mode == SessionResetPolicy().mode
+        assert restored.at_hour == 4
+        assert restored.at_minute == 0
+        assert restored.idle_minutes == 1440
+
+    def test_legacy_at_hour_without_minute_keeps_midnight_minute_default(self):
+        restored = SessionResetPolicy.from_dict({"mode": "daily", "at_hour": 17})
+        assert restored.to_dict()["at_hour"] == 17
+        assert restored.to_dict()["at_minute"] == 0
+
+    def test_legacy_positional_constructor_keeps_existing_field_order(self):
+        policy = SessionResetPolicy(
+            "daily",
+            17,
+            90,
+            False,
+            ("api_server",),
+            48,
+        )
+        assert policy.idle_minutes == 90
+        assert policy.notify is False
+        assert policy.notify_exclude_platforms == ("api_server",)
+        assert policy.bg_process_max_age_hours == 48
+        assert policy.at_minute == 0
+
+    @pytest.mark.parametrize("invalid", [-1, 60, True, "30", None])
+    def test_validation_replaces_invalid_at_minute_for_every_policy_scope(
+        self, invalid
+    ):
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(at_minute=invalid),
+            reset_by_type={"thread": SessionResetPolicy(at_minute=invalid)},
+            reset_by_platform={
+                Platform.SLACK: SessionResetPolicy(at_minute=invalid)
+            },
+        )
+        _validate_gateway_config(config)
+        assert config.default_reset_policy.at_minute == 0
+        assert config.reset_by_type["thread"].at_minute == 0
+        assert config.reset_by_platform[Platform.SLACK].at_minute == 0
 
 
 class TestStreamingConfig:

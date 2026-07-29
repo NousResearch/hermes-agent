@@ -1454,3 +1454,51 @@ class TestVoiceBargeCaptureSubmit:
         assert cli._pending_input.empty()
         assert not cli._voice_barge_capture.is_set()
         assert restarted.wait(2.0)  # continuous mode resumes listening
+
+
+# ============================================================================
+# Typed stop phrase — typing "stop" during a voice chat ends it
+# ============================================================================
+class TestTypedVoiceStop:
+    """_typed_voice_stop: a TYPED bare stop phrase during an active voice chat
+    ends the chat (same as saying "stop"); outside voice mode it passes
+    through to the agent untouched."""
+
+    def _cli(self, **overrides):
+        cli = _make_voice_cli(**overrides)
+        cli._disable_calls = []
+        cli._disable_voice_mode = lambda: cli._disable_calls.append(True)
+        return cli
+
+    @pytest.fixture(autouse=True)
+    def _pin_stop_phrases(self, monkeypatch):
+        # Hermetic: don't let a dev machine's voice.stop_phrases config
+        # change which utterances count as a stop phrase.
+        monkeypatch.setattr(
+            "tools.voice_mode._load_voice_stop_phrases", lambda: ("stop",)
+        )
+
+    def test_typed_stop_ends_voice_chat_when_voice_on(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop("stop") is True
+        assert cli._disable_calls == [True]
+
+    def test_typed_stop_during_continuous_mode(self):
+        cli = self._cli(_voice_mode=False, _voice_continuous=True)
+        assert cli._typed_voice_stop("Stop.") is True
+        assert cli._disable_calls == [True]
+
+    def test_typed_stop_passes_through_when_voice_off(self):
+        cli = self._cli(_voice_mode=False, _voice_continuous=False)
+        assert cli._typed_voice_stop("stop") is False
+        assert cli._disable_calls == []
+
+    def test_longer_typed_message_passes_through_in_voice_mode(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop("stop the docker container") is False
+        assert cli._disable_calls == []
+
+    def test_non_string_input_passes_through(self):
+        cli = self._cli(_voice_mode=True)
+        assert cli._typed_voice_stop(("text", ["img.png"])) is False
+        assert cli._disable_calls == []

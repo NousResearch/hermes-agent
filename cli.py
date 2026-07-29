@@ -12250,6 +12250,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
 
+    def _typed_voice_stop(self, user_input) -> bool:
+        """Typed bare stop phrase during an active voice chat ends the chat.
+
+        Saying "stop" ends the voice chat (PR #73106); TYPING the same bare
+        stop phrase while voice mode is on must behave identically instead of
+        sending "stop" to the agent as a turn. Guarded on voice mode being ON
+        — typed "stop" outside voice chat passes through to the agent exactly
+        as before. Reuses ``is_voice_stop_phrase`` (same config
+        ``voice.stop_phrases``, same exact-match semantics), so longer typed
+        messages containing "stop" are never swallowed.
+        """
+        if not isinstance(user_input, str):
+            return False
+        with self._voice_lock:
+            voice_on = self._voice_mode or self._voice_continuous
+        if not voice_on:
+            return False
+        try:
+            from tools.voice_mode import is_voice_stop_phrase
+            if not is_voice_stop_phrase(user_input):
+                return False
+        except Exception:
+            return False
+        _cprint(f"\n{_DIM}Stop phrase typed — ending voice chat.{_RST}")
+        self._disable_voice_mode()
+        return True
+
     def _disable_voice_mode(self):
         """Disable voice mode, cancel any active recording, and stop TTS."""
         recorder = None
@@ -16522,6 +16549,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
                         if _had_mouse_reports:
                             self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
+
+                    # Typed bare stop phrase while a voice chat is active ends
+                    # the voice chat (same semantics as SAYING "stop") instead
+                    # of sending the word to the agent. Voice transcripts are
+                    # already stop-checked at the transcription points, so this
+                    # only intercepts typed input.
+                    if not is_voice_input and self._typed_voice_stop(user_input):
+                        continue
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isVoiceStopCommand } from './voice-stop-word'
+import { interceptsTypedVoiceStop, isVoiceStopCommand } from './voice-stop-word'
 
 describe('isVoiceStopCommand', () => {
   it('matches bare stop commands', () => {
@@ -58,5 +58,29 @@ describe('isVoiceStopCommand', () => {
     for (const phrase of ['hello', 'yes', 'what time is it', 'thanks']) {
       expect(isVoiceStopCommand(phrase)).toBe(false)
     }
+  })
+})
+
+describe('interceptsTypedVoiceStop', () => {
+  it('intercepts a typed bare stop command while the conversation is active', () => {
+    for (const text of ['stop', 'Stop.', 'never mind', 'hey hermes, stop']) {
+      expect(interceptsTypedVoiceStop(true, text)).toBe(true)
+    }
+  })
+
+  it('never intercepts when the voice conversation is inactive', () => {
+    for (const text of ['stop', 'never mind', 'goodbye']) {
+      expect(interceptsTypedVoiceStop(false, text)).toBe(false)
+    }
+  })
+
+  it('passes through substantive messages during a conversation', () => {
+    for (const text of ['stop the docker container', 'how do I stop a process', 'hello']) {
+      expect(interceptsTypedVoiceStop(true, text)).toBe(false)
+    }
+  })
+
+  it('passes through when attachments ride along (real payload)', () => {
+    expect(interceptsTypedVoiceStop(true, 'stop', 1)).toBe(false)
   })
 })

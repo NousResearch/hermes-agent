@@ -44,10 +44,22 @@ _CHANNEL_TYPE_MAP = {
     "O": "channel",
 }
 
+_MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
+
 # Reconnect parameters (exponential backoff).
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+
+def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a post payload that prevents Mattermost from firing mentions."""
+    props = payload.get("props")
+    if isinstance(props, dict):
+        payload["props"] = {**props, **_MATTERMOST_DISABLE_MENTIONS_PROPS}
+    else:
+        payload["props"] = dict(_MATTERMOST_DISABLE_MENTIONS_PROPS)
+    return payload
 
 
 def check_mattermost_requirements() -> bool:
@@ -361,10 +373,10 @@ class MattermostAdapter(BasePlatformAdapter):
 
         last_id = None
         for chunk in chunks:
-            payload: Dict[str, Any] = {
+            payload: Dict[str, Any] = _with_mentions_disabled({
                 "channel_id": chat_id,
                 "message": chunk,
-            }
+            })
             # Thread support: reply_to or metadata["thread_id"] is the root post ID.
             resolved_root = await self._thread_root_for_send(reply_to, metadata)
             if resolved_root:
@@ -407,7 +419,7 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         data = await self._api_put(
             f"posts/{message_id}/patch",
-            {"message": formatted},
+            _with_mentions_disabled({"message": formatted}),
         )
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to edit post")
@@ -543,11 +555,11 @@ class MattermostAdapter(BasePlatformAdapter):
         if not file_id:
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
 
-        payload: Dict[str, Any] = {
+        payload: Dict[str, Any] = _with_mentions_disabled({
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
-        }
+        })
         resolved_root = await self._thread_root_for_send(reply_to, metadata)
         if resolved_root:
             payload["root_id"] = resolved_root
@@ -584,11 +596,11 @@ class MattermostAdapter(BasePlatformAdapter):
         if not file_id:
             return SendResult(success=False, error="File upload failed")
 
-        payload: Dict[str, Any] = {
+        payload: Dict[str, Any] = _with_mentions_disabled({
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
-        }
+        })
         resolved_root = await self._thread_root_for_send(reply_to, metadata)
         if resolved_root:
             payload["root_id"] = resolved_root
@@ -672,11 +684,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 if not file_ids:
                     continue
 
-                payload: Dict[str, Any] = {
+                payload: Dict[str, Any] = _with_mentions_disabled({
                     "channel_id": chat_id,
                     "message": "\n".join(caption_parts),
                     "file_ids": file_ids,
-                }
+                })
                 resolved_root = await self._thread_root_for_send(None, metadata)
                 if resolved_root:
                     payload["root_id"] = resolved_root
@@ -1124,7 +1136,7 @@ def interactive_setup() -> None:
     ``hermes_cli/setup.py::_setup_mattermost`` function this migration
     removes.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -1169,9 +1181,12 @@ def interactive_setup() -> None:
     print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
     print_info("   To get a channel ID: click channel name → View Info → copy the ID")
     print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+    else:
+        if remove_env_value("MATTERMOST_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
     print_info("   Open config in your editor:  hermes config edit")
 
 

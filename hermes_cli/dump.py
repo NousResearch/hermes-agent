@@ -64,7 +64,7 @@ def _get_git_commit(project_root: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             cwd=str(project_root),
         )
         if result.returncode == 0:
@@ -99,7 +99,7 @@ def _get_git_commit_date(project_root: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "log", "-1", "--format=%cd", "--date=short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             cwd=str(project_root),
         )
         if result.returncode == 0:
@@ -243,6 +243,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("browser", "allow_private_urls"),
         ("compression", "enabled"),
         ("compression", "threshold"),
+        ("compression", "in_place"),
         ("display", "streaming"),
         ("display", "skin"),
         ("display", "show_reasoning"),

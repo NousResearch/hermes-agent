@@ -127,6 +127,38 @@ describe('reactive pane unhide', () => {
     expect(tree.$collapsedTreeSides.get().has('right')).toBe(false)
   })
 
+  // Opening a preview used to drag the file tree open with it: the preview
+  // shares ⌘J's column, and `revealTreePane` un-collapses a column through its
+  // bound store — which for the right side IS the file-browser toggle. The
+  // reveal now un-collapses the column directly and leaves the toggle alone.
+  it('revealing a preview opens its column without flipping the file-tree toggle', async () => {
+    const { tree, layout } = await setupWithFiles()
+    const { registry } = await import('@/contrib/registry')
+
+    registry.register({
+      id: 'preview',
+      area: 'panes',
+      data: { placement: 'right' },
+      render: () => null,
+      title: 'preview'
+    })
+
+    layout.setFileBrowserOpen(false)
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(true)
+
+    // The revealPreview sequence from controller.tsx.
+    const side = tree.treeSideOfPane('files')
+
+    expect(side).toBe('right')
+    tree.setTreeSideCollapsed(side!, false)
+    tree.revealTreePane('preview')
+
+    // The column is showing…
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(false)
+    // …but the tree's own toggle never moved, so the tree stays closed.
+    expect(layout.$fileBrowserOpen.get()).toBe(false)
+  })
+
   it('reactive unhide does not invoke the right side opener directly', async () => {
     const { tree, layout } = await setupWithFiles()
 

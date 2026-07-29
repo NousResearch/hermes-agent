@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import urllib.parse
 
 from hermes_cli.config import clear_model_endpoint_credentials
 
@@ -73,6 +74,13 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
         # Asia-Pacific regions can carry ap./apac./jp. profile spellings.
         return matched_geo in ("ap.", "apac.", "jp.")
     return matched_geo == geo
+
+
+def _existing_api_key_for_model_flow(provider_id: str, pconfig) -> tuple[str, str]:
+    """Resolve an existing wizard credential without changing its storage."""
+    from hermes_cli.auth import _resolve_api_key_provider_secret
+
+    return _resolve_api_key_provider_secret(provider_id, pconfig)
 
 
 def _prune_replaced_custom_model_config_credentials(
@@ -176,8 +184,6 @@ def _model_flow_openrouter(config, current_model=""):
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import get_env_value
-
     # Route through _prompt_api_key so users can replace a stale/broken key
     # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand. The
     # previous bypass-when-key-exists branch left no way to recover from a
@@ -189,11 +195,16 @@ def _model_flow_openrouter(config, current_model=""):
         auth_type="api_key",
         api_key_env_vars=("OPENROUTER_API_KEY",),
     )
-    existing_key = get_env_value("OPENROUTER_API_KEY") or ""
+    existing_key, existing_source = _existing_api_key_for_model_flow("openrouter", pconfig)
     if not existing_key:
         print("Get one at: https://openrouter.ai/keys")
         print()
-    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="openrouter")
+    _resolved, abort = _prompt_api_key(
+        pconfig,
+        existing_key,
+        provider_id="openrouter",
+        existing_source=existing_source,
+    )
     if abort:
         return
 
@@ -833,7 +844,13 @@ def _model_flow_custom(config):
     """
     from hermes_cli.main import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.config import (
+        custom_endpoint_key_env,
+        get_env_value,
+        load_config,
+        save_config,
+        save_env_value,
+    )
     from hermes_cli.secret_prompt import masked_secret_prompt
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
@@ -988,6 +1005,18 @@ def _model_flow_custom(config):
             print(f"Invalid context length: {context_length_str} — will auto-detect.")
             context_length = None
 
+    # The key goes to .env and config.yaml only references it (#69449). Keyed
+    # on host:port so two servers on one machine keep separate credentials.
+    custom_key_env = ""
+    if effective_key:
+        _parsed = urllib.parse.urlparse(effective_url)
+        _identity = _parsed.hostname or ""
+        if _parsed.port:
+            _identity = f"{_identity}_{_parsed.port}"
+        custom_key_env = custom_endpoint_key_env(_identity)
+        save_env_value(custom_key_env, effective_key)
+        print(f"  API key saved to .env as {custom_key_env}")
+
     if model_name:
         _save_model_choice(model_name)
 
@@ -999,8 +1028,8 @@ def _model_flow_custom(config):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = effective_url
-        if effective_key:
-            model["api_key"] = effective_key
+        if custom_key_env:
+            model["api_key"] = f"${{{custom_key_env}}}"
         if api_mode:
             model["api_mode"] = api_mode
         else:
@@ -1025,8 +1054,8 @@ def _model_flow_custom(config):
             _caller_model = {"default": _caller_model} if _caller_model else {}
         _caller_model["provider"] = "custom"
         _caller_model["base_url"] = effective_url
-        if effective_key:
-            _caller_model["api_key"] = effective_key
+        if custom_key_env:
+            _caller_model["api_key"] = f"${{{custom_key_env}}}"
         if api_mode:
             _caller_model["api_mode"] = api_mode
         else:
@@ -1042,6 +1071,7 @@ def _model_flow_custom(config):
         context_length=context_length,
         name=display_name,
         api_mode=api_mode,
+        key_env=custom_key_env,
     )
     _prune_replaced_custom_model_config_credentials(
         effective_url,
@@ -1951,18 +1981,16 @@ def _model_flow_kimi(config, current_model=""):
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
     # Step 1: Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2037,17 +2065,15 @@ def _model_flow_stepfun(config, current_model=""):
 
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2146,18 +2172,28 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     from hermes_cli.config import (
         load_config,
         save_config,
-        get_env_value,
         save_env_value,
     )
     from hermes_cli.models import _PROVIDER_MODELS
 
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
-    # Prompt for API key
-    existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
+    # Check env var and credential pool (keys added via `hermes auth`)
+    from hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
+    bedrock_pconfig = ProviderConfig(
+        id="bedrock",
+        name="Bedrock",
+        auth_type="api_key",
+        api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",),
+    )
+    existing_key, existing_source = _resolve_api_key_provider_secret(
+        "bedrock", bedrock_pconfig
+    )
     if existing_key:
         from hermes_cli.env_loader import format_secret_source_suffix
-        source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
+        source_suffix = format_secret_source_suffix(
+            existing_source or "AWS_BEARER_TOKEN_BEDROCK"
+        )
         print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
     else:
         print(f"  Endpoint: {mantle_base_url}")
@@ -2622,14 +2658,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     base_url_env = pconfig.base_url_env_var or ""
 
     # Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return

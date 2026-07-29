@@ -127,7 +127,7 @@ class TestShouldInjectEngine:
     def test_no_inject_with_cdp_override(self):
         from tools.browser_tool import _should_inject_engine
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
-             patch("tools.browser_tool._get_cdp_override", return_value="ws://localhost:9222"):
+             patch("tools.browser_tool._get_cdp_override_raw", return_value="ws://localhost:9222"):
             assert _should_inject_engine("lightpanda") is False
 
     def test_no_inject_with_cloud_provider(self):

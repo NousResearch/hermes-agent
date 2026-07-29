@@ -258,7 +258,7 @@ hermes config set terminal.backend ssh       # 远程服务器
 # 在 Hermes 安装目录下运行（curl 安装器在 Linux/macOS 上将其放置于
 # ~/.hermes/hermes-agent，在 Windows 上为 %LOCALAPPDATA%\hermes\hermes-agent）：
 cd ~/.hermes/hermes-agent
-uv pip install -e ".[voice]"
+uv pip install --python ./venv/bin/python -e ".[voice]"
 # 包含 faster-whisper，用于免费的本地语音转文字
 ```
 

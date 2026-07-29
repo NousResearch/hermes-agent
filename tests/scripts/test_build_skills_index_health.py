@@ -1,7 +1,7 @@
 """Invariants for scripts/build_skills_index.py's health-check guard.
 
 Regression context (June 2026): a GitHub API rate limit zeroed every
-api.github.com-backed source (github / claude-marketplace / well-known) at
+api.github.com-backed source (github / well-known) at
 once during the docs deploy crawl. The build's health check fired and exited
 non-zero — but it had ALREADY written the degenerate index to disk, and
 deploy-site.yml swallowed the exit code with ``|| echo non-fatal``. The
@@ -40,7 +40,7 @@ class _FakeSource:
         return [_meta(f"{self._src}-{i}", self._src) for i in range(self._n)]
 
 
-def _install_fake_sources(monkeypatch, *, github_count, claude_count=40,
+def _install_fake_sources(monkeypatch, *, github_count,
                           well_known_count=10, github_rate_limited=False):
     monkeypatch.setattr(build_mod, "SkillsShSource", lambda auth: _FakeSource("skills.sh", 15000))
     monkeypatch.setattr(build_mod, "OptionalSkillSource", lambda: _FakeSource("official", 95))
@@ -50,10 +50,6 @@ def _install_fake_sources(monkeypatch, *, github_count, claude_count=40,
         lambda auth: _FakeSource("github", github_count, rate_limited=github_rate_limited),
     )
     monkeypatch.setattr(build_mod, "ClawHubSource", lambda: _FakeSource("clawhub", 69000))
-    monkeypatch.setattr(
-        build_mod, "ClaudeMarketplaceSource",
-        lambda auth: _FakeSource("claude-marketplace", claude_count, rate_limited=github_rate_limited),
-    )
     monkeypatch.setattr(build_mod, "LobeHubSource", lambda: _FakeSource("lobehub", 500))
     monkeypatch.setattr(build_mod, "BrowseShSource", lambda: _FakeSource("browse-sh", 380))
     monkeypatch.setattr(
@@ -71,7 +67,7 @@ def test_degenerate_crawl_exits_nonzero_and_writes_no_file(tmp_path, monkeypatch
     """A collapsed GitHub crawl must fail loud and leave OUTPUT_PATH unwritten."""
     out = tmp_path / "skills-index.json"
     monkeypatch.setattr(build_mod, "OUTPUT_PATH", str(out))
-    _install_fake_sources(monkeypatch, github_count=0, claude_count=0,
+    _install_fake_sources(monkeypatch, github_count=0,
                           well_known_count=0, github_rate_limited=True)
 
     with pytest.raises(SystemExit) as exc:
@@ -95,5 +91,5 @@ def test_healthy_crawl_writes_index_with_all_sources(tmp_path, monkeypatch):
     data = json.loads(out.read_text())
     sources = {s["source"] for s in data["skills"]}
     # Every GitHub-API-backed source that vanished in the regression is present.
-    assert {"github", "claude-marketplace", "well-known"} <= sources
+    assert {"github", "well-known"} <= sources
     assert data["skill_count"] == len(data["skills"])

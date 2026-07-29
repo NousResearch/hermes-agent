@@ -87,10 +87,42 @@ def test_projection_falls_back_to_top_level_require_mention(monkeypatch):
 
 def test_projection_none_when_all_default(monkeypatch):
     # No require_mention, no free-response, no allow-bots ⇒ nothing to declare
-    # (the connector's quiet default already matches).
+    # (the connector's default — mention-gated — applies).
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"discord": {}}, raising=False)
     assert relay.relay_relevance_policy() is None
+
+
+def test_projection_declares_explicit_require_mention_false(monkeypatch):
+    # An EXPLICIT `require_mention: false` is a configured (non-default) choice
+    # and MUST be declared: the connector's absent-row default is now
+    # requireAddress=true, so staying silent would mention-gate an agent the
+    # operator configured to free-respond.
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"discord": {"require_mention": False}},
+        raising=False,
+    )
+    pol = relay.relay_relevance_policy()
+    assert pol == {
+        "platform": "discord",
+        "requireAddress": False,
+        "freeResponseScopes": [],
+        "allowOtherBots": False,
+    }
+
+
+def test_projection_declares_explicit_top_level_require_mention_false(monkeypatch):
+    # Same as above via the bridged top-level key.
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"require_mention": False},
+        raising=False,
+    )
+    pol = relay.relay_relevance_policy()
+    assert pol is not None and pol["requireAddress"] is False
 
 
 def test_projection_none_when_platform_unresolved(monkeypatch):

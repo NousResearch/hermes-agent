@@ -222,6 +222,31 @@ function normalizeAnsiForeground(color: string): string {
   return `ansi256(${ansi})`
 }
 
+const ANSI256_RE = /^ansi256\((\d{1,3})\)$/
+
+/**
+ * The literal `#rrggbb` a theme tone paints as, or '' when it has none.
+ *
+ * The inverse of `normalizeAnsiForeground`: tones are not uniformly hex, since
+ * a limited-palette terminal rewrites the foregrounds to `ansi256(N)`.
+ * Consumers needing a real color — OSC 10/11, which only speak `#rrggbb` —
+ * resolve through here rather than hex-testing the tone, which would silently
+ * skip exactly the terminals that did the quantizing.
+ */
+export function themeToneHex(tone: string): string {
+  const ansi = ANSI256_RE.exec(tone.trim())
+
+  if (ansi) {
+    const n = Number(ansi[1])
+
+    return n <= 255 ? toHex(xtermEightBitRgb(n)) : ''
+  }
+
+  const rgb = parseColor(tone)
+
+  return rgb ? toHex(rgb) : ''
+}
+
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {

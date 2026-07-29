@@ -1183,6 +1183,99 @@ class TestGetModelContextLength:
                 f"Expected {DEFAULT_FALLBACK_CONTEXT}, got {ctx3}"
             )
 
+    # ── Local vs non-local Ollama context resolution (#63122) ──────────
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
+    @patch("agent.model_metadata._query_local_context_length", return_value=32768)
+    @patch("agent.model_metadata.is_local_endpoint", return_value=True)
+    @patch("agent.model_metadata.save_context_length")
+    @patch("agent.model_metadata._maybe_cache_local_context_length")
+    def test_local_ollama_prefers_num_ctx_over_gguf(
+        self,
+        mock_maybe_cache, mock_save,
+        mock_is_local, mock_local_ctx,
+        mock_ollama_show, mock_resolve_ep,
+        mock_fetch, mock_cache,
+    ):
+        """Local Ollama: _query_local_context_length (num_ctx-first) must
+        win over _query_ollama_api_show (GGUF-first).  The configured
+        Modelfile num_ctx is the context value the local probe prefers;
+        the GGUF training max can be larger and would create a false-safe
+        window for compression (#63122)."""
+        result = get_model_context_length(
+            "my-model",
+            base_url="http://localhost:11434",
+        )
+        assert result == 32768, (
+            f"Expected configured Modelfile num_ctx (32768), got {result}. "
+            "Local Ollama must prefer num_ctx over GGUF training max."
+        )
+        # The non-local-oriented probe must NOT fire when local probe succeeds
+        mock_ollama_show.assert_not_called()
+        # The local probe MUST be called exactly once
+        mock_local_ctx.assert_called_once()
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
+    @patch("agent.model_metadata._query_local_context_length", return_value=None)
+    @patch("agent.model_metadata.is_local_endpoint", return_value=True)
+    @patch("agent.model_metadata.save_context_length")
+    @patch("agent.model_metadata._maybe_cache_local_context_length")
+    def test_local_ollama_falls_back_to_generic_probe(
+        self,
+        mock_maybe_cache, mock_save,
+        mock_is_local, mock_local_ctx,
+        mock_ollama_show, mock_resolve_ep,
+        mock_fetch, mock_cache,
+    ):
+        """Local Ollama falls back to the generic /api/show probe when the
+        num_ctx-first local probe cannot determine a context length."""
+        result = get_model_context_length(
+            "my-model",
+            base_url="http://localhost:11434",
+        )
+
+        assert result == 131072
+        mock_local_ctx.assert_called_once()
+        mock_ollama_show.assert_called_once()
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
+    @patch("agent.model_metadata._query_local_context_length", return_value=None)
+    @patch("agent.model_metadata.is_local_endpoint", return_value=False)
+    @patch("agent.model_metadata.save_context_length")
+    @patch("agent.model_metadata._maybe_cache_local_context_length")
+    def test_non_local_custom_ollama_preserves_gguf_first(
+        self,
+        mock_maybe_cache, mock_save,
+        mock_is_local, mock_local_ctx,
+        mock_ollama_show, mock_resolve_ep,
+        mock_fetch, mock_cache,
+    ):
+        """Non-local custom Ollama: GGUF-first ordering must be preserved.
+        A non-local endpoint should use _query_ollama_api_show (which
+        prefers model_info.context_length) — this preserves the existing
+        GGUF-first behavior for non-local Ollama endpoints."""
+        result = get_model_context_length(
+            "my-model",
+            base_url="http://ollama.example.com:11434",
+        )
+        assert result == 131072, (
+            f"Expected GGUF training max (131072), got {result}. "
+            "Non-local Ollama must preserve GGUF-first ordering."
+        )
+        # The local probe must NOT be called for non-local endpoints
+        mock_local_ctx.assert_not_called()
+        # The non-local probe MUST be called
+        mock_ollama_show.assert_called_once()
+
 
 # =========================================================================
 # Bedrock context resolution — must run BEFORE custom-endpoint probe
@@ -1800,27 +1893,31 @@ class TestGrok43StaleCacheGuard:
 class TestMoAContextLength:
     """MoA virtual provider resolves context from the aggregator slot, not 256K default."""
 
-    def _write_moa_config(self, home, aggregator):
+    def _write_moa_config(
+        self, home, aggregator, custom_providers=None, providers=None
+    ):
         import os
         os.makedirs(home, exist_ok=True)
-        with open(os.path.join(home, "config.yaml"), "w") as f:
-            yaml.safe_dump(
-                {
-                    "moa": {
-                        "default_preset": "p",
-                        "presets": {
-                            "p": {
-                                "enabled": True,
-                                "reference_models": [
-                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
-                                ],
-                                "aggregator": aggregator,
-                            }
-                        },
+        payload = {
+            "moa": {
+                "default_preset": "p",
+                "presets": {
+                    "p": {
+                        "enabled": True,
+                        "reference_models": [
+                            {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                        ],
+                        "aggregator": aggregator,
                     }
                 },
-                f,
-            )
+            }
+        }
+        if custom_providers is not None:
+            payload["custom_providers"] = custom_providers
+        if providers is not None:
+            payload["providers"] = providers
+        with open(os.path.join(home, "config.yaml"), "w") as f:
+            yaml.safe_dump(payload, f)
 
     def test_moa_resolves_from_aggregator(self, tmp_path, monkeypatch):
         home = str(tmp_path / ".hermes")
@@ -1843,3 +1940,138 @@ class TestMoAContextLength:
             "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
         )
         assert ctx == 500_000
+
+    def test_moa_resolves_custom_provider_per_model_context(self, tmp_path, monkeypatch):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            custom_providers=[
+                {
+                    "name": "example",
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "model": "example-model",
+                    "models": {
+                        "example-model": {"context_length": 777_777},
+                    },
+                }
+            ],
+        )
+
+        ctx = get_model_context_length(
+            "p", base_url="http://127.0.0.1/v1", provider="moa"
+        )
+
+        assert ctx == 777_777
+
+    def test_moa_resolves_canonical_provider_per_model_context(
+        self, tmp_path, monkeypatch
+    ):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            providers={
+                "example": {
+                    "api": "http://127.0.0.1:1/v1",
+                    "default_model": "example-model",
+                    "models": {
+                        "example-model": {"context_length": 888_888},
+                    },
+                }
+            },
+        )
+
+        with patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=None,
+        ) as endpoint_probe:
+            ctx = get_model_context_length(
+                "p", base_url="http://127.0.0.1/v1", provider="moa"
+            )
+
+        assert ctx == 888_888
+        endpoint_probe.assert_not_called()
+
+    def test_moa_custom_context_configures_compressor_threshold(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.context_compressor import ContextCompressor
+
+        configured_context = 600_000
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            providers={
+                "example": {
+                    "api": "http://127.0.0.1:1/v1",
+                    "default_model": "example-model",
+                    "models": {
+                        "example-model": {
+                            "context_length": configured_context,
+                        },
+                    },
+                }
+            },
+        )
+
+        with patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=None,
+        ) as endpoint_probe:
+            compressor = ContextCompressor(
+                model="p",
+                base_url="http://127.0.0.1/v1",
+                provider="moa",
+                threshold_percent=0.50,
+                quiet_mode=True,
+            )
+
+        assert compressor.context_length == configured_context
+        assert compressor.threshold_tokens == configured_context // 2
+        endpoint_probe.assert_not_called()
+
+    def test_moa_preserves_caller_supplied_custom_provider_context(
+        self, tmp_path, monkeypatch
+    ):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(
+            home,
+            {"provider": "custom:example", "model": "example-model"},
+            providers={
+                "example": {
+                    "api": "http://127.0.0.1:1/v1",
+                    "default_model": "example-model",
+                    "models": {"example-model": {}},
+                }
+            },
+        )
+        supplied = [
+            {
+                "name": "example",
+                "base_url": "http://127.0.0.1:1/v1",
+                "model": "example-model",
+                "models": {
+                    "example-model": {"context_length": 999_999},
+                },
+            }
+        ]
+
+        with patch(
+            "agent.model_metadata._resolve_endpoint_context_length",
+            return_value=None,
+        ) as endpoint_probe:
+            ctx = get_model_context_length(
+                "p",
+                base_url="http://127.0.0.1/v1",
+                provider="moa",
+                custom_providers=supplied,
+            )
+
+        assert ctx == 999_999
+        endpoint_probe.assert_not_called()

@@ -29,6 +29,7 @@ import { $layoutTree, trackActiveTreeGroup } from '../store'
 import { ZoneEditor } from '../zone-editor'
 
 import { TreeEditBar } from './edit-bar'
+import { FloatingPanes } from './floating-panes'
 import { NarrowOverlays } from './narrow-overlays'
 import { TreeNode } from './tree-node'
 
@@ -73,6 +74,8 @@ export function LayoutTreeRoot({ children }: { children?: ReactNode }) {
       `}</style>
       <TreeNode node={tree} root rootRow={tree.type === 'split' && tree.orientation === 'row'} />
       <NarrowOverlays />
+      {/* Non-tiling panes: fixed cards above the tree, outside every zone. */}
+      <FloatingPanes />
       <TreeEditBar />
       <ZoneEditor />
       {children}

@@ -210,7 +210,15 @@ def _read_hub_installed_names() -> Set[str]:
     if not lock_path.exists():
         return set()
     try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        # Tolerate non-UTF-8 bytes in the lock file. Hub descriptions can carry
+        # Windows-1252 typographic chars (em-dash 0x97, smart quotes, bullets)
+        # written as single high bytes; a strict utf-8 read raises
+        # UnicodeDecodeError, which is a ValueError sibling (not OSError/
+        # JSONDecodeError) so it escapes the handler below and 500s the whole
+        # /api/skills endpoint. errors="replace" degrades the offending byte to
+        # U+FFFD, keeping the (structurally valid) JSON — and every other
+        # skill — readable. See #68053.
+        data = json.loads(lock_path.read_text(encoding="utf-8", errors="replace"))
         if isinstance(data, dict):
             installed = data.get("installed") or {}
             if isinstance(installed, dict):
@@ -475,10 +483,158 @@ def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> 
 
 
 def _is_curator_managed_record(record: Any) -> bool:
-    """Return True when a usage record opts a skill into curator management."""
+    """Return True when a usage record opts a skill into curator management.
+
+    NAMING (issue #67140): the on-disk field is ``created_by``, which reads
+    like provenance but is consumed as a **curator-management opt-in policy
+    flag**. The two are not the same question:
+
+    * provenance = "who authored this file" — historical fact, and for records
+      written before the marker existed it is simply unrecoverable.
+    * management = "may autonomous curation mutate/archive this" — a policy
+      decision the user can change at any time via ``hermes curator adopt``.
+
+    ``created_by: "agent"`` therefore means "curator-managed", NOT "proof the
+    agent wrote it". The field name is retained because it is already on disk
+    in every user's ``.usage.json``; renaming it would strand those records.
+    Read it as policy, and prefer ``is_curator_managed()`` at call sites so the
+    intent is unambiguous.
+    """
     if not isinstance(record, dict):
         return False
     return record.get("created_by") == "agent" or record.get("agent_created") is True
+
+
+def is_curator_managed(skill_name: str) -> bool:
+    """Whether *skill_name* is opted into curator management.
+
+    Policy-intent alias for the ``created_by``-marker check, so call sites read
+    as the question they are actually asking (see ``_is_curator_managed_record``
+    for why the stored field name says "created_by").
+    """
+    return _is_curator_managed_record(load_usage().get(skill_name))
+
+
+def list_unmanaged_skill_names() -> List[str]:
+    """Enumerate curation-ELIGIBLE skills that carry no provenance marker.
+
+    These are skills the curator *could* manage (they are not hub-installed,
+    not external, not protected built-ins) but never will, because nothing
+    ever wrote ``created_by: agent`` onto their usage record. Two ways a skill
+    lands here:
+
+    * It predates the provenance mechanism entirely — records written before
+      ``created_by`` existed carry no key at all, so their authorship is
+      unknowable from the record alone.
+    * It was created by a FOREGROUND ``skill_manage(action="create")`` call,
+      which deliberately does not mark provenance (skills a user asks for
+      belong to the user).
+
+    Either way the skill is invisible to ``curated_report()`` and therefore to
+    every automatic transition. ``hermes curator status`` surfaces this count
+    so the blind spot is legible instead of silent, and ``hermes curator
+    adopt`` lets the user hand specific skills over explicitly.
+
+    Provenance is a DECLARATION, never an inference: this function only
+    reports, and callers must not auto-adopt what it returns. Heavy patch or
+    use counts are evidence of maintenance, not of authorship — the agent
+    edits user-authored skills on the user's behalf routinely.
+    """
+    base = _skills_dir()
+    if not base.exists():
+        return []
+    hub = _read_hub_installed_names()
+    bundled = _read_bundled_manifest_names()
+    usage = load_usage()
+
+    names: List[str] = []
+    for skill_md in base.rglob("SKILL.md"):
+        if is_excluded_skill_path(skill_md) or is_external_skill_path(skill_md):
+            continue
+        try:
+            skill_md.relative_to(base)
+        except ValueError:
+            continue
+        name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
+        # Anything with an external owner or a bundled/protected identity is
+        # outside the adoption question entirely.
+        if name in hub or name in bundled or is_protected_builtin(name):
+            continue
+        if _is_curator_managed_record(usage.get(name)):
+            continue
+        if not is_curation_eligible(name, skill_md):
+            continue
+        names.append(name)
+    return sorted(set(names))
+
+
+def unmanaged_report() -> List[Dict[str, Any]]:
+    """Rows for every skill :func:`list_unmanaged_skill_names` returns.
+
+    Each row carries the usual activity fields plus ``has_provenance_key``:
+    False when the record has no ``created_by`` key at all (pre-dates the
+    mechanism), True when the key is present but unset (a foreground create
+    under the current policy). The distinction matters for explaining WHY a
+    skill is unmanaged; it is not a signal to adopt on.
+    """
+    usage = load_usage()
+    rows: List[Dict[str, Any]] = []
+    for name in list_unmanaged_skill_names():
+        raw = usage.get(name)
+        rec: Dict[str, Any] = dict(raw) if isinstance(raw, dict) else _empty_record()
+        for k, v in _empty_record().items():
+            rec.setdefault(k, v)
+        row = {"name": name, **rec}
+        row["has_provenance_key"] = isinstance(raw, dict) and "created_by" in raw
+        row["has_record"] = isinstance(raw, dict)
+        row["last_activity_at"] = latest_activity_at(row)
+        row["activity_count"] = activity_count(row)
+        rows.append(row)
+    return rows
+
+
+def adopt_skill(skill_name: str) -> Tuple[bool, str]:
+    """Hand *skill_name* to the curator by user declaration.
+
+    Writes the same ``created_by: agent`` marker the background review fork
+    writes, so the skill joins ``curated_report()`` and the automatic
+    transition walk. The inactivity clock is NOT reset: the skill's existing
+    ``last_activity_at`` still governs staleness, so adopting something idle
+    for months does not buy it a fresh window (nor does it archive it on the
+    spot — the state machine decides on the next pass).
+
+    Returns (ok, message). Refuses hub-installed, external, and protected
+    built-in skills, which have an owner other than the user.
+    """
+    if not skill_name:
+        return False, "no skill name given"
+    if is_protected_builtin(skill_name):
+        return False, f"'{skill_name}' is a protected built-in; the curator never manages it"
+    if is_hub_installed(skill_name):
+        return False, f"'{skill_name}' is hub-installed; its upstream owns it"
+    if is_bundled(skill_name):
+        # Bundled skills already fall under the curator via
+        # ``curator.prune_builtins``; stamping created_by=agent on one would
+        # claim Hermes' own shipped skill was agent-authored and change nothing
+        # about its eligibility.
+        return False, (
+            f"'{skill_name}' is a bundled built-in — it is governed by "
+            "curator.prune_builtins, not by adoption"
+        )
+    skill_dir = _find_skill_dir(skill_name)
+    if skill_dir is None:
+        if _find_external_skill_dir(skill_name) is not None:
+            return False, f"'{skill_name}' lives in skills.external_dirs and is read-only to the curator"
+        return False, f"skill '{skill_name}' not found"
+    if is_external_skill_path(skill_dir):
+        return False, _external_read_only_message(skill_name)
+    usage = load_usage()
+    if _is_curator_managed_record(usage.get(skill_name)):
+        return True, f"'{skill_name}' is already curator-managed"
+    mark_agent_created(skill_name)
+    if not _is_curator_managed_record(load_usage().get(skill_name)):
+        return False, f"could not mark '{skill_name}' as curator-managed"
+    return True, f"adopted '{skill_name}' into curator management"
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +918,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
     try:
         skill_dir.rename(dest)
-    except OSError as e:
+    except OSError:
         # Cross-device — fall back to shutil.move
         import shutil
         try:
@@ -893,10 +1049,14 @@ def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
 # Reporting — for the curator CLI / slash command
 # ---------------------------------------------------------------------------
 
-def agent_created_report() -> List[Dict[str, Any]]:
-    """Return a list of {name, state, pinned, last_activity_at, ...}
+def curated_report() -> List[Dict[str, Any]]:
+    """Return a list of {name, provenance, state, pinned, last_activity_at, ...}
     records for every curator-managed skill. Missing usage records are
     backfilled with defaults so callers can always index fields.
+
+    ``provenance`` is 'agent', 'bundled', or 'hub' (see :func:`provenance`).
+    Bundled skills are only included when ``curator.prune_builtins`` is enabled.
+    Hub-installed skills are never included.
 
     Each row carries ``_persisted``: True when a real record exists in
     ``.usage.json``, False when the row is a fresh backfill (e.g. a built-in
@@ -915,8 +1075,20 @@ def agent_created_report() -> List[Dict[str, Any]]:
         row = {"name": name, **rec, "_persisted": persisted}
         row["last_activity_at"] = latest_activity_at(row)
         row["activity_count"] = activity_count(row)
+        row["provenance"] = provenance(name)
         rows.append(row)
     return rows
+
+
+def agent_created_report() -> List[Dict[str, Any]]:
+    """DEPRECATED — use :func:`curated_report` instead.
+
+    Used to return everything :func:`curated_report` returns (including bundled
+    skills when ``curator.prune_builtins`` is enabled), which made the
+    "agent-created" name misleading. Kept as a compatibility alias for
+    external callers; new code should call ``curated_report()``.
+    """
+    return curated_report()
 
 
 def provenance(skill_name: str) -> str:
@@ -935,7 +1107,7 @@ def provenance(skill_name: str) -> str:
 def usage_report() -> List[Dict[str, Any]]:
     """Return usage telemetry for EVERY skill on disk, with provenance.
 
-    Unlike ``agent_created_report()`` (which is scoped to curator-managed
+    Unlike ``curated_report()`` (which is scoped to curator-managed
     candidates), this surfaces all skills — bundled built-ins and
     hub-installed included — so callers can answer "how often is this skill
     used" independent of whether it's ever curated. Rows carry a

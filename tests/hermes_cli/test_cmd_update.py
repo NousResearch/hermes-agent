@@ -59,10 +59,10 @@ def _patch_managed_uv(request):
     def _fake_resolve_uv():
         return shutil.which("uv")
 
-    def _fake_ensure_uv():
+    def _fake_ensure_uv(**_kwargs):
         return shutil.which("uv")
 
-    def _fake_update_managed_uv():
+    def _fake_update_managed_uv(**_kwargs):
         return None  # never actually self-update in tests
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
@@ -148,6 +148,41 @@ class TestCmdUpdateNpmLockfileCache:
             '{"dependencies": {"left-pad": "^1.0.0"}}'
         )
         assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_missing_web_build_toolchain_defeats_skip(self, tmp_path, monkeypatch):
+        """A hash recorded over a tree that never got tsc/vite must not skip.
+
+        Otherwise the half-installed tree is permanent: every later update
+        trusts the hash, the build keeps failing, and the stale dist is served
+        forever.
+        """
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "package.json").write_text('{"workspaces": ["web"]}')
+        (tmp_path / "web").mkdir()
+        (tmp_path / "web" / "package.json").write_text("{}")
+        bin_dir = tmp_path / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True)
+        hm._record_npm_lockfile_hash(tmp_path)
+
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+        (bin_dir / "tsc").touch()
+        (bin_dir / "vite").touch()
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
+    def test_toolchain_check_skipped_without_a_web_package(self, tmp_path, monkeypatch):
+        """Prebuilt bundles ship no web/ source — they must still skip."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "node_modules").mkdir()
+        hm._record_npm_lockfile_hash(tmp_path)
+
+        assert hm._npm_lockfile_changed(tmp_path) is False
 
     def test_workspace_package_json_edit_defeats_skip(self, tmp_path, monkeypatch):
         """The manifest list comes from the root package.json `workspaces`
@@ -324,10 +359,11 @@ class TestCmdUpdateBranchFallback:
         assert "origin/main" in rev_list_cmds[0]
         assert "origin/fix/stoicneko" not in rev_list_cmds[0]
 
-        # pull should use main, not fix/stoicneko
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        # the ff-only merge should target origin/main, not the feature branch
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert len(merge_cmds) == 1
+        assert "origin/main" in merge_cmds[0]
+        assert "fix/stoicneko" not in merge_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -346,9 +382,9 @@ class TestCmdUpdateBranchFallback:
         assert len(rev_list_cmds) == 1
         assert "origin/main" in rev_list_cmds[0]
 
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert len(merge_cmds) == 1
+        assert "origin/main" in merge_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -359,15 +395,63 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="0"
         )
 
-        cmd_update(mock_args)
+        with patch("hermes_cli.managed_uv.update_managed_uv") as mock_uv_update, \
+             patch(
+                 "hermes_cli.managed_uv.ensure_uv",
+                 return_value=None,
+             ) as mock_uv_ensure:
+            cmd_update(mock_args)
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
+        update_observer = mock_uv_update.call_args.kwargs["repair_observer"]
+        ensure_observer = mock_uv_ensure.call_args.kwargs["repair_observer"]
+        assert update_observer.__self__ is ensure_observer.__self__
+        assert update_observer.__self__ == []
 
-        # Should NOT have called pull
+        # Should NOT have advanced the checkout (no pull, no ff-only merge)
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        pull_cmds = [c for c in commands if "pull" in c]
+        pull_cmds = [c for c in commands if "pull" in c or "merge --ff-only" in c]
         assert len(pull_cmds) == 0
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_zero_commit_runtime_repair_requires_process_restart(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path
+    ):
+        from hermes_cli.managed_uv import RuntimeRepairResult
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+        backup = tmp_path / "venv.stale.runtime-test"
+        repair = RuntimeRepairResult(
+            "repaired",
+            sqlite_before="3.50.4",
+            sqlite_after="3.53.1",
+            backup_venv=backup,
+        )
+
+        def fake_update(*, repair_observer):
+            repair_observer(repair)
+            return "/managed/uv"
+
+        with patch(
+            "hermes_cli.managed_uv.update_managed_uv",
+            side_effect=fake_update,
+        ), patch(
+            "hermes_cli.managed_uv.ensure_uv",
+            return_value="/managed/uv",
+        ), patch(
+            "hermes_cli.main._is_windows",
+            return_value=False,
+        ):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        assert "Restart required to finish the managed Python runtime repair" in captured.out
+        assert "long-lived processes still use the previous runtime" in captured.out
+        assert str(backup) in captured.out
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -741,9 +825,9 @@ class TestCmdUpdateBranchFlag:
         assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
         assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
-        # pull must target bb/gui
-        pull_cmds = [c for c in commands if "pull" in c and "ff-only" in c]
-        assert any("bb/gui" in c and "main" not in c.split() for c in pull_cmds), pull_cmds
+        # the ff-only merge must target origin/bb/gui
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert any("origin/bb/gui" in c and "origin/main" not in c for c in merge_cmds), merge_cmds
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

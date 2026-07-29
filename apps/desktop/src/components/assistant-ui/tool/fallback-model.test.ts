@@ -76,6 +76,38 @@ describe('buildToolView terminal exit-code status', () => {
       'error'
     )
   })
+
+  it('keeps the command and exit code for the terminal transcript', () => {
+    const view = buildToolView(
+      part({
+        args: { command: 'npm run check --workspace=apps/desktop' },
+        result: { exit_code: 0, output: 'done' },
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.terminalCommand).toBe('npm run check --workspace=apps/desktop')
+    expect(view.terminalExitCode).toBe(0)
+  })
+})
+
+describe('buildToolView web-search query', () => {
+  it('keeps the query separate from structured search results', () => {
+    const view = buildToolView(
+      part({
+        args: { query: 'Hermes Agent Desktop tool calls' },
+        result: { web: [{ snippet: 'Desktop docs', title: 'Hermes docs', url: 'https://example.com/docs' }] },
+        toolName: 'web_search'
+      }),
+      ''
+    )
+
+    expect(view.searchQuery).toBe('Hermes Agent Desktop tool calls')
+    expect(view.searchHits).toEqual([
+      { snippet: 'Desktop docs', title: 'Hermes docs', url: 'https://example.com/docs' }
+    ])
+  })
 })
 
 describe('buildToolView browser_navigate title', () => {
@@ -306,6 +338,28 @@ describe('buildToolView title actions', () => {
     expect(view.title).toBe('Running pnpm run lint')
     expect(view.subtitle).toBe('')
     expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
+  })
+
+  it('never stutters the verb or echoes the command when the backend context is a phrased label', () => {
+    // Older backends stamped tool.start with a *phrased* label
+    // ("Running sleep 70 + 2 commands") rather than a raw arg preview, and the
+    // desktop merges that into args.context. The row must still prepend its own
+    // verb exactly once, show the real command in the `$` transcript, and not
+    // repeat either string as detail.
+    const command = 'sleep 70; echo "a"; echo "b"'
+
+    const view = buildToolView(
+      part({
+        args: { command, context: 'Running sleep 70 + 2 commands' },
+        result: { exit_code: 0 },
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Ran sleep 70 + 2 commands')
+    expect(view.terminalCommand).toBe(command)
+    expect(view.detail).toBe('')
   })
 
   it('uses the runtime locale for title text and action placement', () => {

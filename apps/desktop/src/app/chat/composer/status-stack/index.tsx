@@ -3,16 +3,19 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'rea
 import { useNavigate } from 'react-router-dom'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
+import { chatSurfaceRoot, clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from '@/app/chat/surface-vars'
 import { AGENTS_ROUTE } from '@/app/routes'
 import { BillingBanner } from '@/components/billing-banner'
-import { composerDockCard } from '@/components/chat/composer-dock'
+import { composerDockCard, composerFloatingStrip } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
+import { $composerActionsBySession } from '@/store/composer-actions'
 import {
   $statusItemsBySession,
   type ComposerStatusItem,
@@ -22,10 +25,12 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
+import { refreshSessionGoal } from '@/store/goals'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
+import { ActionBadges } from './action-badges'
 import { PreviewStatusRow } from './preview-row'
 import { StatusItemRow } from './status-row'
 
@@ -41,12 +46,25 @@ const isLocalhostPreview = (target: string): boolean => /\b(?:localhost|127\.0\.
 // Real codicons per group (no sparkles): a checklist for todos, the agent glyph
 // for subagents, a background process glyph for background tasks.
 const GROUP_ICON: Record<StatusGroup['type'], string> = {
+  goal: 'target',
   todo: 'checklist',
   subagent: 'agent',
   background: 'server-process'
 }
 
 const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
+  if (group.type === 'goal') {
+    const status = group.items[0]?.goalStatus
+
+    return status === 'paused'
+      ? s.goalPaused
+      : status === 'waiting'
+        ? s.goalWaiting
+        : status === 'done'
+          ? s.goalDone
+          : s.goalActive
+  }
+
   if (group.type === 'todo') {
     return s.todos(group.items.filter(i => i.todoStatus === 'completed').length, group.items.length)
   }
@@ -69,23 +87,26 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const itemsBySession = useStore($statusItemsBySession)
-  const previewsBySession = useStore($previewStatusBySession)
+  // Subscribe to THIS session's slice only. Both maps churn on other
+  // sessions' activity (subagent ticks, background polls, preview updates in
+  // any tile); a whole-map `useStore` re-rendered every mounted stack — one
+  // per open tile — on all of it. The per-key arrays are referentially stable
+  // across unrelated writes, so the slice hook bails out unless OUR session's
+  // items actually changed.
+  const items = useSessionSlice($statusItemsBySession, sessionId)
+  const previews = useSessionSlice($previewStatusBySession, sessionId)
+  const actions = useSessionSlice($composerActionsBySession, sessionId)
   const scrolledUp = useStore($threadScrolledUp)
   const billing = useStore($billingBlock)
 
-  const groups = useMemo(
-    () => groupStatusItems(sessionId ? (itemsBySession[sessionId] ?? []) : []),
-    [itemsBySession, sessionId]
-  )
-
-  const previews = sessionId ? (previewsBySession[sessionId] ?? []) : []
+  const groups = useMemo(() => groupStatusItems(items), [items])
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream.
   useEffect(() => {
     if (sessionId) {
       void refreshBackgroundProcesses(sessionId)
+      void refreshSessionGoal(sessionId)
     }
   }, [sessionId])
 
@@ -133,6 +154,10 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     sections.push({ key: 'billing', node: <BillingBanner sessionId={sessionId} /> })
   }
 
+  // Micro actions ride at the top of the stack — the one block you press
+  // rather than read. Rendered OUTSIDE the card (see `actionStrip`) so the
+  // pills float; a blocked account still gets the billing wall above them.
+
   for (const group of groups) {
     sections.push({
       key: group.type,
@@ -153,7 +178,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
               </Tip>
             ) : undefined
           }
-          defaultCollapsed={group.type !== 'todo'}
+          defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
         >
@@ -190,23 +215,34 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     sections.push({ key: 'queue', node: queue })
   }
 
-  const visible = sections.length > 0
+  // Micro actions are the TOP-MOST thing in the whole overlay lane — above the
+  // status card, above the billing wall, above everything. They're the only
+  // rows up here you press instead of read, so nothing may ever stack on top
+  // of them. Rendered outside the card (below) so the pills float.
+  const actionStrip = actions.length > 0 && sessionId ? <ActionBadges actions={actions} sessionId={sessionId} /> : null
+
+  const visible = sections.length > 0 || Boolean(actionStrip)
   const stackRef = useRef<HTMLDivElement | null>(null)
 
   // The stack is out of flow (overlays the thread), so the composer's measured
   // height never sees it. Publish our own measured height — bucketed like the
   // composer's, to avoid style invalidation churn — so the thread's
   // last-message clearance can add it and the stack never hides messages.
+  // Scoped to THIS surface: tiles render their own stack (see surface-vars.ts).
   useLayoutEffect(() => {
-    const root = document.documentElement
     const el = stackRef.current
 
     if (!visible || !el) {
-      root.style.removeProperty('--status-stack-measured-height')
-
       return
     }
 
+    // Resolve the owning surface NOW, while the node is attached. The cleanup
+    // below runs after the stack collapsed and React removed the div, so
+    // closest() from the detached node misses [data-chat-surface] and would
+    // clear the document root instead — leaving the stale height on the
+    // surface, which keeps inflating the thread's bottom clearance until the
+    // next publish.
+    const root = chatSurfaceRoot(el)
     let last = -1
 
     const sync = () => {
@@ -214,7 +250,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
       if (bucket !== last) {
         last = bucket
-        root.style.setProperty('--status-stack-measured-height', `${bucket}px`)
+        setSurfaceVar(el, STATUS_STACK_VAR, `${bucket}px`)
       }
     }
 
@@ -224,7 +260,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
     return () => {
       observer.disconnect()
-      root.style.removeProperty('--status-stack-measured-height')
+      clearSurfaceVar(root, STATUS_STACK_VAR)
     }
   }, [visible])
 
@@ -237,29 +273,52 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
       // Sits in the overlay lane above the composer. The composer root has pt-2
       // before the actual surface; translate by that amount so the stack returns
       // to its original attachment point without intruding into the repo strip.
-      className="absolute inset-x-0 bottom-full z-3 max-h-[40vh] translate-y-2 overflow-y-auto"
+      // pl matches the surface's own left edge: `inset-x-0` resolves against the
+      // root's PADDING box, while the surface and the underside strip sit in its
+      // CONTENT box, so without it the lane hangs 5px further left than both.
+      className="absolute inset-x-0 bottom-full z-3 flex max-h-[40vh] flex-col translate-y-2 pl-[0.3125rem]"
       onPointerDownCapture={() => blurComposerInput()}
       ref={stackRef}
     >
-      {/* The card paints the shared --composer-fill (rest / scrolled / focused
-          all match the composer surface by construction); on scroll we only
-          ghost the CONTENT — element opacity on the card would kill the blur.
-          Rounded top, square bottom; the bottom border is TRANSPARENT — the
-          composer surface's visible top border (which sits at a higher z) is the
-          single shared seam, so the two read as one fused capsule. */}
-      <div
-        className={cn(
-          composerDockCard('top'),
-          // Inset (mx-2) so the stack reads slightly narrower than the composer
-          // surface below it — the original look.
-          'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
-          'transition-opacity duration-200 ease-out',
-          scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+      {/* FIRST in the lane and OUTSIDE the scroller, so nothing can ever sit
+          above the pills — not the status card, not the billing wall — and a
+          long todo list can't scroll them out of view. Outside the card too:
+          they carry their own fill, so they must not paint on its background. */}
+      {actionStrip && (
+        <div
+          className={cn(
+            composerFloatingStrip,
+            'shrink-0 pb-1.5 transition-opacity duration-200 ease-out',
+            scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+          )}
+        >
+          {actionStrip}
+        </div>
+      )}
+      {/* Everything else scrolls under them. */}
+      <div className="min-h-0 overflow-y-auto">
+        {/* The card paints the shared --composer-fill (rest / scrolled / focused
+            all match the composer surface by construction); on scroll we only
+            ghost the CONTENT — element opacity on the card would kill the blur.
+            Rounded top, square bottom; the bottom border is TRANSPARENT — the
+            composer surface's visible top border (which sits at a higher z) is the
+            single shared seam, so the two read as one fused capsule. */}
+        {sections.length > 0 && (
+          <div
+            className={cn(
+              composerDockCard('top'),
+              // Inset (mx-2) so the stack reads slightly narrower than the composer
+              // surface below it — the original look.
+              'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
+              'transition-opacity duration-200 ease-out',
+              scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+            )}
+          >
+            {sections.map(section => (
+              <div key={section.key}>{section.node}</div>
+            ))}
+          </div>
         )}
-      >
-        {sections.map(section => (
-          <div key={section.key}>{section.node}</div>
-        ))}
       </div>
     </div>
   )

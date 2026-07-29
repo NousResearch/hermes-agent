@@ -704,6 +704,26 @@ class TestSessionManagementEndpoints:
         assert {"total", "active_store", "archived", "messages", "by_source"} <= set(body)
         assert body["total"] >= 1
 
+    def test_stats_source_counts_use_direct_aggregate(self, monkeypatch):
+        """Source badges must not materialise rich session rows.
+
+        Large stores can have thousands of sessions. The stats endpoint only
+        needs grouped counts, so it should call ``session_count_by_source``
+        instead of ``list_sessions_rich`` and build preview/last-active rows
+        just to count source labels.
+        """
+        from hermes_state import SessionDB
+
+        def fail_list_sessions_rich(self, *args, **kwargs):
+            raise AssertionError("stats should use grouped source counts, not list_sessions_rich")
+
+        monkeypatch.setattr(SessionDB, "list_sessions_rich", fail_list_sessions_rich)
+
+        r = self.client.get("/api/sessions/stats")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["by_source"]["cli"] >= 1
+
     def test_rename(self):
         r = self.client.patch("/api/sessions/sess-x", json={"title": "Renamed"})
         assert r.status_code == 200 and r.json()["title"] == "Renamed"
@@ -740,6 +760,8 @@ class TestSessionManagementEndpoints:
         body = r.json()
         assert body["matched"] >= 1
         assert "oldest_started_at" in body and "newest_started_at" in body
+        assert "oldest_last_active" in body and "newest_last_active" in body
+        assert all("last_active" in session for session in body["sessions"])
 
     def test_prune_explicit_older_than_kept_with_attr_filter(self):
         # Explicit older_than_days is honored even alongside attribute filters.

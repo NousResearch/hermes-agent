@@ -4,6 +4,7 @@ import { createContext, useContext, useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -18,14 +19,9 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { ChevronDown, ChevronRight } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import {
-  currentPickerSelection,
-  displayModelName,
-  modelDisplayParts,
-  reasoningEffortLabel
-} from '@/lib/model-status-label'
+import { currentPickerSelection, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
@@ -39,6 +35,7 @@ import {
   setModelVisibilityOpen
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { $defaultReasoningEffort } from '@/store/session'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
@@ -84,6 +81,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const currentProvider = useStore(view.$provider)
   const currentReasoningEffort = useStore(view.$reasoningEffort)
   const modelPresets = useStore($modelPresets)
+  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const visibleModels = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
 
@@ -96,7 +94,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
-    !!activeSessionId,
     { model: currentModel, provider: currentProvider },
     modelOptions.data
   )
@@ -181,7 +178,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
     await applyModelPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
+        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
       {
@@ -247,25 +244,26 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
           {groups.map(group => {
             const slug = group.provider.slug
 
-            // Collapsed when stored + no active search + not the current provider.
-            const collapsed = collapsedProviders.includes(slug) && !search && slug !== optionsProvider
+            // Collapsed when the user stored it (and not while searching, which
+            // spans every model regardless of collapse state).
+            const collapsed = collapsedProviders.includes(slug) && !search
 
             return (
               <DropdownMenuGroup className="py-0.5" key={slug}>
                 <DropdownMenuItem
-                  className={cn(dropdownMenuSectionLabel, 'cursor-pointer hover:bg-(--ui-control-active-background)')}
+                  className="group/label flex w-full items-center gap-1 px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary) cursor-pointer !bg-transparent focus:!bg-transparent"
                   onSelect={event => {
                     event.preventDefault()
                     toggleCollapsedProvider(slug)
                   }}
                   textValue=""
                 >
-                  {collapsed ? (
-                    <ChevronRight className="size-2.5 shrink-0" />
-                  ) : (
-                    <ChevronDown className="size-2.5 shrink-0" />
-                  )}
-                  {group.provider.name}
+                  <span className="truncate">{group.provider.name}</span>
+                  <DisclosureCaret
+                    className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
+                    open={!collapsed}
+                    size="0.625rem"
+                  />
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => {
@@ -300,7 +298,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
                     const meta = [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
+                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
                     ]
                       .filter(Boolean)
                       .join(' ')

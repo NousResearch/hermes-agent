@@ -379,6 +379,135 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 402
 
 
+def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeypatch):
+    """A 402 must exhaust every pool entry backed by the same API key.
+
+    Regression: the same key can back more than one pool entry — e.g. an
+    explicit pool entry plus a ``model_config`` entry auto-seeded from
+    ``model.api_key`` (both carry the identical ``runtime_api_key``).  When
+    ``mark_exhausted_and_rotate`` is called with ``api_key_hint`` it matched
+    only the *first* such entry, leaving the sibling OK.  ``_select_unlocked()``
+    then kept handing back the same depleted key, so the billing-recovery
+    ``continue`` loop in the conversation retry path never converged — the
+    request hung ~2.5min until the client disconnected, with no 402 ever
+    surfaced to the user.  All entries sharing the failed key must be
+    exhausted so the pool reaches "no available entries" and the error
+    propagates immediately.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    shared_key = "sk-deepseek-shared"
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "custom": [
+                    {
+                        "id": "cred-explicit",
+                        "label": "520555",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": shared_key,
+                        "base_url": "https://api.deepseek.com",
+                    },
+                    {
+                        "id": "cred-model-config",
+                        "label": "model_config",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": shared_key,
+                        "base_url": "https://api.deepseek.com",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    pool = load_pool("custom")
+
+    # First 402 on the shared key: rotation must NOT hand back a sibling
+    # entry that wraps the same depleted key — it must converge to None.
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=402,
+        api_key_hint=shared_key,
+    )
+    assert next_entry is None
+
+    # Both entries are now exhausted (not just the first match).
+    statuses = {entry.id: entry.last_status for entry in pool.entries()}
+    assert statuses["cred-explicit"] == STATUS_EXHAUSTED
+    assert statuses["cred-model-config"] == STATUS_EXHAUSTED
+
+
+def test_unmatched_api_key_hint_rotates_without_benching_innocent_key(tmp_path, monkeypatch):
+    """An api_key_hint matching no entry must not quarantine a healthy key.
+
+    Regression: when the hint was unmatched (key rotated away, or a wrapper
+    whose runtime key differs), mark_exhausted_and_rotate fell through to
+    current()/_select_unlocked() — on a freshly loaded pool that selects the
+    NEXT healthy key and benched it for the full cooldown TTL, punishing an
+    innocent credential.  Now it rotates without marking anything.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Keep the dev machine's live ~/.claude credentials from seeding a
+    # claude_code singleton entry into this pool (same isolation as the
+    # other anthropic pool tests in this file).
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-secondary",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
+
+    # Freshly loaded pool: current() is None, exactly the shape of the bug.
+    pool = load_pool("anthropic")
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        api_key_hint="sk-ant-api-rotated-away",
+    )
+
+    # A fresh selection is still handed back so the caller can retry...
+    assert next_entry is not None
+
+    # ...but no credential was benched, in memory or on disk.
+    assert all(
+        entry.last_status not in (STATUS_EXHAUSTED, STATUS_DEAD)
+        for entry in pool.entries()
+    )
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    for persisted in auth_payload["credential_pool"]["anthropic"]:
+        assert persisted.get("last_status") not in (STATUS_EXHAUSTED, STATUS_DEAD)
+        assert persisted.get("last_error_code") is None
+
+
 def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
     """OpenAI Codex token_invalidated must mark the credential DEAD, not exhausted.
 
@@ -3426,3 +3555,146 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     assert synced.last_error_reason is None
     assert synced.last_error_message is None
     assert synced.last_error_reset_at is None
+
+
+def _load_two_ok_pool(tmp_path, monkeypatch):
+    """A pool with two OK anthropic entries, current = cred-1."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1", "label": "primary", "auth_type": "api_key",
+                        "priority": 0, "source": "manual", "access_token": "***",
+                        "last_status": "ok", "last_status_at": None, "last_error_code": None,
+                    },
+                    {
+                        "id": "cred-2", "label": "secondary", "auth_type": "api_key",
+                        "priority": 1, "source": "manual", "access_token": "***",
+                        "last_status": "ok", "last_status_at": None, "last_error_code": None,
+                    },
+                ]
+            },
+        },
+    )
+    from agent.credential_pool import load_pool
+
+    return load_pool("anthropic")
+
+
+def _fresh_entry(pool):
+    """A copy of the pool's first entry under a new id, for add_entry()."""
+    from dataclasses import replace as dc_replace
+
+    return dc_replace(pool.entries()[0], id="cred-new")
+
+
+class TestCredentialPoolQueryLocking:
+    """Public pool-state methods must run under ``self._lock``.
+
+    ``has_available``/``peek``/``current``/``entries`` all touch
+    ``self._entries`` (and ``_available_entries`` even prunes + persists),
+    and the management surface (``has_credentials``/``reset_statuses``/
+    ``remove_index``/``resolve_target``/``add_entry``) reads or rebinds
+    ``self._entries`` and persists auth.json, so they must all hold the
+    same lock every mutating entry point uses.  A naive fix would deadlock
+    because the lock is non-reentrant and ``peek`` calls ``current`` +
+    ``_available_entries``; these tests guard both the no-deadlock and the
+    actually-locked properties.
+    """
+
+    def test_query_methods_do_not_deadlock(self, tmp_path, monkeypatch):
+        pool = _load_two_ok_pool(tmp_path, monkeypatch)
+        pool.select()  # set a current entry
+
+        # peek() internally calls current() + _available_entries(); if any of
+        # these re-acquired the non-reentrant lock we'd hang here forever.
+        assert pool.current() is not None
+        assert pool.peek() is not None
+        assert pool.has_available() is True
+        assert pool.has_credentials() is True
+        assert pool.resolve_target("cred-1")[1] is not None
+        # (env may seed extra singleton entries; just assert ours are present)
+        assert {"cred-1", "cred-2"} <= {e.id for e in pool.entries()}
+        # try_refresh_matching's no-hint branch resolves the current entry
+        # while already holding the lock — must use _current_unlocked(), not
+        # current(), or it deadlocks on the non-reentrant lock (found when
+        # rebasing this fix over the #69843 salvage which added the method).
+        pool.try_refresh_matching()
+
+    @pytest.mark.parametrize(
+        "method,get_args",
+        [
+            ("has_available", lambda pool: ()),
+            ("peek", lambda pool: ()),
+            ("current", lambda pool: ()),
+            ("entries", lambda pool: ()),
+            ("has_credentials", lambda pool: ()),
+            ("reset_statuses", lambda pool: ()),
+            ("resolve_target", lambda pool: ("cred-1",)),
+            ("remove_index", lambda pool: (1,)),
+            ("add_entry", lambda pool: (_fresh_entry(pool),)),
+        ],
+    )
+    def test_query_method_acquires_lock(self, tmp_path, monkeypatch, method, get_args):
+        import threading
+
+        pool = _load_two_ok_pool(tmp_path, monkeypatch)
+        pool.select()
+        args = get_args(pool)
+
+        inner = pool._lock
+
+        class _InstrumentedLock:
+            """Probe that records acquire attempts, so the test can prove the
+            worker actually reached ``self._lock`` before asserting that it
+            blocks (a plain timed wait passes spuriously if the worker is
+            simply never scheduled)."""
+
+            def __init__(self):
+                self.attempted = threading.Event()
+
+            def acquire(self, *args, **kwargs):
+                self.attempted.set()
+                return inner.acquire(*args, **kwargs)
+
+            def release(self):
+                inner.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self.release()
+
+        probe = _InstrumentedLock()
+        pool._lock = probe
+
+        done = threading.Event()
+
+        def _call():
+            getattr(pool, method)(*args)
+            done.set()
+
+        # Hold the real lock (without tripping the probe), then fire the query
+        # on another thread. If the method acquires self._lock (as it must),
+        # it blocks until we release.
+        inner.acquire()
+        try:
+            worker = threading.Thread(target=_call, daemon=True)
+            worker.start()
+            assert probe.attempted.wait(timeout=2.0), (
+                f"{method}() never attempted to acquire self._lock"
+            )
+            assert not done.wait(timeout=0.5), (
+                f"{method}() returned while the pool lock was held — it is not "
+                f"blocking on self._lock"
+            )
+        finally:
+            inner.release()
+
+        assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"

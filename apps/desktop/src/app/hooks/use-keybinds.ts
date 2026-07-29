@@ -5,11 +5,18 @@ import { closeActiveTab } from '@/app/chat/close-tab'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { activateTreeTabSlot, cycleTreeTabInFocusedZone, layoutHasRootSide } from '@/components/pane-shell/tree/store'
+import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
+import {
+  $findInPage,
+  findNext as findNextMatch,
+  findPrevious as findPreviousMatch,
+  openFindBar
+} from '@/store/find-in-page'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
@@ -41,15 +48,18 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
+import { openSession } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  navigateToWorkspacePage,
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
@@ -94,7 +104,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   const goToSession = (sessionId: null | string) => {
     if (sessionId) {
-      navigate(sessionRoute(sessionId))
+      openSession(sessionId, navigate)
     }
   }
 
@@ -131,9 +141,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
-    'nav.skills': () => navigate(SKILLS_ROUTE),
-    'nav.messaging': () => navigate(MESSAGING_ROUTE),
-    'nav.artifacts': () => navigate(ARTIFACTS_ROUTE),
+    'nav.skills': () => navigateToWorkspacePage(navigate, SKILLS_ROUTE),
+    'nav.messaging': () => navigateToWorkspacePage(navigate, MESSAGING_ROUTE),
+    'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
@@ -166,6 +176,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleRightSidebar': () =>
       layoutHasRootSide('right') ? toggleFileBrowserOpen() : setTerminalTakeover(!$terminalTakeover.get()),
     'view.toggleReview': toggleReview,
+    'view.toggleStatusbar': toggleStatusbarVisible,
     'view.showFiles': showFiles,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     // Create first so the pane's open-effect ensure sees a non-empty set and
@@ -181,11 +192,21 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.closeTerminal': () => $terminalTakeover.get() && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
     // ⌘W: close the focused tab (terminal / preview target / zone tree tab).
-    // On macOS the menu accelerator owns ⌘W and routes through the same
+    // On the main tab with session tabs stacked, it shifts the next one in —
+    // the loader navigates to that session's route (loads it into main). On
+    // macOS the menu accelerator owns ⌘W and routes through the same
     // closeActiveTab via IPC (see use-desktop-integrations); this binding is
     // the Win/Linux path where ⌘W reaches the renderer directly.
-    'view.closeTab': () => void closeActiveTab(),
+    'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
+    'view.findInPage': openFindBar,
+    // ⌘G / ⌘⇧G are handled by the find bar's own capture-phase listener while
+    // it is open (so they don't collide with `view.toggleReview`). These
+    // registry handlers cover a user-assigned dedicated chord: stepping is a
+    // no-op unless the bar is open with a query, so a bound key can't search
+    // invisibly.
+    'view.findNext': findNextMatch,
+    'view.findPrevious': findPreviousMatch,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
 
@@ -238,6 +259,16 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       const combo = comboFromEvent(event)
 
       if (!combo) {
+        return
+      }
+
+      // The open find bar owns ⌘G / ⌘⇧G / Escape. Its own capture-phase
+      // listener runs those actions; bail here so the registry doesn't ALSO
+      // fire the action bound to the same combo (⌘G = view.toggleReview,
+      // Escape = composer.cancel, which would abort a live turn). Both
+      // listeners are on `window`, so stopPropagation in the bar can't
+      // suppress this one — the dispatcher has to yield explicitly.
+      if ($findInPage.get().active && findBarClaimsCombo(combo)) {
         return
       }
 

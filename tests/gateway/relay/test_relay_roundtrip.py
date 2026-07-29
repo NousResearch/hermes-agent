@@ -20,6 +20,8 @@ from gateway.session import SessionSource, build_session_key
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 
+from dataclasses import replace
+
 from tests.gateway.relay.stub_connector import StubConnector
 
 
@@ -112,6 +114,12 @@ async def test_outbound_send_round_trips(wired):
 @pytest.mark.asyncio
 async def test_get_chat_info_proxied_to_connector(wired):
     adapter, stub = wired
+    # Phase 1: the proxy is gated on op discovery — the connector must
+    # advertise get_chat_info in supported_ops (a legacy descriptor falls
+    # back to the local echo; see test_relay_adapter.py).
+    adapter._apply_descriptor(
+        replace(_discord_descriptor(), supported_ops=("send", "edit", "typing", "get_chat_info"))
+    )
     stub.chat_info["chan1"] = {"name": "general", "type": "group"}
     info = await adapter.get_chat_info("chan1")
     assert info == {"name": "general", "type": "group"}

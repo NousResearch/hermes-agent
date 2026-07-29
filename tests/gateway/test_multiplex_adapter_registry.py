@@ -41,6 +41,22 @@ class TestCredentialFingerprint:
                 self.bot_token = "alt-token"
         assert GatewayRunner._adapter_credential_fingerprint(_AltAdapter()) is not None
 
+    def test_reads_photon_project_secret(self):
+        class _PhotonAdapter:
+            def __init__(self, secret):
+                self._project_secret = secret
+
+        fp1 = GatewayRunner._adapter_credential_fingerprint(
+            _PhotonAdapter("shared-project-secret")
+        )
+        fp2 = GatewayRunner._adapter_credential_fingerprint(
+            _PhotonAdapter("shared-project-secret")
+        )
+
+        assert fp1 == fp2
+        assert fp1 is not None
+        assert "shared-project-secret" not in fp1
+
     def test_reads_platform_config_token(self):
         class _Config:
             token = "config-token"
@@ -718,8 +734,10 @@ class TestSecondaryProfileConfigHandling:
         assert connect_calls == [(relay, Platform.RELAY)]
 
     @pytest.mark.asyncio
-    async def test_secondary_same_config_token_is_refused(self, monkeypatch):
-        """Adapters that keep their token on config still trip the mux guard."""
+    async def test_secondary_same_config_token_is_refused_without_disconnect(
+        self, monkeypatch
+    ):
+        """A never-connected duplicate must not disturb shared live state."""
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         class _ConfigTokenAdapter:
@@ -762,8 +780,217 @@ class TestSecondaryProfileConfigHandling:
         )
 
         assert connected == 0
-        assert duplicate.disconnected is True
+        assert duplicate.disconnected is False
         assert runner._profile_adapters["reviewer"] == {}
+
+    @pytest.mark.asyncio
+    async def test_secondary_distinct_photon_credentials_same_port_are_refused(
+        self, monkeypatch
+    ):
+        """The sidecar listener is exclusive even when credentials differ."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _PhotonAdapter:
+            def __init__(self, secret, port=8789):
+                self._project_secret = secret
+                self._sidecar_bind = "127.0.0.1"
+                self._sidecar_port = port
+                self.platform = Platform("photon")
+                self.connected = False
+                self.disconnected = False
+
+            async def connect(self):
+                self.connected = True
+                raise AssertionError("conflicting sidecar must not connect")
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        photon = Platform("photon")
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {photon: PlatformConfig(enabled=True)}
+        primary = _PhotonAdapter("primary-secret")
+        duplicate = _PhotonAdapter("different-secret")
+        claimed = {
+            GatewayRunner._adapter_listener_claim(photon, primary): "default"
+        }
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: duplicate)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/x", claimed
+        )
+
+        assert connected == 0
+        assert duplicate.connected is False
+        assert duplicate.disconnected is False
+        assert runner._profile_adapters["reviewer"] == {}
+
+    @pytest.mark.asyncio
+    async def test_secondary_distinct_photon_credentials_distinct_ports_connect(
+        self, monkeypatch
+    ):
+        """Multiplexing remains supported when Photon sidecars cannot collide."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _PhotonAdapter:
+            def __init__(self, secret, port):
+                self._project_secret = secret
+                self._sidecar_bind = "127.0.0.1"
+                self._sidecar_port = port
+                self.platform = Platform("photon")
+                self.connected = False
+                self.disconnected = False
+                self.config = PlatformConfig(enabled=True)
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = None
+        runner._busy_text_mode = "queue"
+
+        photon = Platform("photon")
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {photon: PlatformConfig(enabled=True)}
+        primary = _PhotonAdapter("primary-secret", 8789)
+        secondary = _PhotonAdapter("different-secret", 8790)
+        claimed = {
+            GatewayRunner._adapter_listener_claim(photon, primary): "default"
+        }
+
+        async def _connect(adapter, platform):
+            adapter.connected = True
+            return True
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: secondary)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
+        monkeypatch.setattr(
+            runner, "_make_adapter_auth_check", lambda p, **kwargs: None
+        )
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/x", claimed
+        )
+
+        assert connected == 1
+        assert secondary.connected is True
+        assert secondary.disconnected is False
+        assert runner._profile_adapters["reviewer"][photon] is secondary
+
+    @pytest.mark.asyncio
+    async def test_failed_photon_connect_releases_listener_for_later_profile(
+        self, monkeypatch
+    ):
+        """A failed sidecar must not reserve an endpoint it never owned."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        class _PhotonAdapter:
+            def __init__(self, secret, should_connect):
+                self._project_secret = secret
+                self._sidecar_bind = "127.0.0.1"
+                self._sidecar_port = 8789
+                self.platform = Platform("photon")
+                self.should_connect = should_connect
+                self.disconnected = False
+                self.config = PlatformConfig(enabled=True)
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = None
+        runner._busy_text_mode = "queue"
+
+        photon = Platform("photon")
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {photon: PlatformConfig(enabled=True)}
+        failed = _PhotonAdapter("failed-secret", False)
+        later = _PhotonAdapter("later-secret", True)
+        adapters = iter((failed, later))
+        claimed = {}
+
+        async def _connect(adapter, platform):
+            return adapter.should_connect
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: next(adapters))
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
+        monkeypatch.setattr(
+            runner, "_make_adapter_auth_check", lambda p, **kwargs: None
+        )
+
+        first = await runner._start_one_profile_adapters("broken", "/tmp/x", claimed)
+        second = await runner._start_one_profile_adapters("later", "/tmp/y", claimed)
+
+        assert first == 0
+        assert failed.disconnected is True
+        assert second == 1
+        assert runner._profile_adapters["later"][photon] is later
+
+    @pytest.mark.asyncio
+    async def test_failed_primary_photon_listener_is_reserved_for_retry(
+        self, monkeypatch
+    ):
+        """A retrying primary keeps secondaries off its sidecar endpoint."""
+        from gateway.config import GatewayConfig, Platform
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        runner._profile_adapters = {}
+        runner.pairing_stores = {}
+
+        photon = Platform("photon")
+        listener_claim = ("listener", "photon", "127.0.0.1", 8789)
+        runner._failed_platforms = {
+            photon: {
+                "config": object(),
+                "attempts": 1,
+                "next_retry": 0,
+                "listener_claim": listener_claim,
+            }
+        }
+        seen = {}
+
+        async def _start(profile_name, profile_home, claimed):
+            seen.update(claimed)
+            return 0
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex=True: (("default", "/tmp/default"), ("reviewer", "/tmp/reviewer")),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kwargs: None)
+        monkeypatch.setattr(runner, "_start_one_profile_adapters", _start)
+
+        connected = await runner._start_secondary_profile_adapters()
+
+        assert connected == 0
+        assert seen[listener_claim] == "default"
 
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES

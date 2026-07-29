@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
@@ -16,6 +16,7 @@ import {
   AppWindow,
   Archive,
   BarChart3,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -48,6 +49,7 @@ import {
 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { resolveVersionStatus } from '@/lib/version-status'
 import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
@@ -58,22 +60,31 @@ import {
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
+import { $connection } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
-import { applyBackendUpdate } from '@/store/updates'
+import {
+  $backendUpdateApply,
+  $backendUpdateStatus,
+  $desktopVersion,
+  $updateApply,
+  $updateStatus,
+  requestActiveUpdate
+} from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
+import { openSession, openSessionIntentFromModifiers } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
-  sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE,
   STARMAP_ROUTE
@@ -89,12 +100,22 @@ import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
   action?: string
+  /** Renders a trailing check: this row IS the current setting (theme, mode). */
+  active?: boolean
+  /** Muted text beside the label — state the row acts on (a version, a count). */
+  detail?: string
   icon: IconComponent
   id: string
   /** Keep the palette open after running (live-preview pickers like theme/mode). */
   keepOpen?: boolean
   keywords?: string[]
   label: string
+  /**
+   * When set, ⌘/⌃-select (or ⌘-Enter) opens a new tab and ⇧⌘-select pops a
+   * window — matching sidebar session rows. Plain select stays in-place.
+   * Receives the last selector event so the modifiers can be read.
+   */
+  runWithEvent?: (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void
   /** Action to run when selected. Mutually exclusive with `to`. */
   run?: () => void
   /** Open a nested palette page (VS Code-style "choose X → options"). */
@@ -208,6 +229,38 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
 // theme lists under both Light and Dark). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
 
+const PaletteRow = memo(function PaletteRow({
+  bindings,
+  item,
+  onSelectMods,
+  onSelectItem
+}: {
+  bindings: Record<string, string[]>
+  item: PaletteItem
+  onSelectMods: (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void
+  onSelectItem: (item: PaletteItem) => void
+}) {
+  const Icon = item.icon
+  const combo = item.action ? bindings[item.action]?.[0] : undefined
+
+  return (
+    <CommandItem
+      className={cn(HUD_ITEM, HUD_TEXT)}
+      keywords={item.keywords}
+      onMouseDown={onSelectMods}
+      onSelect={() => onSelectItem(item)}
+      value={paletteValue(item)}
+    >
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{item.label}</span>
+      {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
+      {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
+      {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
+      {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />}
+    </CommandItem>
+  )
+})
+
 // Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
 // "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
 const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
@@ -245,7 +298,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   },
   {
     icon: KeyRound,
-    keywords: ['providers', 'api key', 'keys', 'secrets', 'tokens'],
+    keywords: ['providers', 'api key', 'keys', 'secrets', 'tokens', 'egress', 'iron proxy', 'sandbox proxy'],
     labelKey: 'providerApiKeys',
     tab: 'providers&pview=keys'
   },
@@ -258,7 +311,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   },
   {
     icon: Settings2,
-    keywords: ['gateway', 'proxy', 'server', 'webhook', 'env'],
+    keywords: ['gateway', 'proxy', 'server', 'webhook', 'env', 'egress proxy', 'iron proxy'],
     labelKey: 'keysSettings',
     tab: 'keys&kview=settings'
   },
@@ -300,9 +353,54 @@ export function CommandPalette() {
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
   const navigate = useNavigate()
-  const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
+  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
+
+  // The Update row names the same install the statusbar names — same target
+  // selection, same resolver. Reduced to the label string: an in-flight apply
+  // rewrites these stores on every progress line, and only a changed string
+  // should rebuild the palette's groups.
+  const connection = useStore($connection)
+  const desktopVersion = useStore($desktopVersion)
+  const clientStatus = useStore($updateStatus)
+  const clientApply = useStore($updateApply)
+  const backendStatus = useStore($backendUpdateStatus)
+  const backendApply = useStore($backendUpdateApply)
+
+  const updateVersionLabel = useMemo(() => {
+    const backend = connection?.mode === 'remote'
+    const apply = backend ? backendApply : clientApply
+    const status = backend ? backendStatus : clientStatus
+
+    return resolveVersionStatus({
+      applying: apply.applying || apply.stage === 'restart',
+      behind: status?.behind ?? 0,
+      copy: t.shell.statusbar,
+      remote: backend,
+      restarting: apply.stage === 'restart',
+      sha: status?.currentSha?.slice(0, 7) ?? null,
+      target: backend ? 'backend' : 'client',
+      updateAvailable: status?.updateAvailable,
+      version: backend ? status?.currentVersion : desktopVersion?.appVersion
+    }).label
+  }, [backendApply, backendStatus, clientApply, clientStatus, connection?.mode, desktopVersion?.appVersion, t])
+
+  // cmdk's onSelect doesn't forward the triggering event — keep the last
+  // click/keydown modifiers so session rows can honour ⌘-Enter / ⌘-click.
+  const lastSelectMods = useRef<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }>({
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false
+  })
+
+  const noteSelectMods = (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
+    lastSelectMods.current = {
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey
+    }
+  }
 
   // Server-backed sources for the type-to-search groups, fetched lazily while
   // the palette is open. react-query handles caching/dedup/staleness.
@@ -351,7 +449,16 @@ export function CommandPalette() {
     }
   }, [open, pendingPage])
 
-  const go = useCallback((path: string) => () => navigate(path), [navigate])
+  const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
+
+  // Sessions: plain select = open in-place (focus existing tile/main, else main);
+  // ⌘/⌃-select / ⌘-Enter = new tab; ⇧⌘ = own window. Same door as the sidebar.
+  const goSession = useCallback(
+    (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+      openSession(sessionId, navigate, openSessionIntentFromModifiers(event))
+    },
+    [navigate]
+  )
 
   // Step up one nested page (or back to the root list), clearing the filter so
   // the parent page doesn't reopen mid-search.
@@ -516,11 +623,12 @@ export function CommandPalette() {
             run: () => void runGatewayRestart()
           },
           {
+            detail: updateVersionLabel,
             icon: Download,
             id: 'cc-update-hermes',
             keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
             label: cc.updateHermes,
-            run: () => void applyBackendUpdate()
+            run: () => requestActiveUpdate()
           }
         ]
       },
@@ -597,7 +705,7 @@ export function CommandPalette() {
           ]
         : [])
     ]
-  }, [contributedItems, go, settingsSectionLabel, t, worktrees])
+  }, [contributedItems, go, settingsSectionLabel, t, updateVersionLabel, worktrees])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
@@ -621,7 +729,7 @@ export function CommandPalette() {
             id: `goto-${directId}`,
             keywords: ['session', 'id', 'go to', directId],
             label: `${t.commandCenter.goToSession} ${directId}`,
-            run: go(sessionRoute(directId))
+            runWithEvent: goSession(directId)
           }
         ]
       })
@@ -665,6 +773,7 @@ export function CommandPalette() {
     result.push({
       heading: t.settings.appearance.themeTitle,
       items: availableThemes.map(theme => ({
+        active: themeName === theme.name,
         icon: Palette,
         id: `search-theme-${theme.name}`,
         keepOpen: true,
@@ -685,6 +794,7 @@ export function CommandPalette() {
     result.push({
       heading: t.settings.appearance.colorMode,
       items: THEME_MODES.map(entry => ({
+        active: mode === entry.mode,
         icon: entry.icon,
         id: `search-mode-${entry.mode}`,
         keepOpen: true,
@@ -707,7 +817,7 @@ export function CommandPalette() {
             ...(session.git_branch ? [session.git_branch] : [])
           ],
           label: session.title,
-          run: go(sessionRoute(session.id))
+          runWithEvent: goSession(session.id)
         }))
       })
     }
@@ -762,14 +872,17 @@ export function CommandPalette() {
     availableThemes,
     configFieldLabel,
     go,
+    goSession,
     mcpServers,
+    mode,
     resolvedMode,
     search,
     sessions,
     setMode,
     setTheme,
     settingsSectionLabel,
-    t
+    t,
+    themeName
   ])
 
   const groups = useMemo(() => [...baseGroups, ...searchGroups], [baseGroups, searchGroups])
@@ -823,6 +936,7 @@ export function CommandPalette() {
           {
             heading: t.settings.appearance.colorMode,
             items: THEME_MODES.map(entry => ({
+              active: mode === entry.mode,
               icon: entry.icon,
               id: `mode-${entry.mode}`,
               keepOpen: true,
@@ -847,7 +961,7 @@ export function CommandPalette() {
         groups: []
       }
     }),
-    [availableThemes, resolvedMode, setMode, setTheme, t, themeName]
+    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
@@ -863,7 +977,14 @@ export function CommandPalette() {
       return
     }
 
-    item.run?.()
+    if (item.runWithEvent) {
+      item.runWithEvent(lastSelectMods.current)
+    } else {
+      item.run?.()
+    }
+
+    // Clear stashed modifiers so a plain Enter after a ⌘-click isn't sticky.
+    lastSelectMods.current = { ctrlKey: false, metaKey: false, shiftKey: false }
 
     if (!item.keepOpen) {
       closeCommandPalette()
@@ -874,13 +995,13 @@ export function CommandPalette() {
     <DialogPrimitive.Root onOpenChange={setCommandPaletteOpen} open={open}>
       <DialogPrimitive.Portal>
         {/* Transparent overlay: keeps click-away + focus trap, but no dim/blur. */}
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[200]" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-(--z-over-modal)" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
           className={cn(
             HUD_POSITION,
             HUD_SURFACE,
-            'z-[210] w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
+            'z-(--z-over-modal-content) w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
           )}
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
@@ -900,6 +1021,10 @@ export function CommandPalette() {
             <CommandInput
               className={HUD_TEXT}
               onKeyDown={event => {
+                // Capture modifiers before cmdk's Enter fires onSelect (which
+                // swipes the inviting MouseEvent and hands us nothing).
+                noteSelectMods(event)
+
                 if (!activePage) {
                   return
                 }
@@ -944,29 +1069,15 @@ export function CommandPalette() {
                       heading={group.heading}
                       key={group.heading ?? `palette-group-${index}`}
                     >
-                      {group.items.map(item => {
-                        const Icon = item.icon
-                        const combo = item.action ? bindings[item.action]?.[0] : undefined
-
-                        return (
-                          <CommandItem
-                            className={cn(HUD_ITEM, HUD_TEXT)}
-                            key={item.id}
-                            keywords={item.keywords}
-                            onSelect={() => handleSelect(item)}
-                            value={paletteValue(item)}
-                          >
-                            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-                            <span className="truncate">{item.label}</span>
-                            {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
-                            {item.to && (
-                              <ChevronRight
-                                className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
-                              />
-                            )}
-                          </CommandItem>
-                        )
-                      })}
+                      {group.items.map(item => (
+                        <PaletteRow
+                          bindings={bindings}
+                          item={item}
+                          key={item.id}
+                          onSelectItem={handleSelect}
+                          onSelectMods={noteSelectMods}
+                        />
+                      ))}
                     </CommandGroup>
                   ))}
                 </>

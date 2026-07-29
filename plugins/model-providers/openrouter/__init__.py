@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from agent.portal_tags import get_conversation_context
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -77,8 +78,26 @@ class OpenRouterProfile(ProviderProfile):
         self, *, session_id: str | None = None, **context: Any
     ) -> dict[str, Any]:
         body: dict[str, Any] = {}
-        if session_id:
-            body["session_id"] = session_id
+        # Top-level session_id → OpenRouter's sticky routing key. Per their
+        # prompt-caching docs it is used directly as the routing key instead of
+        # hashing the opening messages, and it activates stickiness on the
+        # first successful request rather than only after a cache hit.
+        #
+        # Resolve it from the ambient conversation contextvar first, explicit
+        # argument as fallback. The gap this closes is the auxiliary call sites
+        # — compression, title generation, vision, web_extract, session_search,
+        # MoA slots — which funnel through ``agent.auxiliary_client``. That
+        # module has no session handle and passes no ``session_id``, so those
+        # calls sent NO sticky key at all and each routed independently of the
+        # conversation it belonged to (#70820).
+        #
+        # Mirrors the Nous Portal profile, which resolves the same way
+        # (f2f4df064d). The ambient value is the session-lineage ROOT, so it
+        # also stays stable for installs that opt out of the default
+        # ``compression.in_place: true`` and across delegate-subagent trees.
+        sticky_key = get_conversation_context() or session_id
+        if sticky_key:
+            body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
         if prefs:
             body["provider"] = prefs
@@ -159,8 +178,13 @@ class OpenRouterProfile(ProviderProfile):
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
-        if session_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
-            extra_headers["x-grok-conv-id"] = session_id
+        # Same resolution as build_extra_body: xAI's prompt cache is pinned per
+        # backend server via this header, and aux calls pass no session_id, so
+        # reading the ambient conversation keeps compression/vision/MoA traffic
+        # on the same Grok backend as the conversation it belongs to.
+        grok_conv_id = get_conversation_context() or session_id
+        if grok_conv_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
+            extra_headers["x-grok-conv-id"] = grok_conv_id
         if extra_headers:
             top_level["extra_headers"] = extra_headers
 
@@ -180,7 +204,7 @@ openrouter = OpenRouterProfile(
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
         "deepseek/deepseek-chat",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.6-flash",
         "qwen/qwen3-plus",
     ),
 )

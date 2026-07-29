@@ -755,6 +755,72 @@ async def test_post_connect_initialization_skips_same_fingerprint_after_success(
 
 
 @pytest.mark.asyncio
+async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {
+                "name": "skill",
+                "description": "Run a skill",
+                "type": 1,
+                "options": [],
+            }
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    desired_fingerprint = adapter._desired_command_sync_fingerprint()
+    state_path = (
+        tmp_path
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
+    )
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "999": {
+                    "fingerprint": desired_fingerprint,
+                    "last_attempt_at": 102.0,
+                    "last_success_at": 101.0,
+                    "summary": {"total": 1},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = {
+        "total": 1,
+        "unchanged": 0,
+        "updated": 0,
+        "recreated": 0,
+        "created": 1,
+        "deleted": 0,
+    }
+    sync = AsyncMock(side_effect=[asyncio.TimeoutError(), summary])
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+    await adapter._run_post_connect_initialization()
+
+    timed_out_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
+    assert timed_out_entry["fingerprint"] == desired_fingerprint
+    assert "last_success_at" not in timed_out_entry
+    assert "summary" not in timed_out_entry
+
+    await adapter._run_post_connect_initialization()
+
+    assert sync.await_count == 2
+    recovered_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
+    assert recovered_entry["last_success_at"] >= recovered_entry["last_attempt_at"]
+    assert recovered_entry["summary"] == summary
+
+
+@pytest.mark.asyncio
 async def test_post_connect_initialization_respects_discord_retry_after(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
@@ -788,7 +854,7 @@ async def test_post_connect_initialization_respects_discord_retry_after(tmp_path
         / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
         / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
     )
-    state = json.loads(state_path.read_text())
+    state = json.loads(state_path.read_text(encoding="utf-8"))
     entry = state["999"]
     assert entry["retry_after"] == 123.0
     assert entry["retry_after_until"] > entry["last_attempt_at"]
@@ -828,7 +894,11 @@ async def test_post_connect_initialization_reraises_non_rate_limit_exceptions(tm
         / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
         / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
     )
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    state = (
+        json.loads(state_path.read_text(encoding="utf-8"))
+        if state_path.exists()
+        else {}
+    )
     entry = state.get("4242", {})
     # Attempt was recorded before the sync call, but no rate-limit cooldown
     # should have been persisted from the unrelated exception.

@@ -518,14 +518,52 @@ class TestTryRecoverPrimaryTransport:
         )
         assert result is False
 
-    def test_skipped_for_nous_provider(self):
-        agent = _make_agent(provider="nous", base_url="https://inference.nous.nousresearch.com/v1")
+    def test_skipped_for_nous_chat_completions(self):
+        """OpenAI-wire Portal traffic still rides aggregator retry infra."""
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        agent.api_mode = "chat_completions"
         error = _make_transport_error("ReadTimeout")
 
         result = agent._try_recover_primary_transport(
             error, retry_count=3, max_retries=3,
         )
         assert result is False
+
+    def test_allowed_for_nous_anthropic_messages(self):
+        """Portal Claude holds a local Anthropic SDK client — rebuild it."""
+        agent = _make_agent(
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        agent.api_mode = "anthropic_messages"
+        agent.model = "anthropic/claude-opus-4.8"
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "model": "anthropic/claude-opus-4.8",
+            "provider": "nous",
+            "anthropic_api_key": "portal-jwt",
+            "anthropic_base_url": "https://inference-api.nousresearch.com/v1",
+            "is_anthropic_oauth": False,
+        })
+        error = _make_transport_error("ReadTimeout")
+        rebuilt = MagicMock(name="anthropic-client")
+
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=rebuilt,
+            ),
+            patch("time.sleep"),
+        ):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        assert agent._anthropic_client is rebuilt
 
     def test_allowed_for_anthropic_direct(self):
         """Direct Anthropic endpoint should get recovery."""
@@ -577,20 +615,26 @@ class TestTryRecoverPrimaryTransport:
             # wait_time = min(3 + 10, 8) = 8
             mock_sleep.assert_called_once_with(8)
 
-    def test_closes_existing_client_before_rebuild(self):
+    def test_retires_existing_client_before_rebuild(self):
+        """#70773: the old shared client is retired (sockets shutdown, FD
+        release deferred to GC), never hard-closed — this path runs on the
+        conversation-loop thread while stale-killed workers may still be
+        unwinding on the old pool."""
         agent = _make_agent(provider="custom")
         old_client = agent.client
         error = _make_transport_error("ReadTimeout")
 
         with patch("run_agent.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"), \
-             patch.object(agent, "_close_openai_client") as mock_close:
+             patch.object(agent, "_close_openai_client") as mock_close, \
+             patch.object(agent, "_retire_shared_openai_client") as mock_retire:
             agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
             )
-            mock_close.assert_called_once_with(
-                old_client, reason="primary_recovery", shared=True,
+            mock_retire.assert_called_once_with(
+                old_client, reason="primary_recovery",
             )
+            mock_close.assert_not_called()
 
     def test_survives_rebuild_failure(self):
         """If client rebuild fails, returns False gracefully."""

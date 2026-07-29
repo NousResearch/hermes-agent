@@ -52,6 +52,7 @@ def test_recovery_clears_stray_marker_without_pyproject(tmp_path, monkeypatch):
     # act on; recovery should just clear it without trying to install.
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
     m._write_update_incomplete_marker()
+    m._write_lazy_refresh_incomplete_marker()
     called = {"install": False}
     monkeypatch.setattr(
         m,
@@ -61,6 +62,7 @@ def test_recovery_clears_stray_marker_without_pyproject(tmp_path, monkeypatch):
     m._recover_from_interrupted_install()
     assert called["install"] is False
     assert not m._update_marker_path().exists()
+    assert not m._lazy_refresh_marker_path().exists()
 
 
 def test_recovery_runs_install_and_clears_marker(tmp_path, monkeypatch):
@@ -139,11 +141,13 @@ def _stub_install_env(monkeypatch, m, seen):
     )
 
 
-def test_recovery_self_lock_guard_clears_marker_without_install(tmp_path, monkeypatch):
-    # Windows self-lock: hermes.exe is an ancestor of this Python process, so a
-    # pip-install would fail trying to replace the running launcher (WinError 32
-    # / 拒绝访问). Recovery must short-circuit — clear the marker, skip install,
-    # break the loop (#45542 / #52378) — instead of retrying forever.
+def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
+    tmp_path, monkeypatch
+):
+    # ``.update-incomplete`` is the generic core-install marker. Healthy
+    # lazy-refresh import probes alone must NOT clear it and skip full
+    # reinstall — a missing dep outside the 7-probe set would look healthy
+    # (#58004 review blocker).
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     m._write_update_incomplete_marker()
@@ -156,6 +160,14 @@ def test_recovery_self_lock_guard_clears_marker_without_install(tmp_path, monkey
     monkeypatch.setattr(m, "_is_windows", lambda: True)
     monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
     monkeypatch.setattr(m, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(
+        m,
+        "_default_venv_install_target",
+        lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
+    )
+    monkeypatch.setattr(
+        m, "_repair_venv_via_import_probes", lambda *a, **k: "healthy"
+    )
 
     class FakeProc:
         def __init__(self, exe_path):
@@ -174,8 +186,142 @@ def test_recovery_self_lock_guard_clears_marker_without_install(tmp_path, monkey
 
     m._recover_from_interrupted_install()
 
-    assert seen["install"] is False, "self-lock must skip the install"
-    assert not m._update_marker_path().exists(), "marker cleared to break the loop"
+    assert seen["install"] is True, "core marker still requires full reinstall"
+    assert not m._update_marker_path().exists(), "cleared only after full reinstall"
+
+
+def test_recovery_self_lock_keeps_core_marker_when_install_fails(
+    tmp_path, monkeypatch
+):
+    # Quarantined full install failed under self-lock — keep the core marker.
+    # Never clear it solely because hermes.exe is an ancestor.
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    scripts_dir = tmp_path / "venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    shim = scripts_dir / "hermes.exe"
+    shim.write_text("")
+
+    monkeypatch.setattr(m, "_is_windows", lambda: True)
+    monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
+    monkeypatch.setattr(m, "_hermes_exe_shims", lambda d: [shim])
+    monkeypatch.setattr(
+        m,
+        "_default_venv_install_target",
+        lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
+    )
+    monkeypatch.setattr(
+        m, "_repair_venv_via_import_probes", lambda *a, **k: "failed"
+    )
+
+    class FakeProc:
+        def __init__(self, exe_path):
+            self._exe = exe_path
+
+        def exe(self):
+            return self._exe
+
+        def parents(self):
+            return [FakeProc(str(shim))]
+
+    monkeypatch.setattr("psutil.Process", lambda: FakeProc(sys_executable_path()))
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+
+    def boom(*a, **k):
+        raise RuntimeError("WinError 32")
+
+    monkeypatch.setattr(
+        m, "_install_python_dependencies_with_optional_fallback", boom
+    )
+
+    m._recover_from_interrupted_install()
+
+    assert m._update_marker_path().exists(), (
+        "core marker kept for retry when self-locked recovery fails"
+    )
+
+
+def test_lazy_marker_cleared_only_after_confirmed_import_repair(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_lazy_refresh_incomplete_marker()
+
+    monkeypatch.setattr(
+        m,
+        "_default_venv_install_target",
+        lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
+    )
+    monkeypatch.setattr(
+        m, "_repair_venv_via_import_probes", lambda *a, **k: "repaired"
+    )
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert seen["install"] is False, "lazy marker does not require full .[all] reinstall"
+    assert not m._lazy_refresh_marker_path().exists()
+
+
+def test_lazy_marker_kept_when_probes_indeterminate(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_lazy_refresh_incomplete_marker()
+
+    monkeypatch.setattr(
+        m,
+        "_default_venv_install_target",
+        lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
+    )
+    monkeypatch.setattr(
+        m, "_repair_venv_via_import_probes", lambda *a, **k: "indeterminate"
+    )
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert seen["install"] is False
+    assert m._lazy_refresh_marker_path().exists(), (
+        "indeterminate probes must not clear the lazy marker"
+    )
+
+
+def test_lazy_and_core_markers_recover_independently(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_lazy_refresh_incomplete_marker()
+    m._write_update_incomplete_marker()
+
+    monkeypatch.setattr(
+        m,
+        "_default_venv_install_target",
+        lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
+    )
+    monkeypatch.setattr(
+        m, "_repair_venv_via_import_probes", lambda *a, **k: "healthy"
+    )
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert not m._lazy_refresh_marker_path().exists()
+    assert seen["install"] is True, "core marker still drives full reinstall"
+    assert not m._update_marker_path().exists()
 
 
 def sys_executable_path():

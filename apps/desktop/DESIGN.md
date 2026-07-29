@@ -117,20 +117,31 @@ that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
 (status-stack/table-footers), and the icon family `icon` / `icon-xs` /
 `icon-sm` / `icon-lg` / `icon-titlebar`.
 
-**Icon-only buttons must have a tooltip.** Every button with an `icon*` size
-carries no visible text label, so it must be wrapped in `<Tip label={...}>`
-with a descriptive label (matching the button's `aria-label`). Never use the
-native HTML `title=` attribute — it's unstyled, delayed (~500ms OS default),
-and visually inconsistent with the instant themed `Tip`. An enforcement test
-(`src/components/ui/__tests__/no-native-title.test.ts`) fails on any `<button>`
-or `<Button>` that still carries `title=`.
+**Tooltips only when hover teaches something new.** `<Tip>` is for discovery,
+not a tax on every icon. Ask: does hover reveal something the user cannot
+already see or infer? If not, skip the tip; keep an `aria-label` for a11y.
 
-**Keybind hints in tooltips.** When a button corresponds to a rebindable
-hotkey, use `<TipKeybindLabel actionId="..." />` as the `Tip` label — it
-auto-reads both the i18n label and the current keybind combo from the store,
-so the hint stays live when the user rebinds. Pass `text={...}` only when the
-tooltip is context-dependent (e.g. "Show" / "Hide" based on state). Never
-hardcode combos in components — always read from the `$bindings` store via
+Tip unlabeled chrome when the job (or a keybind / truncated path / host /
+other detail) is not already on screen — toolbar / titlebar / statusbar icons,
+`TipKeybindLabel` shortcuts, ownership chips, unlabeled icon grids.
+
+Do **not** tip:
+
+- Menu triggers (kebabs / ⋯ / `ActionsMenu` / `DropdownMenuTrigger`) — the
+  affordance is "open menu"; verbs live in the menu. Never tip
+  `"Actions for ${row title}"` / `"Project actions"` / `"Actions"`.
+- Close / dismiss X buttons — the glyph is the label (`aria-label` only).
+- Controls whose visible label already says what the tip would ("click to…",
+  paraphrases of the same words, timer labels restating "Running").
+
+Never use native HTML `title=` on buttons — unstyled, ~500ms OS delay, clashes
+with the themed `Tip`. `src/components/ui/__tests__/no-native-title.test.ts`
+fails on any `<button>` / `<Button>` that still carries `title=`.
+
+**Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
+use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
+current combo from `$bindings`. Pass `text={...}` only when the label is
+context-dependent (e.g. "Show" / "Hide"). Never hardcode combos; always use
 `useKeybindHint` or `TipKeybindLabel`.
 
 Notes:
@@ -192,7 +203,12 @@ Notes:
   semantics when unifying appearance.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
-  z-index literals.
+  z-index literals. Pick a rung of the ladder in `styles.css` instead —
+  `--z-modal-backdrop` / `--z-modal` / `--z-modal-popover`, `--z-over-modal`
+  (toasts, tooltips, command surfaces) and `--z-over-modal-content`,
+  `--z-switcher-backdrop` / `--z-switcher`, then the boot chain
+  `--z-connecting` → `--z-onboarding` → `--z-setup` → `--z-crash`. Plain
+  `z-10`/`z-20` are still right for stacking *within* one component.
 
 ## Iconography & brand
 
@@ -294,9 +310,10 @@ The detailed state contract lives in the scoped
 - [ ] Tokens (`--ui-*`, `shadow-nous`, `--stroke-nous`) — zero raw colors /
       one-off shadows?
 - [ ] No `className` overriding a primitive's padding / size / radius / chrome?
-- [ ] Icon-only buttons wrapped in `<Tip>` with a descriptive label?
-- [ ] No native `title=` on buttons — use `<Tip>` instead?
-- [ ] Keybind hints read from the store via `useKeybindHint` / `TipKeybindLabel`?
+- [ ] Tips only where hover teaches something new (no kebab / menu-trigger
+      tips; unlabeled chrome that needs discovery gets `<Tip>` + `aria-label`)?
+- [ ] No native `title=` on buttons?
+- [ ] Keybind hints on tipped buttons use `useKeybindHint` / `TipKeybindLabel`?
 - [ ] Overlay uses `shadow-nous` + `border-(--stroke-nous)`, no hard border?
 - [ ] Flat — no card-in-card, no gratuitous row dividers?
 - [ ] No automatic navigation, focus steal, or pane opening from background

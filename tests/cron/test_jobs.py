@@ -836,6 +836,24 @@ class TestGetDueJobs:
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 
+    def test_stale_past_due_records_one_catch_up_occurrence(self, tmp_cron_dir, monkeypatch):
+        import cron.jobs as jobs_module
+
+        recorded = []
+        monkeypatch.setattr(
+            jobs_module,
+            "record_catch_up_occurrence",
+            lambda: recorded.append("catch-up"),
+            raising=False,
+        )
+        create_job(prompt="Stale", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        save_jobs(jobs)
+
+        assert len(get_due_jobs()) == 1
+        assert recorded == ["catch-up"]
+
     def test_idless_job_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
         """A job missing its 'id' key must not crash the tick or freeze siblings.
 
@@ -1908,6 +1926,57 @@ class TestClaimDispatch:
         due = get_due_jobs()
         assert due == []
         assert load_jobs() == []  # cleaned up
+
+    def test_get_due_jobs_stale_removal_writes_diagnostic(self, tmp_cron_dir, monkeypatch):
+        """#73973: when the due-scan removes a wedged one-shot (dispatch claimed,
+        run never completed), it must leave an operator-visible diagnostic file
+        in the job's output dir instead of vanishing silently."""
+        import cron.jobs as jobs_mod
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        ttl = _oneshot_run_claim_ttl_seconds()
+        stale = (_hermes_now() - timedelta(seconds=ttl + 300)).isoformat()
+        save_jobs([{
+            "id": "wedged1",
+            "name": "wedged one-shot",
+            "enabled": True,
+            "schedule": {"kind": "once", "run_at": stale},
+            "repeat": {"times": 1, "completed": 1},
+            "run_claim": {"at": stale, "by": "dead-process:123"},
+            "next_run_at": stale,
+        }])
+        assert get_due_jobs() == []
+        assert load_jobs() == []
+        out_dir = jobs_mod._job_output_dir("wedged1")
+        files = list(out_dir.glob("*.md"))
+        assert files, "expected a diagnostic file in the output dir"
+        text = files[0].read_text(encoding="utf-8")
+        assert "removed without producing output" in text
+        assert "wedged1" in text
+
+    def test_claim_dispatch_stale_removal_writes_diagnostic(self, tmp_cron_dir):
+        """#73973: the claim_dispatch removal path for an already-maxed one-shot
+        with no completed run also leaves a diagnostic."""
+        import cron.jobs as jobs_mod
+        save_jobs([self._oneshot(times=1, completed=1)])
+        assert claim_dispatch("os1") is False
+        assert load_jobs() == []
+        out_dir = jobs_mod._job_output_dir("os1")
+        files = list(out_dir.glob("*.md"))
+        assert files, "expected a diagnostic file in the output dir"
+        assert "removed without producing output" in files[0].read_text(encoding="utf-8")
+
+    def test_no_diagnostic_when_run_completed(self, tmp_cron_dir):
+        """A one-shot that DID complete a run (last_run_at set) is a normal
+        completion race, not a wedge — no diagnostic file is written."""
+        import cron.jobs as jobs_mod
+        job = self._oneshot(times=1, completed=1)
+        job["last_run_at"] = "2026-01-01T00:05:00+00:00"
+        save_jobs([job])
+        assert claim_dispatch("os1") is False
+        assert load_jobs() == []
+        out_dir = jobs_mod._job_output_dir("os1")
+        assert not out_dir.exists() or not list(out_dir.glob("*.md"))
 
     def test_bad_schedule_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
         """Regression for a job with non-dict 'schedule' (null / string / etc.

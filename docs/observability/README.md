@@ -14,6 +14,10 @@ Behavior-changing request or execution wrappers are outside this observer
 contract. Observer hooks should report what happened; they should not replace
 provider requests, tool arguments, or execution callbacks.
 
+Hermes also has a first-party NeMo Relay shared-metrics path. It uses these
+lifecycle boundaries directly and does not require enabling an observability
+plugin. See [Relay shared metrics](relay-shared-metrics.md).
+
 ## Contract
 
 Plugins register observer callbacks from `register(ctx)`:
@@ -217,7 +221,11 @@ Subagent hooks describe delegated child-agent work:
 and `child_goal`.
 
 `subagent_stop` fields include parent/child session IDs, role/status fields,
-`child_summary`, and `duration_ms`.
+`child_summary`, `duration_ms`, and a metadata-only `tool_call_history`. Each
+history entry contains the tool name, argument names, bounded side-effect
+targets, input/output byte counts, and outcome. URL query strings and fragments
+are removed; raw arguments, prompts, commands, contents, headers, and results
+are intentionally excluded.
 
 Observers can use these hooks to model nested trajectories while keeping child
 agent execution linked to the parent turn that spawned it.

@@ -71,6 +71,17 @@ def _reset_wal_fallback_warned_paths():
     hermes_state._wal_fallback_warned_paths.clear()
 
 
+@pytest.fixture(autouse=True)
+def _assume_fixed_sqlite(monkeypatch):
+    """NFS-fallback tests assume a SQLite build without the WAL-reset bug."""
+    monkeypatch.setattr(
+        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+    )
+    hermes_state._wal_reset_bug_warned_paths.clear()
+    yield
+    hermes_state._wal_reset_bug_warned_paths.clear()
+
+
 class TestApplyWalWithFallback:
     def test_succeeds_on_local_fs(self, tmp_path):
         """Happy path: WAL works on a normal filesystem."""
@@ -297,6 +308,9 @@ class TestGetLastInitError:
                 return super().execute(sql, *args, **kwargs)
 
         def gated_connect(*args, **kwargs):
+            # connect_tracked passes a tracking-augmented factory; drop it and
+            # substitute the double, which connect_tracked will re-augment.
+            kwargs.pop("factory", None)
             return real_connect(str(target), factory=_BothPragmasFailConnection, **kwargs)
 
         with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
@@ -348,6 +362,10 @@ class TestSessionDbUsesWalFallback:
         factory = _make_blocking_factory("locking protocol", attempts)
 
         def gated_connect(*args, **kwargs):
+            # connect_tracked passes a tracking-augmented factory; drop it and
+            # substitute the double, which connect_tracked re-applies to the
+            # returned instance.
+            kwargs.pop("factory", None)
             return real_connect(str(target), factory=factory, **kwargs)
 
         with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):

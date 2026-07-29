@@ -4,18 +4,17 @@ import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
 import {
-  $currentCwd,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   setAvailablePersonalities,
-  setCurrentCwd,
   setCurrentFastMode,
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setDefaultReasoningEffort,
   setIntroPersonality
 } from '@/store/session'
-import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
+import { applyAutoSpeakFromConfig, applyThinkingSoundFromConfig, applyVoiceStopPhraseFromConfig } from '@/store/voice-prefs'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
@@ -43,10 +42,9 @@ function normalizeConfigEffort(value: unknown): string {
 
 interface HermesConfigOptions {
   activeSessionIdRef: MutableRefObject<string | null>
-  refreshProjectBranch: (cwd: string) => Promise<void>
 }
 
-export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: HermesConfigOptions) {
+export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
   const profileRefreshEpochRef = useRef(0)
@@ -83,18 +81,14 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
           ])
         ])
 
-        const cwd = (config.terminal?.cwd ?? '').trim()
-
-        if (cwd && cwd !== '.') {
-          // Configured terminal.cwd beats a stale remembered workspace cwd
-          // (#38855) — but never yank the workspace out from under an active
-          // session; those keep their own cwd until the user detaches.
-          setCurrentCwd(prev => (activeSessionIdRef.current ? prev : cwd))
-          void refreshProjectBranch($currentCwd.get() || cwd)
-        }
-
         const reasoning = normalizeConfigEffort(config.agent?.reasoning_effort)
         const tier = (config.agent?.service_tier ?? '').trim()
+
+        // Publish the profile default regardless of whether the composer is
+        // reseeded below: picker rows and preset application resolve "the
+        // default" from here, so a manual model pick must not leave them
+        // rendering/applying Hermes' built-in medium over the user's config.
+        setDefaultReasoningEffort(reasoning)
 
         const shouldSeedComposer =
           !activeSessionIdRef.current &&
@@ -111,11 +105,13 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
         applyAutoSpeakFromConfig(config)
+        applyVoiceStopPhraseFromConfig(config)
+        applyThinkingSoundFromConfig(config)
       } catch {
         // Config is nice-to-have; chat still works without it.
       }
     },
-    [activeSessionIdRef, refreshProjectBranch]
+    [activeSessionIdRef]
   )
 
   return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }

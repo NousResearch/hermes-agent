@@ -759,3 +759,181 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# Property-key renaming (provider ^[a-zA-Z0-9_.-]{1,64}$ pattern compat)
+# Real-world source: Cloudflare flat API MCP ships keys like
+# ``issue_class~neq`` and ``meta.<field>[<operator>]`` — one bad key anywhere
+# in the tools array 400s the whole request on Anthropic/Bedrock/Vertex/Azure.
+# ---------------------------------------------------------------------------
+
+from tools.schema_sanitizer import sanitize_property_key, unrename_tool_args
+
+
+def test_bad_property_keys_renamed_to_conforming():
+    tools = [_tool("cf_issues", {
+        "type": "object",
+        "properties": {
+            "issue_class~neq": {"type": "string"},
+            "meta.<field>[<operator>]": {"type": "string"},
+            "normal_key": {"type": "string"},
+        },
+        "required": ["issue_class~neq"],
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    import re
+    pat = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+    assert all(pat.match(k) for k in props), list(props)
+    assert "normal_key" in props
+    assert "issue_class_neq" in props
+    # required remapped alongside
+    assert out[0]["function"]["parameters"]["required"] == ["issue_class_neq"]
+
+
+def test_property_key_over_64_chars_truncated():
+    long_key = "k" * 80
+    tools = [_tool("t", {"type": "object", "properties": {long_key: {"type": "string"}}})]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert list(props) == ["k" * 64]
+
+
+def test_rename_collision_deduped_deterministically():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "a~b": {"type": "string"},
+            "a b": {"type": "integer"},
+            "a_b": {"type": "boolean"},  # already owns the sanitized name
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["a_b"]["type"] == "boolean"       # original conforming key untouched
+    assert set(props) == {"a_b", "a_b_2", "a_b_3"}
+    # deterministic across repeated runs
+    out2 = sanitize_tool_schemas(tools)
+    assert out2[0]["function"]["parameters"]["properties"].keys() == props.keys()
+
+
+def test_nested_bad_property_keys_renamed():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "body": {
+                "type": "object",
+                "properties": {"filter~gte": {"type": "number"}},
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    body = out[0]["function"]["parameters"]["properties"]["body"]
+    assert "filter_gte" in body["properties"]
+    assert "filter~gte" not in body["properties"]
+
+
+def test_unrename_tool_args_maps_back_to_wire_names():
+    original_params = {
+        "type": "object",
+        "properties": {
+            "issue_class~neq": {"type": "string"},
+            "normal": {"type": "string"},
+            "body": {
+                "type": "object",
+                "properties": {"filter~gte": {"type": "number"}},
+            },
+        },
+    }
+    model_args = {
+        "issue_class_neq": "spoofed_dns",
+        "normal": "x",
+        "body": {"filter_gte": 5},
+    }
+    restored = unrename_tool_args(original_params, model_args)
+    assert restored == {
+        "issue_class~neq": "spoofed_dns",
+        "normal": "x",
+        "body": {"filter~gte": 5},
+    }
+
+
+def test_unrename_passes_unknown_keys_through():
+    params = {"type": "object", "properties": {"a": {"type": "string"}}}
+    assert unrename_tool_args(params, {"a": 1, "mystery": 2}) == {"a": 1, "mystery": 2}
+
+
+def test_sanitize_property_key_empty_falls_back():
+    assert sanitize_property_key("~~~") == "___"
+    assert sanitize_property_key("") == "param"
+
+
+# ---------------------------------------------------------------------------
+# dependentRequired -- literal property-name strings must survive
+# ---------------------------------------------------------------------------
+
+
+def test_dependent_required_preserved_through_public_api():
+    """dependentRequired values are literal property names, not schemas."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "organization": {"type": "string"},
+        },
+        "dependentRequired": {
+            "owner": ["repo", "organization"],
+            "repo": ["owner"],
+        },
+    }
+    tools = [_tool("t", copy.deepcopy(schema))]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    dep = params.get("dependentRequired", {})
+    # Values are the original property-name strings unchanged.
+    assert dep.get("owner") == ["repo", "organization"]
+    assert dep.get("repo") == ["owner"]
+    # Normal property schemas are still present and valid.
+    assert params["properties"]["owner"] == {"type": "string"}
+    assert params["properties"]["repo"] == {"type": "string"}
+    assert params["properties"]["organization"] == {"type": "string"}
+
+
+def test_dependent_required_does_not_mutate_original_input():
+    """The original schema's dependentRequired must be unchanged after sanitize."""
+    original_dep = {"owner": ["repo", "organization"], "repo": ["owner"]}
+    schema = {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "organization": {"type": "string"},
+        },
+        "dependentRequired": {k: list(v) for k, v in original_dep.items()},
+    }
+    saved_copy = copy.deepcopy(schema)
+    tools = [_tool("t", schema)]
+    _ = sanitize_tool_schemas(tools)
+    assert schema == saved_copy
+    assert schema["dependentRequired"] == original_dep
+
+
+def test_dependent_schemas_still_recursively_sanitized():
+    """dependentSchemas (real schemas, not literal lists) must still be sanitized."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+        },
+        "dependentSchemas": {
+            "owner": {"type": "object"},  # bare object -- needs properties: {}
+        },
+    }
+    tools = [_tool("t", copy.deepcopy(schema))]
+    out = sanitize_tool_schemas(tools)
+    dep_schemas = out[0]["function"]["parameters"]["dependentSchemas"]
+    assert dep_schemas["owner"] == {"type": "object", "properties": {}}, (
+        f"dependentSchemas['owner'] was not fully sanitized: {dep_schemas['owner']!r}"
+    )

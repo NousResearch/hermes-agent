@@ -354,7 +354,11 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_windows_detached_restart_uses_pythonw_for_watcher(monkeypatch, tmp_path):
+async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
+    """The restart watcher must run sys.executable (console python) under the
+    hidden-console detach kwargs — NOT swap in GUI-subsystem pythonw.exe,
+    which would leave the watcher console-less and make its descendants
+    flash visible conhosts (#54220/#56747)."""
     runner, _adapter = make_restart_runner()
     popen_calls = []
     venv_dir = tmp_path / "venv"
@@ -368,17 +372,11 @@ async def test_windows_detached_restart_uses_pythonw_for_watcher(monkeypatch, tm
     monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
 
     import hermes_cli._subprocess_compat as subprocess_compat
-    import hermes_cli.gateway_windows as gateway_windows
 
-    monkeypatch.setattr(
-        gateway_windows,
-        "_resolve_detached_python",
-        lambda _python: (r"C:\Python311\pythonw.exe", venv_dir, [str(site_packages)]),
-    )
     monkeypatch.setattr(
         subprocess_compat,
         "windows_detach_popen_kwargs",
-        lambda: {"creationflags": 0x08000008},
+        lambda: {"creationflags": 0x08000200},
     )
 
     def fake_popen(cmd, **kwargs):
@@ -391,9 +389,9 @@ async def test_windows_detached_restart_uses_pythonw_for_watcher(monkeypatch, tm
 
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
-    assert cmd[0] == r"C:\Python311\pythonw.exe"
+    assert cmd[0] == r"C:\venv\Scripts\python.exe"
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
-    assert kwargs["creationflags"] == 0x08000008
+    assert kwargs["creationflags"] == 0x08000200
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

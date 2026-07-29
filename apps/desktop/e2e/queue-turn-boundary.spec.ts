@@ -26,12 +26,18 @@ async function send(page: Page, text: string): Promise<void> {
 
 async function steer(page: Page, text: string): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first()
-  const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
 
   await composer.click()
   await composer.type(text, { delay: 5 })
-  await expect(primary).toHaveAttribute('aria-label', /Steer/)
-  await primary.click()
+  await page.keyboard.press('Enter')
+}
+
+async function queue(page: Page, text: string): Promise<void> {
+  const composer = page.locator('[contenteditable="true"]').first()
+
+  await composer.click()
+  await composer.type(text, { delay: 5 })
+  await page.keyboard.press('Control+Enter')
 }
 
 async function transcriptMessageOrder(page: Page): Promise<string[]> {
@@ -72,15 +78,10 @@ test.describe('queued prompt turn boundary', () => {
 
   test('submits a queued prompt only after the active turn completes', async () => {
     const { mock, page } = fixture!
-    const composer = page.locator('[contenteditable="true"]').first()
-    const queue = page.locator('[data-slot="composer-root"] button[aria-label="Queue message"]')
 
     await send(page, ACTIVE_PROMPT)
     await mock.waitForHeldStream()
-
-    await composer.click()
-    await composer.type(QUEUED_PROMPT, { delay: 5 })
-    await queue.click()
+    await queue(page, QUEUED_PROMPT)
     await expect(page.getByText('1 Queued')).toBeVisible()
 
     // The mock keeps the active SSE stream open, so a queued prompt has no

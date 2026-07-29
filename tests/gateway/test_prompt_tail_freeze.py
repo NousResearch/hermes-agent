@@ -99,9 +99,10 @@ def _make_context(
 
 @pytest.fixture(autouse=True)
 def _stable_discord_tools(monkeypatch):
-    """Pin the config/env-dependent renderer gate so key<->render parity is
+    """Pin the config/env-dependent renderer gates so key<->render parity is
     evaluated on the same footing in every environment."""
     monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
+    monkeypatch.setattr("gateway.session._slack_tools_loaded", lambda: False)
 
 
 def _key(runner, context, redact_pii=False):
@@ -191,6 +192,45 @@ class TestEphemeralChangeKeyParity:
         monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: False)
         assert _render(ctx) != render_on
         assert _key(runner, ctx) != key_on
+
+    def test_slack_tools_gate_flip_changes_key(self, monkeypatch):
+        """The Slack capability note is gated on _slack_tools_loaded(); the
+        gate state must be part of the change key (same parity contract as
+        the Discord gate) or a config/MCP flip would serve a stale pinned
+        note forever."""
+        runner = _make_runner()
+        ctx = _make_context(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            thread_id=None,
+            parent_chat_id=None,
+            guild_id=None,
+        )
+        render_off, key_off = _render(ctx), _key(runner, ctx)
+        monkeypatch.setattr("gateway.session._slack_tools_loaded", lambda: True)
+        assert _render(ctx) != render_off
+        assert _key(runner, ctx) != key_off
+
+    def test_slack_note_byte_stable_across_turns_in_one_session(self):
+        """Within one session (gate state constant), the Slack platform note
+        must be byte-stable turn over turn — the pin returns the identical
+        object, so the composed system prompt cannot drift mid-conversation."""
+        runner = _make_runner()
+
+        def _slack_ctx():
+            return _make_context(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id=None,
+                parent_chat_id=None,
+                guild_id=None,
+            )
+
+        t1 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
+        t2 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
+        t3 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
+        assert t2 is t1 and t3 is t1
+        assert hashlib.sha256(t1.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
 
     def test_message_id_value_change_is_not_a_bust(self):
         """Only message-id PRESENCE renders (the id itself rides the user

@@ -259,6 +259,21 @@ class TestPlatformDefaults:
         for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
+    def test_photon_defaults_to_low_tier(self):
+        """Photon (managed iMessage) is a permanent-message mobile inbox like
+        BlueBubbles, so it must default to TIER_LOW: tool progress off, no
+        interim scratch commentary, no heartbeats, no busy-ack iteration detail.
+        Regression guard for the Photon launch shipping without a
+        _PLATFORM_DEFAULTS entry, which left it inheriting the noisy global
+        ('all') defaults and spamming the iMessage thread."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "photon", "tool_progress") == "off"
+        assert resolve_display_setting({}, "photon", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "photon", "long_running_notifications") is False
+        assert resolve_display_setting({}, "photon", "busy_ack_detail") is False
+        assert resolve_display_setting({}, "photon", "streaming") is False
+
     def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
         """Regression guard: ``whatsapp_cloud`` must stay TIER_LOW until the
         adapter implements edit_message. Without an edit endpoint, raising
@@ -312,6 +327,14 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
+
+    def test_slack_workspace_chatter_defaults(self):
+        """Slack should not leave permanent heartbeat/debug breadcrumbs in channels."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
+        assert resolve_display_setting({}, "slack", "long_running_notifications") is False
+        assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
     def test_telegram_mobile_chatter_can_opt_in(self):
         """Per-platform config can re-enable Telegram busy-ack detail

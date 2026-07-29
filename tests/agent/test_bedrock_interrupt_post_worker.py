@@ -86,7 +86,21 @@ def test_bedrock_stream_returns_normally_when_not_interrupted():
     agent._interrupt_requested = False
 
     resp = SimpleNamespace(choices=[], usage=None, stop_reason="end_turn")
-    fake_client = SimpleNamespace(converse_stream=lambda **kw: {"stream": []})
+
+    class ProviderStream:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            return iter(())
+
+        def close(self):
+            self.closed = True
+
+    provider_stream = ProviderStream()
+    fake_client = SimpleNamespace(
+        converse_stream=lambda **kw: {"stream": provider_stream}
+    )
 
     with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=fake_client), \
          patch("agent.bedrock_adapter.stream_converse_with_callbacks", return_value=resp), \
@@ -97,3 +111,4 @@ def test_bedrock_stream_returns_normally_when_not_interrupted():
         api_kwargs = {"__bedrock_region__": "us-east-1", "__bedrock_converse__": True}
         out = cch.interruptible_streaming_api_call(agent, api_kwargs)
         assert out is resp
+        assert provider_stream.closed is True

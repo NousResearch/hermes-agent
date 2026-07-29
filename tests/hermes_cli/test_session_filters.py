@@ -72,14 +72,18 @@ class TestBuildPruneFilters:
     def test_newer_than_sets_lower_bound_only(self):
         f = build_prune_filters(_ns(newer_than="5h"))
         assert f["started_before"] is None
-        assert f["started_after"] == pytest.approx(time.time() - 18000, abs=5)
+        assert f["started_after"] is None
+        assert f["last_active_after"] == pytest.approx(
+            time.time() - 18000, abs=5
+        )
         assert f["older_than_days"] is None  # no implicit 90d cap
 
     def test_older_than_bare_days(self):
         f = build_prune_filters(_ns(older_than="90"))
-        assert f["started_before"] == pytest.approx(
+        assert f["last_active_before"] == pytest.approx(
             time.time() - 90 * 86400, abs=5
         )
+        assert f["started_before"] is None
         assert f["started_after"] is None
 
     def test_window_before_and_after(self):
@@ -87,14 +91,19 @@ class TestBuildPruneFilters:
         assert f["started_after"] < f["started_before"]
 
     def test_inverted_window_rejected(self):
-        with pytest.raises(ValueError, match="Empty time window"):
+        with pytest.raises(ValueError, match="Empty start-time window"):
             build_prune_filters(_ns(after="2h", before="10h"))
 
-    def test_tighter_bound_wins(self):
-        # --older-than 1d and --before 5h both set the upper bound;
-        # 1d ago is earlier (tighter for "older than") so it wins.
+    def test_inverted_activity_window_rejected(self):
+        with pytest.raises(ValueError, match="Empty activity window"):
+            build_prune_filters(_ns(newer_than="2h", older_than="10h"))
+
+    def test_activity_and_start_bounds_are_independent(self):
         f = build_prune_filters(_ns(older_than="1d", before="5h"))
         assert f["started_before"] == pytest.approx(
+            time.time() - 5 * 3600, abs=5
+        )
+        assert f["last_active_before"] == pytest.approx(
             time.time() - 86400, abs=5
         )
 
@@ -141,7 +150,7 @@ class TestBuildPruneFilters:
     def test_describe_filters_mentions_active_parts(self):
         f = build_prune_filters(_ns(newer_than="5h", source="cli"))
         desc = describe_filters(f)
-        assert "started after" in desc
+        assert "last active after" in desc
         assert "source 'cli'" in desc
 
     def test_describe_filters_empty(self):

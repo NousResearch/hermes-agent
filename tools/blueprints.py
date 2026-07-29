@@ -259,7 +259,6 @@ def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional
     name = name.strip("-_") or "shared-blueprint"
 
     schedule = job.get("schedule_display") or _schedule_to_string(job.get("schedule"))
-    skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
 
     blueprint_block: Dict[str, Any] = {"schedule": schedule}
     deliver = job.get("deliver")

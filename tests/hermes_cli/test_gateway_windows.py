@@ -72,8 +72,10 @@ def test_exec_schtasks_decodes_with_replace_errors(monkeypatch):
     assert captured["text"] is True
 
 
-def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
-    """Avoid uv's venv pythonw launcher because it respawns console python.exe."""
+def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
+    """No pythonw / base-interpreter detour: the venv console python.exe is
+    launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden
+    console instead of flashing their own (#54220/#56747)."""
 
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
@@ -105,11 +107,10 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
 
-    assert argv[:3] == [str(base_pythonw), "-m", "hermes_cli.main"]
+    assert argv[:3] == [str(venv_python), "-m", "hermes_cli.main"]
     assert cwd == str(hermes_home.resolve())
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
-    assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
 
 
 class TestStableWindowsGatewayWorkingDir:
@@ -188,12 +189,14 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     return script_path, calls
 
 
-def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypatch):
-    """Scheduled Task wrapper should launch pythonw once and avoid replace loops."""
+def test_gateway_cmd_script_uses_console_python_without_replace_or_start_churn(monkeypatch):
+    """Scheduled Task wrapper launches the console python once (hidden by the
+    .vbs window-style-0 chain, NOT console-less pythonw — see #54220/#56747)
+    and avoids replace loops."""
     monkeypatch.setattr(
         gateway_windows,
         "_resolve_detached_python",
-        lambda exe: (exe.replace("python.exe", "pythonw.exe"), r"C:\\Hermes\\hermes-agent\\venv", []),
+        lambda exe: (exe, r"C:\\Hermes\\hermes-agent\\venv", []),
     )
 
     content = gateway_windows._build_gateway_cmd_script(
@@ -203,15 +206,23 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
         "--profile alice",
     )
 
-    assert "pythonw.exe" in content
+    assert "python.exe" in content
+    assert "pythonw.exe" not in content
     assert "gateway run" in content
     assert "--replace" not in content
     assert "start \"\"" not in content
     assert "exit /b 0" in content
 
 
-def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
-    """Scheduled Task wrapper should share the detached uv-venv workaround."""
+def test_gateway_launcher_scripts_keep_console_python_for_uv_venv(monkeypatch, tmp_path):
+    """The launcher must NOT detour to uv's base pythonw.exe.
+
+    The old uv-venv workaround swapped in the base ``pythonw.exe`` +
+    PYTHONPATH overlay. That console-less daemon made every console-subsystem
+    descendant allocate a visible flashing conhost (#54220/#56747). The venv
+    console ``python.exe`` under the hidden-console launch chain is correct —
+    the uv shim re-execs the base interpreter windowless because the child
+    inherits the shim's hidden console."""
     project = tmp_path / "project"
     scripts = project / "venv" / "Scripts"
     site_packages = project / "venv" / "Lib" / "site-packages"
@@ -239,14 +250,16 @@ def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
         "",
     )
 
-    assert str(base_pythonw) in content
+    assert str(venv_python) in content
     assert f'set "VIRTUAL_ENV={project / "venv"}"' in content
-    assert str(site_packages) in content
+    assert str(base_pythonw) not in content
     assert str(venv_pythonw) not in content
 
 
-def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
-    """UAC handoff should not leave a second elevated cmd.exe window open."""
+def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
+    """UAC handoff launches console python with SW_HIDE — a single hidden
+    console, not console-less pythonw (#54220/#56747), and no visible
+    elevated cmd.exe window left open."""
     calls = []
 
     class FakeShell32:
@@ -259,7 +272,6 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_current_profile_cli_args", lambda: ["--profile", "alice"])
-    monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: exe.replace("python.exe", "pythonw.exe"))
     monkeypatch.setattr(gateway_windows.sys, "executable", r"C:\Hermes\venv\Scripts\python.exe")
     monkeypatch.setattr(gateway_windows.ctypes, "windll", FakeWindll(), raising=False)
 
@@ -268,7 +280,7 @@ def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
     assert len(calls) == 1
     _hwnd, verb, executable, params, cwd, show = calls[0]
     assert verb == "runas"
-    assert executable.endswith("pythonw.exe")
+    assert executable == r"C:\Hermes\venv\Scripts\python.exe"
     assert "--profile alice gateway install --start-now --elevated-handoff" in params
     assert show == 0
     assert cwd

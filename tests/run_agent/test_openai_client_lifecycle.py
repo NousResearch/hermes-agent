@@ -92,7 +92,11 @@ def test_retry_after_api_connection_error_recreates_request_client(monkeypatch):
     assert result == {"ok": True}
     assert len(factory.calls) == 2
     assert first_request.close_calls >= 1
-    assert second_request.close_calls >= 1
+    # The successful request's wire client is cached for reuse across
+    # sequential calls (not closed at request end); teardown really closes it.
+    assert second_request.close_calls == 0
+    agent._close_cached_request_openai_client(reason="agent_close")
+    assert second_request.close_calls == 1
 
 
 def test_stale_non_stream_close_is_single_owner(monkeypatch):
@@ -205,5 +209,9 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
     assert response.choices[0].message.content == "Hello world"
     assert agent.client is replacement_shared
     assert stale_shared.close_calls >= 1
-    assert request_client.close_calls >= 1
+    # The clean stream's wire client is cached for reuse across sequential
+    # calls (not closed at request end); teardown really closes it.
+    assert request_client.close_calls == 0
+    agent._close_cached_request_openai_client(reason="agent_close")
+    assert request_client.close_calls == 1
     assert len(factory.calls) == 2

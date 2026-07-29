@@ -4,7 +4,7 @@ import { sessionProjectColor } from '@/app/chat/sidebar/projects/workspace-group
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { $projects } from '@/store/projects'
 import { $sessions, sessionPinId } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 // Per-session color OVERRIDES — a user-picked color that wins over the inherited
 // project color (#66565 layer 2). Desktop-local like pins, keyed by the DURABLE
@@ -39,13 +39,21 @@ export function setSessionColorOverride(durableId: string, color: null | string)
 //
 // Precedence in one place: an explicit per-session override wins over the
 // inherited project color. Agent-set color (#66565 layer 3) slots in here too.
+function resolveSessionColor(
+  session: SessionInfo,
+  projects: ProjectInfo[],
+  overrides: Record<string, string>
+): string | undefined {
+  return overrides[sessionPinId(session)] ?? sessionProjectColor(session, projects) ?? undefined
+}
+
 export const $sessionColorById = computed(
   [$sessions, $projects, $sessionColorOverrides],
   (sessions, projects, overrides) => {
     const map: Record<string, string> = {}
 
     for (const session of sessions) {
-      const color = overrides[sessionPinId(session)] ?? sessionProjectColor(session, projects)
+      const color = resolveSessionColor(session, projects, overrides)
 
       if (color) {
         map[session.id] = color
@@ -57,7 +65,16 @@ export const $sessionColorById = computed(
 )
 
 // The color for a single session object (the tabs already hold the SessionInfo
-// they render, so they resolve through the same map the sidebar reads).
+// they render, so they resolve through the same map the sidebar reads). A row
+// that isn't in `$sessions` — e.g. a project-tree session older than the
+// paginated recents page, opened as a tab — misses the map, so fall back to the
+// same resolver the map is built from.
 export function sessionColorFor(session: null | SessionInfo | undefined): string | undefined {
-  return session ? $sessionColorById.get()[session.id] : undefined
+  if (!session) {
+    return undefined
+  }
+
+  return (
+    $sessionColorById.get()[session.id] ?? resolveSessionColor(session, $projects.get(), $sessionColorOverrides.get())
+  )
 }

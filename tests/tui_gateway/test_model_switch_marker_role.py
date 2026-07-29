@@ -102,4 +102,5 @@ class TestAppendModelSwitchMarkerRole:
             session_id="sess-1",
             role="user",
             content=marker["content"],
+            display_kind="model_switch",
         )

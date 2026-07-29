@@ -277,6 +277,27 @@ def test_all_invalid_batch_still_strikes_out(agent_env):
     assert "invalid tool call" in (result.get("error") or "")
 
 
+def test_invalid_tool_exhaustion_closes_tool_tail(agent_env):
+    """Invalid-tool 3-strike partial must not leave a durable tool→user tail (#48879 class).
+
+    Retries <3 append assistant+error tool rows, so the transcript already ends
+    on ``tool`` before the exhaustion early-return. That return must close the
+    sequence (same contract as interrupt aborts) so the next user turn is not
+    ``tool → user`` for strict providers.
+    """
+    agent, handler = agent_env
+    for _ in range(3):
+        handler.response_queue.append(_tc_resp("frobnicate_xyz", "{}"))
+
+    result = agent.run_conversation("degenerate", conversation_history=[], task_id="t")
+
+    assert result.get("partial", False)
+    msgs = result.get("messages") or []
+    assert msgs, "expected persisted conversation messages"
+    assert msgs[-1].get("role") == "assistant"
+    assert "invalid tool call" in (msgs[-1].get("content") or "").lower()
+
+
 def test_mixed_batch_invalid_call_with_broken_json_does_not_retry_turn(agent_env):
     """Broken args on a never-executing invalid call must not trigger the JSON retry loop."""
     agent, handler = agent_env

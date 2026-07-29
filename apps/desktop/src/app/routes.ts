@@ -1,7 +1,10 @@
 import { atom } from 'nanostores'
 import type { ReactNode } from 'react'
 
+import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+
+type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
 export const SESSION_ROUTE_PREFIX = '/'
 export const NEW_CHAT_ROUTE = '/'
@@ -9,6 +12,7 @@ export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
+export const WEBHOOKS_ROUTE = '/webhooks'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
@@ -31,6 +35,7 @@ export type AppView =
   | 'settings'
   | 'skills'
   | 'starmap'
+  | 'webhooks'
 
 export type AppRouteId =
   | 'agents'
@@ -43,6 +48,7 @@ export type AppRouteId =
   | 'settings'
   | 'skills'
   | 'starmap'
+  | 'webhooks'
 
 export interface AppRoute {
   id: AppRouteId
@@ -56,6 +62,7 @@ export const APP_ROUTES = [
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
+  { id: 'webhooks', path: WEBHOOKS_ROUTE, view: 'webhooks' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
@@ -121,25 +128,57 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'cron',
   'profiles',
   'settings',
-  'starmap'
+  'starmap',
+  'webhooks'
 ])
 
 export function isOverlayView(view: AppView): boolean {
   return OVERLAY_VIEWS.has(view)
 }
 
+/** The pathname of a router target. Every classifier below reasons about a
+ *  PATH, but callers navigate to full targets (`/skills?tab=mcp`), and an
+ *  unstripped query reaches the session-id parser — `/skills?tab=mcp` reads as
+ *  the session `skills?tab=mcp`, so Capabilities classifies as a chat.
+ *  `sessionRoute` percent-encodes ids, so `?`/`#` can only start a query or a
+ *  hash. */
+export function routePathname(to: string): string {
+  const cut = to.search(/[?#]/)
+
+  return cut === -1 ? to : to.slice(0, cut)
+}
+
 export function isNewChatRoute(pathname: string): boolean {
-  return pathname === NEW_CHAT_ROUTE
+  return routePathname(pathname) === NEW_CHAT_ROUTE
 }
 
 export function routeSessionId(pathname: string): string | null {
-  if (!pathname.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(pathname) || isContributedPath(pathname)) {
+  const path = routePathname(pathname)
+
+  if (!path.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(path) || isContributedPath(path)) {
     return null
   }
 
-  const id = pathname.slice(SESSION_ROUTE_PREFIX.length)
+  const id = path.slice(SESSION_ROUTE_PREFIX.length)
 
   return id && !id.includes('/') ? decodeURIComponent(id) : null
+}
+
+/**
+ * The primary composer's durable scope key candidate: the route is the source
+ * of truth for which chat is on screen, so prefer its (stable) stored session
+ * id over a store selection that can be momentarily null/stale mid-switch
+ * (#59305). A genuine new-chat route always wins with `null`, never falling
+ * back to a leftover selection from the chat just left. A non-chat route
+ * (settings, an overlay) has no session opinion, so the store selection passes
+ * through unchanged.
+ */
+export function primaryRouteSelectedSessionId(pathname: string, storeSelectedSessionId: string | null): string | null {
+  if (isNewChatRoute(pathname)) {
+    return null
+  }
+
+  return routeSessionId(pathname) ?? storeSelectedSessionId
 }
 
 export function sessionRoute(sessionId: string): string {
@@ -147,15 +186,26 @@ export function sessionRoute(sessionId: string): string {
 }
 
 export function appViewForPath(pathname: string): AppView {
-  if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
+  const path = routePathname(pathname)
+
+  if (isNewChatRoute(path) || routeSessionId(path)) {
     return 'chat'
   }
 
-  if (isContributedPath(pathname)) {
+  if (isContributedPath(path)) {
     return 'extension'
   }
 
-  return APP_VIEW_BY_PATH.get(pathname) ?? 'chat'
+  return APP_VIEW_BY_PATH.get(path) ?? 'chat'
+}
+
+/** Does `to` land on a full page rendered INSIDE the workspace pane
+ *  (skills/messaging/artifacts/contributed routes)? Overlays don't count —
+ *  they float over whatever the workspace is already showing. */
+function isWorkspacePageRoute(to: string): boolean {
+  const view = appViewForPath(to)
+
+  return view !== 'chat' && !isOverlayView(view)
 }
 
 /** True while the workspace pane shows a FULL PAGE (skills/messaging/
@@ -165,11 +215,49 @@ export function appViewForPath(pathname: string): AppView {
  *  (settings/…) don't count — the chat stays beneath them. */
 export const $workspaceIsPage = atom(false)
 
-export function syncWorkspaceIsPage(pathname: string): void {
-  const view = appViewForPath(pathname)
-  const isPage = view !== 'chat' && !isOverlayView(view)
+function revealWorkspacePane(): void {
+  noteActiveTreeGroup(null)
+  revealTreePane('workspace')
+}
+
+/**
+ * Point the workspace at `pathname`: mirror "showing a full page" into
+ * `$workspaceIsPage`, and FRONT the pane when it is one.
+ *
+ * A page renders inside `workspace`, so a main zone parked on a session tile
+ * keeps the tile on screen while the route and the page content change behind
+ * it — the navigation looks dead (#72602). Session switches already front the
+ * pane in `store/session-states.ts`; pages had no equivalent.
+ *
+ * The router location drives this, so every entry point gets it without opting
+ * in: sidebar, keybinds, command palette, Command Center, contributed
+ * statusbar/titlebar `to` targets, back/forward, and cold-start restore.
+ */
+export function syncWorkspaceRoute(pathname: string): void {
+  const isPage = isWorkspacePageRoute(pathname)
 
   if (isPage !== $workspaceIsPage.get()) {
     $workspaceIsPage.set(isPage)
+  }
+
+  if (isPage) {
+    revealWorkspacePane()
+  }
+}
+
+/**
+ * Navigate to `to`, fronting the workspace pane when it is a page route.
+ *
+ * `syncWorkspaceRoute` covers route CHANGES; this covers the RE-CLICK, the one
+ * case it can't see — hitting Capabilities while already on `/skills` with a
+ * tile focused leaves the location untouched, so no effect fires and only an
+ * imperative reveal brings the page back. Use it wherever a nav affordance can
+ * be triggered from the page it targets.
+ */
+export function navigateToWorkspacePage(navigate: NavigateLike, to: string, options?: { replace?: boolean }): void {
+  navigate(to, options)
+
+  if (isWorkspacePageRoute(to)) {
+    revealWorkspacePane()
   }
 }

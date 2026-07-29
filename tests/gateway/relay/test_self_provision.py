@@ -375,3 +375,107 @@ def test_connector_failure_is_non_fatal(monkeypatch):
     monkeypatch.setattr(relay, "_post_provision", _boom)
     assert relay.self_provision_relay() is False
     assert relay.relay_connection_auth() == (None, None)
+
+
+# ─────────────────────────── displayName (Phase 1 parity, gg#171) ───────────────────────────
+
+def test_relay_display_name_env_wins(monkeypatch):
+    monkeypatch.setenv("GATEWAY_RELAY_DISPLAY_NAME", "  Atlas  ")
+    assert relay.relay_display_name() == "Atlas"
+
+
+def test_relay_display_name_caps_at_64(monkeypatch):
+    monkeypatch.setenv("GATEWAY_RELAY_DISPLAY_NAME", "x" * 200)
+    assert relay.relay_display_name() == "x" * 64
+
+
+def test_relay_display_name_falls_back_to_skin_branding(monkeypatch):
+    monkeypatch.delenv("GATEWAY_RELAY_DISPLAY_NAME", raising=False)
+
+    class _Skin:
+        def get_branding(self, key, fallback=""):
+            return "Chatterbox" if key == "agent_name" else fallback
+
+    monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", lambda: _Skin())
+    assert relay.relay_display_name() == "Chatterbox"
+
+
+def test_relay_display_name_suppresses_stock_brand(monkeypatch):
+    """The default 'Hermes Agent' brand is identical on every install — forwarding
+    it would shadow the connector's linked-owner fallback (which actually
+    disambiguates) with a uniform label. Only customized names are forwarded."""
+    monkeypatch.delenv("GATEWAY_RELAY_DISPLAY_NAME", raising=False)
+
+    class _Skin:
+        def get_branding(self, key, fallback=""):
+            return "Hermes Agent" if key == "agent_name" else fallback
+
+    monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", lambda: _Skin())
+    assert relay.relay_display_name() is None
+
+
+def test_relay_display_name_branding_failure_is_non_fatal(monkeypatch):
+    monkeypatch.delenv("GATEWAY_RELAY_DISPLAY_NAME", raising=False)
+
+    def _boom():
+        raise RuntimeError("no skin engine")
+
+    monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", _boom)
+    assert relay.relay_display_name() is None
+
+
+def test_self_provision_forwards_display_name(monkeypatch):
+    _arm(monkeypatch)
+    monkeypatch.setenv("GATEWAY_RELAY_DISPLAY_NAME", "Atlas")
+    captured: dict = {}
+    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
+
+    assert relay.self_provision_relay() is True
+    assert captured["display_name"] == "Atlas"
+
+
+def test_post_provision_body_includes_displayName_only_when_set(monkeypatch):
+    """`displayName` joins the body ONLY when a value is supplied — omitting it
+    lets the connector store null (attribution falls back to linked-owner)."""
+    import json
+
+    sent: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ANN001
+        sent["body"] = json.loads(req.data.decode())
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    relay._post_provision(
+        provision_url="https://c.example/relay/provision",
+        access_token="tok",
+        gateway_id="gw-1",
+        platform="discord",
+        bot_id="app",
+        gateway_endpoint=None,
+        route_keys=[],
+        display_name="Atlas",
+    )
+    assert sent["body"]["displayName"] == "Atlas"
+
+    relay._post_provision(
+        provision_url="https://c.example/relay/provision",
+        access_token="tok",
+        gateway_id="gw-1",
+        platform="discord",
+        bot_id="app",
+        gateway_endpoint=None,
+        route_keys=[],
+    )
+    assert "displayName" not in sent["body"]

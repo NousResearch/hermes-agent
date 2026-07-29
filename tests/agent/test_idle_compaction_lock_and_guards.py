@@ -115,6 +115,53 @@ def test_idle_compaction_runs_through_guarded_path_and_releases_lock(
     assert ctx.messages[ctx.current_turn_user_idx].get("role") == "user"
 
 
+def test_idle_compaction_status_suppressed_when_engine_opts_out(
+    tmp_path: Path,
+) -> None:
+    """Quiet context engines silence the 💤 idle-resume status line too.
+
+    The idle emit routes through ``automatic_compaction_status_message``
+    (phase="idle") the same way the preflight and pre-API emits do — an
+    engine with ``emit_automatic_compaction_status = False`` gets a fully
+    silent idle compaction, while the compaction itself still runs.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "IDLE_QUIET"
+    db.create_session(sid, source="cli")
+    agent = _prep_idle_agent(db, sid)
+    agent.context_compressor.emit_automatic_compaction_status = False
+    events = []
+    agent.status_callback = lambda ev, msg: events.append((ev, msg))
+
+    _run_prologue(agent, _history())
+
+    agent.context_compressor.compress.assert_called_once()
+    assert not any(
+        "Resumed after" in str(msg) for _ev, msg in events
+    ), f"idle status leaked despite quiet engine: {events}"
+
+
+def test_idle_compaction_status_emitted_by_default(tmp_path: Path) -> None:
+    """Control: the default engine keeps the 💤 idle-resume status line."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "IDLE_LOUD"
+    db.create_session(sid, source="cli")
+    agent = _prep_idle_agent(db, sid)
+    # MagicMock would auto-create the hook attributes as truthy mocks; pin
+    # the default-engine surface explicitly.
+    agent.context_compressor.emit_automatic_compaction_status = True
+    del agent.context_compressor.get_automatic_compaction_status_message
+    events = []
+    agent.status_callback = lambda ev, msg: events.append((ev, msg))
+
+    _run_prologue(agent, _history())
+
+    agent.context_compressor.compress.assert_called_once()
+    assert any(
+        ev == "lifecycle" and "Resumed after" in str(msg) for ev, msg in events
+    ), f"expected idle status line, got: {events}"
+
+
 def test_idle_compaction_defers_to_held_compression_lock(tmp_path: Path) -> None:
     """An idle-triggered compress racing another path must sit the round out.
 
@@ -174,6 +221,9 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
             quiet_mode=True,
         )
     compressor.bind_session_state(db, sid)
+    # Trip the breaker durably (#54923: the strike counter now round-trips
+    # state.db, and the gate re-reads durable rows before honoring a block).
+    db.set_compression_ineffective_count(sid, 2)
     compressor._ineffective_compression_count = 2  # breaker tripped
     compressor.compress = MagicMock()
     agent.context_compressor = compressor

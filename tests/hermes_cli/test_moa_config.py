@@ -14,12 +14,37 @@ from hermes_cli.moa_config import (
 )
 
 
+def test_moa_slot_picker_excludes_unconfigured_providers(monkeypatch):
+    from hermes_cli import moa_cmd
+
+    captured = {}
+    monkeypatch.setattr(moa_cmd, "load_picker_context", lambda: object())
+
+    def fake_build(_context, **kwargs):
+        captured.update(kwargs)
+        return {
+            "providers": [
+                {"slug": "moa", "models": ["default"]},
+                {"slug": "opencode-go", "models": ["deepseek-v4-pro"]},
+            ]
+        }
+
+    monkeypatch.setattr(moa_cmd, "build_models_payload", fake_build)
+
+    assert [row["slug"] for row in moa_cmd._model_options()] == ["opencode-go"]
+    assert captured["include_unconfigured"] is False
+
+
+def _enabled_refs(refs):
+    return [{**slot, "enabled": True} for slot in refs]
+
+
 def test_normalize_moa_config_uses_default_named_preset():
     cfg = normalize_moa_config({})
 
     assert cfg["default_preset"] == DEFAULT_MOA_PRESET_NAME
     assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
-    assert cfg["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
 
 
@@ -42,7 +67,45 @@ def test_normalize_moa_config_preserves_named_presets():
 
     assert cfg["default_preset"] == "coding"
     assert set(cfg["presets"]) == {"coding", "review"}
-    assert cfg["reference_models"] == [{"provider": "openai-codex", "model": "gpt-5.5"}]
+    assert cfg["reference_models"] == [{"provider": "openai-codex", "model": "gpt-5.5", "enabled": True}]
+
+
+def test_normalize_moa_config_defaults_reference_enabled_true():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["review"]["reference_models"] == [
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
+    ]
+
+
+def test_normalize_moa_config_preserves_disabled_reference():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5", "enabled": False},
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": "false"},
+                    ],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["review"]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.5", "enabled": False},
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": False},
+    ]
 
 
 def test_legacy_flat_config_becomes_default_preset():
@@ -54,7 +117,7 @@ def test_legacy_flat_config_becomes_default_preset():
     )
 
     assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["reference_models"] == [
-        {"provider": "openai-codex", "model": "gpt-5.5"}
+        {"provider": "openai-codex", "model": "gpt-5.5", "enabled": True}
     ]
 
 
@@ -89,7 +152,7 @@ def test_normalize_moa_config_tolerates_non_list_reference_models():
     cfg = normalize_moa_config(
         {"presets": {"broken": {"reference_models": 2}}}
     )
-    assert cfg["presets"]["broken"]["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["presets"]["broken"]["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
 
 
 def test_normalize_moa_config_wraps_bare_dict_reference_models():
@@ -97,7 +160,36 @@ def test_normalize_moa_config_wraps_bare_dict_reference_models():
     cfg = normalize_moa_config(
         {"presets": {"p": {"reference_models": {"provider": "openai", "model": "gpt-4o"}}}}
     )
-    assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o"}]
+    assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o", "enabled": True}]
+
+
+def test_normalize_moa_config_parses_json_string_reference_models():
+    """reference_models stored as a JSON string (hand-edited config.yaml or a
+    stringified GUI save) must round-trip to the parsed model list instead of
+    being discarded for defaults."""
+    import json
+
+    models = [
+        {"provider": "openai", "model": "gpt-4o"},
+        {"provider": "anthropic", "model": "claude-sonnet-4"},
+    ]
+    cfg = normalize_moa_config(
+        {"presets": {"p": {"reference_models": json.dumps(models)}}}
+    )
+    assert cfg["presets"]["p"]["reference_models"] == [
+        {**m, "enabled": True} for m in models
+    ]
+
+
+def test_normalize_moa_config_malformed_json_string_falls_back_to_defaults():
+    """A malformed JSON string reference_models must degrade to the default
+    reference models without raising."""
+    cfg = normalize_moa_config(
+        {"presets": {"p": {"reference_models": "[{'provider': broken"}}}
+    )
+    assert cfg["presets"]["p"]["reference_models"] == [
+        {**m, "enabled": True} for m in DEFAULT_MOA_REFERENCE_MODELS
+    ]
 
 
 def test_normalize_moa_config_preserves_slot_reasoning_effort():
@@ -123,6 +215,42 @@ def test_normalize_moa_config_preserves_slot_reasoning_effort():
     assert "reasoning_effort" not in preset["reference_models"][2]
     assert preset["reference_models"][3]["reasoning_effort"] == "ultra"
     assert preset["aggregator"]["reasoning_effort"] == "xhigh"
+
+
+def test_normalize_moa_config_round_trips_reasoning_effort_and_enabled():
+    """Regression: a client that GETs the config and PUTs it straight back must
+    not strip per-slot keys. reasoning_effort AND enabled have to survive a
+    normalize → normalize round trip together (a save path that re-normalizes
+    the previously normalized payload is the exact client round-trip shape)."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "high", "enabled": False},
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True},
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                        "reasoning_effort": "xhigh",
+                    },
+                }
+            }
+        }
+    )
+
+    round_tripped = normalize_moa_config(cfg)
+
+    refs = round_tripped["presets"]["p"]["reference_models"]
+    assert refs[0] == {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "reasoning_effort": "high",
+        "enabled": False,
+    }
+    assert refs[1] == {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
+    assert round_tripped["presets"]["p"]["aggregator"]["reasoning_effort"] == "xhigh"
 
 
 def test_normalize_moa_config_coerces_numeric_strings():
@@ -204,7 +332,7 @@ def test_resolve_moa_preset_returns_requested_model_set():
     )
 
     assert resolve_moa_preset(cfg, "review")["reference_models"] == [
-        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
     ]
 
 
@@ -254,7 +382,7 @@ def test_build_moa_turn_prompt_encodes_one_shot_default_preset():
     decoded_prompt, cfg = decode_moa_turn(prompt)
     assert decoded_prompt == "write a file then inspect it"
     assert cfg is not None
-    assert cfg["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
 
 
 def test_moa_provider_rejected_as_reference_slot():
@@ -276,7 +404,7 @@ def test_moa_provider_rejected_as_reference_slot():
 
     refs = cfg["presets"]["p"]["reference_models"]
     assert {"provider": "moa", "model": "default"} not in refs
-    assert refs == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
+    assert refs == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}]
 
 
 def test_moa_provider_rejected_as_aggregator_slot():
@@ -451,7 +579,9 @@ def test_validate_moa_payload_agrees_with_clean_slot():
     assert validate_moa_payload(payload) == []
 
     cfg = normalize_moa_config(payload)
-    assert cfg["presets"]["p"]["reference_models"] == payload["presets"]["p"]["reference_models"]
+    # Slots survive with only the canonical enabled=True default added — no
+    # provider/model swap, no defaults substitution.
+    assert cfg["presets"]["p"]["reference_models"] == _enabled_refs(payload["presets"]["p"]["reference_models"])
     assert cfg["presets"]["p"]["aggregator"] == payload["presets"]["p"]["aggregator"]
 
 
@@ -461,3 +591,186 @@ def test_validate_moa_payload_rejects_non_dict():
     assert validate_moa_payload(None)
     assert validate_moa_payload([1, 2])
     assert validate_moa_payload({"presets": {"p": "not-a-dict"}})
+
+
+# ── Per-slot max_tokens ────────────────────────────────────────────────────
+
+
+def test_slot_max_tokens_preserved():
+    """A max_tokens field on a reference slot survives normalization."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": 600},
+                        {"provider": "openai-codex", "model": "gpt-5.5"},
+                    ],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+    )
+    refs = cfg["presets"]["p"]["reference_models"]
+    assert refs[0] == {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": 600, "enabled": True}
+    assert refs[1] == {"provider": "openai-codex", "model": "gpt-5.5", "enabled": True}
+
+
+def test_slot_max_tokens_coerced_from_string():
+    """Hand-edited YAML string '600' coerces to int on a slot."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": "600"},
+                    ],
+                }
+            }
+        }
+    )
+    refs = cfg["presets"]["p"]["reference_models"]
+    assert refs[0]["max_tokens"] == 600
+
+
+def test_slot_max_tokens_invalid_dropped():
+    """Non-positive / non-numeric slot max_tokens is dropped (slot kept)."""
+    for bad in (0, -5, "abc", "", None):
+        cfg = normalize_moa_config(
+            {
+                "presets": {
+                    "p": {
+                        "reference_models": [
+                            {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "max_tokens": bad},
+                        ],
+                    }
+                }
+            }
+        )
+        ref = cfg["presets"]["p"]["reference_models"][0]
+        assert "max_tokens" not in ref, bad
+        assert ref["provider"] == "openrouter"
+
+
+def test_slot_max_tokens_absent_by_default():
+    """Slots without max_tokens don't get the field — backward compat."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                    ],
+                }
+            }
+        }
+    )
+    ref = cfg["presets"]["p"]["reference_models"][0]
+    assert "max_tokens" not in ref
+
+
+# --- fanout cadence normalization (every_n) ---
+
+
+def test_fanout_defaults_to_user_turn():
+    # Default is the cheapest cadence (#67199): advisors once per user turn.
+    cfg = normalize_moa_config({})
+    assert cfg["fanout"] == "user_turn"
+
+
+def test_fanout_per_iteration_still_selectable():
+    cfg = normalize_moa_config({"fanout": "per_iteration"})
+    assert cfg["fanout"] == "per_iteration"
+
+
+def test_fanout_every_n_string_form_normalized():
+    cfg = normalize_moa_config({"fanout": "every_n:3"})
+    assert cfg["fanout"] == "every_n:3"
+    assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["fanout"] == "every_n:3"
+
+
+def test_fanout_every_n_mapping_form_normalized_to_string():
+    cfg = normalize_moa_config({"fanout": {"mode": "every_n", "n": 4}})
+    assert cfg["fanout"] == "every_n:4"
+
+
+def test_fanout_every_n_degenerate_n_falls_back():
+    # n=1 means "every iteration" — that semantically IS per_iteration;
+    # n=0 / negative / garbage is unparseable and falls to the default
+    # cadence (user_turn, the cheapest — #67199).
+    assert normalize_moa_config({"fanout": "every_n:1"})["fanout"] == "per_iteration"
+    assert normalize_moa_config({"fanout": "every_n:0"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": "every_n:-2"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": "every_n:x"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": "every_n"})["fanout"] == "user_turn"
+    assert normalize_moa_config({"fanout": {"mode": "every_n"}})["fanout"] == "user_turn"
+
+
+def test_fanout_every_n_round_trips_through_normalize():
+    once = normalize_moa_config({"fanout": "every_n:3"})
+    twice = normalize_moa_config(once)
+    assert twice["fanout"] == "every_n:3"
+    assert twice["presets"][DEFAULT_MOA_PRESET_NAME]["fanout"] == "every_n:3"
+
+
+def test_fanout_mapping_user_turn_mode_accepted():
+    cfg = normalize_moa_config({"fanout": {"mode": "user_turn"}})
+    assert cfg["fanout"] == "user_turn"
+
+
+# --- privacy_filter normalization ---
+
+
+def test_privacy_filter_defaults_off():
+    cfg = normalize_moa_config({})
+    assert cfg["privacy_filter"] == ""
+
+
+def test_privacy_filter_modes_normalized():
+    from hermes_cli.moa_config import coerce_privacy_filter
+
+    assert coerce_privacy_filter("display") == "display"
+    assert coerce_privacy_filter("FULL") == "full"
+    assert coerce_privacy_filter(True) == "full"       # legacy boolean → issue #59959 ask
+    assert coerce_privacy_filter("true") == "full"
+    assert coerce_privacy_filter(False) == ""
+    assert coerce_privacy_filter(None) == ""
+    assert coerce_privacy_filter("bogus") == ""
+    assert coerce_privacy_filter("off") == ""
+
+
+def test_privacy_filter_round_trips_through_normalize():
+    once = normalize_moa_config({"privacy_filter": "display"})
+    assert once["privacy_filter"] == "display"
+    assert normalize_moa_config(once)["privacy_filter"] == "display"
+    full = normalize_moa_config({"privacy_filter": "full"})
+    assert normalize_moa_config(full)["privacy_filter"] == "full"
+
+
+def test_reference_failure_controls_are_normalized_per_preset_and_flattened():
+    cfg = normalize_moa_config(
+        _preset(reference_timeout="120.5", degraded_reference_policy="silent")
+    )
+
+    preset = cfg["presets"]["p"]
+    assert preset["reference_timeout"] == 120.5
+    assert preset["degraded_reference_policy"] == "silent"
+    assert cfg["reference_timeout"] == 120.5
+    assert cfg["degraded_reference_policy"] == "silent"
+
+
+@pytest.mark.parametrize("value", [None, "", 0, -1, "bad"])
+def test_reference_timeout_invalid_values_fall_back_to_default(value):
+    # None = inherit auxiliary.moa_reference.timeout (no per-preset override).
+    assert resolve_moa_preset(_preset(reference_timeout=value), "p")["reference_timeout"] is None
+
+
+def test_reference_timeout_is_uncapped_and_unknown_policy_is_loud():
+    preset = resolve_moa_preset(
+        _preset(reference_timeout=9999, degraded_reference_policy="wat"), "p"
+    )
+
+    # Explicit per-preset values are honored as-is — long-thinking advisor
+    # models legitimately run beyond any fixed cap.
+    assert preset["reference_timeout"] == 9999.0
+    assert preset["degraded_reference_policy"] == "loud"

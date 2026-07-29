@@ -1298,6 +1298,91 @@ class TestClassifyApiError:
         result = classify_api_error(e, approx_tokens=100000, context_length=200000)
         assert result.reason == FailoverReason.context_overflow
 
+    def test_400_empty_content_message_not_context_overflow(self):
+        """Anthropic 'non-empty content' 400 → format_error, NOT compression.
+
+        Regression for the empty-assistant-stub bug: a stream dies with 0
+        recovered chars, an empty assistant message is persisted, and every
+        subsequent request 400s with 'all messages must have non-empty
+        content'.  On a large session the generic '400 + large session'
+        heuristic used to mis-route this into the compression loop, ending in
+        'Cannot compress further' on every retry (compression can't fix a
+        malformed transcript).  It must classify as a non-retryable
+        format_error so the loop stops looping.
+        """
+        msg = ("all messages must have non-empty content except for the "
+               "optional final assistant message")
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg, "type": "invalid_request_error"}},
+        )
+        # Large session (many messages / tokens) to prove the overflow
+        # heuristic does NOT capture it.
+        result = classify_api_error(
+            e, approx_tokens=66000, context_length=200000, num_messages=219,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is not True
+
+    def test_400_litellm_invalid_request_body_shape(self, caplog):
+        """litellm/Bedrock proxy shape (errorMessage/errorCode) → format_error.
+
+        The proxy in front of Anthropic surfaces the empty-content rejection
+        as {"errorMessage": "...non-empty content...", "errorCode":
+        "INVALID_REQUEST_BODY", "errorArgs": {"reason": "..."}}.  Those keys
+        are not the standard error.message / message, so err_body_msg used to
+        come back empty → is_generic=True → mis-routed into compression on a
+        large session.  Both the message pattern and the errorCode must be
+        recognized, and a distinct warning must be logged so the condition is
+        observable in the field.
+        """
+        import logging
+        proxy_msg = ("The provided request body is invalid: claude "
+                     "messages.208: all messages must have non-empty content "
+                     "except for the optional final assistant message")
+        e = MockAPIError(
+            proxy_msg,
+            status_code=400,
+            body={
+                "errorMessage": proxy_msg,
+                "errorCode": "INVALID_REQUEST_BODY",
+                "statusCode": 400,
+                "errorArgs": {"reason": "claude messages.208: ..."},
+            },
+        )
+        with caplog.at_level(logging.WARNING, logger="agent.error_classifier"):
+            result = classify_api_error(
+                e, approx_tokens=66000, context_length=200000, num_messages=219,
+            )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is not True
+        assert any(
+            "Malformed message array 400" in r.getMessage()
+            for r in caplog.records
+        ), "Expected a distinct warning identifying the malformed-body 400"
+
+    def test_400_real_context_overflow_still_compresses(self):
+        """Guard: the new empty-content guard must NOT swallow real overflows.
+
+        A genuine 'maximum context length' 400 must still route into
+        compression — the fix is surgical, not a blanket 400→format_error.
+        """
+        msg = ("This model's maximum context length is 200000 tokens. "
+               "However, your messages resulted in 250000 tokens.")
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg, "type": "invalid_request_error"}},
+        )
+        result = classify_api_error(
+            e, approx_tokens=250000, context_length=200000, num_messages=219,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     # ── Peer closed + large session ──
 
     def test_peer_closed_large_session(self):
@@ -2169,4 +2254,76 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
+
+
+# ── Test: throttle vs overflow disambiguation + new overflow shapes ─────
+# Port of anomalyco/opencode#37848 (expand context overflow patterns +
+# rate-limit exclusion guard).
+
+class TestThrottleVsOverflowDisambiguation:
+    """Throttle messages that mention tokens must NOT route to compression."""
+
+    def test_bedrock_throttling_too_many_tokens_is_rate_limit(self):
+        # AWS Bedrock (and some proxies) surface throttling as
+        # "Throttling error: Too many tokens, please wait before trying
+        # again." — the "too many tokens" fragment sits in
+        # _CONTEXT_OVERFLOW_PATTERNS, so before the "throttling" rate-limit
+        # pattern this compressed a healthy session on every throttle.
+        e = Exception(
+            "Throttling error: Too many tokens, please wait before trying again."
+        )
+        result = classify_api_error(e, provider="bedrock", model="claude")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_compress is False
+
+    def test_plain_too_many_tokens_still_overflow(self):
+        # Without any throttle wording, "Too many tokens" remains a
+        # context-overflow signal (Z.AI / GLM family wording).
+        e = Exception("Too many tokens")
+        result = classify_api_error(e, provider="zai", model="glm-5")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+
+class TestExpandedOverflowPatterns:
+    """New provider overflow wordings route into compression recovery."""
+
+    def test_maximum_allowed_input_length_is_overflow(self):
+        # Together/Fireworks-style wording — matched no pattern before.
+        e = Exception(
+            "Input length 131393 exceeds the maximum allowed input length "
+            "of 131040 tokens."
+        )
+        result = classify_api_error(e, provider="together", model="m")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_request_too_large_message_only_is_payload_too_large(self):
+        # Anthropic's structured 413 type re-wrapped by a proxy with no
+        # status attribute — was falling through to `unknown`.
+        e = Exception(
+            '{"error":{"type":"request_too_large",'
+            '"message":"Request exceeds the maximum size"}}'
+        )
+        result = classify_api_error(e, provider="anthropic", model="m")
+        assert result.reason == FailoverReason.payload_too_large
+        assert result.should_compress is True
+
+    def test_longer_than_context_length_still_overflow(self):
+        # Regression guard for wordings that already matched.
+        e = Exception(
+            "The input (516368 tokens) is longer than the model's context "
+            "length (262144 tokens)."
+        )
+        result = classify_api_error(e, provider="openrouter", model="m")
+        assert result.reason == FailoverReason.context_overflow
+
+    def test_configured_context_size_still_overflow(self):
+        e = Exception(
+            "Prompt has 5,958,968 tokens, but the configured context size "
+            "is 256,000 tokens"
+        )
+        result = classify_api_error(e, provider="ollama", model="m")
+        assert result.reason == FailoverReason.context_overflow
+
 

@@ -111,7 +111,8 @@ export function ListRow({
   hint,
   action,
   below,
-  wide = false
+  wide = false,
+  className
 }: {
   title: ReactNode
   description?: ReactNode
@@ -119,12 +120,13 @@ export function ListRow({
   action?: ReactNode
   below?: ReactNode
   wide?: boolean
+  className?: string
 }) {
   return (
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className="@container">
+    <div className={cn('@container', className)}>
       <div
         className={cn(
           'grid gap-3 py-3',
@@ -194,7 +196,12 @@ export function SectionHeadingSkeleton() {
 export function ListRowSkeleton({ wide = false }: { wide?: boolean }) {
   return (
     <div className="@container">
-      <div className={cn('grid gap-3 py-3', !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center')}>
+      <div
+        className={cn(
+          'grid gap-3 py-3',
+          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center'
+        )}
+      >
         <div className="min-w-0 space-y-1.5">
           <Skeleton className="h-3.5 w-40 max-w-full" />
           <Skeleton className="h-3 w-64 max-w-full" />

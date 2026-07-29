@@ -182,6 +182,27 @@ class TestIssue6211NativeProviderPrefixNormalization:
         assert normalize_model_for_provider(model, target_provider) == expected
 
 
+class TestCustomProviderIsNotAVendorIdentity:
+    """``custom`` is a generic bucket, not a vendor -- an alias that merely
+    *resolves to* ``custom`` (e.g. ``ollama`` -> ``custom`` in
+    ``_PROVIDER_ALIASES``) must not be treated as a redundant prefix the
+    way ``zai/``, ``gemini/``, etc. are for their own native providers.
+
+    Regression for: a named custom provider (e.g. a LiteLLM proxy fronting
+    Ollama) registers its own routing name as ``ollama/glm-5.2``. Stripping
+    the ``ollama/`` prefix because it happens to alias to ``custom``
+    produced a bare ``glm-5.2`` the proxy doesn't recognise.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("ollama/glm-5.2", "ollama/glm-5.2"),
+        ("ollama/llama3.2", "ollama/llama3.2"),
+        ("custom/some-model", "some-model"),
+    ])
+    def test_only_literal_custom_prefix_is_stripped(self, model, expected):
+        assert normalize_model_for_provider(model, "custom") == expected
+
+
 # ── detect_vendor ──────────────────────────────────────────────────────
 
 class TestDetectVendor:
@@ -232,18 +253,32 @@ class TestDeepseekVSeriesPassThrough:
         assert result == "deepseek-v4-flash"
 
 
-# ── DeepSeek regressions (existing behaviour still holds) ──────────────
+# ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:
-    """Canonical pass-through and reasoner-keyword folding stay intact."""
+    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
+
+    DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
+    2026-07-24; sending them on the wire returns HTTP 400.
+    """
 
     @pytest.mark.parametrize("model,expected", [
-        ("deepseek-chat", "deepseek-chat"),
-        ("deepseek-reasoner", "deepseek-reasoner"),
-        ("DEEPSEEK-CHAT", "deepseek-chat"),
+        ("deepseek-chat", "deepseek-v4-flash"),
+        ("deepseek-reasoner", "deepseek-v4-flash"),
+        ("DEEPSEEK-CHAT", "deepseek-v4-flash"),
+        ("DEEPSEEK-REASONER", "deepseek-v4-flash"),
+        ("deepseek/deepseek-reasoner", "deepseek-v4-flash"),
+        ("deepseek-v4-pro", "deepseek-v4-pro"),
+        ("deepseek-v4-flash", "deepseek-v4-flash"),
     ])
-    def test_canonical_models_pass_through(self, model, expected):
+    def test_retired_aliases_and_canonicals(self, model, expected):
         assert _normalize_for_deepseek(model) == expected
+
+    def test_provider_path_rewrites_reasoner(self):
+        assert (
+            normalize_model_for_provider("deepseek-reasoner", "deepseek")
+            == "deepseek-v4-flash"
+        )
 
     @pytest.mark.parametrize("model", [
         "deepseek-r1",
@@ -252,8 +287,8 @@ class TestDeepseekCanonicalAndReasonerMapping:
         "deepseek-reasoning-preview",
         "deepseek-cot-experimental",
     ])
-    def test_reasoner_keywords_map_to_reasoner(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-reasoner"
+    def test_reasoner_keywords_map_to_v4_flash(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
 
     @pytest.mark.parametrize("model", [
         "deepseek-chat-v3.1",    # 'chat' prefix, not V-series pattern
@@ -261,5 +296,5 @@ class TestDeepseekCanonicalAndReasonerMapping:
         "something-random",
         "gpt-5",                 # non-DeepSeek names still fall through
     ])
-    def test_unknown_names_fall_back_to_chat(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-chat"
+    def test_unknown_names_fall_back_to_v4_flash(self, model):
+        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"

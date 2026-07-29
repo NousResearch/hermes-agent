@@ -7,15 +7,18 @@ import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
+import { writeClipboardText } from '@/components/ui/copy-button'
 import { triggerHaptic } from '@/lib/haptics'
-import { $filePreviewTarget, $previewTarget } from '@/store/preview'
+import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
 
 import { makeTerminalReader, registerTerminalReader } from './buffer'
+import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import {
   isAddSelectionShortcut,
+  isMacPlatform,
   resolveSurfaceColor,
   terminalSelectionAnchor,
   terminalSelectionLabel,
@@ -62,7 +65,7 @@ type TerminalStatus = 'closed' | 'open' | 'starting'
 // file's name instead of the shell, so the composer ref reads as a file quote
 // rather than a bogus "zsh:N lines".
 function previewSelectionLabel(): string {
-  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const target = $previewTarget.get()
   const source = target?.path || target?.url || ''
 
   return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
@@ -421,6 +424,7 @@ export function useTerminalSession({
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
     onShellRef.current = onShell
@@ -478,6 +482,7 @@ export function useTerminalSession({
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [addSelectionToChat, readSelection])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
     const terminalApi = window.hermesDesktop?.terminal
@@ -790,11 +795,54 @@ export function useTerminalSession({
       const next = term.getSelection()
       selectionRef.current = next
       selectionLabelRef.current = next.trim() ? terminalSelectionLabel(term, shellNameRef.current, next) : ''
+      // Mirror into xterm's helper textarea so the OS sees a real selection —
+      // that's what makes the Edit menu, ⌘C, and right-click Copy work over a
+      // canvas that has no DOM selection of its own.
+      mirrorSelection(host, next)
       setSelection(next)
       setSelectionStyle(next.trim() ? terminalSelectionAnchor(host) : null)
     })
 
     cleanup.push(() => selectionDisposable.dispose())
+
+    // Copy/paste chords. Returning false stops xterm from also sending the key
+    // to the PTY; every path that doesn't copy or paste returns true, so plain
+    // Ctrl+C with no selection still interrupts the running process.
+    term.attachCustomKeyEventHandler(event => {
+      const intent = terminalClipboardIntent(event, {
+        hasSelection: Boolean(term.getSelection()),
+        isMac: isMacPlatform()
+      })
+
+      if (!intent) {
+        return true
+      }
+
+      event.preventDefault()
+
+      if (intent === 'copy') {
+        const text = term.getSelection()
+        // Write through the main process: the renderer's clipboard API throws
+        // "Write permission denied" whenever the document isn't focused.
+        void writeClipboardText(text).catch(() => {
+          // Clipboard unavailable — the selection stays put so the user can retry.
+        })
+        term.clearSelection()
+        triggerHaptic('selection')
+
+        return false
+      }
+      void (async () => {
+        const text = (await window.hermesDesktop?.readClipboard?.()) ?? ''
+
+        if (text) {
+          hasSessionActivityRef.current = true
+          term.paste(text)
+        }
+      })()
+
+      return false
+    })
 
     const startSession = () =>
       void terminalApi
@@ -974,6 +1022,7 @@ export function useTerminalSession({
   // the subscribe fires immediately, so a command set before this pane mounted
   // runs as soon as the session is ready. Cleared after writing so a later
   // remount can't replay a stale command.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!active || status !== 'open') {
       return

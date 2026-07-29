@@ -438,6 +438,9 @@ class TestBlocklistCoverage:
             "SIGNAL_HTTP_URL",
             "SIGNAL_ACCOUNT",
             "SIGNAL_ALLOWED_USERS",
+            "SIGNAL_ALLOWED_GROUPS",
+            "SIGNAL_ALLOWED_GROUP_USERS",
+            # Legacy alias (deprecated)
             "SIGNAL_GROUP_ALLOWED_USERS",
             "SIGNAL_HOME_CHANNEL",
             "SIGNAL_HOME_CHANNEL_NAME",

@@ -21570,6 +21570,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
+        # ── message:pre_route — hook-driven session redirect ──────────
+        # Fires after all session resolution (get_or_create, delegation
+        # pinning, topic tip-walk, auto-reset) is complete but BEFORE the
+        # turn-lease is claimed.  Hooks may return
+        #   {"decision": "switch_session", "session_id": "<id>"}
+        # to redirect this turn to a different session/worker profile.
+        _pre_route_ctx = {
+            "platform": source.platform.value if hasattr(source.platform, "value") else str(source.platform),
+            "user_id": str(source.user_id),
+            "chat_id": str(source.chat_id),
+            "thread_id": str(source.thread_id) if source.thread_id else None,
+            "chat_type": source.chat_type or "",
+            "session_id": session_entry.session_id,
+            "session_key": session_key,
+            "message": event.text or "",
+        }
+        _pre_route_results = await self.hooks.emit_collect("message:pre_route", _pre_route_ctx)
+        for _pr in _pre_route_results:
+            if not isinstance(_pr, dict):
+                continue
+            if _pr.get("decision") == "switch_session" and _pr.get("session_id"):
+                _target_id = str(_pr["session_id"])
+                if _target_id != session_entry.session_id:
+                    _switched = await self._async_session_store.switch_session(
+                        session_key, _target_id
+                    )
+                    if _switched:
+                        session_entry = _switched
+            break
+
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation
         # pinning → topic tip-walk switch_session are all above). Serialize

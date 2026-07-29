@@ -5,6 +5,7 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -171,7 +172,8 @@ class TestRunBackgroundTask:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("task_id,filename,uri_spec", [
         ("bg_qqbot_file", "shot.png", "two_slash"),
-        ("bg_win_file_url", "win_test.png", "three_slash_windows"),
+        pytest.param("bg_win_file_url", "win_test.png", "three_slash_windows",
+                     marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")),
     ])
     async def test_qqbot_background_task_file_url_routes_to_send_image_file(self, tmp_path, monkeypatch, task_id, filename, uri_spec):
         """Background-task finalizer sees ``file://`` images and routes them

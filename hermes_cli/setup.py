@@ -549,7 +549,8 @@ def _print_setup_summary(config: dict, hermes_home):
 
     # STT — show configured provider
     stt_provider = cfg_get(config, "stt", "provider", default="local") or "local"
-    if getattr(subscription_features, "stt", None) and subscription_features.stt.managed_by_nous:
+    _stt_feature = subscription_features.features.get("stt")
+    if _stt_feature is not None and _stt_feature.managed_by_nous:
         tool_status.append(("Speech-to-Text (OpenAI via Nous subscription)", True, None))
     elif stt_provider == "openai" and (
         get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")

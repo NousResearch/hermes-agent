@@ -348,11 +348,48 @@ class TestHermesConfigWriteProtection:
         # handled by the project patterns, not the Hermes-home rule.
         for cmd in (
             "cat ~/.hermes/config.yaml",
-            "sed -i 's/a/b/' /srv/app/config.yaml",
             "echo data > /tmp/scratch.txt",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
+
+    def test_sed_in_place_any_yaml_file_dangerous(self):
+        # PR #45755 broadens sed/perl -i protection to ANY .yaml/.yml file,
+        # not just Hermes-managed config/env paths. In-place YAML edits can
+        # silently break indentation/quoting/flow sequences.
+        for command in (
+            "sed -i 's/a/b/' /srv/app/config.yaml",
+            "sed --in-place 's/a/b/' /srv/app/settings.yml",
+            "perl -i -pe 's/a/b/' /srv/app/config.yaml",
+            "ruby -i -pe 'gsub(/a/, %s)' /srv/app/settings.yml" % '"b"',
+            # -i after other flags / long flags / attached backup suffixes
+            # (GNU sed 4.9 forms that previously bypassed the guard):
+            "sed -e 's/a/b/' -i /srv/app/config.yaml",
+            "sed --posix -i 's/a/b/' /srv/app/settings.yml",
+            "sed -ibak 's/a/b/' /srv/app/config.yaml",
+            "perl -ibak -pe 's/a/b/' /srv/app/settings.yml",
+            "perl -pi -e 's/a/b/' /srv/app/config.yaml",
+            "sed -i.bak 's/a/b/' /srv/app/settings.yml",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+            assert "YAML" in desc or "yaml" in desc, command
+
+    def test_sed_without_in_place_flag_on_yaml_is_safe(self):
+        # No -i/--in-place flag -> not an in-place edit, even when the
+        # expression contains an 'i' or a long flag contains the letter.
+        for command in (
+            "sed -n 's/a/b/p' /srv/app/config.yaml",
+            "sed -e 's/a/b/' /srv/app/settings.yml",
+            "sed --posix 's/a/b/' /srv/app/config.yaml",
+            "sed --separate 's/a/b/' /srv/app/settings.yml",
+            "sed -n 's/foo/i/' /srv/app/config.yaml",
+            "perl -w 'print qq{ok}' /srv/app/settings.yml",
+            "ruby -w 'puts :ok' /srv/app/config.yaml",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is False, command
 
 
 class TestFindExecFullPathRm:

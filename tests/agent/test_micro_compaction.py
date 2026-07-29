@@ -18,6 +18,8 @@ The invariants that matter:
   times and then skipped, so a poison exchange can't stall every turn.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from agent.context_compressor import (
@@ -217,6 +219,70 @@ class TestMicroCompaction:
         # Content-free: no transcript text may ride along in the payload.
         blob = json.dumps(payload)
         assert "answer 0" not in blob and "question 0" not in blob
+
+    def test_telemetry_reports_occupancy_without_forcing_resolution(self, caplog):
+        """Occupancy is the headline: how full the window is being kept.
+
+        It must be read from the cached threshold only. The public
+        ``threshold_tokens`` property resolves lazily and can fire a
+        synchronous /models probe (#32221); telemetry must never be what
+        blocks a turn, so an unresolved window reports null instead.
+        """
+        import json
+        import logging
+
+        cc = _compressor()
+        cc.threshold_tokens = 10_000  # pin; also populates the cache
+        messages = _conversation(exchanges=8)
+
+        with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+            cc._micro_compact(messages)
+
+        line = next(r.getMessage() for r in caplog.records
+                    if "micro compaction telemetry:" in r.getMessage())
+        payload = json.loads(line.split("micro compaction telemetry: ", 1)[1])
+
+        assert payload["threshold_tokens"] == 10_000
+        assert payload["occupancy_pct"] == pytest.approx(
+            payload["tokens_after"] / 10_000 * 100, abs=0.1
+        )
+
+    def test_emitter_never_forces_window_resolution(self, caplog):
+        """The emitter reads the cached threshold, never the property.
+
+        In a real pass the threshold is already resolved by the time
+        telemetry runs (the tail calculation needs it), so occupancy is
+        normally populated. This pins the safety property directly: with the
+        cache empty, emitting reports null rather than triggering the lazy
+        resolution — which can issue a synchronous /models probe (#32221).
+        """
+        import json
+        import logging
+
+        cc = _compressor()
+        cc._threshold_tokens = None
+        cc._resolved_context_length = None
+
+        def explode(self):  # pragma: no cover - must never be called
+            raise AssertionError("telemetry forced context-length resolution")
+
+        with patch.object(type(cc), "threshold_tokens",
+                          property(explode, lambda s, v: None)):
+            with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+                cc._emit_micro_compaction_telemetry(
+                    outcome="absorbed",
+                    messages_before=10,
+                    messages_after=9,
+                    tokens_before=500,
+                    tokens_after=400,
+                )
+
+        line = next(r.getMessage() for r in caplog.records
+                    if "micro compaction telemetry:" in r.getMessage())
+        payload = json.loads(line.split("micro compaction telemetry: ", 1)[1])
+
+        assert payload["occupancy_pct"] is None
+        assert payload["threshold_tokens"] is None
 
     def test_first_pass_costs_marker_overhead_then_pays_it_back(self):
         """The first pass can grow the transcript; later passes recover it.

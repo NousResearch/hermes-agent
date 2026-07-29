@@ -148,7 +148,7 @@ def direct_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config",
+        "hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -166,7 +166,7 @@ def real_binding_runtime(tmp_path, monkeypatch):
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config",
+        "hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -492,7 +492,7 @@ def test_direct_runtime_is_disabled_by_default(tmp_path, monkeypatch):
     fake = _Relay()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
-    monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
     monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
@@ -919,7 +919,7 @@ def test_core_mark_does_not_start_relay_without_metrics_or_a_plugin(
         return _Relay()
 
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", load_relay)
-    monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", lambda: {})
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
     monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
@@ -1056,7 +1056,7 @@ def test_shared_metrics_policy_and_store_are_profile_scoped(tmp_path, monkeypatc
     profile_b = tmp_path / "profile-b"
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config",
+        "hermes_cli.config.read_raw_config_readonly",
         lambda: {
             "telemetry": {
                 "shared_metrics": {"enabled": get_hermes_home() == profile_a}
@@ -1112,7 +1112,7 @@ def test_shared_metrics_subscribers_isolate_two_enabled_profiles(tmp_path, monke
     profile_b = tmp_path / "profile-b"
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config",
+        "hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -1249,7 +1249,7 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     monkeypatch.setenv("HERMES_HOME", str(profile))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config",
+        "hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": dict(policy)}},
     )
     relay_shared_metrics._reset_for_tests()

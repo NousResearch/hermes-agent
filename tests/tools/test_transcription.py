@@ -237,7 +237,14 @@ class TestTranscribeLocal:
             result = _transcribe_local(str(audio_file), "base")
 
         assert result["success"] is True
-        assert mock_model.transcribe.call_args.kwargs == {"beam_size": 5}
+        # Contract: null `stt.local:` config must not crash, and must not
+        # force a language or initial_prompt. Baseline kwargs (beam_size,
+        # VAD hardening) are pinned by test_stt_silence_hallucinations —
+        # don't exact-match the dict here (change-detector).
+        kwargs = mock_model.transcribe.call_args.kwargs
+        assert kwargs["beam_size"] == 5
+        assert "language" not in kwargs
+        assert "initial_prompt" not in kwargs
 
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):

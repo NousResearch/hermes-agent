@@ -247,6 +247,76 @@ class TestApprovalFlow:
             store.approve_code("telegram", code)
             assert store.is_approved("telegram", "user1") is True
 
+    def test_approve_request_id_from_pending_list(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            pending = store.list_pending("telegram")
+            request_id = pending[0]["request_id"]
+
+            assert request_id
+            assert request_id != bot_code
+
+            result = store.approve_request("telegram", request_id.upper())
+            remaining = store.list_pending("telegram")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+        assert remaining == []
+
+    def test_approve_request_never_reveals_or_accepts_the_code_digest(self, tmp_path):
+        """`list_pending` exposes an approvable id and nothing derived from the code.
+
+        The pre-fix listing returned the code's hash prefix under a ``code``
+        key, which admin GUIs posted straight back to approve — it could never
+        match, because approval hashes its input and compares to that digest.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            entry = store.list_pending("telegram")[0]
+
+            digest = json.loads(
+                (tmp_path / "telegram-pending.json").read_text()
+            )[entry["request_id"]]["hash"]
+
+            assert set(entry) == {
+                "platform",
+                "request_id",
+                "user_id",
+                "user_name",
+                "age_minutes",
+            }
+            assert bot_code not in entry.values()
+            assert entry["request_id"] not in (digest, digest[:8])
+            # The digest prefix is not a credential on either grant path.
+            assert store.approve_code("telegram", digest[:8]) is None
+            assert store.approve_request("telegram", digest[:8]) is None
+
+    def test_stale_request_id_never_locks_out_the_code_path(self, tmp_path):
+        """Clicking Approve on an expired row is not a brute-force attempt.
+
+        Request ids only reach an admin already authenticated to this store, so
+        a miss means the row went stale — counting it toward the code lockout
+        let a handful of GUI clicks lock the operator out of `pairing approve`.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            stale_id = store.list_pending("telegram")[0]["request_id"]
+            assert store.approve_request("telegram", stale_id) is not None
+
+            # Re-click the now-approved row well past the lockout threshold.
+            for _ in range(MAX_FAILED_ATTEMPTS + 3):
+                assert store.approve_request("telegram", stale_id) is None
+
+            assert store._is_locked_out("telegram") is False
+            # And the code path is still usable for the next real request.
+            next_code = store.generate_code("telegram", "user2", "Bee")
+            assert store.approve_code("telegram", next_code) is not None
+            assert code != next_code
+
 
     def test_whatsapp_legacy_raw_jid_approval_survives_alias_flip(self, tmp_path, monkeypatch):
         mapping_dir = tmp_path / "whatsapp" / "session"
@@ -283,6 +353,30 @@ class TestApprovalFlow:
 
 class TestLockout:
 
+
+    def test_successful_approval_resets_failure_counter(self, tmp_path):
+        """A successful approval clears the brute-force streak, so isolated
+        typos across the gateway's lifetime don't accumulate into a spurious
+        lockout that rejects a valid code.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+
+            # One short of the lockout threshold — not locked out yet.
+            for _ in range(MAX_FAILED_ATTEMPTS - 1):
+                assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
+
+            # A legitimate approval must reset the accumulated failures.
+            code = store.generate_code("telegram", "user1", "Alice")
+            assert store.approve_code("telegram", code) is not None
+            limits = store._load_json(store._rate_limit_path())
+            assert limits.get("_failures:telegram", 0) == 0
+
+            # Because the streak was cleared, a single fresh typo afterwards
+            # must NOT trip the lockout (it would have with the stale count).
+            assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
 
     def test_lockout_blocks_code_approval(self, tmp_path):
         """Regression guard for #10195: lockout must also gate approve_code.

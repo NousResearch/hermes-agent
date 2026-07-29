@@ -216,3 +216,47 @@ def test_mcp_catalog_git_install_runs_noninteractively(monkeypatch, tmp_path):
     for call in calls:
         if call["argv"][0].endswith("git") or "git" in call["argv"][0]:
             _assert_noninteractive(call)
+
+
+# ---------------------------------------------------------------------------
+# 4. `hermes update` — the same class, on the update path's own remote calls.
+#
+# These run in exactly the "nobody attached" contexts the helper exists for:
+# desktop auto-update, a supervised backend restarting itself, `hermes update`
+# from a launchd/systemd unit. They also capture output, so a credential
+# prompt is invisible: the user sees "→ Fetching updates..." and nothing else.
+# Updating from a (possibly private) fork is a first-class, detected case.
+# ---------------------------------------------------------------------------
+
+
+_REMOTE_GIT_VERBS = {"fetch", "pull", "push", "clone", "ls-remote"}
+
+
+def _remote_calls(calls: list[dict]) -> list[dict]:
+    """Captured runs whose argv drives a remote (auth-capable) git operation."""
+    return [c for c in calls if _REMOTE_GIT_VERBS & set(c["argv"])]
+
+
+def test_update_fork_push_runs_noninteractively(monkeypatch, tmp_path):
+    from hermes_cli import main
+
+    calls = _capture_run(monkeypatch, main)
+    main._sync_fork_with_upstream(["git"], tmp_path)
+
+    remote = _remote_calls(calls)
+    assert remote, calls
+    for call in remote:
+        _assert_noninteractive(call)
+
+
+def test_update_upstream_sync_runs_noninteractively(monkeypatch, tmp_path):
+    from hermes_cli import main
+
+    monkeypatch.setattr(main, "_has_upstream_remote", lambda *a, **k: True)
+    calls = _capture_run(monkeypatch, main)
+    main._sync_with_upstream_if_needed(["git"], tmp_path)
+
+    remote = _remote_calls(calls)
+    assert remote, calls
+    for call in remote:
+        _assert_noninteractive(call)

@@ -66,7 +66,10 @@ except ModuleNotFoundError:
 # any dependency touching ``platform.uname()`` at import time flashes a
 # visible console when this process is windowless (pythonw gateway + every
 # kanban worker).  No-op on POSIX; never raises.
-from hermes_cli._subprocess_compat import suppress_platform_ver_console
+from hermes_cli._subprocess_compat import (
+    noninteractive_git_env,
+    suppress_platform_ver_console,
+)
 
 suppress_platform_ver_console()
 
@@ -8730,6 +8733,8 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
         return result.returncode == 0
     except Exception:
@@ -8793,6 +8798,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             cwd=cwd,
             capture_output=True,
             check=True,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
@@ -8832,6 +8839,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             git_cmd + ["pull", "--ff-only", "upstream", "main"],
             cwd=cwd,
             check=True,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except subprocess.CalledProcessError:
         print(
@@ -11032,6 +11041,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
         if fetch_result.returncode != 0:
             # Fallback to origin if upstream doesn't exist
@@ -11041,6 +11052,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL,
+                env=noninteractive_git_env(),
             )
             upstream_exists = False
             compare_branch = f"origin/{branch}"
@@ -11055,6 +11068,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
         upstream_exists = False
         compare_branch = f"origin/{branch}"
@@ -12334,6 +12349,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
@@ -12552,6 +12569,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
+                stdin=subprocess.DEVNULL,
+                env=noninteractive_git_env(),
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream

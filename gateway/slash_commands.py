@@ -2011,7 +2011,7 @@ class GatewaySlashCommandsMixin:
                         lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
-                        from hermes_cli.model_switch import resolve_display_context_length
+                        from hermes_cli.model_switch import resolve_display_context_length_async
                         _sw_config_ctx = None
                         _sw_model_cfg = {}
                         try:
@@ -2025,7 +2025,7 @@ class GatewaySlashCommandsMixin:
                             pass
                         if not isinstance(_sw_model_cfg, dict):
                             _sw_model_cfg = {}
-                        ctx = resolve_display_context_length(
+                        ctx = await resolve_display_context_length_async(
                             result.new_model,
                             result.target_provider,
                             base_url=result.base_url or current_base_url or "",
@@ -2333,7 +2333,7 @@ class GatewaySlashCommandsMixin:
             # Context: always resolve via the provider-aware chain so Codex OAuth,
             # Copilot, and Nous-enforced caps win over the raw models.dev entry.
             mi = result.model_info
-            from hermes_cli.model_switch import resolve_display_context_length
+            from hermes_cli.model_switch import resolve_display_context_length_async
             _sw2_config_ctx = None
             _sw2_model_cfg = {}
             try:
@@ -2347,7 +2347,7 @@ class GatewaySlashCommandsMixin:
                 pass
             if not isinstance(_sw2_model_cfg, dict):
                 _sw2_model_cfg = {}
-            ctx = resolve_display_context_length(
+            ctx = await resolve_display_context_length_async(
                 result.new_model,
                 result.target_provider,
                 base_url=result.base_url or current_base_url or "",

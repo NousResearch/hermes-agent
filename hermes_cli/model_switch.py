@@ -1058,6 +1058,48 @@ def resolve_display_context_length(
     return None
 
 
+async def resolve_display_context_length_async(
+    model: str,
+    provider: str,
+    base_url: str = "",
+    api_key: str = "",
+    model_info: Optional[ModelInfo] = None,
+    custom_providers: list | None = None,
+    config_context_length: int | None = None,
+    configured_model: str | None = None,
+    configured_provider: str | None = None,
+    configured_base_url: str | None = None,
+) -> Optional[int]:
+    """Async variant of :func:`resolve_display_context_length`.
+
+    The sync version runs two blocking chains: the route comparison in
+    ``should_clear_context_pin`` and the full provider probe ladder in
+    ``get_model_context_length`` (blocking ``requests`` calls to Anthropic
+    ``/v1/models``, Copilot, Nous, Codex, GMI, Ollama, models.dev and
+    OpenRouter).  Async gateway handlers must not run either on the event
+    loop — see ``agent.model_metadata.get_model_context_length_async`` and
+    ``hermes_cli.route_identity.should_clear_context_pin_async``, which
+    offload the same chains for the message path.
+
+    Shares all logic with the sync version — no code duplication.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(
+        resolve_display_context_length,
+        model,
+        provider,
+        base_url=base_url,
+        api_key=api_key,
+        model_info=model_info,
+        custom_providers=custom_providers,
+        config_context_length=config_context_length,
+        configured_model=configured_model,
+        configured_provider=configured_provider,
+        configured_base_url=configured_base_url,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Configured-provider detection for typed model names
 # ---------------------------------------------------------------------------

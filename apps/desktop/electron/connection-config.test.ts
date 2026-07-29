@@ -26,7 +26,9 @@ import {
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   isGatewayAuthRejection,
+  isNativeRefreshAuthRejection,
   localProfileEntry,
+  mintGatewayWsTicket,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,
@@ -540,6 +542,139 @@ test('tokenPreview returns set for short tokens', () => {
 
 test('tokenPreview returns a masked suffix for long tokens', () => {
   assert.equal(tokenPreview('abcdefghijklmnop'), '...klmnop')
+})
+
+// --- isNativeRefreshAuthRejection ---
+//
+// The dead-RT branch inside main.ts's ensureNativeAccessToken is untestable
+// directly (main.ts isn't importable from a test), but the classification
+// predicate it delegates to lives here. Sol's finding: main.ts's fetchJson
+// never attaches a `.statusCode` property — a real dead-RT 401 from
+// POST /auth/native/refresh arrives as `Error('401: {"error":
+// "session_expired",...}')` (see hermes_cli/dashboard_auth/routes.py's
+// auth_native_refresh, the JSONResponse(..., status_code=401) branch) with
+// NO .statusCode at all. A property-only check never matched it in
+// production, so the "clear tokens, return null" branch was dead code and
+// every dead-RT rejection propagated as a throw.
+
+test('isNativeRefreshAuthRejection recognizes the production 401 shape (message-only, no .statusCode)', () => {
+  assert.equal(isNativeRefreshAuthRejection(new Error('401: {"error":"session_expired","detail":"..."}')), true)
+  assert.equal(isNativeRefreshAuthRejection(new Error('401: Unauthorized')), true)
+})
+
+test('isNativeRefreshAuthRejection also recognizes a tagged .statusCode (other callers may attach one)', () => {
+  assert.equal(isNativeRefreshAuthRejection(Object.assign(new Error('rejected'), { statusCode: 401 })), true)
+})
+
+test('isNativeRefreshAuthRejection rejects non-401 shapes', () => {
+  assert.equal(isNativeRefreshAuthRejection(new Error('503: Auth provider unreachable')), false)
+  assert.equal(isNativeRefreshAuthRejection(new Error('network timeout')), false)
+  assert.equal(isNativeRefreshAuthRejection(Object.assign(new Error('rejected'), { statusCode: 403 })), false)
+  assert.equal(isNativeRefreshAuthRejection(null), false)
+})
+
+// --- mintGatewayWsTicket ---
+//
+// issue #73722 mechanism 2, two halves:
+//  (a) a native (cookieless) sign-in whose token refresh hits a transient
+//      failure (timeout/5xx/network) must NOT be silently treated as "no
+//      native token, fall back to cookies" and then misreport a cookie-side
+//      401 (no cookie exists in a native-only config) as an expired session.
+//  (b) cookie and native-token sessions can COEXIST (logout clears both) —
+//      so a transient native failure should still try the cookie path, and
+//      use it, before giving up. Only if the cookie path ALSO fails does the
+//      ORIGINAL native error surface (not the cookie's).
+
+function fakeDeps(overrides: Partial<Parameters<typeof mintGatewayWsTicket>[1]> = {}) {
+  return {
+    ensureNativeAccessToken: async () => null,
+    fetchJson: async () => ({ ticket: 'unused-fetchJson-ticket' }),
+    fetchJsonViaOauthSession: async () => ({ ticket: 'cookie-ticket' }),
+    ...overrides
+  }
+}
+
+test('mintGatewayWsTicket (native token present) mints via the bearer path', async () => {
+  const calls: any[] = []
+  const ticket = await mintGatewayWsTicket(
+    'https://gw.example.com',
+    fakeDeps({
+      ensureNativeAccessToken: async () => 'nat-token-123',
+      fetchJson: async (url, token, options) => {
+        calls.push({ url, token, options })
+
+        return { ticket: 'bearer-ticket' }
+      }
+    })
+  )
+
+  assert.equal(ticket, 'bearer-ticket')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, 'https://gw.example.com/api/auth/ws-ticket')
+  assert.equal(calls[0].options.bearer, 'nat-token-123')
+})
+
+test('mintGatewayWsTicket (no native token) falls back to the cookie path', async () => {
+  // Covers BOTH real callers of a null return: no tokens saved at all, and a
+  // terminal 401 that ensureNativeAccessToken already cleared — from this
+  // function's perspective they're the same "null" shape.
+  const ticket = await mintGatewayWsTicket('https://gw.example.com', fakeDeps())
+  assert.equal(ticket, 'cookie-ticket')
+})
+
+test('FIX #73722 mechanism 2 (coexistence): a transient native failure still tries cookies, and uses a successful mint', async () => {
+  const transient = Object.assign(new Error('network timeout'), { code: 'ETIMEDOUT' })
+  let cookieCalls = 0
+
+  const ticket = await mintGatewayWsTicket(
+    'https://gw.example.com',
+    fakeDeps({
+      ensureNativeAccessToken: async () => {
+        throw transient
+      },
+      fetchJsonViaOauthSession: async () => {
+        cookieCalls += 1
+
+        return { ticket: 'coexisting-cookie-ticket' }
+      }
+    })
+  )
+
+  assert.equal(ticket, 'coexisting-cookie-ticket')
+  assert.equal(cookieCalls, 1)
+})
+
+test('FIX #73722 mechanism 2 (no false expiry): a transient native failure tries cookies, but a cookie 401 surfaces the ORIGINAL native error', async () => {
+  const transient = Object.assign(new Error('network timeout'), { code: 'ETIMEDOUT' })
+  const cookie401 = Object.assign(new Error('401: no session cookie'), { statusCode: 401 })
+
+  await assert.rejects(
+    () =>
+      mintGatewayWsTicket(
+        'https://gw.example.com',
+        fakeDeps({
+          ensureNativeAccessToken: async () => {
+            throw transient
+          },
+          fetchJsonViaOauthSession: async () => {
+            // The cookie path IS tried (unlike the old sentinel-based test) —
+            // it just loses to the preserved native error when it also fails.
+            throw cookie401
+          }
+        })
+      ),
+    (err: any) => {
+      assert.equal(err, transient)
+      // Not tagged as an auth rejection — gatewayTicketFailure (see the
+      // classification test below) routes an untagged, non-401/403 error to
+      // its transportMessage, not the "session expired" one. If the cookie's
+      // 401 leaked through instead, this would be true and the bug would be
+      // back.
+      assert.equal(isGatewayAuthRejection(err), false)
+
+      return true
+    }
+  )
 })
 
 // --- resolveTestWsUrl ---

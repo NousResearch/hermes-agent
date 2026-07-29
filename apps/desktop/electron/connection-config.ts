@@ -99,6 +99,38 @@ function isGatewayAuthRejection(error) {
   return statusCode === 401 || statusCode === 403
 }
 
+/**
+ * True when `error` is the /auth/native/refresh endpoint's "the refresh
+ * token is dead" rejection (HTTP 401, body `{"error": "session_expired",
+ * ...}` — hermes_cli/dashboard_auth/routes.py's auth_native_refresh, the
+ * `JSONResponse({...}, status_code=401)` branch after every provider rejects
+ * the RT). ensureNativeAccessToken (main.ts) uses this to decide whether to
+ * clear the stored tokens and return null (dead RT — force a fresh native
+ * login) instead of letting the rejection propagate (a transient refresh
+ * failure — timeout/5xx/network — must NOT clear live tokens).
+ *
+ * error.statusCode === 401 alone is not enough in production:
+ * main.ts's fetchJson (the transport postJsonNoAuth/ensureNativeAccessToken
+ * ride) never attaches a `.statusCode` property to its rejection — it only
+ * bakes the status into the message as `` `${res.statusCode}: ${body}` ``
+ * (see fetchJson's `res.statusCode >= 400` branch). So a real dead-RT 401
+ * arrives here as `Error('401: {"error":"session_expired",...}')` with no
+ * `.statusCode` at all; matching only the property left the "dead RT" branch
+ * unreachable and every dead-RT rejection fell through to `throw error`.
+ * Keep the property check too so an error shaped by a DIFFERENT caller (one
+ * that does attach `.statusCode`, e.g. gatewayTicketFailure's callers) is
+ * still recognized.
+ */
+function isNativeRefreshAuthRejection(error) {
+  if (error && typeof error === 'object' && (error as any).statusCode === 401) {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : ''
+
+  return /^401[:\s]/.test(message)
+}
+
 function gatewayTicketFailure(error, authMessage, transportMessage) {
   const needsOauthLogin = isGatewayAuthRejection(error)
   const err = new Error(needsOauthLogin ? authMessage : transportMessage)
@@ -123,6 +155,101 @@ async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
       ok: false as const
     }
   }
+}
+
+export interface MintGatewayWsTicketDeps {
+  /** Real impl: main.ts's ensureNativeAccessToken. Resolves the cached/refreshed
+   *  native bearer token, or null when there is none (no tokens saved, or a
+   *  terminal 401 already cleared them). MUST be allowed to reject — a
+   *  rejection is a native-path failure (typically a transient refresh
+   *  timeout/5xx/network, but also e.g. a malformed refresh response from
+   *  parseTokenResponse); swallowing it here used to fall through to the
+   *  cookie path, which 401s with no session cookie in native-only configs and
+   *  gets misreported as an expired session (issue #73722 mechanism 2). */
+  ensureNativeAccessToken: (baseUrl: string) => Promise<string | null>
+  fetchJson: (url: string, token: string | null, options?: any) => Promise<any>
+  fetchJsonViaOauthSession: (url: string, options?: any) => Promise<any>
+}
+
+async function mintViaBearer(deps: MintGatewayWsTicketDeps, baseUrl: string, nativeAt: string): Promise<string> {
+  const body = (await deps.fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
+    method: 'POST',
+    timeoutMs: 8_000,
+    bearer: nativeAt
+  })) as any
+
+  const ticket = body?.ticket
+
+  if (!ticket || typeof ticket !== 'string') {
+    throw new Error('Gateway did not return a WS ticket.')
+  }
+
+  return ticket
+}
+
+async function mintViaCookie(deps: MintGatewayWsTicketDeps, baseUrl: string): Promise<string> {
+  const body = (await deps.fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
+    method: 'POST',
+    timeoutMs: 8_000
+  })) as any
+
+  const ticket = body?.ticket
+
+  if (!ticket || typeof ticket !== 'string') {
+    throw new Error('Gateway did not return a WS ticket.')
+  }
+
+  return ticket
+}
+
+/**
+ * Mint a single-use WS ticket for a gated gateway (pure orchestration,
+ * electron-free — main.ts's mintGatewayWsTicket wires in the real I/O as
+ * `deps`, mirroring how it feeds resolveTestWsUrl below). Prefers a native
+ * bearer token (cookieless RFC 8252 flow) when present, falling back to the
+ * OAuth cookie partition otherwise. Throws (with statusCode 401, from the
+ * cookie-session fetch) if the session cookie is missing/expired — callers
+ * treat that as "needs re-login".
+ *
+ * Cookie and native-token sessions can coexist (logout clears both), so a
+ * native-side failure doesn't mean the connection has to fail: if
+ * ensureNativeAccessToken (or the bearer ws-ticket POST) THROWS — any
+ * native-path error: a transient refresh failure, a malformed refresh or
+ * ticket response, a failed bearer POST (a dead RT already resolves null,
+ * see isNativeRefreshAuthRejection) — the cookie path is tried as a fallback
+ * before giving up (issue #73722 mechanism 2's coexistence half). If the
+ * cookie path ALSO fails, the ORIGINAL native error is what gets thrown, not
+ * the cookie's — a cookie-side 401 (no cookie session at all, in a
+ * native-only config) must not overwrite a genuinely transient native
+ * failure with a false "session expired". A native token that's simply
+ * absent (ensureNativeAccessToken resolves null, no throw) skips this
+ * preservation entirely and goes straight to cookie, propagating whatever it
+ * says — that 401 IS a real "please sign in".
+ */
+async function mintGatewayWsTicket(baseUrl: string, deps: MintGatewayWsTicketDeps): Promise<string> {
+  let nativeError: unknown
+
+  try {
+    const nativeAt = await deps.ensureNativeAccessToken(baseUrl)
+
+    if (nativeAt) {
+      return await mintViaBearer(deps, baseUrl, nativeAt)
+    }
+  } catch (error) {
+    nativeError = error
+  }
+
+  if (nativeError !== undefined) {
+    try {
+      return await mintViaCookie(deps, baseUrl)
+    } catch {
+      throw nativeError
+    }
+  }
+
+  // No native token at all — genuinely no native session. Straight to
+  // cookie, propagating its result (or error) unchanged.
+  return mintViaCookie(deps, baseUrl)
 }
 
 /**
@@ -547,7 +674,9 @@ export {
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
   isGatewayAuthRejection,
+  isNativeRefreshAuthRejection,
   localProfileEntry,
+  mintGatewayWsTicket,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,

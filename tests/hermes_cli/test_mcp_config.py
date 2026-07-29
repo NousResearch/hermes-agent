@@ -201,6 +201,109 @@ class TestMcpAdd:
         assert "ink" in config.get("mcp_servers", {})
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
 
+    def test_add_stdio_server(self, tmp_path, capsys, monkeypatch):
+        """Add a stdio server."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        inputs = iter([""])  # accept all tools
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["@mcp/github"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["github"]
+        assert srv["command"] == "npx"
+        assert srv["args"] == ["@mcp/github"]
+
+    def test_add_stdio_server_drops_only_empty_args(self, tmp_path, capsys, monkeypatch):
+        """Regression for #26886: empty-string placeholders are dropped; whitespace-only args are preserved."""
+
+        def mock_probe(name, config, **kw):
+            assert config["command"] == "npx"
+            # Args may be absent (when only "" was passed) or contain " " (when " " was passed)
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        # Case 1: args=[""] -> must be dropped entirely
+        cmd_mcp_add(_make_args(
+            name="drop-empty",
+            mcp_command="npx",
+            args=[""],
+        ))
+        capsys.readouterr()  # discard output
+        from hermes_cli.config import load_config
+        srv = load_config()["mcp_servers"]["drop-empty"]
+        assert srv["command"] == "npx"
+        assert "args" not in srv, f"empty-string placeholder must be dropped, got {srv.get('args')!r}"
+
+        # Case 2: args=[" "] -> whitespace must be preserved (valid argv)
+        cmd_mcp_add(_make_args(
+            name="preserve-whitespace",
+            mcp_command="npx",
+            args=[" "],
+        ))
+        capsys.readouterr()
+        srv = load_config()["mcp_servers"]["preserve-whitespace"]
+        assert srv["command"] == "npx"
+        assert srv["args"] == [" "], f"whitespace-only argv must be preserved, got {srv['args']!r}"
+
+        # Case 3: mixed ["", "real", " "] -> only the "" is dropped
+        cmd_mcp_add(_make_args(
+            name="mixed",
+            mcp_command="npx",
+            args=["", "real", " "],
+        ))
+        capsys.readouterr()
+        srv = load_config()["mcp_servers"]["mixed"]
+        assert srv["command"] == "npx"
+        assert srv["args"] == ["real", " "], f"only empty must be dropped, got {srv['args']!r}"
+
+    def test_add_connection_failure_save_disabled(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Failed connection → option to save as disabled."""
+
+        def mock_probe_fail(name, config, **kw):
+            raise ConnectionError("Connection refused")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe_fail
+        )
+        inputs = iter(["n", "y"])  # no auth, yes save disabled
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="broken", url="https://bad.host/mcp"))
+        out = capsys.readouterr().out
+        assert "disabled" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        assert config["mcp_servers"]["broken"]["enabled"] is False
 
     def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
         """Stdio servers can persist explicit environment variables."""

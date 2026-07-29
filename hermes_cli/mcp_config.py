@@ -360,6 +360,23 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     return parsed
 
 
+def _normalize_cli_args(raw_args: Optional[List[Any]]) -> List[str]:
+    """Normalize CLI-provided stdio args, dropping only exact empty placeholders.
+
+    This intentionally preserves whitespace-only entries (``[" "]``) because
+    ``--args`` is direct command-argv passthrough and whitespace can be a
+    meaningful shell argument. Only the synthetic ``[""]`` placeholder that
+    ``argparse nargs="*"`` produces for ``--args ""`` is dropped.
+    """
+    normalized: List[str] = []
+    for item in raw_args or []:
+        text = str(item or "")
+        if not text:
+            continue
+        normalized.append(text)
+    return normalized
+
+
 def _apply_mcp_preset(
     name: str,
     *,
@@ -614,7 +631,7 @@ def cmd_mcp_add(args):
     url = getattr(args, "url", None)
     # --command uses dest="mcp_command" (see hermes_cli/main.py for why the dest is renamed).
     command = getattr(args, "mcp_command", None)
-    cmd_args = getattr(args, "args", None) or []
+    cmd_args = _normalize_cli_args(getattr(args, "args", None))
     if cmd_args and cmd_args[0] == "--":
         cmd_args = cmd_args[1:]
     auth_type = getattr(args, "auth", None)

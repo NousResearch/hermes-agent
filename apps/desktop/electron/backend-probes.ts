@@ -92,6 +92,7 @@ function execProbeSync(
   command: string,
   args: string[],
   options: {
+    cwd?: string
     env?: NodeJS.ProcessEnv
     stdio: 'ignore'
     timeout: number
@@ -211,6 +212,7 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
 export {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
+  execProbeSync,
   hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,

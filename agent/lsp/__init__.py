@@ -42,55 +42,63 @@ _atexit_registered = False
 _service_lock = threading.Lock()
 
 
+def _accepting(svc: LSPService) -> bool:
+    check = getattr(svc, "is_accepting_requests", None)
+    return bool(check()) if callable(check) else True
+
+
+def _closed(svc: LSPService) -> bool:
+    check = getattr(svc, "is_closed", None)
+    return bool(check()) if callable(check) else False
+
+
 def get_service() -> Optional[LSPService]:
     """Return the process-wide LSP service singleton, or None when disabled.
 
-    The service is created lazily on first call.  ``None`` is returned
-    when LSP is disabled in config, when no workspace can be detected,
-    or when the platform doesn't support subprocess-based LSP servers.
-
-    On first creation, registers an :mod:`atexit` handler that tears
-    down spawned language servers on Python exit so a long-running
-    CLI or gateway session doesn't leak pyright/gopls/etc. processes
-    when it terminates.
+    A closing singleton is never exposed. Callers that race a process-local
+    restart wait on ``_service_lock`` until the previous service has completed
+    shutdown, preventing old and new LSP pools from overlapping.
     """
     global _service, _atexit_registered
-    if _service is not None:
-        return _service if _service.is_active() else None
+    current = _service
+    if current is not None and _accepting(current):
+        return current if current.is_active() else None
     with _service_lock:
-        if _service is not None:
-            return _service if _service.is_active() else None
+        current = _service
+        if current is not None and _accepting(current):
+            return current if current.is_active() else None
+        if current is not None and not _closed(current):
+            # Teardown is incomplete or failed. Keep the tombstoned singleton
+            # rather than exposing an overlapping replacement pool.
+            return None
         _service = LSPService.create_from_config()
         if not _atexit_registered:
             # ``atexit`` handlers run in LIFO order on normal Python
             # exit and on SystemExit, but NOT on os._exit() or
-            # uncaught signals.  Language servers are stateless
-            # subprocesses — losing them on SIGKILL is fine; they'll
-            # be reaped by the kernel along with their parent.  We
-            # care about clean exits where Python flushes stdio
-            # before terminating; without this hook every
-            # ``hermes chat`` exit would leak pyright processes that
-            # outlive the parent for a few seconds while their
-            # stdout buffers drain.
+            # uncaught signals. Language servers are stateless
+            # subprocesses and are recreated on the next process start.
             atexit.register(_atexit_shutdown)
             _atexit_registered = True
     return _service if (_service is not None and _service.is_active()) else None
 
 
 def shutdown_service() -> None:
-    """Tear down the LSP service if one was started.
-
-    Safe to call multiple times; safe to call when no service was created.
-    """
+    """Synchronously retire the singleton before allowing replacement."""
     global _service
     with _service_lock:
         svc = _service
-        _service = None
-    if svc is not None:
+        if svc is None:
+            return
+        begin = getattr(svc, "begin_shutdown", None)
+        if callable(begin):
+            begin()
         try:
             svc.shutdown()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("LSP shutdown error: %s", e)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LSP shutdown incomplete; replacement remains blocked: %s", exc)
+            return
+        if _service is svc and _closed(svc):
+            _service = None
 
 
 def _atexit_shutdown() -> None:

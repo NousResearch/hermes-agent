@@ -26,6 +26,7 @@ const MUTATING_COMMANDS = [
   'model',
   'new',
   'personality',
+  'profile',
   'queue',
   'reasoning',
   'reload-mcp',

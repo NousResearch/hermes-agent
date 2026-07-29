@@ -4809,14 +4809,17 @@ def get_sessions(
                 exclude_children=True,
             )
             now = time.time()
+            # Same ownership contract as get_session_detail: rows are stamped
+            # with the serving profile even when the request wasn't explicitly
+            # scoped, so default-profile rows never circulate unowned.
+            row_profile = profile_name or _cron_default_profile()
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
-                if profile_name:
-                    s["profile"] = profile_name
-                    s["is_default_profile"] = profile_name == "default"
+                s["profile"] = row_profile
+                s["is_default_profile"] = row_profile == "default"
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
@@ -11819,8 +11822,16 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        if profile:
-            session["profile"] = _cron_profile_home(profile)[0]
+        # Always stamp the owning profile — the serving profile is known even
+        # when the request carries no ``?profile=`` (it's this process's own
+        # profile). Stamping only on explicit ``?profile=`` left rows for the
+        # default/primary profile systematically unowned, so multi-profile
+        # clients resolved them to whichever gateway happened to be active
+        # (cross-profile open asymmetry, #67603 family).
+        session["profile"] = (
+            _cron_profile_home(profile)[0] if profile else _cron_default_profile()
+        )
+        session["is_default_profile"] = session["profile"] == "default"
         return session
     finally:
         db.close()

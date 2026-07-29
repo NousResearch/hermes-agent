@@ -3622,6 +3622,8 @@ def run_job(
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
+            # Same as above: never block on shutdown. The inactivity branch
+            # (below) is responsible for killing stuck agents.
             _cron_pool.shutdown(wait=False, cancel_futures=True)
 
         if _inactivity_timeout:
@@ -3733,7 +3735,7 @@ def run_job(
         
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
-        
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)

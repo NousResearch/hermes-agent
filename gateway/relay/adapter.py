@@ -72,6 +72,20 @@ class RelayAdapter(BasePlatformAdapter):
         # recipient's author binding; we re-attach this user_id as
         # metadata.user_id on the outbound action so it can. See _capture_scope.
         self._dm_user_by_chat: Dict[str, str] = {}
+        # chat_id -> chat_type (e.g. "dm", "channel", "group") learned from the
+        # inbound event. Used to reproduce native Slack's synthetic-DM-thread
+        # suppression on the relay lane: a DM streaming reply carries
+        # reply_to=<triggering message ts> as its edit anchor, but the connector
+        # maps a raw reply_to to a Slack thread_ts — so a plain DM reply would be
+        # threaded UNDER the user's message (and lose progressive edit streaming)
+        # instead of posting flat at the DM root. Native SlackAdapter drops that
+        # synthetic reply_to in _resolve_thread_ts; the relay lane needs the same
+        # disambiguation, and it needs the chat_type to know a chat is a DM.
+        self._chat_type_by_chat: Dict[str, str] = {}
+        # chat_id -> last triggering message ts (Slack). The typing/status
+        # lane's synthetic thread anchor in thread-per-message mode;
+        # see _capture_scope and send_typing.
+        self._last_inbound_ts_by_chat: Dict[str, str] = {}
         # chat_id -> the UNDERLYING platform (e.g. "discord", "telegram") this
         # chat belongs to (Phase 1.5 multi-platform-per-agent). One relay adapter
         # fronts N platforms on one WS; an outbound reply must egress through the
@@ -122,6 +136,27 @@ class RelayAdapter(BasePlatformAdapter):
     @property
     def message_len_fn(self) -> Callable[[str], int]:
         return _LEN_FNS.get(self.descriptor.len_unit, len)
+
+    @property
+    def supports_status_text(self) -> bool:  # type: ignore[override]
+        """Whether the fronted platform renders a TEXT status line.
+
+        Native parity (rich status text): Slack's typing surface is the
+        assistant status line ("Finding answers…" next to the bot name), a
+        text-rendering indicator. When the relay fronts Slack, advertise it so
+        run.py's live-status lane feeds per-tool phrases via
+        ``set_status_text()`` — exactly the wiring the native SlackAdapter
+        gets (``supports_status_text = True``). Other fronted platforms keep
+        textless typing bubbles and must NOT receive phrase traffic.
+
+        Property (not class attr) because ONE RelayAdapter class fronts many
+        platforms; the answer depends on the handshaked descriptor. On a
+        multi-platform relay this scalar reflects the PRIMARY identity's
+        platform (same convention as the scalar ``descriptor``); per-chat
+        egress paths that need chat-accurate capabilities use
+        ``_descriptor_for_chat`` below.
+        """
+        return self.descriptor.platform == Platform.SLACK.value
 
     # ── per-chat capability resolution (Phase 1.5 multi-platform) ─────────
     def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
@@ -279,6 +314,7 @@ class RelayAdapter(BasePlatformAdapter):
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
         self._capture_scope(event)
+        self._stamp_slack_session_thread(event)
         # Phase 3: a structured prompt answer resolves its waiting primitive
         # (approval/confirm/clarify) and is CONSUMED — it must not also
         # dispatch as a chat message. Unknown/expired prompt ids fall through
@@ -287,6 +323,112 @@ class RelayAdapter(BasePlatformAdapter):
             return
         await self._localize_inbound_media(event)
         await self.handle_message(event)
+
+    def _relay_slack_extra(self) -> Dict[str, Any]:
+        """The Slack-behavior subset of the RELAY platform config.
+
+        Enterprise knob shape (Hermes-config directed, relay-namespaced):
+
+            platforms:
+              relay:
+                extra:
+                  slack:              # supported subset of native Slack fields
+                    reply_in_thread: true
+
+        The native ``platforms.slack`` block keeps meaning "native adapter
+        settings"; relay-fronted Slack reads its subset here. Legacy fallback:
+        a flat key on the relay extra (``extra.reply_in_thread``) still wins
+        when no ``slack`` object exists, preserving current staging configs.
+        """
+        extra = getattr(self.config, "extra", None) or {}
+        sub = extra.get("slack")
+        return sub if isinstance(sub, dict) else extra
+
+    @staticmethod
+    def _coerce_flag(raw: Any, default: bool) -> bool:
+        """Coerce an operator-supplied boolean exactly as native Slack does.
+
+        Native SlackAdapter reads its behavior flags with
+        ``str(raw).strip().lower() in {"1","true","yes","on"}``, so a
+        YAML-quoted ``"false"`` — a shape operators write routinely — turns
+        the flag OFF. A bare ``bool()`` would read that same string as True
+        (non-empty string), silently ignoring the off switch. These knobs are
+        documented as native-parity mirrors, so they must coerce identically
+        or the parity claim only holds for unquoted YAML booleans.
+        """
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _effective_reply_in_thread(self) -> bool:
+        """Resolve the thread-per-message vs flat-DM mode for fronted Slack."""
+        try:
+            return self._coerce_flag(
+                self._relay_slack_extra().get("reply_in_thread"), True
+            )
+        except Exception:  # noqa: BLE001 - config shape is operator-owned
+            return True
+
+    def _dm_top_level_threads_as_sessions(self) -> bool:
+        """Native-parity escape hatch: per-message DM sessions on/off.
+
+        Mirrors native SlackAdapter._dm_top_level_threads_as_sessions
+        (platforms.slack.extra.dm_top_level_threads_as_sessions). Default
+        True: in thread-per-message mode each top-level DM message keys its
+        own session (parallel turns). Set
+        platforms.relay.extra.slack.dm_top_level_threads_as_sessions: false
+        to keep threaded reply PLACEMENT but ONE rolling DM session — the
+        legacy steer/queue posture, decoupled from reply_in_thread.
+        """
+        try:
+            return self._coerce_flag(
+                self._relay_slack_extra().get("dm_top_level_threads_as_sessions"),
+                True,
+            )
+        except Exception:  # noqa: BLE001 - config shape is operator-owned
+            return True
+
+    def _stamp_slack_session_thread(self, event) -> None:
+        """Native session-keying parity for fronted Slack DMs.
+
+        Native SlackAdapter's inbound handler stamps ``thread_ts =
+        event.thread_ts or ts`` — every TOP-LEVEL message carries its own ts
+        as ``source.thread_id``, so build_session_key appends it and each
+        top-level message gets a FRESH session (per-message threads ⇒
+        per-message sessions; a 2nd message runs parallel instead of steering
+        the in-flight turn). The connector normalizes a top-level message
+        with thread_id=null, so without this stamp every top-level DM
+        collapses into ONE session key and message 2 pre-empts message 1
+        ("Redirected current run", 2026-07-27 report).
+
+        Only in thread-per-message mode: flat mode keeps the shared rolling
+        DM session on purpose (steer/queue there is the intended UX). Never
+        overwrites a real thread_id (an in-thread reply must keep resolving
+        to its thread's session).
+        """
+        try:
+            src = getattr(event, "source", None)
+            if not src:
+                return
+            platform = getattr(src, "platform", None)
+            if getattr(platform, "value", platform) != Platform.SLACK.value:
+                return
+            if getattr(src, "thread_id", None):
+                return  # real thread — its session key is already correct
+            message_id = getattr(event, "message_id", None) or getattr(
+                src, "message_id", None
+            )
+            if not message_id:
+                return
+            if not self._effective_reply_in_thread():
+                return
+            if not self._dm_top_level_threads_as_sessions():
+                return  # opt-out: threaded replies, one rolling session
+            src.thread_id = str(message_id)
+        except Exception:  # noqa: BLE001 - session stamping must never break inbound
+            logger.debug("slack session-thread stamp failed", exc_info=True)
 
     async def _localize_inbound_media(self, event) -> None:
         """Download connector re-hosted attachments to local temp paths.
@@ -380,10 +522,32 @@ class RelayAdapter(BasePlatformAdapter):
             scope = getattr(src, "scope_id", None)
             if scope:
                 self._scope_by_chat[str(chat)] = str(scope)
+            # Remember the chat_type so send() can suppress the synthetic-DM
+            # thread anchor on Slack (native _resolve_thread_ts parity). send()
+            # only receives a chat_id, so it needs this per-chat cache to know a
+            # chat is a DM.
+            chat_type = getattr(src, "chat_type", None)
+            if chat_type:
+                self._chat_type_by_chat[str(chat)] = str(chat_type)
+            # Triggering message ts: the typing/status lane's metadata
+            # (base.py _thread_metadata_for_source) carries NO thread anchor
+            # for a top-level DM, but in thread-per-message mode the status
+            # must target the per-message thread (its root = this ts). Cache
+            # it per chat so send_typing can synthesize the anchor, mirroring
+            # native send_typing's _resolve_thread_ts(metadata.message_id).
+            # NOTE: message_id lives on the EVENT (MessageEvent), not the
+            # source — fall back to source for defensive coverage.
+            message_id = getattr(event, "message_id", None) or getattr(
+                src, "message_id", None
+            )
+            if message_id:
+                self._last_inbound_ts_by_chat[str(chat)] = str(message_id)
         except Exception:  # noqa: BLE001 - scope tracking must never break inbound
             pass
 
-    def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _with_scope(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         """Ensure the outbound metadata carries the discriminator(s) the connector's
         egress guard needs to resolve the owning tenant.
 
@@ -542,16 +706,26 @@ class RelayAdapter(BasePlatformAdapter):
         else:
             text = ""
         member = payload.get("member") or {}
-        user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
+        user = (
+            (member.get("user") if isinstance(member, dict) else None)
+            or payload.get("user")
+            or {}
+        )
         channel_id = str(payload.get("channel_id") or "")
         guild_id = payload.get("guild_id")  # real Discord interaction wire field
         source = SessionSource(
             platform=Platform.RELAY,
             chat_id=channel_id,
             chat_type="channel" if guild_id else "dm",
-            user_id=str(user.get("id")) if isinstance(user, dict) and user.get("id") else None,
-            user_name=str(user.get("username")) if isinstance(user, dict) and user.get("username") else None,
-            scope_id=str(guild_id) if guild_id else None,  # Discord guild → generic scope slot
+            user_id=str(user.get("id"))
+            if isinstance(user, dict) and user.get("id")
+            else None,
+            user_name=str(user.get("username"))
+            if isinstance(user, dict) and user.get("username")
+            else None,
+            scope_id=str(guild_id)
+            if guild_id
+            else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
@@ -567,7 +741,9 @@ class RelayAdapter(BasePlatformAdapter):
                 prompt_id, option_id = decoded
                 msg = payload.get("message") or {}
                 prompt_message_id = (
-                    str(msg.get("id")) if isinstance(msg, dict) and msg.get("id") else None
+                    str(msg.get("id"))
+                    if isinstance(msg, dict) and msg.get("id")
+                    else None
                 )
                 event.prompt_response = {
                     "prompt_id": prompt_id,
@@ -620,7 +796,9 @@ class RelayAdapter(BasePlatformAdapter):
                 sub_name = str(opt.get("name") or "").strip()
                 if sub_name:
                     parts.append(sub_name)
-                parts.extend(RelayAdapter._render_interaction_options(opt.get("options")))
+                parts.extend(
+                    RelayAdapter._render_interaction_options(opt.get("options"))
+                )
             else:
                 value = opt.get("value")
                 if value is not None and str(value).strip():
@@ -744,12 +922,19 @@ class RelayAdapter(BasePlatformAdapter):
             )
         if self._transport is None:
             return SendResult(success=False, error="no transport")
+        # Native _resolve_thread_ts parity: a Slack DM reply must post flat at
+        # the DM root, not threaded under the triggering message. One shared
+        # helper resolves the anchor for EVERY egress lane (see
+        # _apply_slack_thread_anchor) so the text and media lanes cannot drift.
+        effective_reply_to = self._apply_slack_thread_anchor(
+            chat_id, reply_to, send_metadata
+        )
         result = await self._transport.send_outbound(
             {
                 "op": "send",
                 "chat_id": chat_id,
                 "content": content,
-                "reply_to": reply_to,
+                "reply_to": effective_reply_to,
                 "metadata": self._with_scope(chat_id, send_metadata),
             },
             platform=self._platform_by_chat.get(str(chat_id)),
@@ -759,6 +944,144 @@ class RelayAdapter(BasePlatformAdapter):
             message_id=result.get("message_id"),
             error=result.get("error"),
         )
+
+    def _resolve_reply_to_for_send(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Suppress the synthetic-DM thread anchor for a Slack DM reply.
+
+        A DM turn's streaming reply is sent with ``reply_to`` = the triggering
+        message's ts (the stream consumer's ``initial_reply_to_id``, used as the
+        edit anchor and, on threading platforms, the reply target). The
+        connector's slackRestSender maps a raw ``reply_to`` to a Slack
+        ``thread_ts``, so a plain DM reply would be posted THREADED under the
+        user's message instead of flat at the DM root — and a threaded first
+        send loses the progressive edit-streaming the user sees in a real
+        thread (the reported symptom: DM/home replies arrive flat, no
+        progressive edits).
+
+        Native Slack Hermes already suppresses this synthetic DM thread anchor:
+        ``SlackAdapter._resolve_thread_ts`` returns ``None`` for a top-level /
+        DM message when ``reply_in_thread`` is off. The relay lane has no such
+        disambiguation, so we reproduce it here. run.py already encodes the
+        real-thread decision in ``metadata["thread_id"]`` (it is set only when
+        progress threading is active — a real thread, or channel autoThread);
+        for a DM with no real thread that key is absent. So the rule is:
+
+          Slack DM + no real ``thread_id`` in metadata  ⇒  drop ``reply_to``.
+
+        This posts the reply flat at the DM root and lets the consumer edit its
+        own first-send ts — streaming works exactly as in a thread. It does NOT:
+          * reintroduce a synthetic DM thread_id (#18859 / the /sethome
+            landmine) — it removes an anchor, never adds one;
+          * regress real-thread streaming — a real thread carries a distinct
+            ``thread_id`` in metadata, so the guard leaves ``reply_to`` alone;
+          * regress channel autoThread — a channel/group top-level reply carries
+            ``thread_id`` (the message's own ts) in metadata when threading is
+            on, so it is left alone; and a non-DM chat is never matched here.
+        """
+        if reply_to is None:
+            return None
+        if self._platform_by_chat.get(str(chat_id)) != Platform.SLACK.value:
+            return reply_to
+        if self._chat_type_by_chat.get(str(chat_id)) != "dm":
+            return reply_to
+        md = metadata or {}
+        if md.get("thread_id") or md.get("thread_ts"):
+            # A real thread was resolved by run.py — honour it.
+            return reply_to
+        # Mode gate (native _resolve_thread_ts parity). The final-reply lane
+        # (gateway/platforms/base.py) builds metadata from source.thread_id
+        # ONLY — for a top-level DM that is None, so in thread-per-message
+        # mode the triggering-ts reply_to here is the final reply's ONLY
+        # threading signal (run.py's synthetic root feeds just the
+        # progress/status lane). Dropping it unconditionally exiled the final
+        # message to the DM root while progress stayed threaded (2026-07-27
+        # report, same class as the prompt-placement bug). Native SlackAdapter only
+        # suppresses the anchor when reply_in_thread=false; mirror that.
+        reply_in_thread = self._effective_reply_in_thread()
+        if reply_in_thread:
+            # Thread-per-message: the triggering ts is the thread anchor.
+            return reply_to
+        # Flat mode: synthetic DM self-anchor — post flat at the DM root.
+        return None
+
+    def _apply_slack_thread_anchor(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Dict[str, Any],
+        *,
+        mirror_key: str = "reply_to_message_id",
+    ) -> Optional[str]:
+        """Resolve the outbound Slack thread anchor for ONE egress frame.
+
+        The single choke point every send lane goes through — text (``send``)
+        and media (``send_media``) alike. It does three things that must always
+        happen together, and previously only happened on the text lane:
+
+          1. Mode gate: ``_resolve_reply_to_for_send`` drops the synthetic DM
+             self-anchor in flat mode, keeps it in thread-per-message mode.
+          2. Mirror strip: when the anchor is dropped, remove the mirrored
+             ``metadata.reply_to_message_id`` too, so the connector cannot
+             thread on the copy we forgot about.
+          3. Anchor promotion: the connector's Slack sender THREADS ON METADATA
+             ONLY — ``threadTs()`` reads ``metadata.thread_id``/``thread_ts``
+             and never looks at the frame's ``reply_to``. A surviving anchor is
+             promoted into ``metadata.thread_id`` or the message silently lands
+             in the home channel instead of the per-message thread.
+
+        ``metadata`` is mutated in place; the effective ``reply_to`` is
+        returned. Non-Slack and non-DM chats are untouched by (1), and (3) is
+        Slack-only, so other fronted platforms keep their existing behaviour.
+        """
+        effective_reply_to = self._resolve_reply_to_for_send(
+            chat_id, reply_to, metadata
+        )
+        if effective_reply_to is None and reply_to is not None:
+            metadata.pop(mirror_key, None)
+        if (
+            effective_reply_to is not None
+            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
+            and not (metadata.get("thread_id") or metadata.get("thread_ts"))
+        ):
+            metadata["thread_id"] = str(effective_reply_to)
+        return effective_reply_to
+
+    def _with_status_thread_anchor(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Copy ``metadata`` with the typing/status thread anchor applied.
+
+        Slack's status line is THREAD-scoped: the connector's typing case
+        no-ops without a thread anchor, and the typing lane's metadata
+        (base.py ``_thread_metadata_for_source``) carries none for a top-level
+        DM (``source.thread_id`` is None). Synthesize it from the per-chat
+        inbound-ts cache, exactly as native ``send_typing`` resolves
+        ``thread_ts`` from ``metadata.message_id``.
+
+        Unconditional across both modes: in flat mode the send lane strips its
+        own anchors (see ``_apply_slack_thread_anchor``), so the status anchor
+        cannot leak into reply placement, and ``setStatus`` clears without
+        leaving a message artifact.
+
+        Shared by ``send_typing`` and ``stop_typing`` — the clear MUST target
+        the same thread the heartbeat set, or the status line sticks until
+        Slack's own timeout. Keeping one implementation is what guarantees it.
+        """
+        md = dict(metadata or {})
+        if (
+            not (md.get("thread_id") or md.get("thread_ts"))
+            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
+            and self._chat_type_by_chat.get(str(chat_id)) == "dm"
+        ):
+            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            if anchor:
+                md["thread_id"] = anchor
+        return md
 
     async def edit_message(
         self,
@@ -817,13 +1140,39 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None:
             return
+        # Thread anchor for the status surface. Slack's status line
+        # ("is thinking…" in the thread's replies footer — works with plain
+        # chat:write, confirmed on native no-assistant bots) is THREAD-only:
+        # the connector's typing case no-ops without a thread_ts. But the
+        # typing lane's metadata (base.py _thread_metadata_for_source) has no
+        # anchor for a top-level DM — source.thread_id is None — so every
+        # heartbeat was silently dropped. In thread-per-message mode the
+        # turn's thread root IS the triggering message ts (run.py's synthetic
+        # root); synthesize it here from the per-chat inbound cache, exactly
+        # like native send_typing resolves thread_ts from metadata.message_id.
+        # Flat mode (reply_in_thread=false) keeps the no-anchor no-op: there
+        # is no thread and must not be one (#18859).
+        md = self._with_status_thread_anchor(chat_id, metadata)
+        # Rich status parity: run.py's live-status lane stashes the
+        # current per-tool phrase via set_status_text() (base class store).
+        # Carry it as the typing frame's content so the connector's Slack
+        # sender renders it on assistant.threads.setStatus — the same phrase
+        # the native adapter shows ("is running pytest…", "Finding answers…").
+        # Absent (None/empty) => omit content; the connector falls back to its
+        # default "is typing…" heartbeat, preserving pre-phrase behaviour on
+        # every platform. Never send empty-string content here: on Slack that
+        # is the explicit CLEAR request reserved for stop_typing.
+        frame: Dict[str, Any] = {
+            "op": "typing",
+            "chat_id": chat_id,
+            "metadata": self._with_scope(chat_id, md),
+        }
+        phrase = getattr(self, "_status_text", {}).get(str(chat_id))
+        if phrase:
+            frame["content"] = str(phrase)
         try:
             await self._transport.send_outbound(
-                {
-                    "op": "typing",
-                    "chat_id": chat_id,
-                    "metadata": self._with_scope(chat_id, metadata),
-                },
+                frame,
                 platform=self._platform_by_chat.get(str(chat_id)),
             )
         except Exception:  # noqa: BLE001 - typing is cosmetic, never breaks a turn
@@ -852,13 +1201,17 @@ class RelayAdapter(BasePlatformAdapter):
         platform = self._platform_by_chat.get(str(chat_id))
         if platform != Platform.SLACK.value:
             return
+        # Clear must target the SAME thread the heartbeat set, or the clear
+        # frame no-ops threadless and the status line sticks until Slack's own
+        # timeout. Shared helper with send_typing so the two guards cannot drift.
+        md = self._with_status_thread_anchor(chat_id, metadata)
         try:
             await self._transport.send_outbound(
                 {
                     "op": "typing",
                     "chat_id": chat_id,
                     "content": "",
-                    "metadata": self._with_scope(chat_id, metadata),
+                    "metadata": self._with_scope(chat_id, md),
                 },
                 platform=platform,
             )
@@ -983,14 +1336,23 @@ class RelayAdapter(BasePlatformAdapter):
             if not uploaded:
                 return None
             source_url = uploaded
+        # Same Slack thread-anchor contract as the text lane (send). Media
+        # frames egress through the connector's Slack sender too, so an
+        # unresolved anchor threads an image under the user's DM message in
+        # flat mode, and loses the per-message thread entirely in thread mode
+        # (threadTs() reads metadata only). Route through the shared helper.
+        media_metadata: Dict[str, Any] = dict(metadata or {})
+        effective_reply_to = self._apply_slack_thread_anchor(
+            chat_id, reply_to, media_metadata
+        )
         action: Dict[str, Any] = {
             "op": "send_media",
             "chat_id": chat_id,
             "media_kind": media_kind,
             "source_url": source_url,
             "content": caption or "",
-            "reply_to": reply_to,
-            "metadata": self._with_scope(chat_id, metadata),
+            "reply_to": effective_reply_to,
+            "metadata": self._with_scope(chat_id, media_metadata),
         }
         if filename:
             action["filename"] = filename
@@ -1065,8 +1427,12 @@ class RelayAdapter(BasePlatformAdapter):
         if result is not None:
             return result
         return await super().send_image_file(
-            chat_id, image_path, caption=caption, reply_to=reply_to,
-            metadata=metadata, **kwargs,
+            chat_id,
+            image_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
         )
 
     async def send_voice(
@@ -1091,8 +1457,12 @@ class RelayAdapter(BasePlatformAdapter):
         if result is not None:
             return result
         return await super().send_voice(
-            chat_id, audio_path, caption=caption, reply_to=reply_to,
-            metadata=metadata, **kwargs,
+            chat_id,
+            audio_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
         )
 
     async def send_video(
@@ -1117,8 +1487,12 @@ class RelayAdapter(BasePlatformAdapter):
         if result is not None:
             return result
         return await super().send_video(
-            chat_id, video_path, caption=caption, reply_to=reply_to,
-            metadata=metadata, **kwargs,
+            chat_id,
+            video_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
         )
 
     async def send_document(
@@ -1145,13 +1519,20 @@ class RelayAdapter(BasePlatformAdapter):
         if result is not None:
             return result
         return await super().send_document(
-            chat_id, file_path, caption=caption, file_name=file_name,
-            reply_to=reply_to, metadata=metadata, **kwargs,
+            chat_id,
+            file_path,
+            caption=caption,
+            file_name=file_name,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
         )
 
     # ── Phase 3 interactive: prompt + react ──────────────────────────────
 
-    def _mint_prompt(self, kind: str, state: Dict[str, Any], timeout_s: float = 3600.0) -> str:
+    def _mint_prompt(
+        self, kind: str, state: Dict[str, Any], timeout_s: float = 3600.0
+    ) -> str:
         """Register a pending prompt and return its 8-hex id.
 
         ``state`` carries what the resolver needs when the answer comes back
@@ -1171,7 +1552,9 @@ class RelayAdapter(BasePlatformAdapter):
         # Opportunistic sweep so abandoned prompts can't accumulate: drop
         # anything already expired (cheap — dict is small by construction).
         now = time.time()
-        for stale in [k for k, v in self._pending_prompts.items() if v.get("expires_at", 0) < now]:
+        for stale in [
+            k for k, v in self._pending_prompts.items() if v.get("expires_at", 0) < now
+        ]:
             self._pending_prompts.pop(stale, None)
         return prompt_id
 
@@ -1207,6 +1590,20 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None or not self.descriptor.supports_op("prompt"):
             return None
+        # An interactive prompt (approval / clarify / slash-confirm) is emitted
+        # mid-turn in reply to the triggering inbound event, so `metadata` carries
+        # that event's thread context (run.py _thread_metadata_for_source stamps
+        # metadata.thread_id — for a Slack DM the triggering message's own ts,
+        # used only as a session-keying fallback). Forwarding it makes the
+        # connector thread the prompt card UNDER the triggering message instead
+        # of posting it flat at the DM root (the reported bug). Native Slack
+        # Hermes suppresses this synthetic DM thread anchor; drop it here for the
+        # same Slack-DM-with-no-real-thread case, matching _resolve_reply_to_for_send.
+        # Prompt metadata is forwarded VERBATIM. The threading mode is decided
+        # in exactly one place — run.py's _resolve_progress_thread_id (flat mode
+        # suppresses the synthetic self-anchor there; thread mode stamps the
+        # turn's thread). Boundary pinned by test_run_py_suppresses_self_anchor*.
+        prompt_metadata = metadata
         action: Dict[str, Any] = {
             "op": "prompt",
             "chat_id": chat_id,
@@ -1214,8 +1611,10 @@ class RelayAdapter(BasePlatformAdapter):
             "prompt_kind": prompt_kind,
             "prompt_id": prompt_id,
             "options": options,
-            "reply_to": reply_to,
-            "metadata": self._with_scope(chat_id, metadata),
+            "reply_to": self._resolve_reply_to_for_send(
+                chat_id, reply_to, prompt_metadata
+            ),
+            "metadata": self._with_scope(chat_id, prompt_metadata),
         }
         if timeout_s is not None:
             action["timeout_s"] = int(timeout_s)
@@ -1260,12 +1659,15 @@ class RelayAdapter(BasePlatformAdapter):
         button→text fallback takes over (same contract as a native adapter's
         failed button send).
         """
-        options: list = [{"id": "once", "label": "✅ Allow Once", "style": "success"}]
+        options: list = [{"id": "once", "label": "Allow Once", "style": "primary"}]
         if not smart_denied and allow_session:
-            options.append({"id": "session", "label": "✅ Session", "style": "primary"})
+            options.append({"id": "session", "label": "Allow Session"})
             if allow_permanent:
-                options.append({"id": "always", "label": "✅ Always", "style": "primary"})
-        options.append({"id": "deny", "label": "❌ Deny", "style": "danger"})
+                options.append({
+                    "id": "always",
+                    "label": "Always Allow",
+                })
+        options.append({"id": "deny", "label": "Deny", "style": "danger"})
 
         cmd_preview = command if len(command) <= 1500 else command[:1500] + "..."
         text = (
@@ -1274,7 +1676,9 @@ class RelayAdapter(BasePlatformAdapter):
             f"Reason: {description}"
         )
         if smart_denied:
-            text += "\n\n**Smart DENY:** owner override applies to this one operation only."
+            text += (
+                "\n\n**Smart DENY:** owner override applies to this one operation only."
+            )
 
         prompt_id = self._mint_prompt(
             "exec_approval",
@@ -1310,9 +1714,9 @@ class RelayAdapter(BasePlatformAdapter):
         gateway's text-intercept flow when the prompt lane is unavailable.
         """
         options = [
-            {"id": "once", "label": "✅ Approve Once", "style": "success"},
-            {"id": "always", "label": "🔒 Always Approve", "style": "primary"},
-            {"id": "cancel", "label": "❌ Cancel", "style": "danger"},
+            {"id": "once", "label": "Approve Once", "style": "primary"},
+            {"id": "always", "label": "Always Approve"},
+            {"id": "cancel", "label": "Cancel", "style": "danger"},
         ]
         text = f"**{title}**\n\n{message}" if title else message
         prompt_id = self._mint_prompt(
@@ -1422,7 +1826,11 @@ class RelayAdapter(BasePlatformAdapter):
             if kind == "exec_approval":
                 from tools.approval import resolve_gateway_approval
 
-                choice = option_id if option_id in {"once", "session", "always", "deny"} else "deny"
+                choice = (
+                    option_id
+                    if option_id in {"once", "session", "always", "deny"}
+                    else "deny"
+                )
                 count = resolve_gateway_approval(session_key, choice)
                 label = {
                     "once": "✅ Approved once",
@@ -1435,13 +1843,17 @@ class RelayAdapter(BasePlatformAdapter):
                 # Acknowledge in-channel (the connector's prompt message can't
                 # be edited cross-platform yet — edit support varies; a short
                 # confirmation preserves the audit trail the native edit gives).
-                await self.send(chat_id, label, metadata=self._prompt_reply_metadata(event))
+                await self.send(
+                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                )
                 if count:
                     self.resume_typing_for_chat(chat_id)
             elif kind == "slash_confirm":
                 from tools import slash_confirm as slash_confirm_mod
 
-                choice = option_id if option_id in {"once", "always", "cancel"} else "cancel"
+                choice = (
+                    option_id if option_id in {"once", "always", "cancel"} else "cancel"
+                )
                 result_text = await slash_confirm_mod.resolve(
                     session_key, str(state.get("confirm_id") or ""), choice
                 )
@@ -1450,13 +1862,20 @@ class RelayAdapter(BasePlatformAdapter):
                     "always": "🔒 Always approve",
                     "cancel": "❌ Cancelled",
                 }.get(choice, "Resolved")
-                await self.send(chat_id, label, metadata=self._prompt_reply_metadata(event))
+                await self.send(
+                    chat_id, label, metadata=self._prompt_reply_metadata(event)
+                )
                 if result_text:
                     await self.send(
-                        chat_id, str(result_text), metadata=self._prompt_reply_metadata(event)
+                        chat_id,
+                        str(result_text),
+                        metadata=self._prompt_reply_metadata(event),
                     )
             elif kind == "clarify":
-                from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
+                from tools.clarify_gateway import (
+                    mark_awaiting_text,
+                    resolve_gateway_clarify,
+                )
 
                 clarify_id = str(state.get("clarify_id") or "")
                 if option_id == "other":

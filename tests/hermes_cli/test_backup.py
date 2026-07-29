@@ -2848,3 +2848,70 @@ class TestMemoryProviderExternalPaths:
 
         paths = HindsightMemoryProvider().backup_paths()
         assert str(tmp_path / ".hindsight") in paths
+
+
+class TestQuickSnapshotRestoreSidecars:
+    """A restore must not leave the destination's stale WAL/SHM in place.
+
+    The snapshot is a checkpointed ``sqlite3.backup()`` image that owns no WAL,
+    so a leftover ``-wal`` from an ungracefully killed gateway describes a
+    *different* page image.  Replacing only the main ``.db`` makes SQLite replay
+    that foreign WAL on the next open and the database comes up malformed.
+    """
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        db_path = home / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, data TEXT)")
+        for i in range(2000):
+            conn.execute("INSERT INTO sessions(data) VALUES (?)", ("seed" * 40,))
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(FULL)")
+        conn.close()
+        return home
+
+    def test_restore_clears_stale_sidecars(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        db_path = hermes_home / "state.db"
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+
+        # Churn after the snapshot, then strand the sidecars on disk the way a
+        # SIGKILLed gateway does (copy them aside, let close() clean up, put
+        # them back) so they describe pages the snapshot image does not have.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        for i in range(4000):
+            conn.execute("INSERT INTO sessions(data) VALUES (?)", ("churn" * 40,))
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        for i in range(4000):
+            conn.execute("INSERT INTO sessions(data) VALUES (?)", ("more" * 40,))
+        conn.commit()
+        stranded = {}
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            assert sidecar.exists(), f"expected a live {suffix} before close"
+            stranded[suffix] = sidecar.read_bytes()
+        conn.close()
+        for suffix, blob in stranded.items():
+            db_path.with_name(db_path.name + suffix).write_bytes(blob)
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+
+        for suffix in ("-wal", "-shm"):
+            assert not db_path.with_name(db_path.name + suffix).exists(), (
+                f"stale {suffix} survived the restore and will be replayed"
+            )
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 2000
+        finally:
+            conn.close()

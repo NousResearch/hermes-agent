@@ -8227,6 +8227,13 @@ def _update_via_zip(args):
                                 try:
                                     import shutil as _shutil
 
+                                    # Stale -wal/-shm from the crashed process
+                                    # would be replayed over the snapshot image
+                                    # and fail the integrity check below.
+                                    for _sfx in ("-wal", "-shm", "-journal"):
+                                        _state_path.with_name(
+                                            _state_path.name + _sfx
+                                        ).unlink(missing_ok=True)
                                     _shutil.copy2(_snap_state, _state_path)
                                     _restored_ok = verify_sqlite_integrity(
                                         _state_path,
@@ -12850,6 +12857,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 try:
                                     import shutil as _shutil
 
+                                    # Stale -wal/-shm from the crashed process
+                                    # would be replayed over the snapshot image
+                                    # and fail the integrity check below.
+                                    for _sfx in ("-wal", "-shm", "-journal"):
+                                        _state_path.with_name(
+                                            _state_path.name + _sfx
+                                        ).unlink(missing_ok=True)
                                     _shutil.copy2(_snap_state, _state_path)
                                     _restored_ok = verify_sqlite_integrity(
                                         _state_path,

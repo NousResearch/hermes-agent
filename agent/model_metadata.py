@@ -123,6 +123,67 @@ _ENDPOINT_MODEL_CACHE_TTL = 300
 _ENDPOINT_PROBE_TTL_SECONDS = 3600.0
 _endpoint_probe_path_cache: Dict[str, tuple] = {}
 
+# ── Disk L2 for local-endpoint probe results ────────────────────────────────
+# The in-process caches above die with the process, so every CLI cold start
+# with a local model re-paid the probe waterfall in AIAgent.__init__:
+# detect_local_server_type (up to 4 HTTP GETs, ≤2 s each on a hung server)
+# + /api/show (≤3 s). A short-TTL disk cache makes back-to-back CLI
+# invocations hit disk instead of the network. Only SUCCESSFUL probes are
+# persisted (a down server must not pin a negative verdict), and the TTL is
+# short enough that swapping the server on a port (stop Ollama, start
+# LM Studio) is picked up within minutes — strictly fresher than the 1 h
+# in-process TTL that already accepts that staleness.
+_LOCAL_PROBE_DISK_TTL_SECONDS = 300.0
+
+
+def _local_probe_disk_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "local_endpoint_probes.json"
+
+
+def _load_local_probe_disk_cache() -> Dict[str, Any]:
+    try:
+        with _local_probe_disk_cache_path().open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _local_probe_disk_get(kind: str, key: str) -> Optional[Any]:
+    """Return a fresh cached value for ``kind:key``, else None."""
+    entry = _load_local_probe_disk_cache().get(f"{kind}:{key}")
+    if not isinstance(entry, dict):
+        return None
+    try:
+        if (time.time() - float(entry["ts"])) >= _LOCAL_PROBE_DISK_TTL_SECONDS:
+            return None
+        return entry["value"]
+    except Exception:
+        return None
+
+
+def _local_probe_disk_put(kind: str, key: str, value: Any) -> None:
+    """Persist a successful probe result. Best-effort; prunes stale entries."""
+    try:
+        now = time.time()
+        data = _load_local_probe_disk_cache()
+        data = {
+            k: v
+            for k, v in data.items()
+            if isinstance(v, dict)
+            and (now - float(v.get("ts", 0))) < _LOCAL_PROBE_DISK_TTL_SECONDS
+        }
+        data[f"{kind}:{key}"] = {"value": value, "ts": now}
+        atomic_json_write(
+            _local_probe_disk_cache_path(),
+            data,
+            indent=0,
+            separators=(",", ":"),
+        )
+    except Exception as e:
+        logger.debug("Failed to save local probe disk cache: %s", e)
+
 
 def _get_model_metadata_cache_path() -> Path:
     """Return path to the OpenRouter model metadata disk cache."""
@@ -752,6 +813,13 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
         return cached[0]
 
+    # Disk L2: a fresh cross-process verdict skips the HTTP waterfall
+    # entirely (back-to-back CLI invocations, cron ticks).
+    disk_hit = _local_probe_disk_get("server_type", server_url)
+    if isinstance(disk_hit, str):
+        _endpoint_probe_path_cache[server_url] = (disk_hit, time.monotonic())
+        return disk_hit
+
     headers = _auth_headers(api_key)
 
     result: Optional[str] = None
@@ -804,6 +872,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
 
     if result is not None:
         _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
+        _local_probe_disk_put("server_type", server_url, result)
     return result
 
 
@@ -1523,6 +1592,13 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     if server_type != "ollama":
         return None
 
+    # Disk L2: /api/show results are stable for a given (model, server) on
+    # human timescales — skip the HTTP roundtrip on fresh cross-process hits.
+    _disk_key = f"{server_url}|{bare_model}"
+    disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
+    if isinstance(disk_hit, int) and disk_hit > 0:
+        return disk_hit
+
     headers = _auth_headers(api_key)
 
     try:
@@ -1540,7 +1616,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                         parts = line.strip().split()
                         if len(parts) >= 2:
                             try:
-                                return int(parts[-1])
+                                _ctx = int(parts[-1])
+                                _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
+                                return _ctx
                             except ValueError:
                                 pass
 
@@ -1548,7 +1626,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
             model_info = data.get("model_info", {})
             for key, value in model_info.items():
                 if "context_length" in key and isinstance(value, (int, float)):
-                    return int(value)
+                    _ctx = int(value)
+                    _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
+                    return _ctx
     except Exception:
         pass
     return None

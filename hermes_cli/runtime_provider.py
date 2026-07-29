@@ -264,7 +264,7 @@ def _auto_detect_local_model(base_url: str) -> str:
         url = base_url.rstrip("/")
         if not url.endswith("/v1"):
             url += "/v1"
-        resp = requests.get(url + "/models", timeout=5)
+        resp = requests.get(url + "/models", timeout=(2, 3))
         if resp.ok:
             models = resp.json().get("data", [])
             if len(models) == 1:

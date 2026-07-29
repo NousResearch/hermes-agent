@@ -33,7 +33,7 @@ Optional / Phase-3+:
 - WHATSAPP_CLOUD_APP_SECRET       (HMAC key for X-Hub-Signature-256)
 - WHATSAPP_CLOUD_WABA_ID          (analytics / future use)
 - WHATSAPP_CLOUD_VERIFY_TOKEN     (hub.verify_token shared secret)
-- WHATSAPP_CLOUD_WEBHOOK_HOST     (default 0.0.0.0)
+- WHATSAPP_CLOUD_WEBHOOK_HOST     (default: unset → dual-stack, all interfaces IPv4+IPv6)
 - WHATSAPP_CLOUD_WEBHOOK_PORT     (default 8090)
 - WHATSAPP_CLOUD_WEBHOOK_PATH     (default /whatsapp/webhook)
 - WHATSAPP_CLOUD_API_VERSION      (default v20.0)
@@ -86,7 +86,12 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_VERSION = "v20.0"
-DEFAULT_WEBHOOK_HOST = "0.0.0.0"
+# ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
+# address family (IPv4 + IPv6). The old "0.0.0.0" default bound IPv4 ONLY and
+# was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) — same
+# bug as the LINE adapter (NS-603) and gateway/platforms/webhook.py
+# (d542894ad). Pin a host via WHATSAPP_CLOUD_WEBHOOK_HOST or extra.webhook_host.
+DEFAULT_WEBHOOK_HOST = None
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
@@ -217,7 +222,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._verify_token: str = str(extra.get("verify_token", "")).strip()
 
         # Webhook server config
-        self._webhook_host: str = str(extra.get("webhook_host", DEFAULT_WEBHOOK_HOST))
+        # Falsy host (None/"") collapses to the dual-stack default.
+        _raw_webhook_host = extra.get("webhook_host", DEFAULT_WEBHOOK_HOST) or DEFAULT_WEBHOOK_HOST
+        self._webhook_host: Optional[str] = (
+            str(_raw_webhook_host) if _raw_webhook_host else None
+        )
         self._webhook_port: int = int(extra.get("webhook_port", DEFAULT_WEBHOOK_PORT))
         self._webhook_path: str = self._normalize_path(
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)

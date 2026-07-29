@@ -1181,6 +1181,9 @@ export const fr: Translations = {
       ready: 'Prêt',
       needsSignIn: 'Nécessite une connexion',
       needsSetup: 'Nécessite une configuration',
+      activeBackend: 'Actif',
+      activeBackendHint: 'Il s’agit de votre backend actif',
+      useBackend: 'Utiliser ce backend',
       nousIncluded: 'Inclus avec un abonnement Nous — connectez-vous au portail Nous pour activer.',
       nousAuthNeededTitle: 'Se connecter au portail Nous',
       nousAuthNeededMessage: provider =>

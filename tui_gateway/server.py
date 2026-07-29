@@ -15411,6 +15411,47 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
 
+def _skill_usage_lookup():
+    """Build ``(usage, origin)`` callables for the skill-command catalog.
+
+    ``usage(name)`` is the skill's observed activity count (use + view +
+    patch); ``origin(name)`` is ``"hub"``, ``"bundled"``, or ``"local"`` — the
+    same classification ``/api/skills`` reports as ``provenance`` (where
+    "local" is spelled "agent"). Both read sidecar files that are cheap and
+    already parsed once per catalog build. Any failure degrades to zero usage
+    and ``"local"`` so a missing/corrupt sidecar can never break the catalog.
+    """
+    try:
+        from tools.skill_usage import (
+            _read_bundled_manifest_names,
+            _read_hub_installed_names,
+            activity_count,
+            load_usage,
+        )
+
+        records = load_usage()
+        bundled = _read_bundled_manifest_names()
+        hub = _read_hub_installed_names()
+    except Exception as e:
+        logger.debug("skill usage lookup unavailable: %s", e)
+        return (lambda _name: 0), (lambda _name: "local")
+
+    def usage(name: str) -> int:
+        try:
+            return activity_count(records.get(name) or {})
+        except Exception:
+            return 0
+
+    def origin(name: str) -> str:
+        if name in hub:
+            return "hub"
+        if name in bundled:
+            return "bundled"
+        return "local"
+
+    return usage, origin
+
+
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""
@@ -15488,12 +15529,21 @@ def _(rid, params: dict) -> dict:
                 warning = f"quick_commands discovery unavailable: {e}"
 
         skill_count = 0
+        skills: dict[str, dict] = {}
         try:
             from agent.skill_commands import scan_skill_commands
+
+            # Usage + origin per skill command. Surfaces here rather than in a
+            # second RPC because every consumer that renders the catalog also
+            # wants to rank it, and both reads are cheap sidecar files already
+            # loaded once per catalog build.
+            usage, origin_of = _skill_usage_lookup()
 
             for k, info in sorted(scan_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
                 all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
+                name = str(info.get("name") or k.lstrip("/"))
+                skills[k] = {"usage": usage(name), "origin": origin_of(name)}
                 skill_count += 1
         except Exception as e:
             warning = f"skill discovery unavailable: {e}"
@@ -15509,6 +15559,7 @@ def _(rid, params: dict) -> dict:
                 "sub": sub,
                 "canon": canon,
                 "categories": categories,
+                "skills": skills,
                 "skill_count": skill_count,
                 "warning": warning,
             },

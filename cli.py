@@ -1475,10 +1475,14 @@ def _resolve_worktree_base(repo_root: str) -> tuple:
     """
     import subprocess
 
+    from hermes_cli._subprocess_compat import noninteractive_git_env
+
     def _git(args, timeout=20):
         return subprocess.run(
             ["git", *args],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=repo_root,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
 
     # 1. Current branch's upstream, if it tracks one.

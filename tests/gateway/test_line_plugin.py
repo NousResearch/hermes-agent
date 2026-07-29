@@ -804,6 +804,21 @@ class TestDualStackBind:
     @pytest.mark.asyncio
     async def test_default_bind_serves_both_families(self, monkeypatch):
         """Behavioural proof: host=None opens v4 AND v6 listening sockets."""
+        # Guard: on IPv4-only hosts (CI runners with IPv6 disabled) the
+        # dual-stack bind legitimately yields no v6 socket — that's the
+        # environment, not a regression. Probe an actual ::1 bind rather
+        # than trusting socket.has_ipv6 (compile-time constant).
+        import socket as _socket
+        if not _socket.has_ipv6:
+            pytest.skip("IPv6 not supported by this Python build")
+        try:
+            _probe = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+            try:
+                _probe.bind(("::1", 0))
+            finally:
+                _probe.close()
+        except OSError:
+            pytest.skip("IPv6 stack unavailable on this host (cannot bind ::1)")
         monkeypatch.delenv("LINE_HOST", raising=False)
         ad = LineAdapter(self._cfg(port=0))
         ad._client = MagicMock()

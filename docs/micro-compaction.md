@@ -160,7 +160,47 @@ compression:
 Set it to `false` to disable micro-compaction and return to batch-only
 compaction. Everything else about compression is unchanged.
 
-## What you'll see in the logs
+## Measuring it
+
+Every pass emits one content-free JSON line, in the same style as the batch
+compaction telemetry:
+
+```
+micro compaction telemetry: {"event":"micro_compaction","outcome":"absorbed",
+"tokens_before":12739,"tokens_after":12060,"tokens_delta":-679,
+"exchange_tokens":868,"rolling_summary_tokens":31,"passes_total":1,
+"tokens_saved_total":679,"duration_ms":14,...}
+```
+
+`tokens_delta` is negative when the pass shrank the transcript.
+`tokens_saved_total` and `passes_total` accumulate across the session, so a whole
+run can be summarised from its last line. No transcript content appears in the
+payload — only counts.
+
+To turn a log into an answer:
+
+```
+python scripts/micro_compaction_report.py [--per-session] [LOGFILE ...]
+```
+
+Defaults to `$HERMES_HOME/logs/agent.log`. It reports passes, outcome mix, net
+tokens saved, mean absorbed-exchange size and pass durations.
+
+### Reading the numbers honestly
+
+**The first pass in a session usually costs tokens rather than saving them.**
+Inserting the summary marker carries a fixed ~400 tokens of scaffolding — the
+compaction preamble, the historical heading, the end marker — and on pass one
+that is paid against a single absorbed exchange. A first pass showing
+`tokens_delta: +330` is not a malfunction.
+
+From the second pass on, the marker is *replaced* rather than added, so the
+scaffolding is already paid for and each absorbed exchange is close to pure
+saving. The break-even is normally the second or third pass. This is why the
+per-session view matters more than any single line: judge the feature on a
+session's trajectory, not on one turn.
+
+The plainer human-readable lines are still there too:
 
 ```
 Micro-compaction: 37 -> 36 messages
@@ -168,7 +208,7 @@ Micro-compaction defrag: rolling summary re-summarized (1843 chars)
 Micro-compaction: skipping exchange at cursor 12 after 3 consecutive failures
 ```
 
-Message counts move by small amounts — that's the point. The token count is where
+Message counts move by small amounts — that's expected. The token count is where
 the effect shows: absorbing one tool-heavy exchange can drop hundreds of tokens
 while changing the message count by one or two.
 

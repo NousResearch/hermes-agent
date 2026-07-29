@@ -186,6 +186,75 @@ class TestMicroCompaction:
         assert len(_summary_markers(messages)) == 1
         assert after < before, f"context grew: {before} -> {after}"
 
+    def test_emits_content_free_token_telemetry(self, caplog):
+        """Each pass logs one JSON line with the token accounting.
+
+        Message counts barely move even when the saving is large, so the token
+        fields are what make the effect measurable in a real session.
+        """
+        import json
+        import logging
+
+        cc = _compressor()
+        messages = _conversation(exchanges=8)
+
+        with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
+            result = cc._micro_compact(messages)
+
+        lines = [
+            r.getMessage() for r in caplog.records
+            if "micro compaction telemetry:" in r.getMessage()
+        ]
+        assert len(lines) == 1
+        payload = json.loads(lines[0].split("micro compaction telemetry: ", 1)[1])
+
+        assert payload["event"] == "micro_compaction"
+        assert payload["outcome"] == "absorbed"
+        assert payload["tokens_saved_total"] == -payload["tokens_delta"]
+        assert payload["passes_total"] == 1
+        assert payload["messages_after"] == len(result)
+        assert payload["exchange_tokens"] > 0
+        # Content-free: no transcript text may ride along in the payload.
+        blob = json.dumps(payload)
+        assert "answer 0" not in blob and "question 0" not in blob
+
+    def test_first_pass_costs_marker_overhead_then_pays_it_back(self):
+        """The first pass can grow the transcript; later passes recover it.
+
+        Inserting the summary marker costs a fixed ~400 tokens of scaffolding
+        (the compaction preamble, the historical heading and the end marker).
+        On pass one that overhead is paid against a single absorbed exchange,
+        so the net can be positive. From pass two on the marker is replaced
+        rather than added, so the scaffolding is already paid for and each
+        absorbed exchange is pure saving. Anyone reading a single turn's
+        telemetry needs to know this before concluding it made things worse.
+        """
+        from agent.model_metadata import estimate_messages_tokens_rough
+
+        cc = _compressor()
+        messages = _conversation(exchanges=10)
+        start = estimate_messages_tokens_rough(messages)
+
+        messages = cc._micro_compact(messages)
+        after_first = estimate_messages_tokens_rough(messages)
+
+        for _ in range(5):
+            messages = cc._micro_compact(messages)
+        after_many = estimate_messages_tokens_rough(messages)
+
+        assert after_first > start, "expected one-time marker overhead"
+        assert after_many < after_first, "later passes must recover it"
+
+    def test_cumulative_savings_accumulate_across_passes(self):
+        cc = _compressor()
+        messages = _conversation(exchanges=10)
+
+        for _ in range(4):
+            messages = cc._micro_compact(messages)
+
+        assert cc._micro_compact_passes == 4
+        assert cc._micro_compact_tokens_saved_total > 0
+
     def test_defrag_triggers_once_the_rolling_summary_grows(self):
         cc = _compressor(summary="FRESH DEFRAGGED SUMMARY")
         cc._micro_compact_rolling_summary = "x" * 40_000  # far over the threshold

@@ -1300,6 +1300,8 @@ class ContextCompressor(ContextEngine):
         self._micro_compact_rolling_summary = ""
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
+        self._micro_compact_passes = 0
+        self._micro_compact_tokens_saved_total = 0
 
     def _begin_compression_telemetry(
         self,
@@ -2155,6 +2157,8 @@ class ContextCompressor(ContextEngine):
         self._micro_compact_consecutive_failures: int = 0
         self._micro_compact_last_failure_cursor: int = -1
         self._micro_compact_defrag_threshold_tokens: int = 2000
+        self._micro_compact_passes: int = 0
+        self._micro_compact_tokens_saved_total: int = 0
 
         # Defer context-length resolution to first access (#32221):
         # get_model_context_length() can issue a synchronous /models HTTP
@@ -5332,6 +5336,15 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         exchange_start, exchange_end = exchange
 
+        # Baseline for telemetry. Taken only once an exchange is in hand, so
+        # turns that no-op early don't pay for the scan.
+        _started_at = time.monotonic()
+        _tokens_before = estimate_messages_tokens_rough(messages)
+        _messages_before = n_messages
+
+        def _elapsed_ms() -> int:
+            return int((time.monotonic() - _started_at) * 1000)
+
         # Check for defrag trigger
         if self._needs_defrag():
             self._defrag_rolling_summary(messages, exchange_start, compress_end)
@@ -5339,10 +5352,19 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._sync_micro_compact_to_db(result)
             self._micro_compact_consecutive_failures = 0
             self._micro_compact_last_failure_cursor = -1
+            self._emit_micro_compaction_telemetry(
+                outcome="defrag",
+                messages_before=_messages_before,
+                messages_after=len(result),
+                tokens_before=_tokens_before,
+                tokens_after=estimate_messages_tokens_rough(result),
+                duration_ms=_elapsed_ms(),
+            )
             return result
 
         # Micro-summarize one exchange
         exchange_text = self._serialize_one_exchange(messages, exchange_start, exchange_end)
+        _exchange_tokens = estimate_tokens_rough(exchange_text)
         updated_summary = self._micro_summarize_one(exchange_text)
         if updated_summary is None:
             # Track consecutive failures on the same cursor position so we
@@ -5366,6 +5388,18 @@ This compaction should PRIORITISE preserving all information related to the focu
                 self._micro_compact_cursor = exchange_end
                 self._micro_compact_consecutive_failures = 0
                 self._micro_compact_last_failure_cursor = -1
+                _outcome = "exchange_skipped"
+            else:
+                _outcome = "summarize_failed"
+            self._emit_micro_compaction_telemetry(
+                outcome=_outcome,
+                messages_before=_messages_before,
+                messages_after=len(messages),
+                tokens_before=_tokens_before,
+                tokens_after=_tokens_before,
+                exchange_tokens=_exchange_tokens,
+                duration_ms=_elapsed_ms(),
+            )
             return messages
 
         self._micro_compact_rolling_summary = updated_summary
@@ -5375,7 +5409,69 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end)
         self._sync_micro_compact_to_db(result)
+        self._emit_micro_compaction_telemetry(
+            outcome="absorbed",
+            messages_before=_messages_before,
+            messages_after=len(result),
+            tokens_before=_tokens_before,
+            tokens_after=estimate_messages_tokens_rough(result),
+            exchange_tokens=_exchange_tokens,
+            duration_ms=_elapsed_ms(),
+        )
         return result
+
+    def _emit_micro_compaction_telemetry(
+        self,
+        *,
+        outcome: str,
+        messages_before: int,
+        messages_after: int,
+        tokens_before: int | None,
+        tokens_after: int | None,
+        exchange_tokens: int | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        """Emit one content-free JSON log line describing a micro-compaction pass.
+
+        Mirrors ``_emit_compression_attempt_telemetry`` for the batch path.
+        Message counts move by one or two even when the saving is large, so the
+        token fields are the ones that actually answer "is this helping?".
+        ``tokens_delta`` is negative when the pass shrank the transcript, and
+        the ``*_total`` fields accumulate across the session so a whole run can
+        be summarised from the last line alone.
+        """
+        try:
+            delta = None
+            if tokens_before is not None and tokens_after is not None:
+                delta = tokens_after - tokens_before
+                self._micro_compact_tokens_saved_total -= delta
+            self._micro_compact_passes += 1
+            payload = {
+                "event": "micro_compaction",
+                "session_id": getattr(self, "_session_id", "") or "",
+                "outcome": outcome,
+                "messages_before": messages_before,
+                "messages_after": messages_after,
+                "tokens_before": _safe_int(tokens_before),
+                "tokens_after": _safe_int(tokens_after),
+                "tokens_delta": _safe_int(delta),
+                "exchange_tokens": _safe_int(exchange_tokens),
+                "rolling_summary_tokens": estimate_tokens_rough(
+                    self._micro_compact_rolling_summary
+                ),
+                "cursor": _safe_int(self._micro_compact_cursor),
+                "passes_total": self._micro_compact_passes,
+                "tokens_saved_total": self._micro_compact_tokens_saved_total,
+                "duration_ms": _safe_int(duration_ms),
+                "main_model": self.model or "",
+                "aux_model": self.summary_model or "",
+            }
+            logger.info(
+                "micro compaction telemetry: %s",
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
+        except Exception as exc:
+            logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
     def _sync_micro_compact_to_db(
         self,

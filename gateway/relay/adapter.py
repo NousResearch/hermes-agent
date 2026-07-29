@@ -904,32 +904,12 @@ class RelayAdapter(BasePlatformAdapter):
         if self._transport is None:
             return SendResult(success=False, error="no transport")
         # Native _resolve_thread_ts parity: a Slack DM reply must post flat at
-        # the DM root, not threaded under the triggering message. Drop the
-        # synthetic self-anchor from BOTH the top-level reply_to and the mirrored
-        # metadata.reply_to_message_id so the connector can't thread on either.
-        effective_reply_to = self._resolve_reply_to_for_send(
+        # the DM root, not threaded under the triggering message. One shared
+        # helper resolves the anchor for EVERY egress lane (see
+        # _apply_slack_thread_anchor) so the text and media lanes cannot drift.
+        effective_reply_to = self._apply_slack_thread_anchor(
             chat_id, reply_to, send_metadata
         )
-        if effective_reply_to is None and reply_to is not None:
-            send_metadata.pop("reply_to_message_id", None)
-        # The connector's Slack sender THREADS ON METADATA ONLY —
-        # threadTs() reads metadata.thread_id/thread_ts and never looks at
-        # the frame's reply_to. A send whose only threading signal is
-        # reply_to (base.py's final-reply and fallback lanes build metadata
-        # from source.thread_id = None for a top-level DM) would post to the
-        # home channel even though _resolve_reply_to_for_send kept the
-        # anchor. Promote the surviving anchor into metadata.thread_id so
-        # the wire carries it where the connector actually reads it. Only
-        # when the mode gate kept the anchor (thread-per-message / real
-        # thread) — flat mode already nulled effective_reply_to above.
-        if (
-            effective_reply_to is not None
-            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
-            and not (
-                send_metadata.get("thread_id") or send_metadata.get("thread_ts")
-            )
-        ):
-            send_metadata["thread_id"] = str(effective_reply_to)
         result = await self._transport.send_outbound(
             {
                 "op": "send",
@@ -1010,6 +990,80 @@ class RelayAdapter(BasePlatformAdapter):
         # Flat mode: synthetic DM self-anchor — post flat at the DM root.
         return None
 
+    def _apply_slack_thread_anchor(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Dict[str, Any],
+        *,
+        mirror_key: str = "reply_to_message_id",
+    ) -> Optional[str]:
+        """Resolve the outbound Slack thread anchor for ONE egress frame.
+
+        The single choke point every send lane goes through — text (``send``)
+        and media (``send_media``) alike. It does three things that must always
+        happen together, and previously only happened on the text lane:
+
+          1. Mode gate: ``_resolve_reply_to_for_send`` drops the synthetic DM
+             self-anchor in flat mode, keeps it in thread-per-message mode.
+          2. Mirror strip: when the anchor is dropped, remove the mirrored
+             ``metadata.reply_to_message_id`` too, so the connector cannot
+             thread on the copy we forgot about.
+          3. Anchor promotion: the connector's Slack sender THREADS ON METADATA
+             ONLY — ``threadTs()`` reads ``metadata.thread_id``/``thread_ts``
+             and never looks at the frame's ``reply_to``. A surviving anchor is
+             promoted into ``metadata.thread_id`` or the message silently lands
+             in the home channel instead of the per-message thread.
+
+        ``metadata`` is mutated in place; the effective ``reply_to`` is
+        returned. Non-Slack and non-DM chats are untouched by (1), and (3) is
+        Slack-only, so other fronted platforms keep their existing behaviour.
+        """
+        effective_reply_to = self._resolve_reply_to_for_send(
+            chat_id, reply_to, metadata
+        )
+        if effective_reply_to is None and reply_to is not None:
+            metadata.pop(mirror_key, None)
+        if (
+            effective_reply_to is not None
+            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
+            and not (metadata.get("thread_id") or metadata.get("thread_ts"))
+        ):
+            metadata["thread_id"] = str(effective_reply_to)
+        return effective_reply_to
+
+    def _with_status_thread_anchor(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Copy ``metadata`` with the typing/status thread anchor applied.
+
+        Slack's status line is THREAD-scoped: the connector's typing case
+        no-ops without a thread anchor, and the typing lane's metadata
+        (base.py ``_thread_metadata_for_source``) carries none for a top-level
+        DM (``source.thread_id`` is None). Synthesize it from the per-chat
+        inbound-ts cache, exactly as native ``send_typing`` resolves
+        ``thread_ts`` from ``metadata.message_id``.
+
+        Unconditional across both modes: in flat mode the send lane strips its
+        own anchors (see ``_apply_slack_thread_anchor``), so the status anchor
+        cannot leak into reply placement, and ``setStatus`` clears without
+        leaving a message artifact.
+
+        Shared by ``send_typing`` and ``stop_typing`` — the clear MUST target
+        the same thread the heartbeat set, or the status line sticks until
+        Slack's own timeout. Keeping one implementation is what guarantees it.
+        """
+        md = dict(metadata or {})
+        if (
+            not (md.get("thread_id") or md.get("thread_ts"))
+            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
+            and self._chat_type_by_chat.get(str(chat_id)) == "dm"
+        ):
+            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            if anchor:
+                md["thread_id"] = anchor
+        return md
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1079,22 +1133,7 @@ class RelayAdapter(BasePlatformAdapter):
         # like native send_typing resolves thread_ts from metadata.message_id.
         # Flat mode (reply_in_thread=false) keeps the no-anchor no-op: there
         # is no thread and must not be one (#18859).
-        md = dict(metadata or {})
-        if (
-            not (md.get("thread_id") or md.get("thread_ts"))
-            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
-            and self._chat_type_by_chat.get(str(chat_id)) == "dm"
-        ):
-            # Thread mode: status targets the per-message thread.
-            # Flat mode: the status STILL anchors to the triggering ts —
-            # setStatus renders in the footer space and clears without a
-            # message artifact, and flat sends strip their anchors
-            # so reply placement cannot inherit it. Unconditional: liveliness
-            # is not a preference, it ships in whatever form the mode
-            # supports (no speculative opt-out knob).
-            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
-            if anchor:
-                md["thread_id"] = anchor
+        md = self._with_status_thread_anchor(chat_id, metadata)
         # Rich status parity: run.py's live-status lane stashes the
         # current per-tool phrase via set_status_text() (base class store).
         # Carry it as the typing frame's content so the connector's Slack
@@ -1143,18 +1182,10 @@ class RelayAdapter(BasePlatformAdapter):
         platform = self._platform_by_chat.get(str(chat_id))
         if platform != Platform.SLACK.value:
             return
-        # Clear must target the SAME thread the heartbeat set: apply
-        # the identical synthetic-anchor rule as send_typing, or the clear
-        # frame no-ops threadless and the status line sticks until Slack's
-        # own timeout.
-        md = dict(metadata or {})
-        if (
-            not (md.get("thread_id") or md.get("thread_ts"))
-            and self._chat_type_by_chat.get(str(chat_id)) == "dm"
-        ):
-            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
-            if anchor:
-                md["thread_id"] = anchor
+        # Clear must target the SAME thread the heartbeat set, or the clear
+        # frame no-ops threadless and the status line sticks until Slack's own
+        # timeout. Shared helper with send_typing so the two guards cannot drift.
+        md = self._with_status_thread_anchor(chat_id, metadata)
         try:
             await self._transport.send_outbound(
                 {
@@ -1286,14 +1317,23 @@ class RelayAdapter(BasePlatformAdapter):
             if not uploaded:
                 return None
             source_url = uploaded
+        # Same Slack thread-anchor contract as the text lane (send). Media
+        # frames egress through the connector's Slack sender too, so an
+        # unresolved anchor threads an image under the user's DM message in
+        # flat mode, and loses the per-message thread entirely in thread mode
+        # (threadTs() reads metadata only). Route through the shared helper.
+        media_metadata: Dict[str, Any] = dict(metadata or {})
+        effective_reply_to = self._apply_slack_thread_anchor(
+            chat_id, reply_to, media_metadata
+        )
         action: Dict[str, Any] = {
             "op": "send_media",
             "chat_id": chat_id,
             "media_kind": media_kind,
             "source_url": source_url,
             "content": caption or "",
-            "reply_to": reply_to,
-            "metadata": self._with_scope(chat_id, metadata),
+            "reply_to": effective_reply_to,
+            "metadata": self._with_scope(chat_id, media_metadata),
         }
         if filename:
             action["filename"] = filename

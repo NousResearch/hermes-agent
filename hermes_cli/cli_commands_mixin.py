@@ -559,7 +559,20 @@ class CLICommandsMixin:
             return
 
         try:
-            from hermes_cli.clipboard import write_clipboard_text
+            from hermes_cli.clipboard import (
+                is_remote_shell_session,
+                write_clipboard_text,
+            )
+            if is_remote_shell_session():
+                # Over SSH, native tools would write the REMOTE clipboard
+                # (or an X-forwarded one) — OSC 52 reaches the terminal
+                # the user is actually sitting at. Fixes #31528.
+                self._write_osc52_clipboard(text)
+                _cprint(
+                    f"  Copied assistant response #{idx + 1} via OSC 52 "
+                    "(terminal support required)"
+                )
+                return
             if write_clipboard_text(text):
                 _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
                 return

@@ -84,6 +84,20 @@ def _write_clipboard_commands() -> list:
     return attempts
 
 
+def is_remote_shell_session(env=None) -> bool:
+    """True when running inside an SSH session.
+
+    Mirrors ui-tui/src/lib/terminalSetup.ts isRemoteShellSession().  Over
+    SSH, native clipboard tools write the REMOTE machine's clipboard (or
+    an X-forwarded one), which is almost never what the user wants —
+    OSC 52 reaches the LOCAL terminal emulator instead.
+    """
+    e = os.environ if env is None else env
+    return bool(
+        e.get("SSH_CONNECTION") or e.get("SSH_TTY") or e.get("SSH_CLIENT")
+    )
+
+
 def write_clipboard_text(text: str) -> bool:
     """Write *text* to the system clipboard via native platform tools.
 

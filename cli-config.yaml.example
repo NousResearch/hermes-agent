@@ -1138,6 +1138,12 @@ stt:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
     # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
+    # --- Anti-hallucination hardening (whisper decodes junk from silence without these) ---
+    # vad: true                # Silero VAD filter (default on) — silence never reaches whisper.
+    #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
+    # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
+    # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
+    # logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
   language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"

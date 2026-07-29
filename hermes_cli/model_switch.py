@@ -27,6 +27,7 @@ from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     ProviderDef,
+    custom_provider_aliases,
     custom_provider_slug,
     determine_api_mode,
     get_label,
@@ -1145,11 +1146,10 @@ def _resolve_named_custom_model_id(
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
-        entry_slugs = {
-            custom_provider_slug(str(entry.get(key) or "")).lower()
-            for key in ("name", "provider_key")
-            if str(entry.get(key) or "").strip()
-        }
+        entry_slugs = custom_provider_aliases(
+            str(entry.get("name") or ""),
+            str(entry.get("provider_key") or ""),
+        )
         if provider not in entry_slugs or f"custom:{prefix}" not in entry_slugs:
             continue
         for model_id in _declared_model_ids(entry.get("models")):
@@ -1684,9 +1684,12 @@ def switch_model(
                     continue
                 # Match by provider slug (custom:<name>) or by base_url
                 entry_name = entry.get("name", "")
-                entry_slug = f"custom:{entry_name}" if entry_name else ""
+                entry_aliases = custom_provider_aliases(
+                    str(entry_name or ""),
+                    str(entry.get("provider_key") or ""),
+                )
                 entry_url = entry.get("base_url", "")
-                if entry_slug == target_provider or entry_url == base_url:
+                if target_provider.lower() in entry_aliases or entry_url == base_url:
                     # Check if the requested model matches the entry's model
                     entry_model = entry.get("model", "")
                     entry_models = entry.get("models", {})
@@ -2580,6 +2583,7 @@ def list_authenticated_providers(
                     "has_explicit_models": False,
                     "ep_cfg": ep_cfg,  # used below for discover_models / api_key
                     "raw_names": [],
+                    "aliases": set(),
                 }
             # Aggregate models across all members of the group (preserve order).
             for _m in entry_models:
@@ -2593,6 +2597,9 @@ def list_authenticated_providers(
             if entry_declared_models:
                 ep_groups[group_key]["has_explicit_models"] = True
             ep_groups[group_key]["raw_names"].append(display_name)
+            ep_groups[group_key]["aliases"].update(
+                custom_provider_aliases(display_name, str(ep_name))
+            )
 
         for grp in ep_groups.values():
             ep_cfg = grp["ep_cfg"]
@@ -2632,10 +2639,12 @@ def list_authenticated_providers(
             has_explicit_models = bool(grp.get("has_explicit_models"))
             _ep_url_norm = str(api_url).strip().rstrip("/").lower()
             _ep_slug_norm = str(ep_name).strip().lower()
-            _ep_custom_slug_norm = custom_provider_slug(display_name).lower()
+            _ep_aliases = {
+                str(alias).lower() for alias in grp.get("aliases", set())
+            }
             _ep_is_current = (
                 _ep_slug_norm == _current_provider_norm
-                or _ep_custom_slug_norm == _current_provider_norm
+                or _current_provider_norm in _ep_aliases
                 or (
                     _current_provider_norm == "custom"
                     and bool(_current_base_url_norm)
@@ -2669,7 +2678,7 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
             seen_slugs.add(ep_name.lower())
-            seen_slugs.add(custom_provider_slug(display_name).lower())
+            seen_slugs.update(_ep_aliases)
             # Record (display_name, api_url) for each raw entry that joined
             # this group so section-4's _section3_emitted_pairs dedup can
             # match per-model custom_providers rows ("Palantir Claude 4.7 Opus")
@@ -2817,7 +2826,8 @@ def list_authenticated_providers(
                 # Reuse the prefix computed above as the row display name;
                 # fall back to the raw name if stripping left it empty.
                 display_name = _display_prefix or raw_name
-                slug = custom_provider_slug(display_name)
+                provider_key = str(entry.get("provider_key") or "").strip()
+                slug = custom_provider_slug(display_name, provider_key)
                 groups[group_key] = {
                     "slug": slug,
                     "name": display_name,
@@ -2827,6 +2837,7 @@ def list_authenticated_providers(
                     "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
+                    "aliases": set(),
                 }
             else:
                 if api_key and not groups[group_key].get("api_key"):
@@ -2837,6 +2848,12 @@ def list_authenticated_providers(
                 # honour that for the whole grouped row.
                 if not discover:
                     groups[group_key]["discover_models"] = False
+            groups[group_key]["aliases"].update(
+                custom_provider_aliases(
+                    raw_name,
+                    str(entry.get("provider_key") or ""),
+                )
+            )
 
             # The singular ``model:`` field only holds the currently
             # active model. Hermes's own writer (main.py::_save_custom_provider)
@@ -2928,7 +2945,13 @@ def list_authenticated_providers(
             #   api_key is present. This supports endpoints that expose a
             #   full aggregator catalog via /models but only serve a subset
             #   (parity with section 3's user ``providers:`` behaviour).
-            _grp_is_current = slug.lower() == _current_provider_norm or (
+            _grp_is_current = (
+                slug.lower() == _current_provider_norm
+                or _current_provider_norm in {
+                    str(alias).lower()
+                    for alias in grp.get("aliases", set())
+                }
+            ) or (
                 _current_provider_norm == "custom"
                 and bool(_current_base_url_norm)
                 and _grp_url_norm == _current_base_url_norm

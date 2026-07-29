@@ -3029,7 +3029,11 @@ def select_provider_and_model(args=None):
         load_config,
         get_env_value,
     )
-    from hermes_cli.providers import resolve_provider_full
+    from hermes_cli.providers import (
+        custom_provider_aliases,
+        custom_provider_slug,
+        resolve_provider_full,
+    )
 
     config = load_config()
     current_model = config.get("model")
@@ -3149,13 +3153,8 @@ def select_provider_and_model(args=None):
             base_url = (entry.get("base_url") or "").strip()
             if not name or not base_url:
                 continue
-            key = "custom:" + name.lower().replace(" ", "-")
             provider_key = (entry.get("provider_key") or "").strip()
-            if provider_key:
-                try:
-                    resolve_provider(provider_key)
-                except AuthError:
-                    key = provider_key
+            key = custom_provider_slug(name, provider_key)
             custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
@@ -3183,6 +3182,16 @@ def select_provider_and_model(args=None):
         config
     )  # key → {name, base_url, api_key}
 
+    def _canonical_named_custom_key(provider_id: str) -> str:
+        requested = str(provider_id or "").strip().lower()
+        for key, provider_info in _custom_provider_map.items():
+            if requested in custom_provider_aliases(
+                provider_info.get("name", ""),
+                provider_info.get("provider_key", ""),
+            ):
+                return key
+        return provider_id
+
     def _active_custom_key_from_base_url() -> str:
         if effective_provider != "custom" or not isinstance(model_cfg, dict):
             return ""
@@ -3205,6 +3214,8 @@ def select_provider_and_model(args=None):
         )
         if active_def is not None:
             active = active_def.id
+            if active_def.source == "user-config":
+                active = _canonical_named_custom_key(active)
         else:
             warning = (
                 f"Unknown provider '{effective_provider}'. Check 'hermes model' for "

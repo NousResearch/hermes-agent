@@ -1757,37 +1757,44 @@ class SessionDB:
 
     @staticmethod
     def _drop_orphan_fts_triggers(cursor: sqlite3.Cursor) -> bool:
-        """Drop triggers on ``messages`` that look FTS-related but are NOT in
-        ``_FTS_TRIGGERS``.
+        """Drop non-canonical triggers that write to a Hermes FTS table.
 
         Legacy code paths (or manual DDL) may have created duplicate triggers
         under alternate names (e.g. ``messages_ai``) that conflict with the
-        canonical ``messages_fts_*`` set.  Two triggers writing to the same
-        FTS5 virtual table on every INSERT causes every message persist to fail
-        with ``"constraint failed"`` (see 2026-07-22 incident).
+        canonical ``messages_fts_*`` set.  Only triggers whose SQL references
+        one of Hermes' FTS virtual tables are eligible; unrelated application
+        triggers on ``messages`` must survive startup cleanup.
 
-        Returns ``True`` if any orphan triggers were found and dropped (caller
-        should rebuild FTS indexes since data may have been silently lost).
+        Returns ``True`` if any orphan FTS triggers were found and dropped
+        (caller should rebuild FTS indexes since data may have been silently
+        lost).
         """
         known = set(_FTS_TRIGGERS)
         rows = cursor.execute(
-            "SELECT name FROM sqlite_master "
+            "SELECT name, sql FROM sqlite_master "
             "WHERE type = 'trigger' AND tbl_name = 'messages'"
         ).fetchall()
-        orphan_names = [
-            (r["name"] if isinstance(r, sqlite3.Row) else r[0])
-            for r in rows
-            if (r["name"] if isinstance(r, sqlite3.Row) else r[0]) not in known
-        ]
-        for name in orphan_names:
+        orphan_rows = []
+        for row in rows:
+            name = row["name"] if isinstance(row, sqlite3.Row) else row[0]
+            sql = row["sql"] if isinstance(row, sqlite3.Row) else row[1]
+            sql_lower = (sql or "").lower()
+            if (
+                name not in known
+                and ("messages_fts" in sql_lower or "messages_fts_trigram" in sql_lower)
+            ):
+                orphan_rows.append(name)
+
+        for name in orphan_rows:
             try:
-                cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+                quoted_name = '"' + name.replace('"', '""') + '"'
+                cursor.execute(f"DROP TRIGGER IF EXISTS {quoted_name}")
                 logger.warning(
                     "Dropped orphan FTS trigger on messages table: %s", name
                 )
             except sqlite3.OperationalError:
                 pass
-        return bool(orphan_names)
+        return bool(orphan_rows)
 
     @staticmethod
     def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:

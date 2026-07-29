@@ -150,6 +150,78 @@ class TestCliApprovalUi:
         thread.join(timeout=2)
         assert result["value"] == "deny"
 
+    def test_bell_on_approval_inherits_bell_on_complete_when_null(self):
+        assert HermesCLI._resolve_bell_on_approval(None, True) is True
+        assert HermesCLI._resolve_bell_on_approval(None, False) is False
+
+    def test_bell_on_approval_explicit_overrides_inheritance(self):
+        # explicit false wins even when bell_on_complete is on
+        assert HermesCLI._resolve_bell_on_approval(False, True) is False
+        # explicit true wins even when bell_on_complete is off
+        assert HermesCLI._resolve_bell_on_approval(True, False) is True
+
+    def test_approval_rings_bell_before_paint(self):
+        cli = _make_cli_stub()
+        cli.bell_on_approval = True
+        calls = []
+
+        cli._paint_now = MagicMock(side_effect=lambda: calls.append("paint"))
+        cli._approval_choices = MagicMock(return_value=["once", "deny"])
+        cli._persist_prompt_summary = MagicMock()
+
+        fake_stdout = MagicMock()
+        fake_stdout.write.side_effect = lambda s: calls.append(("write", s))
+
+        result = {}
+
+        def _run_callback():
+            with patch.object(cli_module.sys, "stdout", fake_stdout):
+                result["value"] = cli._approval_callback("rm -rf /tmp/x", "cleanup")
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        cli._approval_state["response_queue"].put("deny")
+        thread.join(timeout=2)
+
+        assert ("write", "\a") in calls
+        # bell must be written before the first paint
+        assert calls.index(("write", "\a")) < calls.index("paint")
+
+    def test_approval_no_bell_when_disabled(self):
+        cli = _make_cli_stub()
+        cli.bell_on_approval = False
+        writes = []
+
+        cli._paint_now = MagicMock()
+        cli._approval_choices = MagicMock(return_value=["once", "deny"])
+        cli._persist_prompt_summary = MagicMock()
+
+        fake_stdout = MagicMock()
+        fake_stdout.write.side_effect = lambda s: writes.append(s)
+
+        def _run_callback():
+            with patch.object(cli_module.sys, "stdout", fake_stdout):
+                cli._approval_callback("rm -rf /tmp/x", "cleanup")
+
+        thread = threading.Thread(target=_run_callback, daemon=True)
+        thread.start()
+
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert cli._approval_state is not None
+        cli._approval_state["response_queue"].put("deny")
+        thread.join(timeout=2)
+
+        assert "\a" not in writes
+
     def test_handle_approval_selection_view_expands_in_place(self):
         cli = _make_cli_stub()
         cli._approval_state = {

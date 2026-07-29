@@ -27,6 +27,7 @@ from agent.credential_pool import (
     list_custom_pool_providers,
     load_pool,
 )
+from agent.credential_persistence import is_command_shaped_api_key
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
@@ -200,6 +201,11 @@ def auth_add_command(args) -> None:
             token = masked_secret_prompt("Paste your API key: ").strip()
         if not token:
             raise SystemExit("No API key provided.")
+        if is_command_shaped_api_key(token):
+            raise SystemExit(
+                "API key input looks like a Hermes/OpenClaw command. "
+                "Paste only the raw API key value."
+            )
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:

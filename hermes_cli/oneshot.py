@@ -310,6 +310,47 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _shutdown_memory_provider_with_transcript(agent) -> None:
+    """Shut down ``agent``'s memory provider, forwarding the real transcript.
+
+    Mirrors cli.py:_run_cleanup: forward the agent's own ``_session_messages``
+    so memory providers' ``on_session_end`` hooks see the real conversation
+    instead of an empty list. ``_session_messages`` is set on
+    ``AIAgent.__init__`` and refreshed every turn via ``_persist_session``.
+    Fall back to the no-messages call on test stubs / partially-initialised
+    agents where the attribute is missing or not a list. Never raises.
+    """
+    if agent is None or not hasattr(agent, "shutdown_memory_provider"):
+        return
+    try:
+        session_messages = getattr(agent, "_session_messages", None)
+        if isinstance(session_messages, list):
+            agent.shutdown_memory_provider(session_messages)
+        else:
+            agent.shutdown_memory_provider()
+    except Exception:
+        logging.debug("oneshot memory/context cleanup failed", exc_info=True)
+
+
+def _make_oneshot_memory_shutdown(get_agent):
+    """Build the once-only memory-shutdown hook for a oneshot run.
+
+    The returned callable is shared by the explicit ``finally`` cleanup and
+    the atexit fallback in ``_run_agent`` — whichever fires first wins, the
+    other becomes a no-op. The agent is behind a callable because the hook
+    is registered before ``AIAgent(...)`` finishes constructing.
+    """
+    done = [False]
+
+    def _shutdown_once() -> None:
+        if done[0]:
+            return
+        done[0] = True
+        _shutdown_memory_provider_with_transcript(get_agent())
+
+    return _shutdown_once
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -401,6 +442,22 @@ def _run_agent(
     # raises on a provider/config error. The one-shot exit path hard-exits via
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
+
+    # Oneshot bypasses the interactive CLI's atexit/_run_cleanup wiring, so
+    # memory providers (e.g. Honcho) whose daemon worker threads are still
+    # blocked in HTTP recv at interpreter exit never get shutdown() called.
+    # CPython then abandons those threads at Py_FinalizeEx and tears the
+    # interpreter down around them, producing SIGABRT (exit 134) with no
+    # Python traceback. The ``finally`` below handles the normal path;
+    # register the same once-guarded hook as an atexit fallback for exit
+    # paths that skip it — whichever fires first wins, the other becomes a
+    # no-op. Both paths forward the real transcript (see
+    # _shutdown_memory_provider_with_transcript).
+    import atexit as _atexit
+
+    _shutdown_oneshot_memory_provider = _make_oneshot_memory_shutdown(lambda: agent)
+    _atexit.register(_shutdown_oneshot_memory_provider)
+
     try:
         # Read the effective fallback chain from profile config so oneshot
         # workers honour the same merge semantics as interactive CLI and
@@ -447,14 +504,7 @@ def _run_agent(
         # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
         # close the agent explicitly because the hard-exit path skips finalizers.
         if agent is not None:
-            try:
-                session_messages = getattr(agent, "_session_messages", None)
-                if isinstance(session_messages, list):
-                    agent.shutdown_memory_provider(session_messages)
-                else:
-                    agent.shutdown_memory_provider()
-            except Exception:
-                logging.debug("oneshot memory/context cleanup failed", exc_info=True)
+            _shutdown_oneshot_memory_provider()
             try:
                 agent.close()
             except Exception:

@@ -3,7 +3,20 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { stopBackendChild } from './backend-child'
-import { hiddenWindowsChildOptions } from './windows-child-options'
+import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
+
+test('windowsShellCommand quotes Windows shell commands with spaces', () => {
+  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+
+  assert.equal(windowsShellCommand(command, true, true), `"${command}"`)
+})
+
+test('windowsShellCommand leaves direct execution and non-Windows commands unchanged', () => {
+  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+
+  assert.equal(windowsShellCommand(command, false, true), command)
+  assert.equal(windowsShellCommand(command, true, false), command)
+})
 
 test('hiddenWindowsChildOptions adds windowsHide:true on Windows when unset', () => {
   assert.deepEqual(hiddenWindowsChildOptions({}, true), { windowsHide: true })

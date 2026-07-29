@@ -16,6 +16,20 @@
 import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
 
 /**
+ * Quote an executable token when Windows delegates execution to cmd.exe.
+ * Without the outer quotes, cmd.exe truncates paths at the first space.
+ * `command` must contain only the executable path; keep arguments in the
+ * separate argument array passed to spawn/execFileSync.
+ */
+export function windowsShellCommand(
+  command: string,
+  shell: boolean,
+  isWindows: boolean = process.platform === 'win32'
+): string {
+  return isWindows && shell ? `"${command}"` : command
+}
+
+/**
  * Merge `windowsHide: true` into `options` when running on Windows, unless
  * the caller already specified a `windowsHide` value (which is preserved
  * as-is, including an explicit `false` for cases that intentionally want a

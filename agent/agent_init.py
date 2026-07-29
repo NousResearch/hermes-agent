@@ -470,6 +470,7 @@ def init_agent(
     max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
+    allowed_tool_names: List[str] = None,
     save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
@@ -544,6 +545,8 @@ def init_agent(
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
+        allowed_tool_names (List[str]): Exact tool-name allowlist applied after
+            toolset expansion and post-build tool injection (optional)
         save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
         verbose_logging (bool): Enable verbose logging for debugging (default: False)
         quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
@@ -829,9 +832,14 @@ def init_agent(
     agent.provider_data_collection = provider_data_collection
     agent.openrouter_min_coding_score = openrouter_min_coding_score
 
-    # Store toolset filtering options
+    # Store toolset and exact-name filtering options.
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
+    agent.allowed_tool_names = (
+        frozenset(str(name) for name in allowed_tool_names)
+        if allowed_tool_names is not None
+        else None
+    )
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
@@ -2628,6 +2636,24 @@ def init_agent(
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
+
+    # Exact-name capability boundary. Apply after registry toolset expansion
+    # and every post-build injection so mixed bundles cannot leak tools that a
+    # security-sensitive caller did not grant.
+    if agent.allowed_tool_names is not None:
+        agent.tools = [
+            tool
+            for tool in (agent.tools or [])
+            if (tool.get("function") or {}).get("name") in agent.allowed_tool_names
+        ]
+        agent.valid_tool_names = {
+            (tool.get("function") or {}).get("name") for tool in agent.tools
+        }
+        agent.valid_tool_names.discard(None)
+        if isinstance(agent._context_engine_tool_names, set):
+            agent._context_engine_tool_names.intersection_update(
+                agent.valid_tool_names
+            )
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

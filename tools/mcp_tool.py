@@ -7106,6 +7106,23 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Preserve any exact-name capability boundary established at build time.
+    # Toolset filtering is insufficient for mixed bundles, and a late MCP
+    # registration must never widen a read-only subagent's surface.
+    allowed_names = getattr(agent, "allowed_tool_names", None)
+    if allowed_names is not None:
+        allowed_names = frozenset(str(name) for name in allowed_names)
+        new_defs = [
+            tool
+            for tool in new_defs
+            if (tool.get("function") or {}).get("name") in allowed_names
+        ]
+        new_names = {
+            (tool.get("function") or {}).get("name") for tool in new_defs
+        }
+        new_names.discard(None)
+        staged_engine_names.intersection_update(new_names)
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.

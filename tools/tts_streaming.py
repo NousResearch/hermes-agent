@@ -139,17 +139,8 @@ def register(name: str) -> Callable[[type[StreamingTTSProvider]], type[Streaming
     return _wrap
 
 
-def resolve_streaming_provider(
-    tts_config: Dict,
-    preferred: Optional[str] = None,
-) -> Optional[StreamingTTSProvider]:
-    """Return a ready streamer for the *configured* provider, else ``None``.
-
-    ``None`` means "no chunked API for this provider" — the dispatcher then
-    speaks per-sentence via the sync path, preserving the user's chosen voice.
-    We never silently swap to a different provider just to get streaming.
-    """
-    name = (preferred or _get_provider(tts_config)).lower().strip()
+def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
+    """Construct the registered streamer *name* if it's usable, else None."""
     cls = _REGISTRY.get(name)
     if cls is None or not cls.available():
         return None
@@ -158,6 +149,47 @@ def resolve_streaming_provider(
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("streaming provider %s init failed: %s", name, exc)
         return None
+
+
+# Fallback priority for ``tts.streaming.provider: auto`` — best chunked
+# latency/quality first. Deliberately hard-coded (a UX decision, not a
+# config knob); edge is absent because it has no chunked-PCM API — the
+# dispatcher's per-sentence sync path keeps it conversational instead.
+_PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
+
+
+def resolve_streaming_provider(
+    tts_config: Dict,
+    preferred: Optional[str] = None,
+) -> Optional[StreamingTTSProvider]:
+    """Return a ready streamer for the *configured* provider, else ``None``.
+
+    Resolution order:
+
+    1. ``tts.streaming.provider`` (config knob) when set:
+       * a provider name pins that exact streamer (or ``None`` if unusable);
+       * ``auto`` walks the priority list (``elevenlabs → gemini → openai
+         → xai``) and returns the first usable streamer — an explicit
+         opt-in to "give me the best chunked voice available".
+    2. Otherwise the *configured* TTS provider (or ``preferred`` override).
+       ``None`` means "no chunked API for this provider" — the dispatcher
+       then speaks per-sentence via the sync path, preserving the user's
+       chosen voice. We never silently swap to a different provider just
+       to get streaming.
+    """
+    streaming_cfg = tts_config.get("streaming") or {}
+    pinned = str(streaming_cfg.get("provider") or "").lower().strip()
+    if pinned == "auto":
+        for name in _PROVIDER_PRIORITY:
+            inst = _try_instantiate(name, tts_config)
+            if inst is not None:
+                return inst
+        return None
+    if pinned:
+        return _try_instantiate(pinned, tts_config)
+
+    name = (preferred or _get_provider(tts_config)).lower().strip()
+    return _try_instantiate(name, tts_config)
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +270,168 @@ class OpenAIStreamer(StreamingTTSProvider):
             response_format="pcm",
         ) as response:
             yield from response.iter_bytes()
+
+
+@register("gemini")
+class GeminiStreamer(StreamingTTSProvider):
+    """Gemini ``streamGenerateContent?alt=sse`` → base64 PCM chunks (24 kHz).
+
+    Each SSE event carries one base64-encoded PCM chunk under
+    ``candidates[0].content.parts[*].inlineData.data``; we decode and yield
+    each one as it arrives.
+    """
+
+    sample_rate = 24000
+
+    @staticmethod
+    def available() -> bool:
+        return bool(
+            get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")
+        )
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import base64
+        import json as _json
+
+        import requests
+
+        from tools.tts_tool import (
+            DEFAULT_GEMINI_TTS_BASE_URL,
+            DEFAULT_GEMINI_TTS_MODEL,
+            DEFAULT_GEMINI_TTS_VOICE,
+        )
+
+        api_key = (
+            get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")
+        )
+        model = str(self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
+        voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+        base_url = str(
+            self.section.get("base_url")
+            or get_env_value("GEMINI_BASE_URL")
+            or DEFAULT_GEMINI_TTS_BASE_URL
+        ).strip().rstrip("/")
+
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {"voiceName": voice},
+                    },
+                },
+            },
+        }
+        # ``?alt=sse`` flips the response from a single JSON blob to an SSE
+        # feed of base64 PCM chunks — the whole point of this provider.
+        url = f"{base_url}/models/{model}:streamGenerateContent"
+
+        def _sse_chunks() -> Iterator[bytes]:
+            with requests.post(
+                url,
+                params={"alt": "sse", "key": api_key},
+                json=payload,
+                timeout=60,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    try:
+                        event = _json.loads(line[len("data: "):])
+                        parts = event["candidates"][0]["content"]["parts"]
+                    except (ValueError, KeyError, IndexError, TypeError):
+                        continue
+                    for part in parts:
+                        inline = part.get("inlineData") or part.get("inline_data") or {}
+                        b64 = inline.get("data", "")
+                        if not b64:
+                            continue
+                        try:
+                            yield base64.b64decode(b64)
+                        except (ValueError, TypeError) as exc:
+                            logger.warning("Gemini SSE: bad base64 audio: %s", exc)
+
+        yield from _sse_chunks()
+
+
+@register("xai")
+class XAIStreamer(StreamingTTSProvider):
+    """xAI WebSocket TTS → binary PCM frames (24 kHz mono int16).
+
+    xAI's chunked TTS API is WebSocket-only (``wss://api.x.ai/v1/tts``).
+    The async WS loop is bridged to the sync iterator contract via
+    ``_collect_async`` — the seam unit tests monkeypatch.
+    """
+
+    sample_rate = 24000
+
+    @staticmethod
+    def available() -> bool:
+        return bool(get_env_value("XAI_API_KEY"))
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        yield from self._collect_async(text)
+
+    # -- async→sync bridge (test seam) ------------------------------------
+
+    def _collect_async(self, text: str) -> List[bytes]:
+        import asyncio
+
+        return asyncio.run(self._drain_async(text))
+
+    async def _drain_async(self, text: str) -> List[bytes]:
+        frames: List[bytes] = []
+        async for frame in self._async_frames(text):
+            frames.append(frame)
+        return frames
+
+    async def _async_frames(self, text: str):
+        import json as _json
+
+        import websockets
+
+        from tools.tts_tool import DEFAULT_XAI_VOICE_ID
+
+        api_key = (get_env_value("XAI_API_KEY") or "").strip()
+        if not api_key:
+            raise RuntimeError("XAI_API_KEY not set; cannot use xAI streaming TTS")
+        voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
+        ws_url = str(
+            self.section.get("streaming_url") or "wss://api.x.ai/v1/tts"
+        ).strip()
+
+        async with websockets.connect(
+            ws_url, extra_headers={"Authorization": f"Bearer {api_key}"}
+        ) as ws:
+            await ws.send(_json.dumps({
+                "text": text,
+                "voice_id": voice,
+                "response_format": "pcm",
+            }))
+            try:
+                while True:
+                    message = await ws.recv()
+                    if isinstance(message, (bytes, bytearray, memoryview)):
+                        yield bytes(message)
+                        continue
+                    try:
+                        envelope = _json.loads(message)
+                    except (ValueError, TypeError):
+                        if message == "done":
+                            return
+                        continue
+                    etype = envelope.get("type")
+                    if etype == "done":
+                        return
+                    if etype == "error":
+                        logger.warning("xAI WS error envelope: %s",
+                                       envelope.get("error") or envelope.get("message") or envelope)
+                        return
+            except Exception as exc:
+                if exc.__class__.__name__ == "ConnectionClosed":
+                    return
+                logger.warning("xAI WS receive failed: %s", exc)
+                return

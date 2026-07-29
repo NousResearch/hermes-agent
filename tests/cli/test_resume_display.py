@@ -159,6 +159,95 @@ class TestDisplayResumedHistory:
         assert "You:" not in output
         assert "opaque" not in output
 
+    def test_personality_change_marker_hidden_not_shown_as_user_message(self):
+        """The personality-change/clear bookkeeping notice (tui_gateway.server's
+        _set_personality) is persisted as role=user "[System: ...]" with NO
+        display_kind — unlike the model-switch marker, there is no "◈ event"
+        branch to catch it, so it must be dropped outright rather than
+        rendered as a fake "You:" bubble (#71916-adjacent gap)."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "What's up?"},
+            {
+                "role": "user",
+                "content": (
+                    "[System: The user has changed the assistant's personality. "
+                    "From this point forward, adopt the following persona and "
+                    "respond accordingly: grumpy pirate]"
+                ),
+            },
+            {"role": "assistant", "content": "Not much, arr."},
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "[System:" not in output
+        assert "grumpy pirate" not in output
+        assert "What's up?" in output
+        assert "Not much, arr." in output
+
+    def test_personality_cleared_marker_hidden(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "user",
+                "content": (
+                    "[System: The user has cleared the personality overlay. "
+                    "From this point forward, respond in your normal default style.]"
+                ),
+            },
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "[System:" not in output
+        assert "cleared the personality" not in output
+
+    def test_skill_invocation_collapsed_not_shown_as_expanded_body(self):
+        """A /skill turn is persisted EXPANDED — activation note plus the
+        entire skill body. tui_gateway/server.py::_history_to_messages (the
+        desktop/TUI/web display projection) already collapses this onto the
+        invocation the user typed; the CLI's _display_resumed_history builds
+        its recap independently and never picked up an equivalent projection,
+        so it rendered the whole skill body as if the user had written it."""
+        cli = _make_cli()
+        scaffolded = (
+            '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+            "want you to follow its instructions. The full skill content is "
+            "loaded below.]\n\n"
+            "# /work\n\nSPIN UP A WORKTREE, never the primary checkout.\n\n"
+            "The user has provided the following instruction alongside the skill "
+            "invocation: fix the title leak"
+        )
+        cli.conversation_history = [
+            {"role": "user", "content": scaffolded},
+            {"role": "assistant", "content": "on it"},
+        ]
+
+        output = self._capture_display(cli)
+
+        assert "SPIN UP A WORKTREE" not in output
+        assert "IMPORTANT: The user has invoked" not in output
+        assert "You:" not in output
+        assert "◈ skill invoked: /work" in output
+        assert "fix the title leak" in output
+
+    def test_bare_skill_invocation_collapsed_to_command(self):
+        cli = _make_cli()
+        scaffolded = (
+            '[IMPORTANT: The user has invoked the "work" skill, indicating they '
+            "want you to follow its instructions. The full skill content is "
+            "loaded below.]\n\n# /work\n\nSPIN UP A WORKTREE."
+        )
+        cli.conversation_history = [{"role": "user", "content": scaffolded}]
+
+        output = self._capture_display(cli)
+
+        assert "SPIN UP A WORKTREE" not in output
+        assert "◈ skill invoked: /work" in output
+
     def test_tool_messages_hidden(self):
         cli = _make_cli()
         cli.conversation_history = _tool_call_history()

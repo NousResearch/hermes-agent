@@ -264,6 +264,8 @@ export const en: Translations = {
       'view.prevTerminal': 'Previous terminal',
       'view.closeTerminal': 'Close terminal',
       'view.terminalSelection': 'Send terminal selection to composer',
+      'view.terminalCopy': 'Copy terminal selection',
+      'view.terminalPaste': 'Paste into terminal',
       'view.closeTab': 'Close tab',
       'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',

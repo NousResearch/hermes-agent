@@ -41,11 +41,25 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from utils import atomic_replace, atomic_write_text
 
-try:
-    from croniter import croniter
-    HAS_CRONITER = True
-except ImportError:
-    HAS_CRONITER = False
+# ``croniter`` compiles ~15 ms of regexes at import and only matters for
+# 5-field cron expressions. Resolve lazily; ``HAS_CRONITER`` stays a module
+# attribute (tests monkeypatch it, and a monkeypatched value wins because
+# ``_ensure_croniter`` only probes while it's still None).
+croniter = None
+HAS_CRONITER: Optional[bool] = None
+
+
+def _ensure_croniter() -> bool:
+    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
+    global croniter, HAS_CRONITER
+    if HAS_CRONITER is None:
+        try:
+            from croniter import croniter as _croniter
+            croniter = _croniter
+            HAS_CRONITER = True
+        except ImportError:
+            HAS_CRONITER = False
+    return bool(HAS_CRONITER)
 
 # =============================================================================
 # Configuration
@@ -585,7 +599,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if len(parts) >= 5 and all(
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
-        if not HAS_CRONITER:
+        if not _ensure_croniter():
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
         # Validate cron expression
         try:
@@ -738,7 +752,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
         grace = period_seconds // 2
         return max(MIN_GRACE, min(grace, MAX_GRACE))
 
-    if kind == "cron" and HAS_CRONITER:
+    if kind == "cron" and _ensure_croniter():
         expr = schedule.get("expr")
         if expr:
             try:
@@ -791,7 +805,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         expr = schedule.get("expr")
         if not expr:
             return None
-        if not HAS_CRONITER:
+        if not _ensure_croniter():
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "

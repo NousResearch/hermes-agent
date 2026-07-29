@@ -3479,6 +3479,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "YDC_API_KEY": {
+        "description": "You.com API key for the You.com MCP server",
+        "prompt": "You.com API key",
+        "url": "https://you.com/platform",
+        "tools": ["mcp_youdotcom"],
+        "password": True,
+        "category": "tool",
+    },
     "SEARXNG_URL": {
         "description": "URL of your SearXNG instance for free self-hosted web search",
         "prompt": "SearXNG URL (e.g. http://localhost:8080)",

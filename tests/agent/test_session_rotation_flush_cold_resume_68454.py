@@ -107,4 +107,3 @@ def test_rotation_flush_writes_only_new_tail(tmp_path: Path) -> None:
         "persisted answer",
         "new unpersisted turn",
     ]
-

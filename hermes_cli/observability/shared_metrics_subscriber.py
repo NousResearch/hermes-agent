@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import logging
+import platform
 import threading
 from typing import Any
 
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
+from hermes_cli.config import detect_install_method
 
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
     MODEL_CALL_METRIC,
     TOOL_CALL_METRIC,
+    client_resource,
     model_call_dimensions,
     skill_counter,
     task_counter,
@@ -33,7 +36,12 @@ class SharedMetricsSubscriber:
         runtime_id: str | None = None,
     ) -> None:
         self.store = store
-        self._hermes_version = hermes_version or "unknown"
+        self._client_resource = client_resource(
+            hermes_version,
+            os_name=platform.system(),
+            architecture=platform.machine(),
+            install_method=detect_install_method(),
+        )
         self._runtime_id = runtime_id
         self._active = True
         self._lock = threading.RLock()
@@ -72,7 +80,7 @@ class SharedMetricsSubscriber:
                 self.store.record_counter(
                     metric_name,
                     dimensions,
-                    self._hermes_version,
+                    self._client_resource,
                 )
             except Exception:
                 logger.warning(

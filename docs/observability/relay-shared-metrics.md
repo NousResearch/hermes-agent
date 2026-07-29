@@ -123,9 +123,13 @@ $HERMES_HOME/telemetry/shared_metrics/outbox/*.json
 
 The database keeps transactional aggregate and package-outbox state. Package
 files are immutable delta documents that conform to a closed JSON schema and
-are written with atomic replacement. Fully packaged aggregate rows and
-successfully exported package rows and files are retained locally for 30 days.
-Pending package rows and counters with unexported deltas are never pruned.
+are written with atomic replacement. Each package records the Hermes version,
+OS family, architecture, and install method as bounded client resources.
+Unrecognized platform or installation values are exported as `unknown`; raw
+platform strings, hostnames, and paths are never included. Fully packaged
+aggregate rows and successfully exported package rows and files are retained
+locally for 30 days. Pending package rows and counters with unexported deltas
+are never pruned.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more

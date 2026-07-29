@@ -10282,6 +10282,12 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
+// Paired reader for the GUI terminal's paste chord: the renderer's
+// navigator.clipboard.readText() throws "Document is not focused" whenever a
+// portaled overlay has focus, and there's no way to route a read through the
+// canvas. The main process has no such gate.
+ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
+
 ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {

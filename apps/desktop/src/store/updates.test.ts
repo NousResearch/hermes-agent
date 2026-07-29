@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import type { DesktopManagedUpdateSnapshot, DesktopUpdateStatus } from '@/global'
 
 const storage = new Map<string, string>()
 
@@ -56,6 +56,7 @@ const {
   resetUpdateApplyState,
   startUpdatePoller,
   stopUpdatePoller,
+  $managedUpdate,
   $updateStatus
 } = await import('./updates')
 
@@ -553,13 +554,19 @@ describe('applyBackendUpdate recovery', () => {
 
 describe('startUpdatePoller', () => {
   const checkMock = vi.fn()
+  const getManagedStateMock = vi.fn()
+  const onManagedStateMock = vi.fn()
   const onProgressMock = vi.fn()
   const listeners: Record<string, Function> = {}
+  let managedListener: ((snapshot: DesktopManagedUpdateSnapshot) => void) | null = null
 
   beforeEach(() => {
     storage.clear()
     checkMock.mockReset()
+    getManagedStateMock.mockReset()
+    onManagedStateMock.mockReset()
     onProgressMock.mockReset()
+    managedListener = null
     Object.keys(listeners).forEach(k => delete listeners[k])
     checkMock.mockResolvedValue({
       supported: true,
@@ -567,9 +574,23 @@ describe('startUpdatePoller', () => {
       targetSha: 'sha-abc',
       fetchedAt: 0
     })
+    getManagedStateMock.mockResolvedValue({ percent: null, stage: 'disabled' })
+    onManagedStateMock.mockImplementation((listener: (snapshot: DesktopManagedUpdateSnapshot) => void) => {
+      managedListener = listener
+
+      return () => void (managedListener = null)
+    })
     $updateStatus.set(null)
+    $managedUpdate.set(null)
     ;(globalThis as unknown as { window: unknown }).window = {
-      hermesDesktop: { updates: { check: checkMock, onProgress: onProgressMock } },
+      hermesDesktop: {
+        updates: {
+          check: checkMock,
+          getManagedState: getManagedStateMock,
+          onManagedState: onManagedStateMock,
+          onProgress: onProgressMock
+        }
+      },
       addEventListener: vi.fn((event: string, handler: Function) => {
         listeners[event] = handler
       }),
@@ -593,6 +614,38 @@ describe('startUpdatePoller', () => {
 
     expect(checkMock).toHaveBeenCalled()
     expect($updateStatus.get()?.behind).toBe(5)
+  })
+
+  it('uses managed package state and suppresses the source updater when enabled', async () => {
+    getManagedStateMock.mockResolvedValue({ percent: 42, stage: 'downloading', version: '0.18.0' })
+    startUpdatePoller()
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkMock).not.toHaveBeenCalled()
+    expect($managedUpdate.get()).toMatchObject({ percent: 42, stage: 'downloading', version: '0.18.0' })
+  })
+
+  it('falls back to source updates when an older preload lacks managed-update methods', async () => {
+    const updates = window.hermesDesktop.updates as Partial<typeof window.hermesDesktop.updates>
+    updates.getManagedState = undefined
+    updates.onManagedState = undefined
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkMock).toHaveBeenCalled()
+    expect($managedUpdate.get()?.stage).toBe('disabled')
+  })
+
+  it('streams managed package state into the renderer atom', async () => {
+    getManagedStateMock.mockResolvedValue({ percent: null, stage: 'checking' })
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    managedListener?.({ checkedAt: 123, percent: 100, stage: 'downloaded', version: '0.18.0' })
+
+    expect($managedUpdate.get()).toMatchObject({ percent: 100, stage: 'downloaded', version: '0.18.0' })
   })
 
   it('calls checkUpdates() on each interval tick', async () => {

@@ -82,6 +82,18 @@ test('electron dependency matches build.electronVersion', () => {
   )
 })
 
+test('Windows packaging keeps executable signing and resource editing enabled', () => {
+  const pkg = desktopPkg()
+  const build = (pkg.build ?? {}) as Record<string, unknown>
+  const win = (build.win ?? {}) as Record<string, unknown>
+
+  assert.equal(
+    win.signAndEditExecutable,
+    true,
+    'build.win.signAndEditExecutable must stay true so the packaged Hermes.exe is signed before release verification'
+  )
+})
+
 test('lockfile resolves the pinned electron', () => {
   if (!fs.existsSync(ROOT_LOCK)) {
     return

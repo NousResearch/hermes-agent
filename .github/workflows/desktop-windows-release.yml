@@ -1,0 +1,265 @@
+name: Desktop Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact apps/desktop package version to release (for example 0.18.0)
+        required: true
+        type: string
+      release_tag:
+        description: Existing GitHub release tag that points at this commit (for example v0.18.0)
+        required: true
+        type: string
+      publish:
+        description: Upload verified assets to the existing GitHub release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-windows-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate-source:
+    name: Validate immutable release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate version and tag identity
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
+            echo "Invalid semantic version: $EXPECTED_VERSION" >&2
+            exit 1
+          }
+          package_version="$(node -p "require('./apps/desktop/package.json').version")"
+          test "$package_version" = "$EXPECTED_VERSION" || {
+            echo "apps/desktop/package.json version $package_version does not match requested $EXPECTED_VERSION" >&2
+            exit 1
+          }
+          if ! tag_commit="$(git rev-parse --verify --end-of-options "${RELEASE_TAG}^{commit}" 2>/dev/null)"; then
+            echo "Release tag $RELEASE_TAG does not exist. This workflow never creates tags." >&2
+            exit 1
+          fi
+          test "$tag_commit" = "$GITHUB_SHA" || {
+            echo "Release tag $RELEASE_TAG points to $tag_commit, not workflow commit $GITHUB_SHA" >&2
+            exit 1
+          }
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run canonical Desktop checks
+        run: npm --prefix apps/desktop run check
+
+  build-verify-publish:
+    name: Build, sign, verify, and optionally publish Windows updater
+    needs: validate-source
+    runs-on: windows-latest
+    timeout-minutes: 60
+    environment: desktop-release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate release identity and signing inputs
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_VERSION -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid semantic version: $env:EXPECTED_VERSION"
+          }
+
+          $packageVersion = node -p "require('./apps/desktop/package.json').version"
+          if ($packageVersion -ne $env:EXPECTED_VERSION) {
+            throw "apps/desktop/package.json version $packageVersion does not match requested $env:EXPECTED_VERSION"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK) -or [string]::IsNullOrWhiteSpace($env:WIN_CSC_KEY_PASSWORD)) {
+            throw 'WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD must be configured in the desktop-release environment.'
+          }
+
+          $tagCommit = git rev-parse --verify --end-of-options "$env:RELEASE_TAG^{commit}" 2>$null
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
+            throw "Release tag $env:RELEASE_TAG does not exist. This workflow never creates tags."
+          }
+          if ($tagCommit.Trim() -ne $env:GITHUB_SHA) {
+            throw "Release tag $env:RELEASE_TAG points to $($tagCommit.Trim()), not workflow commit $env:GITHUB_SHA"
+          }
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run Windows updater release gates
+        working-directory: apps/desktop
+        run: |
+          npm run typecheck
+          npm run lint
+          npx vitest run --project electron electron/update-health.test.ts electron/managed-updater.test.ts scripts/verify-update-release.test.mjs
+
+      - name: Build signed NSIS update artifacts
+        run: npm --prefix apps/desktop run dist:win:nsis -- --publish never -c.win.signAndEditExecutable=true
+
+      - name: Verify signatures and synchronized update metadata
+        id: verify
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/release'
+          $packagedExecutable = Join-Path $releaseDir 'win-unpacked/Hermes.exe'
+          $packagedUpdateConfig = Join-Path $releaseDir 'win-unpacked/resources/app-update.yml'
+          $verificationPath = Join-Path $env:RUNNER_TEMP 'desktop-update-verification.json'
+          node apps/desktop/scripts/verify-update-release.mjs $releaseDir $env:EXPECTED_VERSION --require-signature --packaged-executable $packagedExecutable --packaged-update-config $packagedUpdateConfig |
+            Tee-Object -FilePath $verificationPath
+
+          $verification = Get-Content -Raw $verificationPath | ConvertFrom-Json
+          $staging = Join-Path $env:RUNNER_TEMP 'desktop-update-release'
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+          @($verification.installer, $verification.blockmap, $verification.latest) | ForEach-Object {
+            Copy-Item -LiteralPath (Join-Path $releaseDir $_) -Destination $staging
+          }
+          Copy-Item -LiteralPath $verificationPath -Destination $staging
+
+          "staging=$staging" >> $env:GITHUB_OUTPUT
+          "installer=$($verification.installer)" >> $env:GITHUB_OUTPUT
+          "blockmap=$($verification.blockmap)" >> $env:GITHUB_OUTPUT
+          "latest=$($verification.latest)" >> $env:GITHUB_OUTPUT
+
+      - name: Attest release artifact provenance
+        id: provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: ${{ steps.verify.outputs.staging }}/*
+
+      - name: Add provenance bundle and checksums
+        shell: pwsh
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          STAGING: ${{ steps.verify.outputs.staging }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:PROVENANCE_BUNDLE -PathType Leaf)) {
+            throw 'The provenance action did not return a readable Sigstore bundle.'
+          }
+          Copy-Item -LiteralPath $env:PROVENANCE_BUNDLE -Destination (Join-Path $env:STAGING 'provenance.sigstore.json')
+          Get-ChildItem -File $env:STAGING |
+            Where-Object Name -ne 'SHA256SUMS.txt' |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            } | Set-Content -Encoding ascii (Join-Path $env:STAGING 'SHA256SUMS.txt')
+
+      - name: Upload verified workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-desktop-windows-${{ inputs.version }}
+          path: ${{ steps.verify.outputs.staging }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload, verify, and atomically promote draft GitHub release
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          STAGING: ${{ steps.verify.outputs.staging }}
+          LATEST: ${{ steps.verify.outputs.latest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft | ConvertFrom-Json
+          if (-not $release.isDraft) {
+            throw "Release $env:RELEASE_TAG must still be a draft. Refusing to mutate a visible release."
+          }
+
+          $latestPath = Join-Path $env:STAGING $env:LATEST
+          $immutableAssets = @(Get-ChildItem -File $env:STAGING | Where-Object Name -ne $env:LATEST)
+          foreach ($asset in $immutableAssets) {
+            gh release upload $env:RELEASE_TAG $asset.FullName --repo $env:GITHUB_REPOSITORY
+          }
+
+          $remoteJson = Join-Path $env:RUNNER_TEMP 'hermes-draft-release.json'
+          gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" |
+            Set-Content -LiteralPath $remoteJson -Encoding utf8
+          node apps/desktop/scripts/verify-remote-release-assets.mjs `
+            --staging $env:STAGING `
+            --remote-json $remoteJson `
+            --exclude $env:LATEST
+
+          gh release upload $env:RELEASE_TAG $latestPath --repo $env:GITHUB_REPOSITORY
+
+          gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" |
+            Set-Content -LiteralPath $remoteJson -Encoding utf8
+          node apps/desktop/scripts/verify-remote-release-assets.mjs `
+            --staging $env:STAGING `
+            --remote-json $remoteJson
+
+          $verifiedRelease = Get-Content -Raw -LiteralPath $remoteJson | ConvertFrom-Json
+          if (-not $verifiedRelease.draft) {
+            throw "Release $env:RELEASE_TAG stopped being a draft before promotion."
+          }
+
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false
+
+      - name: Record release result
+        shell: pwsh
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $summary = @"
+          ## Hermes Desktop Windows release
+
+          - Version: `$env:VERSION`
+          - Release tag: `$env:RELEASE_TAG`
+          - Authenticode: verified
+          - Installer/update metadata: synchronized
+          - Provenance: attested
+          - Uploaded to GitHub Release: `$env:PUBLISH`
+          "@
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

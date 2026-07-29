@@ -29,6 +29,7 @@ import {
   shell,
   systemPreferences
 } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import nodePty from 'node-pty'
 
 import { classifyActiveRuntime } from './active-runtime-state'
@@ -136,6 +137,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
+import { createManagedUpdater, shouldEnableManagedUpdates } from './managed-updater'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
@@ -189,6 +191,7 @@ import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
+import { createUpdateHealthManager, type UpdateHealthDecision } from './update-health'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
@@ -262,10 +265,74 @@ const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACK
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
+const APP_ROOT = app.getAppPath()
+const MANAGED_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
+const MANAGED_UPDATE_HEALTH_TIMEOUT_MS = 45_000
+
+// electron-builder writes app-update.yml only for a packaged distribution with
+// a configured publish provider. Its presence is the boundary between the new
+// prebuilt-package updater and the existing source/Git updater fallback.
+const MANAGED_UPDATES_ENABLED = shouldEnableManagedUpdates({
+  isPackaged: IS_PACKAGED,
+  platform: process.platform,
+  updateConfigExists: fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))
+})
+
+function readPackagedDesktopMetadata() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')) as {
+      hermesUpdateE2EFailHealth?: boolean
+      hermesUpdateHealthTimeoutMs?: number
+      name?: string
+    }
+  } catch {
+    return {}
+  }
+}
+
+const PACKAGED_DESKTOP_METADATA = readPackagedDesktopMetadata()
+
+const MANAGED_UPDATE_PACKAGE_NAME =
+  typeof PACKAGED_DESKTOP_METADATA.name === 'string' &&
+  /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(PACKAGED_DESKTOP_METADATA.name)
+    ? PACKAGED_DESKTOP_METADATA.name
+    : 'hermes'
+
+const MANAGED_UPDATE_HEALTH_TIMEOUT =
+  MANAGED_UPDATE_PACKAGE_NAME === 'hermes-update-e2e' &&
+  Number.isInteger(PACKAGED_DESKTOP_METADATA.hermesUpdateHealthTimeoutMs) &&
+  Number(PACKAGED_DESKTOP_METADATA.hermesUpdateHealthTimeoutMs) >= 1_000 &&
+  Number(PACKAGED_DESKTOP_METADATA.hermesUpdateHealthTimeoutMs) <= MANAGED_UPDATE_HEALTH_TIMEOUT_MS
+    ? Number(PACKAGED_DESKTOP_METADATA.hermesUpdateHealthTimeoutMs)
+    : MANAGED_UPDATE_HEALTH_TIMEOUT_MS
+
+const SIMULATE_MANAGED_UPDATE_HEALTH_FAILURE =
+  MANAGED_UPDATE_PACKAGE_NAME === 'hermes-update-e2e' && PACKAGED_DESKTOP_METADATA.hermesUpdateE2EFailHealth === true
+
+const MANAGED_UPDATE_CACHE_ROOT = path.join(
+  process.env.LOCALAPPDATA || app.getPath('userData'),
+  `${MANAGED_UPDATE_PACKAGE_NAME}-rollback`
+)
+
+const managedUpdateHealth = createUpdateHealthManager({
+  cacheDir: MANAGED_UPDATE_CACHE_ROOT,
+  currentVersion: app.getVersion(),
+  enabled: MANAGED_UPDATES_ENABLED && IS_WINDOWS
+})
+
+const managedUpdater = createManagedUpdater({
+  enabled: MANAGED_UPDATES_ENABLED,
+  shouldAcceptVersion: version => !managedUpdateHealth.isVersionRejected(version),
+  updater: autoUpdater
+})
+
+let managedUpdateCheckTimer: null | ReturnType<typeof setInterval> = null
+let managedUpdateHealthTimer: null | ReturnType<typeof setTimeout> = null
+let managedUpdaterStarted = false
+let unsubscribeManagedUpdate: null | (() => void) = null
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
 // build SDK, so gate Tahoe workarounds on Darwin instead.
 const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
-const APP_ROOT = app.getAppPath()
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
@@ -2430,6 +2497,98 @@ function emitUpdateProgress(payload) {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('hermes:updates:progress', merged)
   }
+}
+
+function emitManagedUpdateSnapshot(snapshot) {
+  rememberLog(
+    `[managed-updates] ${snapshot.stage}${snapshot.version ? ` ${snapshot.version}` : ''}${
+      snapshot.error ? `: ${snapshot.error}` : ''
+    }`
+  )
+
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send('hermes:updates:managed:state', snapshot)
+  }
+}
+
+async function startManagedUpdaterAfterHealth() {
+  if (managedUpdaterStarted) {
+    return
+  }
+
+  managedUpdaterStarted = true
+  unsubscribeManagedUpdate = managedUpdater.subscribe(emitManagedUpdateSnapshot)
+  await managedUpdater.start()
+
+  if (MANAGED_UPDATES_ENABLED && !managedUpdateCheckTimer) {
+    managedUpdateCheckTimer = setInterval(() => {
+      void managedUpdater.check()
+    }, MANAGED_UPDATE_CHECK_INTERVAL_MS)
+  }
+}
+
+function clearManagedUpdateHealthTimer() {
+  if (managedUpdateHealthTimer) {
+    clearTimeout(managedUpdateHealthTimer)
+    managedUpdateHealthTimer = null
+  }
+}
+
+async function handOffManagedUpdateRollback(decision: UpdateHealthDecision) {
+  if (decision.action !== 'rollback') {
+    return false
+  }
+
+  const prepared = await managedUpdateHealth.prepareRollbackInstaller(decision)
+
+  if (!prepared.ok || !prepared.launchPath) {
+    rememberLog(`[managed-updates] rollback blocked: ${prepared.error || 'could not prepare installer'}`)
+
+    return false
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(prepared.launchPath, ['/S', '--force-run', '--keep-shortcuts'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      })
+
+      child.once('error', reject)
+      child.once('spawn', () => {
+        child.unref()
+        resolve()
+      })
+    })
+  } catch (error) {
+    rememberLog(`[managed-updates] rollback launch failed: ${error instanceof Error ? error.message : String(error)}`)
+
+    return false
+  }
+
+  managedUpdateHealth.recordRollbackStarted(decision)
+  clearManagedUpdateHealthTimer()
+  rememberLog(
+    `[managed-updates] startup health failed for ${decision.failedVersion}; ` +
+      `launching verified rollback to ${decision.targetVersion} (${decision.reason})`
+  )
+  isQuittingForHandoff = true
+  setTimeout(() => app.quit(), 600)
+
+  return true
+}
+
+function armManagedUpdateHealthTimeout() {
+  clearManagedUpdateHealthTimer()
+  managedUpdateHealthTimer = setTimeout(() => {
+    managedUpdateHealthTimer = null
+    const decision = managedUpdateHealth.timeoutDecision()
+
+    if (decision) {
+      void handOffManagedUpdateRollback(decision)
+    }
+  }, MANAGED_UPDATE_HEALTH_TIMEOUT)
 }
 
 // Self-heal the tracked update branch: if origin no longer publishes it (e.g.
@@ -11390,6 +11549,14 @@ ipcMain.handle('hermes:updates:check', async () =>
   }))
 )
 
+ipcMain.handle('hermes:updates:managed:get', () => managedUpdater.getSnapshot())
+
+ipcMain.handle('hermes:updates:managed:check', async () => {
+  await managedUpdater.check()
+
+  return managedUpdater.getSnapshot()
+})
+
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   applyUpdates(payload || {}).catch(error => ({
     ok: false,
@@ -11452,6 +11619,30 @@ ipcMain.handle('hermes:version', async () => ({
   platform: process.platform,
   hermesRoot: resolveUpdateRoot()
 }))
+
+ipcMain.handle('hermes:updates:health:confirm', async () => {
+  if (SIMULATE_MANAGED_UPDATE_HEALTH_FAILURE) {
+    rememberLog('[managed-updates] E2E candidate intentionally withheld startup health confirmation')
+
+    return { error: 'E2E startup health failure requested.', ok: false }
+  }
+
+  clearManagedUpdateHealthTimer()
+  const result = await managedUpdateHealth.confirmHealthy()
+
+  if (result.ok) {
+    rememberLog(`[managed-updates] startup health confirmed for ${app.getVersion()}`)
+    await startManagedUpdaterAfterHealth()
+  } else {
+    rememberLog(`[managed-updates] startup health confirmation failed: ${result.error || 'unknown error'}`)
+
+    if (managedUpdateHealth.isAwaitingHealth()) {
+      armManagedUpdateHealthTimeout()
+    }
+  }
+
+  return result
+})
 
 // ===========================================================================
 // Uninstall — remove the Chat GUI (and optionally the agent / user data).
@@ -11799,7 +11990,13 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  const updateHealthDecision = managedUpdateHealth.beginStartup()
+
+  if (updateHealthDecision.action === 'rollback' && (await handOffManagedUpdateRollback(updateHealthDecision))) {
+    return
+  }
+
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {
@@ -11840,6 +12037,22 @@ app.whenReady().then(() => {
   }
 
   createWindow()
+
+  if (updateHealthDecision.action === 'rollback-exhausted') {
+    rememberLog(
+      `[managed-updates] automatic rollback from ${updateHealthDecision.failedVersion} to ` +
+        `${updateHealthDecision.targetVersion} exhausted after ${updateHealthDecision.handoffs} handoff(s); ` +
+        'managed updates are disabled for this launch'
+    )
+  } else if (updateHealthDecision.action === 'await-health' || updateHealthDecision.action === 'rollback') {
+    rememberLog(
+      `[managed-updates] awaiting renderer startup health for ${app.getVersion()} ` +
+        `(timeout ${MANAGED_UPDATE_HEALTH_TIMEOUT}ms)`
+    )
+    armManagedUpdateHealthTimeout()
+  } else {
+    void startManagedUpdaterAfterHealth()
+  }
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -11934,6 +12147,23 @@ app.on('before-quit', event => {
   if (heldQuitForActiveWork(event)) {
     return
   }
+
+  if (managedUpdateHealthTimer) {
+    if (!isQuittingForHandoff) {
+      managedUpdateHealth.recordCleanExit()
+    }
+
+    clearManagedUpdateHealthTimer()
+  }
+
+  if (managedUpdateCheckTimer) {
+    clearInterval(managedUpdateCheckTimer)
+    managedUpdateCheckTimer = null
+  }
+
+  unsubscribeManagedUpdate?.()
+  unsubscribeManagedUpdate = null
+  managedUpdater.dispose()
 
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()

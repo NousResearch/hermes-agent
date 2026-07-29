@@ -83,7 +83,23 @@ npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+Windows NSIS builds use GitHub Releases as the managed-update feed. Packaged Desktop checks in the background, downloads verified updates, shows progress beside the lower-left profile controls, and installs silently on a normal quit. Each installer retains itself; a new version must complete renderer startup health before becoming known-good. A failed candidate is rolled back to the hash-verified previous installer and that exact immutable version is rejected so it cannot loop.
+
+Production Windows releases are built by the manual **Desktop Windows release** workflow (`.github/workflows/desktop-windows-release.yml`):
+
+1. Bump `apps/desktop/package.json` and the root lockfile to the exact release version.
+2. Merge the release commit, create the intended tag and a **draft** GitHub Release, and ensure the tag points to that commit.
+3. Configure the protected `desktop-release` environment with `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD`.
+4. Run the workflow first with `publish=false`. It runs the canonical Node 22 checks; signs and verifies Authenticode on both packaged `Hermes.exe` and the NSIS installer; requires packaged `app-update.yml` to contain the certificate-derived `publisherName` used by `electron-updater` for customer-side signature verification; checks installer size/SHA-512 against `latest.yml`; requires the matching blockmap; and produces a Sigstore provenance bundle plus SHA-256 manifest.
+5. Re-run with `publish=true`. The workflow uploads the installer, blockmap, metadata, verification evidence, provenance, and checksums while the Release remains invisible; verifies each remote asset; then publishes the draft as the atomic channel promotion. It refuses to create tags, mutate a visible Release, or overwrite an existing asset.
+
+Local update artifacts can be checked with:
+
+```bash
+npm run verify:update-release -- release <version>
+```
+
+macOS signing/notarization still uses `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*`; Windows uses `WIN_CSC_*`. Never publish an unsigned build or upload an installer without its same-build blockmap and `latest.yml`.
 
 ### How it works
 

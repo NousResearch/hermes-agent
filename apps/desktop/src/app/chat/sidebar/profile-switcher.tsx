@@ -66,6 +66,7 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
+import { ManagedUpdateIndicator } from './managed-update-indicator'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
@@ -304,6 +305,8 @@ export function ProfileRail() {
           <AddProfileButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
         </div>
       )}
+
+      <ManagedUpdateIndicator />
 
       {/* Always reachable, even with only the default profile: the manage
           overlay is the only place to edit a profile's SOUL.md, and a

@@ -61,7 +61,9 @@
     "check": "npm run check:lint && npm run check:test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
     "test:e2e": "npm run build && playwright test e2e/",
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
-    "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots"
+    "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
+    "build:update:e2e": "node scripts/build-update-e2e.mjs",
+    "verify:update-release": "node scripts/verify-update-release.mjs"
   },
   "dependencies": {
     "@assistant-ui/core": "0.2.23",
@@ -101,6 +103,7 @@
     "d3-force": "3.0.0",
     "dnd-core": "14.0.1",
     "dompurify": "3.4.12",
+    "electron-updater": "6.8.9",
     "emojibase-data": "16.0.3",
     "fflate": "0.8.3",
     "frimousse": "0.3.0",
@@ -245,13 +248,21 @@
         }
       ]
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "NousResearch",
+        "repo": "hermes-agent",
+        "releaseType": "release"
+      }
+    ],
     "win": {
       "legalTrademarks": "Hermes",
       "target": [
         "nsis",
         "msi"
       ],
-      "signAndEditExecutable": false
+      "signAndEditExecutable": true
     },
     "linux": {
       "category": "Development",
@@ -269,7 +280,8 @@
       "perMachine": false,
       "shortcutName": "Hermes",
       "uninstallDisplayName": "Hermes",
-      "warningsAsErrors": false
+      "warningsAsErrors": false,
+      "include": "electron/installer-retention.nsh"
     }
   }
 }

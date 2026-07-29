@@ -316,6 +316,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
+  signalStartupHealthy: () => ipcRenderer.invoke('hermes:updates:health:confirm'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
@@ -324,6 +325,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   updates: {
     check: () => ipcRenderer.invoke('hermes:updates:check'),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
+    getManagedState: () => ipcRenderer.invoke('hermes:updates:managed:get'),
+    checkManaged: () => ipcRenderer.invoke('hermes:updates:managed:check'),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
     onProgress: callback => {
@@ -331,6 +334,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:updates:progress', listener)
 
       return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
+    },
+    onManagedState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:updates:managed:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:updates:managed:state', listener)
     }
   },
   themes: {

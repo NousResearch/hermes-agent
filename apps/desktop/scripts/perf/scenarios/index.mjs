@@ -8,6 +8,7 @@ import keystroke from './keystroke.mjs'
 import multitab from './multitab.mjs'
 import profileSwitch from './profile-switch.mjs'
 import renderChurn from './render-churn.mjs'
+import sessionLoad from './session-load.mjs'
 import sessionSwitch from './session-switch.mjs'
 import stream from './stream.mjs'
 import streamHistory from './stream-history.mjs'
@@ -25,6 +26,7 @@ export const SCENARIOS = {
   [coldStart.name]: coldStart,
   [firstToken.name]: firstToken,
   [submit.name]: submit,
+  [sessionLoad.name]: sessionLoad,
   [sessionSwitch.name]: sessionSwitch,
   [profileSwitch.name]: profileSwitch
 }

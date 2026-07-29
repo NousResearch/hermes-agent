@@ -3592,6 +3592,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
             TELEGRAM_WEBHOOK_URL    Public HTTPS URL (e.g. https://app.fly.dev/telegram)
             TELEGRAM_WEBHOOK_PORT   Local listen port (default 8443)
+            TELEGRAM_WEBHOOK_HOST   Bind host (default: unset → dual-stack,
+                                    all interfaces IPv4+IPv6)
             TELEGRAM_WEBHOOK_SECRET Secret token for update verification
         """
         # Explicit connect() is the only operation allowed to reopen polling
@@ -3944,6 +3946,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
                 webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
+                # Bind host. Default "" → tornado bind_sockets opens one
+                # listening socket per address family (IPv4 + IPv6). The old
+                # hardcoded "0.0.0.0" bound IPv4 ONLY and was unreachable
+                # over IPv6-only private networks (e.g. Fly.io 6PN) — same
+                # bug as the LINE adapter (NS-603). Pin via
+                # TELEGRAM_WEBHOOK_HOST or platforms.telegram.extra.webhook_host.
+                webhook_host = (
+                    os.getenv("TELEGRAM_WEBHOOK_HOST", "").strip()
+                    or str((self.config.extra or {}).get("webhook_host") or "").strip()
+                )
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
@@ -3962,7 +3974,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
                 await self._app.updater.start_webhook(
-                    listen="0.0.0.0",
+                    listen=webhook_host,
                     port=webhook_port,
                     url_path=webhook_path,
                     webhook_url=webhook_url,
@@ -3978,8 +3990,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_progress_accepting = False
                 self._send_path_degraded = False
                 logger.info(
-                    "[%s] Webhook server listening on 0.0.0.0:%d%s",
-                    self.name, webhook_port, webhook_path,
+                    "[%s] Webhook server listening on %s:%d%s",
+                    self.name,
+                    webhook_host or "* (all interfaces, IPv4+IPv6)",
+                    webhook_port,
+                    webhook_path,
                 )
             else:
                 # ── Polling mode (default) ───────────────────────────

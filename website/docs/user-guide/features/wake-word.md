@@ -80,7 +80,7 @@ wake_word:
 wake_word:
   enabled: false
   surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
-  provider: openwakeword      # "openwakeword" (free, local) | "porcupine"
+  provider: openwakeword      # "openwakeword" (free, local) | "sherpa" (free, any phrase) | "porcupine"
   phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire

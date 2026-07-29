@@ -180,8 +180,8 @@ Experimental connector-backed platforms use the generic relay adapter in `gatewa
 
 Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management
-- `send_message()` — outbound message delivery
-- `on_message()` — inbound message normalization → `MessageEvent`
+- `send()` — outbound message delivery
+- inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
 
 ### Token Locks
 

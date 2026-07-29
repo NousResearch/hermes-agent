@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ClientSessionState } from '@/app/types'
 import { group, split } from '@/components/pane-shell/tree/model'
 import type { SessionTile } from '@/store/session-states'
-import { focusedSessionNeedsRoute, orderTilesByTree, selectionHomesToWorkspace } from '@/store/session-states'
+import {
+  blankDraftTile,
+  focusedSessionNeedsRoute,
+  orderTilesByTree,
+  selectionHomesToWorkspace
+} from '@/store/session-states'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
@@ -62,5 +68,40 @@ describe('focusedSessionNeedsRoute', () => {
   it('never routes for a tile — its pane shows the chat on any route', () => {
     expect(focusedSessionNeedsRoute('tile', true)).toBe(false)
     expect(focusedSessionNeedsRoute('tile', false)).toBe(false)
+  })
+})
+
+describe('blankDraftTile', () => {
+  const bound = (storedSessionId: string, runtimeId: string): SessionTile => ({ runtimeId, storedSessionId })
+
+  const state = (messages: number, busy = false) =>
+    ({ busy, messages: Array.from({ length: messages }, (_, i) => ({ id: `m${i}` })) }) as ClientSessionState
+
+  it('finds the open tab whose session has no messages', () => {
+    const tiles = [bound('a', 'run-a'), bound('b', 'run-b')]
+    const states = { 'run-a': state(3), 'run-b': state(0) }
+
+    expect(blankDraftTile(tiles, states)).toEqual(tiles[1])
+  })
+
+  it('picks the most recent blank tab when there are several', () => {
+    const tiles = [bound('a', 'run-a'), bound('b', 'run-b')]
+    const states = { 'run-a': state(0), 'run-b': state(0) }
+
+    expect(blankDraftTile(tiles, states)).toEqual(tiles[1])
+  })
+
+  it('leaves a blank-but-busy tab alone — its first turn is already in flight', () => {
+    expect(blankDraftTile([bound('a', 'run-a')], { 'run-a': state(0, true) })).toBeNull()
+  })
+
+  it('treats an unbound or unpublished tile as unknown, not empty', () => {
+    expect(blankDraftTile([tile('a')], {})).toBeNull()
+    expect(blankDraftTile([bound('a', 'run-a')], {})).toBeNull()
+  })
+
+  it('is null when every open tab holds a conversation', () => {
+    expect(blankDraftTile([bound('a', 'run-a')], { 'run-a': state(2) })).toBeNull()
+    expect(blankDraftTile([], {})).toBeNull()
   })
 })

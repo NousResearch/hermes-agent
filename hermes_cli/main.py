@@ -11030,15 +11030,33 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     depth_args = ["--depth", "1"] if is_shallow else []
 
     if branch == "main":
-        print("→ Fetching from upstream...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch"] + depth_args + ["upstream", branch],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
+        # Probe locally (~6 ms) whether an 'upstream' remote exists at all
+        # before spending a network fetch on it. Non-fork installs have no
+        # 'upstream' remote, and the old flow burned a failed network attempt
+        # (~0.3-1 s) on every --check before falling back to origin.
+        has_upstream_remote = (
+            subprocess.run(
+                git_cmd + ["remote", "get-url", "upstream"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            ).returncode
+            == 0
         )
-        if fetch_result.returncode != 0:
-            # Fallback to origin if upstream doesn't exist
+        fetch_result = None
+        if has_upstream_remote:
+            print("→ Fetching from upstream...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch"] + depth_args + ["upstream", branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+        if fetch_result is not None and fetch_result.returncode == 0:
+            upstream_exists = True
+            compare_branch = f"upstream/{branch}"
+        else:
+            # No upstream remote, or the upstream fetch failed — use origin.
             print("→ Fetching from origin...")
             fetch_result = subprocess.run(
                 git_cmd + ["fetch"] + depth_args + ["origin", branch],
@@ -11048,9 +11066,6 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             )
             upstream_exists = False
             compare_branch = f"origin/{branch}"
-        else:
-            upstream_exists = True
-            compare_branch = f"upstream/{branch}"
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
@@ -12551,8 +12566,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
+            # Merge the ref we already fetched above (→ Fetching updates...)
+            # instead of `git pull`, which performs a SECOND network fetch of
+            # the same branch (~0.5-1.5 s of redundant round-trip per update).
+            # `merge --ff-only origin/<branch>` is byte-identical in effect to
+            # `pull --ff-only origin <branch>` given the fresh tracking ref;
+            # the divergence fallback below is unchanged.
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -12785,34 +12806,51 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and _resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-            # Capture the (very loud) Electron/vite build output into
-            # update.log instead of streaming it to the terminal. On the rare
-            # nonzero exit, retry once after waiting again for the venv — this
-            # covers a still-settling rebuild window the first wait didn't fully
-            # catch — then surface the captured tail so the failure is
-            # debuggable.
-            #
-            # Start the build subprocess with the Hermes-managed Node on PATH:
-            # when `hermes update` runs inside the desktop updater chain
-            # (Desktop → hermes-setup → hermes update), the shell PATH
-            # customizations are lost, so a bare-PATH child would fail with
-            # `node: not found` before cmd_gui can self-heal.
-            from hermes_constants import with_hermes_node_path
-
-            _build_env = with_hermes_node_path()
-            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
-            if build_result.returncode != 0:
-                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
-            if build_result.returncode != 0:
-                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
-                tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
-                if tail:
-                    print(tail)
-                from hermes_constants import display_hermes_home as _dhh
-                print(f"  Full build log: {_dhh()}/logs/update.log")
-            else:
+            # Consult the content-hash stamp IN-PROCESS first. The spawned
+            # `hermes desktop --build-only` subprocess re-imports the whole
+            # CLI stack (~1-3 s) just to reach the same _desktop_build_needed
+            # check; when the stamp already says "up to date" we can skip the
+            # spawn entirely. The update path never passes --source, so the
+            # subprocess would run with source_mode=False — mirror that here.
+            # Any error in the pre-check falls through to the subprocess.
+            _skip_desktop_build = False
+            try:
+                _skip_desktop_build = not _desktop_build_needed(
+                    desktop_dir, PROJECT_ROOT, source_mode=False
+                )
+            except Exception:
+                _skip_desktop_build = False
+            if _skip_desktop_build:
                 print("  ✓ Desktop app up to date")
+            else:
+                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+                # Capture the (very loud) Electron/vite build output into
+                # update.log instead of streaming it to the terminal. On the rare
+                # nonzero exit, retry once after waiting again for the venv — this
+                # covers a still-settling rebuild window the first wait didn't fully
+                # catch — then surface the captured tail so the failure is
+                # debuggable.
+                #
+                # Start the build subprocess with the Hermes-managed Node on PATH:
+                # when `hermes update` runs inside the desktop updater chain
+                # (Desktop → hermes-setup → hermes update), the shell PATH
+                # customizations are lost, so a bare-PATH child would fail with
+                # `node: not found` before cmd_gui can self-heal.
+                from hermes_constants import with_hermes_node_path
+
+                _build_env = with_hermes_node_path()
+                build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
+                if build_result.returncode != 0:
+                    build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT, env=_build_env)
+                if build_result.returncode != 0:
+                    print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                    tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])
+                    if tail:
+                        print(tail)
+                    from hermes_constants import display_hermes_home as _dhh
+                    print(f"  Full build log: {_dhh()}/logs/update.log")
+                else:
+                    print("  ✓ Desktop app up to date")
 
         print()
         print("✓ Code updated!")

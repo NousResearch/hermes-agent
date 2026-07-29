@@ -359,10 +359,11 @@ class TestCmdUpdateBranchFallback:
         assert "origin/main" in rev_list_cmds[0]
         assert "origin/fix/stoicneko" not in rev_list_cmds[0]
 
-        # pull should use main, not fix/stoicneko
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        # the ff-only merge should target origin/main, not the feature branch
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert len(merge_cmds) == 1
+        assert "origin/main" in merge_cmds[0]
+        assert "fix/stoicneko" not in merge_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -381,9 +382,9 @@ class TestCmdUpdateBranchFallback:
         assert len(rev_list_cmds) == 1
         assert "origin/main" in rev_list_cmds[0]
 
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert len(merge_cmds) == 1
+        assert "origin/main" in merge_cmds[0]
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -408,9 +409,9 @@ class TestCmdUpdateBranchFallback:
         assert update_observer.__self__ is ensure_observer.__self__
         assert update_observer.__self__ == []
 
-        # Should NOT have called pull
+        # Should NOT have advanced the checkout (no pull, no ff-only merge)
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        pull_cmds = [c for c in commands if "pull" in c]
+        pull_cmds = [c for c in commands if "pull" in c or "merge --ff-only" in c]
         assert len(pull_cmds) == 0
 
     @patch("shutil.which", return_value=None)
@@ -824,9 +825,9 @@ class TestCmdUpdateBranchFlag:
         assert any("origin/bb/gui" in c for c in rev_list_cmds), rev_list_cmds
         assert not any("origin/main" in c for c in rev_list_cmds), rev_list_cmds
 
-        # pull must target bb/gui
-        pull_cmds = [c for c in commands if "pull" in c and "ff-only" in c]
-        assert any("bb/gui" in c and "main" not in c.split() for c in pull_cmds), pull_cmds
+        # the ff-only merge must target origin/bb/gui
+        merge_cmds = [c for c in commands if "merge --ff-only" in c]
+        assert any("origin/bb/gui" in c and "origin/main" not in c for c in merge_cmds), merge_cmds
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

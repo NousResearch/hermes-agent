@@ -951,8 +951,9 @@ def run_doctor(args):
 
         # Validate model.provider and model.default values
         try:
-            import yaml as _yaml
-            cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            # Raw-file diagnostic: inspects what the user actually wrote.
+            from hermes_cli.config import read_user_config_raw
+            cfg = read_user_config_raw(config_path)
             model_section = cfg.get("model") or {}
             provider_raw = (model_section.get("provider") or "").strip()
             provider = provider_raw.lower()
@@ -1184,9 +1185,9 @@ def run_doctor(args):
 
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
-            import yaml
-            with open(config_path, encoding="utf-8") as f:
-                raw_config = yaml.safe_load(f) or {}
+            # Raw-file diagnostic: stale-key detection must see the raw file.
+            from hermes_cli.config import read_user_config_raw
+            raw_config = read_user_config_raw(config_path)
             stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
             if stale_root_keys:
                 check_warn(
@@ -1231,10 +1232,9 @@ def run_doctor(args):
         # Read the .env FILE directly (load_env), not get_env_value/os.environ,
         # which the startup bridge may already have overridden.
         try:
-            import yaml
-            from hermes_cli.config import load_env, remove_env_value
-            with open(config_path, encoding="utf-8") as f:
-                raw_config = yaml.safe_load(f) or {}
+            from hermes_cli.config import load_env, read_user_config_raw, remove_env_value
+            # Raw-file diagnostic: drift check against the raw file.
+            raw_config = read_user_config_raw(config_path)
             agent_cfg = raw_config.get("agent")
             cfg_max_turns = (
                 agent_cfg.get("max_turns")
@@ -1281,11 +1281,11 @@ def run_doctor(args):
         # Migrations may still live in config.py version steps; doctor does
         # not auto-delete here — only tells the user the modern replacement.
         try:
-            import yaml as _yaml_depr
             from hermes_cli.config import load_env as _load_env_depr
+            from hermes_cli.config import read_user_config_raw as _read_raw_depr
 
-            with open(config_path, encoding="utf-8") as _f_depr:
-                _raw_for_depr = _yaml_depr.safe_load(_f_depr) or {}
+            # Raw-file diagnostic: deprecation sweep inspects the raw file.
+            _raw_for_depr = _read_raw_depr(config_path)
             # Prefer the on-disk .env so bridged process env (e.g. TERMINAL_CWD
             # from terminal.cwd) does not false-positive.
             try:
@@ -2528,11 +2528,11 @@ def run_doctor(args):
     _section("Memory Provider")
     _active_memory_provider = ""
     try:
-        import yaml as _yaml
+        from hermes_cli.config import read_user_config_raw as _read_raw_mem
         _mem_cfg_path = HERMES_HOME / "config.yaml"
         if _mem_cfg_path.exists():
-            with open(_mem_cfg_path, encoding="utf-8") as _f:
-                _raw_cfg = _yaml.safe_load(_f) or {}
+            # Raw-file diagnostic (+ managed overlay below, unchanged).
+            _raw_cfg = _read_raw_mem(_mem_cfg_path)
             try:
                 from hermes_cli import managed_scope
                 _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)

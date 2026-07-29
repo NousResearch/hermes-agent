@@ -1289,13 +1289,19 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     if profile_home is None:
         return None
     try:
-        import yaml
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
 
         p = Path(profile_home) / "config.yaml"
         if not p.exists():
             return None
-        with open(p, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+        # Behavioral read of a NON-launch profile's config: load_config()
+        # would resolve the ACTIVE profile's path, so read this profile's
+        # file directly, then apply the same read-side pipeline as
+        # _load_cfg (managed overlay + ${VAR} expansion). Fail-open.
+        data = _apply_managed(read_user_config_raw(p))
+        expanded = _expand_env_vars(data)
+        if isinstance(expanded, dict):
+            data = expanded
         return _configured_cwd_from_cfg(data)
     except Exception:
         return None
@@ -2641,8 +2647,9 @@ def _coerce_int_config_value(value: Any, default: int, *, min_value: int) -> int
 def _load_dashboard_process_isolation_config(cfg: dict | None = None) -> dict[str, Any]:
     """Return dashboard process-isolation config with read-site defaults.
 
-    ``_load_cfg()`` intentionally returns raw ``config.yaml`` plus the managed
-    overlay; it does not deep-merge ``hermes_cli.config.DEFAULT_CONFIG``. Keep
+    ``_load_cfg()`` intentionally returns the user ``config.yaml`` plus the
+    managed overlay and ``${VAR}`` expansion; it does not deep-merge
+    ``hermes_cli.config.DEFAULT_CONFIG``. Keep
     the Phase-0 defaults here so dashboard runtime and the REST editor's
     DEFAULT_CONFIG-backed schema cannot drift.
     """
@@ -2668,11 +2675,17 @@ def _load_dashboard_process_isolation_config(cfg: dict | None = None) -> dict[st
     }
 
 
-def _load_cfg() -> dict:
+def _load_cfg_raw() -> dict:
+    """Read the active profile's config.yaml EXACTLY as written (write-back primitive).
+
+    ONLY legal for read→mutate→``_save_cfg`` round-trips (and raw-file
+    inspection): merging defaults, the managed overlay, or ``${VAR}``
+    expansion here would be persisted into the user's file on the next
+    save. Behavioral reads must use :func:`_load_cfg`, which layers the
+    managed overlay + env expansion on top of this raw read.
+    """
     global _cfg_cache, _cfg_mtime, _cfg_path
     try:
-        import yaml
-
         # Honor a per-session profile override (see session.resume) so a resumed
         # remote profile loads ITS config (model, skills, prompt); otherwise the
         # launch profile's _hermes_home. Cache is keyed on the resolved path, so
@@ -2683,10 +2696,10 @@ def _load_cfg() -> dict:
         mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
-                return _apply_managed(copy.deepcopy(_cfg_cache))
+                return copy.deepcopy(_cfg_cache)
         if p.exists():
-            with open(p, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+            from hermes_cli.config import read_user_config_raw
+            data = read_user_config_raw(p)
         else:
             data = {}
         with _cfg_lock:
@@ -2697,10 +2710,35 @@ def _load_cfg() -> dict:
             _cfg_cache = copy.deepcopy(data)
             _cfg_mtime = mtime
             _cfg_path = p
-        return _apply_managed(data)
+        return data
     except Exception:
         pass
     return {}
+
+
+def _load_cfg() -> dict:
+    """Behavioral config read: raw user file + managed overlay + ${VAR} expansion.
+
+    Delegates the disk read to :func:`_load_cfg_raw` (shared cache), then
+    applies the same read-side pipeline as the canonical
+    ``hermes_cli.config.load_config_readonly`` — managed-scope overlay and
+    ``${ENV_VAR}`` expansion — minus the DEFAULT_CONFIG merge (callers here
+    treat a missing key as "unset" and apply their own defaults; merging
+    would also break ``_load_cfg() == {}`` sentinels). Do NOT pass the
+    result to ``_save_cfg``: use ``_load_cfg_raw()`` for write-back
+    round-trips or expanded/overlaid values get persisted into the user's
+    file.
+    """
+    cfg = _apply_managed(_load_cfg_raw())
+    try:
+        from hermes_cli.config import _expand_env_vars
+
+        expanded = _expand_env_vars(cfg)
+        if isinstance(expanded, dict):
+            cfg = expanded
+    except Exception:
+        pass
+    return cfg
 
 
 def _apply_managed(cfg: dict) -> dict:
@@ -3519,7 +3557,9 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
 
 def _write_config_key(key_path: str, value):
-    cfg = _load_cfg()
+    # Write-back round-trip: raw read is mandatory — saving the managed-
+    # overlaid / env-expanded view would persist those values into the file.
+    cfg = _load_cfg_raw()
     current = cfg
     keys = key_path.split(".")
     for key in keys[:-1]:
@@ -13939,7 +13979,7 @@ def _(rid, params: dict) -> dict:
             scope = str(params.get("scope") or "").strip().lower()
             global_scope = scope == "global"
             if arg in {"show", "on"}:
-                cfg = _load_cfg()
+                cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
                 )
@@ -13957,7 +13997,7 @@ def _(rid, params: dict) -> dict:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in {"hide", "off"}:
-                cfg = _load_cfg()
+                cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
                 )
@@ -13982,7 +14022,7 @@ def _(rid, params: dict) -> dict:
             # display.reasoning_full is persisted too so the config key stays
             # consistent across the CLI and TUI surfaces.
             if arg in {"full", "all"}:
-                cfg = _load_cfg()
+                cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
                 )
@@ -13998,7 +14038,7 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 return _ok(rid, {"key": key, "value": "full"})
             if arg in {"clamp", "collapse", "short"}:
-                cfg = _load_cfg()
+                cfg = _load_cfg_raw()  # write-back round-trip
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
                 )
@@ -14044,7 +14084,7 @@ def _(rid, params: dict) -> dict:
         nv = str(value or "").strip().lower()
         if nv not in _DETAIL_MODES:
             return _err(rid, 4002, f"unknown details_mode: {value}")
-        cfg = _load_cfg()
+        cfg = _load_cfg_raw()  # write-back round-trip
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         sections = (
             display.get("sections") if isinstance(display.get("sections"), dict) else {}
@@ -14066,7 +14106,7 @@ def _(rid, params: dict) -> dict:
         if section not in _DETAIL_SECTION_NAMES:
             return _err(rid, 4002, f"unknown section: {section}")
 
-        cfg = _load_cfg()
+        cfg = _load_cfg_raw()  # write-back round-trip
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         sections_cfg = (
             display.get("sections") if isinstance(display.get("sections"), dict) else {}
@@ -14211,7 +14251,7 @@ def _(rid, params: dict) -> dict:
 
     if key in {"prompt", "personality", "skin"}:
         try:
-            cfg = _load_cfg()
+            cfg = _load_cfg_raw()  # write-back round-trip ("prompt" saves cfg)
             if key == "prompt":
                 if value == "clear":
                     cfg.pop("custom_prompt", None)
@@ -18059,7 +18099,7 @@ def _speak_text_with_barge(text: str) -> None:
 def _voice_cfg_dict() -> dict:
     """Shape-safe accessor for the ``voice:`` block in config.yaml.
 
-    ``_load_cfg()`` returns raw ``yaml.safe_load()`` output, so both the
+    ``_load_cfg()`` does not deep-merge DEFAULT_CONFIG, so both the
     root AND ``voice`` may be any YAML scalar / list / None. A hand-edit
     like ``voice: true`` or a malformed top-level config that parses to
     a scalar would otherwise break ``.get("…")`` and take every

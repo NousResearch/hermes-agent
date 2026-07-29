@@ -271,15 +271,16 @@ def enrolled_profile_phrases() -> Dict[str, str]:
     """
     phrases: Dict[str, str] = {}
     try:
-        import yaml
-
+        from hermes_cli.config import read_user_config_raw
         from hermes_cli.profiles import get_profile_dir, list_profiles
 
         for info in list_profiles():
             name = getattr(info, "name", None) or str(info)
             try:
+                # Multi-profile read: load_config() targets the ACTIVE
+                # profile's home, so read each profile's file directly.
                 cfg_path = Path(get_profile_dir(name)) / "config.yaml"
-                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                raw = read_user_config_raw(cfg_path)
                 wc = raw.get("wake_word") or {}
                 if not isinstance(wc, dict) or not wc.get("enabled"):
                     continue

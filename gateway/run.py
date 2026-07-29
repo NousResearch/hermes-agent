@@ -3337,6 +3337,30 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+class _STTTranscript(str):
+    """Raw transcript text carrying optional user-facing echo metadata.
+
+    The string value deliberately remains the unadorned transcript so consumers
+    such as clarify-choice parsing receive exactly what the user said. Echo paths
+    can inspect the metadata without leaking provider failures into agent input.
+    """
+
+    fallback_from: str | None
+    provider_used: str | None
+
+    def __new__(
+        cls,
+        transcript: str,
+        *,
+        fallback_from: str | None = None,
+        provider_used: str | None = None,
+    ):
+        value = super().__new__(cls, transcript)
+        value.fallback_from = fallback_from
+        value.provider_used = provider_used
+        return value
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -13081,9 +13105,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _echo_adapter:
                         for _tx in _successful_transcripts:
                             try:
+                                _echo_text = self._format_stt_echo(_tx)
                                 await _echo_adapter.send(
                                     source.chat_id,
-                                    f'🎙️ "{_tx}"',
+                                    _echo_text,
                                     metadata=_echo_meta,
                                 )
                             except Exception as _echo_exc:
@@ -18327,6 +18352,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
+    @staticmethod
+    def _format_stt_echo(transcript: str) -> str:
+        """Format a transcript echo, including safe fallback metadata when present."""
+        fallback_from = getattr(transcript, "fallback_from", None)
+        if fallback_from:
+            provider_used = getattr(transcript, "provider_used", None) or "local"
+            return (
+                f'🎙️ "{transcript}"\n\n'
+                f"⚠️ STT fallback: {fallback_from} failed, so Hermes used "
+                f"{provider_used} / faster-whisper."
+            )
+        return f'🎙️ "{transcript}"'
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
@@ -18419,12 +18457,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "to resend or type it out.]"
                         )
                         continue
-                    successful_transcripts.append(transcript)
-                    # Pass the transcript through as a plain quoted line. The
-                    # earlier wording ("The user sent a voice message~ Here's
-                    # what they said: ...") read as a meta-instruction and made
-                    # the LLM volunteer commentary about voice mode rather than
-                    # reply to the content.
+                    fallback_from = result.get("fallback_from")
+                    if fallback_from:
+                        provider_used = result.get("provider", "local")
+                        successful_transcripts.append(
+                            _STTTranscript(
+                                transcript,
+                                fallback_from=fallback_from,
+                                provider_used=provider_used,
+                            )
+                        )
+                    else:
+                        successful_transcripts.append(transcript)
+                    # Keep the agent-facing input as the current upstream
+                    # plain transcript form. Provider failure details belong
+                    # in operational logs, not durable conversation context.
                     enriched_parts.append(f'"{transcript}"')
                 else:
                     error = result.get("error", "unknown error")
@@ -18541,7 +18588,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await adapter.send(
                     source.chat_id,
-                    f'🎙️ "{tx}"',
+                    self._format_stt_echo(tx),
                     metadata=metadata,
                 )
             except Exception as echo_exc:

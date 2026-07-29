@@ -279,3 +279,119 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     # Success path: the transcript passes through as a plain quoted line, with
     # no "voice message" meta-commentary that the LLM would echo back.
     assert "queued voice transcript" in result
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._has_setup_skill = lambda: False
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "fallback transcript",
+            "provider": "local",
+            "fallback_from": "parakeet",
+            "fallback_reason": "command exited 127",
+        },
+    ):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            "caption",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "fallback transcript" in result
+    assert "STT fallback" not in result
+    assert "command exited 127" not in result
+    assert transcripts == ["fallback transcript"]
+    assert GatewayRunner._format_stt_echo(transcripts[0]) == (
+        '🎙️ "fallback transcript"\n\n'
+        "⚠️ STT fallback: parakeet failed, so Hermes used "
+        "local / faster-whisper."
+    )
+
+
+def test_format_stt_echo_includes_fallback_notice_without_changing_raw_text():
+    from gateway.run import GatewayRunner, _STTTranscript
+
+    fallback_transcript = _STTTranscript(
+        "fallback transcript",
+        fallback_from="parakeet",
+        provider_used="local",
+    )
+    fallback_notice = (
+        '🎙️ "fallback transcript"\n\n'
+        "⚠️ STT fallback: parakeet failed, so Hermes used local / faster-whisper."
+    )
+
+    assert fallback_transcript == "fallback transcript"
+    assert GatewayRunner._format_stt_echo("plain transcript") == '🎙️ "plain transcript"'
+    assert GatewayRunner._format_stt_echo(fallback_transcript) == fallback_notice
+
+
+@pytest.mark.asyncio
+async def test_clarify_reply_uses_raw_transcript_after_stt_fallback():
+    from gateway.run import GatewayRunner, _STTTranscript
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._pending_event_audio_paths = lambda event: ["/tmp/voice.ogg"]
+    runner._transcribe_pending_audio_event_once = AsyncMock(
+        return_value=(
+            '"2"',
+            [
+                _STTTranscript(
+                    "2",
+                    fallback_from="parakeet",
+                    provider_used="local",
+                )
+            ],
+        )
+    )
+
+    assert await runner._prepare_clarify_reply_text(object()) == "2"
+
+
+@pytest.mark.asyncio
+async def test_pending_echo_preserves_fallback_notice():
+    from gateway.run import GatewayRunner, _STTTranscript
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._should_echo_stt_transcripts = lambda: True
+    fallback_transcript = _STTTranscript(
+        "queued fallback",
+        fallback_from="parakeet",
+        provider_used="local",
+    )
+    fallback_notice = (
+        '🎙️ "queued fallback"\n\n'
+        "⚠️ STT fallback: parakeet failed, so Hermes used local / faster-whisper."
+    )
+    echo_send = AsyncMock()
+    echo_adapter = type("EchoAdapter", (), {"send": echo_send})()
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/queued-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    await runner._echo_pending_stt_transcripts_once(
+        event,
+        echo_adapter,
+        source,
+        [fallback_transcript],
+        metadata=None,
+        log_context="Voice-interrupt",
+    )
+
+    echo_send.assert_awaited_once_with("123", fallback_notice, metadata=None)

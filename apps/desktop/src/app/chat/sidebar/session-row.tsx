@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { memo } from 'react'
 import type * as React from 'react'
 
 import { ProfileTag } from '@/app/chat/profile-tag'
@@ -54,7 +55,7 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
 }
 
-export function SidebarSessionRow({
+function SidebarSessionRowImpl({
   session,
   branchStem,
   isPinned,
@@ -251,3 +252,32 @@ export function SidebarSessionRow({
     </SessionContextMenu>
   )
 }
+
+// The sidebar re-renders on every stream tick ($sessions/$workingSessionIds
+// churn), and it stays mounted beneath every overlay — so an unmemoized row
+// re-rendered the whole list (and its Codicon/label/status-dot subtree) on each
+// delta, bleeding churn into Settings, Cron, Profiles, Artifacts, etc.
+//
+// The callback props (onArchive/onResume/…) are fresh closures every render by
+// design (they close over the row's session id), so a default memo never bails.
+// They're pure id-forwarders, though — identical behavior for a given row — so
+// the comparator deliberately ignores them and compares only the DATA that
+// changes what the row paints. A row whose session/selection/working/pin state
+// is unchanged now bails out, even while a sibling session streams.
+function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): boolean {
+  return (
+    a.session === b.session &&
+    a.isPinned === b.isPinned &&
+    a.isSelected === b.isSelected &&
+    a.isWorking === b.isWorking &&
+    a.branchStem === b.branchStem &&
+    a.reorderable === b.reorderable &&
+    a.dragging === b.dragging &&
+    a.showProfile === b.showProfile &&
+    a.dragHandleProps === b.dragHandleProps &&
+    a.className === b.className &&
+    a.style === b.style
+  )
+}
+
+export const SidebarSessionRow = memo(SidebarSessionRowImpl, rowPropsEqual)

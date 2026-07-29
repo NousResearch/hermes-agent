@@ -587,7 +587,13 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
   const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
-  if (cached) {
+  // A row with no owning profile can't route a resume when more than one
+  // profile exists — a resume without a profile lands on whichever gateway is
+  // active (#67603 family, cross-profile open asymmetry). Treat such a hit as
+  // unresolved and fall through to the by-id lookups, which stamp ownership.
+  const multiProfile = $profiles.get().length > 1
+
+  if (cached && (cached.profile?.trim() || !multiProfile)) {
     return cached
   }
 
@@ -596,6 +602,12 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   // past the sidebar's recent window). 404 just means it's not on this profile.
   try {
     const session = await getSession(storedSessionId)
+
+    // Older backends omit `profile` on unscoped GETs; the serving backend is
+    // the active gateway's, so back-fill that rather than caching an unowned
+    // row. A present stamp is preserved: in app-global remote mode a bare hit
+    // can legitimately carry another profile's row (see the branch tests).
+    session.profile ||= normalizeProfileKey($activeGatewayProfile.get())
 
     upsertResolvedSession(session, storedSessionId)
 
@@ -617,6 +629,12 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   for (const profile of otherProfiles) {
     try {
       const session = await getSession(storedSessionId, profile)
+
+      // Same ownership contract: the DESKTOP profile we explicitly probed is
+      // authoritative, whatever the scoped backend stamped (older backends
+      // omit the field; a per-profile remote override strips the alias before
+      // forwarding, so that backend answers as its own "default").
+      session.profile = profile
 
       upsertResolvedSession(session, storedSessionId)
 

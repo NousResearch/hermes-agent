@@ -1723,7 +1723,6 @@ class GatewaySlashCommandsMixin:
           /model --provider <provider>        — switch to provider, auto-detect model
         """
         from gateway.run import _hermes_home, _load_gateway_config
-        import yaml
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_flags_detailed,
             resolve_persist_behavior,
@@ -1993,11 +1992,10 @@ class GatewaySlashCommandsMixin:
                         # model survives across sessions like a typed one (#49066).
                         if persist_global:
                             try:
-                                if config_path.exists():
-                                    with open(config_path, encoding="utf-8") as f:
-                                        _persist_cfg = yaml.safe_load(f) or {}
-                                else:
-                                    _persist_cfg = {}
+                                # Write-back round-trip: raw read is correct
+                                # (merged defaults must not be persisted).
+                                from hermes_cli.config import read_user_config_raw
+                                _persist_cfg = read_user_config_raw(config_path)
                                 _raw_model = _persist_cfg.get("model")
                                 if isinstance(_raw_model, dict):
                                     _persist_model_cfg = _raw_model
@@ -2315,11 +2313,10 @@ class GatewaySlashCommandsMixin:
             # Persist to config (default) unless --session opted out
             if persist_global:
                 try:
-                    if config_path.exists():
-                        with open(config_path, encoding="utf-8") as f:
-                            cfg = yaml.safe_load(f) or {}
-                    else:
-                        cfg = {}
+                    # Write-back round-trip: raw read is correct (merged
+                    # defaults must not be persisted back to the user's file).
+                    from hermes_cli.config import read_user_config_raw
+                    cfg = read_user_config_raw(config_path)
                     # Coerce scalar/None ``model:`` into a dict before mutation —
                     # otherwise ``cfg.setdefault("model", {})`` returns the existing
                     # scalar and the next assignment raises
@@ -3227,14 +3224,13 @@ class GatewaySlashCommandsMixin:
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast
         and their interactive pickers)."""
-        import yaml
         from gateway.run import _hermes_home
+        from hermes_cli.config import read_user_config_raw
         config_path = _hermes_home / "config.yaml"
         try:
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            # Write-back round-trip: raw read is correct (merged defaults must
+            # not be persisted back to the user's file).
+            user_config = read_user_config_raw(config_path)
             keys = key_path.split(".")
             current = user_config
             for k in keys[:-1]:
@@ -3483,11 +3479,10 @@ class GatewaySlashCommandsMixin:
         config_path = _hermes_home / "config.yaml"
 
         def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            # Write-back round-trip: raw read is correct (merged defaults must
+            # not be persisted back to the user's file).
+            from hermes_cli.config import read_user_config_raw
+            user_config = read_user_config_raw(config_path)
             user_config.setdefault("memory", {})["write_approval"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.
@@ -3539,11 +3534,10 @@ class GatewaySlashCommandsMixin:
                     "writes here with /skills pending.")
 
         def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            # Write-back round-trip: raw read is correct (merged defaults must
+            # not be persisted back to the user's file).
+            from hermes_cli.config import read_user_config_raw
+            user_config = read_user_config_raw(config_path)
             user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.

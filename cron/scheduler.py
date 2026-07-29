@@ -3169,11 +3169,10 @@ def run_job(
         _cfg = {}
         _model_cfg = {}
         try:
-            import yaml
+            from hermes_cli.config import read_user_config_raw
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
-                with open(_cfg_path, encoding="utf-8") as _f:
-                    _cfg = yaml.safe_load(_f) or {}
+                _cfg = read_user_config_raw(Path(_cfg_path))
                 # Managed scope: a scheduled job must honor administrator-pinned
                 # model / reasoning / toolsets / provider_routing too. This loader
                 # builds its own dict, so overlay managed values via the shared

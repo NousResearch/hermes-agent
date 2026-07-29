@@ -1707,11 +1707,13 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     if not config_path.exists():
         return
     try:
-        import yaml as _yaml
-        with open(config_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        from hermes_cli.config import _expand_env_vars
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+        # Presence-sensitive env bridge: raw read is deliberate (only keys the
+        # user actually wrote get bridged); overlay + expansion applied below.
+        cfg = read_user_config_raw(config_path)
         cfg = _expand_env_vars(cfg)
+        if not isinstance(cfg, dict):
+            cfg = {}
         # Managed scope: keep administrator-pinned values authoritative on every
         # turn too. This per-turn reload re-bridges config→env, so without the
         # overlay a managed agent.max_turns / timezone / redact_secrets would be
@@ -1873,12 +1875,15 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 _config_path = _hermes_home / 'config.yaml'
 if _config_path.exists():
     try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
+        # Presence-sensitive env bridge: raw read is deliberate — only keys the
+        # user actually wrote may be bridged (a defaults merge would export the
+        # whole DEFAULT_CONFIG into the env). Overlay + expansion applied below.
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+        _cfg = read_user_config_raw(_config_path)
         # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
         _cfg = _expand_env_vars(_cfg)
+        if not isinstance(_cfg, dict):
+            _cfg = {}
         # Managed scope: overlay administrator-pinned values BEFORE bridging to
         # env vars, so a managed timezone / redact_secrets / max_turns / terminal
         # setting wins over the user's value at the env layer too. This bridge
@@ -2437,12 +2442,10 @@ def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
-        import yaml as _y
-        cfg_path = _hermes_home / "config.yaml"
-        if not cfg_path.exists():
-            return None
-        with open(cfg_path, encoding="utf-8") as _f:
-            cfg = _y.safe_load(_f) or {}
+        # Canonical gateway loader: managed overlay + ${VAR} expansion +
+        # root-model normalization now reach the fallback chain too (a raw
+        # read here used to miss administrator-pinned fallback_providers).
+        cfg = _load_gateway_runtime_config()
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
@@ -5854,12 +5857,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return cfg.get("provider_routing", {}) or {}
+            # Canonical gateway loader (fail-open): managed overlay + ${VAR}
+            # expansion now apply to provider_routing too.
+            cfg = _load_gateway_runtime_config()
+            return cfg.get("provider_routing", {}) or {}
         except Exception:
             pass
         return {}
@@ -5873,14 +5874,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         when both keys are present.
         """
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                fb = get_fallback_chain(cfg)
-                if fb:
-                    return fb
+            # Canonical gateway loader (fail-open): managed overlay + ${VAR}
+            # expansion now apply to the fallback chain too.
+            cfg = _load_gateway_runtime_config()
+            fb = get_fallback_chain(cfg)
+            if fb:
+                return fb
         except Exception:
             pass
         return None
@@ -5900,13 +5899,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         that genuinely lacks the key clears the chain.
         """
         try:
-            import yaml as _y
+            from hermes_cli.config import read_user_config_raw
             cfg_path = _hermes_home / "config.yaml"
             if not cfg_path.exists():
                 self._fallback_model = None
                 return self._fallback_model
-            with open(cfg_path, encoding="utf-8") as _f:
-                cfg = _y.safe_load(_f) or {}
+            # Raw primitive (raises on parse failure) is required here: the
+            # canonical fail-open loader would return {} on a torn mid-edit
+            # write and WIPE the last known-good chain. The overlay/expansion
+            # below fixes the managed-scope/${VAR} drift without losing that.
+            cfg = read_user_config_raw(cfg_path)
+            try:
+                from hermes_cli import managed_scope
+                cfg = managed_scope.apply_managed_overlay(cfg)
+            except Exception:
+                pass
+            try:
+                from hermes_cli.config import _expand_env_vars
+                expanded = _expand_env_vars(cfg)
+                if isinstance(expanded, dict):
+                    cfg = expanded
+            except Exception:
+                pass
         except Exception:
             # Transient failure — keep last known-good chain.
             logger.debug(

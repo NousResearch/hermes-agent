@@ -1660,15 +1660,13 @@ class AutoSetHomeMiddleware(InboundMiddleware):
             if _should_set:
                 try:
                     from hermes_constants import get_hermes_home
-                    from hermes_cli.config import atomic_config_write
-                    import yaml
+                    from hermes_cli.config import atomic_config_write, read_user_config_raw
 
                     _home = get_hermes_home()
                     config_path = _home / "config.yaml"
-                    user_config: dict = {}
-                    if config_path.exists():
-                        with open(config_path, encoding="utf-8") as f:
-                            user_config = yaml.safe_load(f) or {}
+                    # Write-back round-trip: raw read is correct (merged
+                    # defaults must not be persisted to the user's file).
+                    user_config: dict = read_user_config_raw(config_path)
                     user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
                     atomic_config_write(config_path, user_config)
                     os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)

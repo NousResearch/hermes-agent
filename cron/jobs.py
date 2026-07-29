@@ -1134,14 +1134,12 @@ def _resolve_default_model_snapshot() -> Optional[str]:
     or resolution fails (fail-open — caller treats ``None`` as "no snapshot").
     """
     try:
-        import yaml
-        from hermes_cli.config import _expand_env_vars
+        from hermes_cli.config import _expand_env_vars, read_user_config_raw
 
         cfg_path = get_hermes_home() / "config.yaml"
         if not cfg_path.exists():
             return None
-        with cfg_path.open(encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        cfg = read_user_config_raw(cfg_path)
         try:
             from hermes_cli import managed_scope
             cfg = managed_scope.apply_managed_overlay(cfg)

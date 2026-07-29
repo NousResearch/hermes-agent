@@ -9350,14 +9350,10 @@ class TelegramAdapter(BasePlatformAdapter):
         recognized without a gateway restart.
         """
         try:
-            from hermes_constants import get_hermes_home
-            config_path = get_hermes_home() / "config.yaml"
-            if not config_path.exists():
-                return
-
-            import yaml as _yaml
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = _yaml.safe_load(f) or {}
+            # Canonical loader: behavioral read (dm_topics routing) now honors
+            # managed-scope overlay + ${VAR} expansion like every other read.
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
 
             dm_topics = (
                 config.get("platforms", {})

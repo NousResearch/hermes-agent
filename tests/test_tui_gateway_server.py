@@ -14521,6 +14521,7 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
             check_tts_requirements=lambda: requirements,
             stream_tts_to_speaker=fake_stream,
             _get_provider=lambda cfg: "edge",
+            _load_tts_config=lambda: {},
             get_env_value=lambda key, default="": default,
         ),
     )

@@ -301,6 +301,47 @@ _continuous_recorder: Any = None
 # leak into the mic.
 _tts_playing = threading.Event()
 _tts_playing.set()  # initially "not playing"
+
+# ── Silence-count hold (agent busy) ──────────────────────────────────
+# While the agent is mid-turn (thinking / tool-calling, possibly for
+# minutes) or TTS is playing, the user is CORRECTLY silent — those cycles
+# must not count toward the no-speech limit or a long tool run ends the
+# voice chat under the user (#silence-must-not-end-the-chat). The host
+# surface (tui_gateway) registers a probe that reports "agent busy";
+# TTS-playing is already tracked via _tts_playing above.
+_voice_busy_probe: Optional[Callable[[], bool]] = None
+
+
+def set_voice_busy_probe(probe: Optional[Callable[[], bool]]) -> None:
+    """Register a callable that returns True while the agent is mid-turn.
+
+    Called by the hosting surface (tui_gateway registers one that checks
+    every session's ``running`` flag). ``None`` clears it. The probe must
+    be cheap and thread-safe — it runs on the silence-callback thread.
+    """
+    global _voice_busy_probe
+    _voice_busy_probe = probe
+
+
+def _voice_activity_held() -> bool:
+    """True while silent cycles must NOT count toward the no-speech limit.
+
+    Held when TTS is playing (the user is listening) or when the
+    registered busy probe reports the agent mid-turn (the user is
+    waiting). Fail-open to "not held" so a broken probe can never make
+    the voice chat immortal.
+    """
+    if not _tts_playing.is_set():
+        return True
+    probe = _voice_busy_probe
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception:
+        return False
+
+
 _continuous_on_transcript: Optional[Callable[[str], None]] = None
 _continuous_on_status: Optional[Callable[[str], None]] = None
 _continuous_on_silent_limit: Optional[Callable[[], None]] = None
@@ -574,9 +615,17 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                             logger.warning("on_transcript callback raised: %s", e)
 
                     if track_no_speech:
+                        held = _voice_activity_held()
                         with _continuous_lock:
                             if transcript or stop_phrase:
                                 _continuous_no_speech_count = 0
+                            elif held:
+                                # Agent busy / TTS playing — the user is
+                                # correctly silent; don't count the cycle.
+                                _debug(
+                                    "stop_continuous: silent cycle ignored "
+                                    "(agent busy or TTS playing)"
+                                )
                             else:
                                 _continuous_no_speech_count += 1
                                 should_halt = (
@@ -712,6 +761,14 @@ def _continuous_on_silence() -> None:
         _debug(f"_continuous_on_silence: stop phrase {transcript!r} — ending loop")
         transcript = None
 
+    # Silent cycle while the agent is mid-turn or TTS is playing: the user
+    # is CORRECTLY quiet (waiting/listening), so the cycle must not count
+    # toward the no-speech limit — a multi-minute tool run would otherwise
+    # end the voice chat under the user. Checked outside the lock (probe
+    # may call into the host surface).
+    _silence_held = (transcript is None and not stop_phrase
+                     and _voice_activity_held())
+
     with _continuous_lock:
         if not _continuous_active:
             # User stopped us while we were transcribing — discard.
@@ -719,6 +776,11 @@ def _continuous_on_silence() -> None:
             return
         if transcript:
             _continuous_no_speech_count = 0
+        elif _silence_held:
+            _debug(
+                "_continuous_on_silence: silent cycle ignored "
+                "(agent busy or TTS playing)"
+            )
         elif not stop_phrase:
             _continuous_no_speech_count += 1
         should_halt = stop_phrase or (

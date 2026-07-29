@@ -17701,6 +17701,21 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
+def _any_session_running() -> bool:
+    """True while any session's agent turn is in flight.
+
+    Registered as the voice busy-probe (``hermes_cli.voice.set_voice_busy_probe``)
+    so silent capture cycles during a long agent turn don't count toward the
+    no-speech limit — the user is correctly quiet while the agent works.
+    Voice is process-global (one microphone), so any running session holds.
+    """
+    try:
+        with _sessions_lock:
+            return any(s.get("running") for s in _sessions.values())
+    except Exception:
+        return False
+
+
 # ── Streaming TTS (one active pipeline per process — one speaker) ──────────
 # Token deltas from the running turn feed a sentence-buffering consumer
 # (tools.tts_tool.stream_tts_to_speaker) so speech starts on the first
@@ -18353,6 +18368,18 @@ def _(rid, params: dict) -> dict:
                 _voice_event_sid = params.get("session_id") or _voice_event_sid
 
             from hermes_cli.voice import start_continuous
+
+            # Register the agent-busy probe so the shared voice wrapper can
+            # hold the no-speech counter during long agent turns (item:
+            # silence must not end the chat while the agent works). Safe to
+            # re-register on every start; older wrappers without the setter
+            # are tolerated.
+            try:
+                from hermes_cli.voice import set_voice_busy_probe
+
+                set_voice_busy_probe(_any_session_running)
+            except Exception:
+                pass
 
             # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)
             # must not crash /voice with a 5025 — fall back to VAD defaults.

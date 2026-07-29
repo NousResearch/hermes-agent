@@ -1740,6 +1740,50 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
+def _write_wedged_oneshot_diagnostic(job: Dict[str, Any]) -> None:
+    """Leave an operator-visible trace when a wedged one-shot is removed.
+
+    A finite one-shot whose dispatch was claimed (``repeat.completed`` >=
+    ``repeat.times``) but which never reached ``mark_job_run`` (``last_run_at``
+    is null) was interrupted mid-run — scheduler restart, gateway kill, or a
+    non-Exception escape (#73973). The recovery guards remove such jobs so
+    they stop appearing due, but a silent removal leaves the user with no
+    output, no error, and no job record. Write a small diagnostic file into
+    the job's output directory so the removal is observable and debuggable.
+
+    Best-effort: diagnostics must never break the removal itself.
+    """
+    if job.get("last_run_at") is not None:
+        return  # a prior run was recorded — normal completion race, not a wedge
+    try:
+        repeat = job.get("repeat") or {}
+        claim = job.get("run_claim") or {}
+        text = (
+            "# Cron job removed without producing output\n\n"
+            f"- job id: {job.get('id')}\n"
+            f"- name: {job.get('name')}\n"
+            f"- dispatch claimed: {repeat.get('completed', '?')}/{repeat.get('times', '?')}\n"
+            f"- run claimed at: {claim.get('at', 'unknown')} by {claim.get('by', 'unknown')}\n"
+            f"- removed at: {_hermes_now().isoformat()}\n\n"
+            "This one-shot job's dispatch was claimed, but the run never "
+            "completed (`last_run_at` was never written) — the scheduler "
+            "process was most likely killed or restarted mid-execution. The "
+            "job has been removed to stop it re-firing; recreate it to run "
+            "again.\n"
+        )
+        save_job_output(job.get("id", ""), text)
+        logger.warning(
+            "Job '%s': removed without a completed run — diagnostic written to "
+            "its output directory",
+            job.get("name", job.get("id", "?")),
+        )
+    except Exception as e:
+        logger.debug(
+            "Failed to write wedged-oneshot diagnostic for job %r: %s",
+            job.get("id"), e,
+        )
+
+
 def claim_dispatch(job_id: str) -> bool:
     """Atomically claim a finite one-shot job dispatch BEFORE execution.
 
@@ -1777,6 +1821,9 @@ def claim_dispatch(job_id: str) -> bool:
                 # Clean up so it stops appearing as due on every tick.
                 jobs.pop(i)
                 save_jobs(jobs)
+                # If the claimed run never completed (#73973), leave an
+                # operator-visible diagnostic instead of vanishing silently.
+                _write_wedged_oneshot_diagnostic(job)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
                     job.get("name", job.get("id", "?")),
@@ -2249,6 +2296,11 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     raw_jobs.remove(rj)
                                     needs_save = True
                                     break
+                            # The claimed run never completed here by
+                            # definition (last_run_at unwritten is what made
+                            # the entry look due) — leave an operator-visible
+                            # diagnostic instead of vanishing silently (#73973).
+                            _write_wedged_oneshot_diagnostic(job)
                             continue
 
                 # Durably claim a one-shot for the DURATION of its run before

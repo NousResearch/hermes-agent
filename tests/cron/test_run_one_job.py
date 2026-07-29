@@ -119,6 +119,57 @@ def test_run_one_job_exception_marks_failure(monkeypatch):
     assert marks == [("j6", False)]
 
 
+def test_run_one_job_base_exception_records_failure_then_reraises(monkeypatch):
+    """#73973: a BaseException escaping run_job (CancelledError re-raised by the
+    inner teardown handler, KeyboardInterrupt, SystemExit) must still record the
+    failure via mark_job_run — otherwise a claim_dispatch()-consumed one-shot is
+    left wedged with completed==times but last_run_at never written. The
+    BaseException itself is re-raised after recording so shutdown semantics are
+    preserved."""
+    import asyncio
+
+    import pytest
+
+    for exc in (asyncio.CancelledError(), KeyboardInterrupt(), SystemExit(1)):
+        def boom(job, *, defer_agent_teardown=None, _exc=exc):
+            raise _exc
+
+        monkeypatch.setattr(s, "run_job", boom)
+        marks = []
+        monkeypatch.setattr(
+            s, "mark_job_run",
+            lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok, err)),
+        )
+
+        with pytest.raises(type(exc)):
+            s.run_one_job({"id": "jbase", "name": "t"})
+
+        assert marks and marks[0][0] == "jbase" and marks[0][1] is False, (
+            f"{type(exc).__name__}: failure was not recorded"
+        )
+        # Empty str(exc) (e.g. bare CancelledError) falls back to the class name.
+        assert marks[0][2], f"{type(exc).__name__}: error text must be non-empty"
+
+
+def test_run_one_job_plain_exception_still_swallowed(monkeypatch):
+    """The BaseException widening must not change plain-Exception behavior:
+    recorded, returns False, NOT re-raised."""
+    def boom(job, *, defer_agent_teardown=None):
+        raise ValueError("plain failure")
+
+    monkeypatch.setattr(s, "run_job", boom)
+    marks = []
+    monkeypatch.setattr(
+        s, "mark_job_run",
+        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok)),
+    )
+
+    ok = s.run_one_job({"id": "jplain", "name": "t"})
+
+    assert ok is False
+    assert marks == [("jplain", False)]
+
+
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
     execute run_job inside a profile secret scope so credential reads

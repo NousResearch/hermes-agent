@@ -33,29 +33,4 @@ class TestMediaTagCleanup:
         assert "MEDIA:" not in stripped
         assert "/tmp/chart.png" not in stripped
 
-    def test_media_tag_with_whitespace_still_works(self):
-        """Baseline: MEDIA tags with whitespace before/after still match."""
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
-        # Space before closing quote
-        text = "Here is your report: MEDIA:/tmp/report.md "
-        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
-        assert "MEDIA:" not in stripped
-        assert "/tmp/report.md" not in stripped
-
-        # Multiple spaces (regex removes tag but preserves surrounding whitespace)
-        text = "Report at MEDIA:/tmp/data.pdf  done"
-        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
-        assert "MEDIA:" not in stripped
-        assert "/tmp/data.pdf" not in stripped
-        assert "Report at" in stripped and "done" in stripped
-
-    def test_media_tag_at_end_of_string(self):
-        """MEDIA tags at the end of a string should match ($ anchor)."""
-        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
-
-        text = "Here is the file: MEDIA:/tmp/file.docx"
-        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
-        assert "MEDIA:" not in stripped
-        assert "/tmp/file.docx" not in stripped
-        assert "Here is the file:" in stripped

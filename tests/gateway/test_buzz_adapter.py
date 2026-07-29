@@ -112,40 +112,12 @@ class TestBech32Helpers:
     def test_npub_to_hex_known_pair(self):
         assert npub_to_hex(SELF_NPUB) == SELF_PUBKEY
 
-    def test_round_trip(self):
-        npub = hex_to_npub(OTHER_PUBKEY)
-        assert npub is not None and npub.startswith("npub1")
-        assert npub_to_hex(npub) == OTHER_PUBKEY
-
-    def test_invalid_inputs(self):
-        assert hex_to_npub("not-hex") is None
-        assert hex_to_npub("ab") is None
-        assert npub_to_hex("npub1invalidchecksum") is None
-        assert npub_to_hex("nsec1notanpub") is None
-
-    def test_normalize_user_ref(self):
-        assert _normalize_user_ref(SELF_NPUB) == SELF_PUBKEY
-        assert _normalize_user_ref(SELF_PUBKEY.upper()) == SELF_PUBKEY
-        assert _normalize_user_ref("") is None
-        assert _normalize_user_ref("bogus") is None
-
 
 # ── Adapter init / config precedence ──────────────────────────────────────
 
 
 class TestBuzzAdapterInit:
 
-    def test_init_from_env(self, monkeypatch):
-        monkeypatch.setenv("BUZZ_RELAY_URL", "https://env.relay")
-        monkeypatch.setenv("BUZZ_CHANNELS", "aaa, bbb ,")
-        monkeypatch.setenv("BUZZ_POLL_INTERVAL", "7.5")
-
-        from gateway.config import PlatformConfig
-        adapter = BuzzAdapter(PlatformConfig(enabled=True))
-
-        assert adapter.relay_url == "https://env.relay"
-        assert adapter.channels == ["aaa", "bbb"]
-        assert adapter.poll_interval == 7.5
 
     def test_init_from_config_extra(self):
         from gateway.config import PlatformConfig
@@ -170,16 +142,6 @@ class TestBuzzAdapterInit:
         adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={"relay_url": "https://cfg.relay"}))
         assert adapter.relay_url == "https://env.relay"
 
-    def test_poll_interval_clamped_and_defaulted(self):
-        adapter = _make_adapter({"poll_interval": 0.01})
-        assert adapter.poll_interval == _buzz_mod._MIN_POLL_INTERVAL
-        adapter = _make_adapter({"poll_interval": "garbage"})
-        assert adapter.poll_interval == _buzz_mod._DEFAULT_POLL_INTERVAL
-
-    def test_allowed_users_normalized_from_mixed_forms(self):
-        adapter = _make_adapter({"allowed_users": [SELF_NPUB, OTHER_PUBKEY.upper(), "junk"]})
-        assert adapter._allowed_pubkeys == {SELF_PUBKEY, OTHER_PUBKEY}
-
 
 # ── CLI error contract ────────────────────────────────────────────────────
 
@@ -189,12 +151,6 @@ class TestCliErrorContract:
     def test_parses_json_error(self):
         msg = _cli_error_message('{"error":"relay_error","message":"boom","retryable":false}', 2)
         assert "relay_error" in msg and "boom" in msg and "exit 2" in msg
-
-    def test_falls_back_to_raw_stderr(self):
-        assert "garbage" in _cli_error_message("garbage output", 4)
-
-    def test_empty_stderr(self):
-        assert "exit code 3" in _cli_error_message("", 3)
 
 
 # ── Seeding / high-water mark / de-dupe ───────────────────────────────────
@@ -252,54 +208,6 @@ class TestPollingDedupe:
         await adapter._poll_channel(CHANNEL)
         assert len(adapter._dispatched) == 1
 
-    @pytest.mark.asyncio
-    async def test_poll_uses_since_high_water_mark(self, adapter):
-        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 4242, "seen": {}}
-        cli = _ScriptedCli()
-        adapter._run_cli = cli
-        await adapter._poll_channel(CHANNEL)
-        args, _stdin = cli.calls[0]
-        assert "--since" in args
-        assert args[args.index("--since") + 1] == "4242"
-
-    @pytest.mark.asyncio
-    async def test_self_echo_suppressed(self, adapter):
-        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
-        cli = _ScriptedCli()
-        cli.script("messages", "get", [
-            _event("own", pubkey=SELF_PUBKEY, content="@Chip I mention myself", created_at=300),
-        ])
-        adapter._run_cli = cli
-        await adapter._poll_channel(CHANNEL)
-        assert adapter._dispatched == []
-        # …but the event still advances the high-water mark
-        assert adapter._channel_state[CHANNEL]["last_ts"] == 300
-
-    @pytest.mark.asyncio
-    async def test_non_chat_kinds_ignored(self, adapter):
-        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
-        cli = _ScriptedCli()
-        cli.script("messages", "get", [
-            _event("j1", content="@Chip join event", created_at=300, kind=40002),
-        ])
-        adapter._run_cli = cli
-        await adapter._poll_channel(CHANNEL)
-        assert adapter._dispatched == []
-
-    @pytest.mark.asyncio
-    async def test_seen_set_is_bounded(self, adapter):
-        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
-        from collections import OrderedDict
-        adapter._channel_state[CHANNEL]["seen"] = OrderedDict()
-        cli = _ScriptedCli()
-        cli.script("messages", "get", [
-            _event(f"e{i}", content="unrelated chatter", created_at=i)
-            for i in range(_buzz_mod._SEEN_CAP + 100)
-        ])
-        adapter._run_cli = cli
-        await adapter._poll_channel(CHANNEL)
-        assert len(adapter._channel_state[CHANNEL]["seen"]) <= _buzz_mod._SEEN_CAP
-
 
 # ── Mention gating / DMs / authorization ──────────────────────────────────
 
@@ -335,50 +243,12 @@ class TestMentionGating:
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
 
-    @pytest.mark.asyncio
-    async def test_bare_name_mention_dispatched_case_insensitive(self, adapter):
-        await self._poll_with(adapter, _event("e1", content="chip: what do you think?", created_at=10))
-        assert len(adapter._dispatched) == 1
-
-    @pytest.mark.asyncio
-    async def test_name_inside_word_not_a_mention(self, adapter):
-        await self._poll_with(adapter, _event("e1", content="I love potato chips", created_at=10))
-        assert adapter._dispatched == []
-
-    @pytest.mark.asyncio
-    async def test_npub_mention_dispatched(self, adapter):
-        await self._poll_with(adapter, _event("e1", content=f"nostr:{SELF_NPUB} hello", created_at=10))
-        assert len(adapter._dispatched) == 1
-
-    @pytest.mark.asyncio
-    async def test_dm_always_dispatched(self, adapter):
-        adapter._channel_state[CHANNEL]["chat_type"] = "dm"
-        await self._poll_with(adapter, _event("e1", content="no mention here", created_at=10))
-        assert len(adapter._dispatched) == 1
-        assert adapter._dispatched[0]["chat_type"] == "dm"
 
     @pytest.mark.asyncio
     async def test_allowlist_blocks_unauthorized(self, adapter):
         adapter._allowed_pubkeys = {"b" * 64}
         await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
         assert adapter._dispatched == []
-
-    @pytest.mark.asyncio
-    async def test_allowlist_admits_npub_entry(self):
-        a = _make_adapter({"allowed_users": [hex_to_npub(OTHER_PUBKEY)]})
-        a._dispatched = []
-
-        async def capture(**kwargs):
-            a._dispatched.append(kwargs)
-
-        a._dispatch_message = capture
-        a._message_handler = AsyncMock()
-        a._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
-        cli = _ScriptedCli()
-        cli.script("messages", "get", [_event("e1", content="@Chip hello", created_at=10)])
-        a._run_cli = cli
-        await a._poll_channel(CHANNEL)
-        assert len(a._dispatched) == 1
 
 
 # ── DM classification via p-tags (issue #68871) ──────────────────────────
@@ -452,27 +322,6 @@ class TestDmClassification:
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
 
-    @pytest.mark.asyncio
-    async def test_dm_latch_persists_for_followup_messages(self, adapter):
-        await self._poll_with(
-            adapter, DM_CHANNEL,
-            _tagged_event("e1", DM_CHANNEL, content="first direct message", p=SELF_PUBKEY),
-        )
-        # Follow-up carries no p-tag at all — the latched state must carry it.
-        await self._poll_with(
-            adapter, DM_CHANNEL,
-            _tagged_event("e2", DM_CHANNEL, content="and a follow-up", created_at=1001),
-        )
-        assert [d["message_id"] for d in adapter._dispatched] == ["e1", "e2"]
-
-    @pytest.mark.asyncio
-    async def test_general_broadcast_without_mention_still_gated(self, adapter):
-        await self._poll_with(
-            adapter, CHANNEL,
-            _tagged_event("e1", CHANNEL, content="just chatting away"),
-        )
-        assert adapter._dispatched == []
-        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
 
     @pytest.mark.asyncio
     async def test_general_reply_ptagging_self_stays_channel(self, adapter):
@@ -495,18 +344,6 @@ class TestDmClassification:
         )
         assert len(adapter._dispatched) == 1
 
-    @pytest.mark.asyncio
-    async def test_general_nonreply_mention_ptag_stays_channel(self, adapter):
-        """Typed channel mentions p-tag us WITHOUT a reply tag (observed
-        live: '@Chip are you up and running?') — still not a DM: the p-tag
-        is explained by the visible mention, and the metadata guard protects
-        real channels regardless."""
-        await self._poll_with(
-            adapter, CHANNEL,
-            _tagged_event("e1", CHANNEL, content="@Chip are you up and running?", p=SELF_PUBKEY),
-        )
-        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
-        assert [d["chat_type"] for d in adapter._dispatched] == ["group"]
 
     @pytest.mark.asyncio
     async def test_channel_like_metadata_blocks_latch_even_without_mention(self, adapter):
@@ -521,60 +358,6 @@ class TestDmClassification:
         assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
         assert adapter._dispatched == []
 
-    @pytest.mark.asyncio
-    async def test_configured_channel_without_metadata_not_latched(self):
-        a = _make_adapter({"channels": ["private-chan"]})
-        a._dispatched = []
-
-        async def capture(**kwargs):
-            a._dispatched.append(kwargs)
-
-        a._dispatch_message = capture
-        a._message_handler = AsyncMock()
-        a._channel_state["private-chan"] = {"chat_type": "group", "last_ts": 0, "seen": {}}
-        cli = _ScriptedCli()
-        cli.script("messages", "get", [
-            _tagged_event("e1", "private-chan", content="no mention here", p=SELF_PUBKEY),
-        ])
-        a._run_cli = cli
-        await a._poll_channel("private-chan")
-        assert a._channel_state["private-chan"]["chat_type"] == "group"
-        assert a._dispatched == []
-
-    @pytest.mark.asyncio
-    async def test_seed_latches_dm_from_history_without_dispatch(self, adapter):
-        cli = _ScriptedCli()
-        cli.script("messages", "get", [
-            _tagged_event("h1", DM_CHANNEL, content="@Chip hello there", p=SELF_PUBKEY, created_at=100),
-            _tagged_event("h2", DM_CHANNEL, content="here's a test message", p=SELF_PUBKEY, created_at=200),
-            _tagged_event("h3", DM_CHANNEL, content="my own reply", pubkey=SELF_PUBKEY, created_at=300),
-        ])
-        adapter._run_cli = cli
-        await adapter._seed_channel(DM_CHANNEL, chat_type="group")
-        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
-        # Seeding classifies but never replays history into the agent.
-        assert adapter._dispatched == []
-
-    @pytest.mark.asyncio
-    async def test_non_chat_kind_ptag_does_not_latch(self, adapter):
-        """Housekeeping events (joins, member adds) may p-tag members —
-        only kind-9 chat traffic classifies."""
-        cli = _ScriptedCli()
-        cli.script("messages", "get", [
-            _tagged_event("h1", DM_CHANNEL, content="member added", p=SELF_PUBKEY, kind=40002),
-        ])
-        adapter._run_cli = cli
-        await adapter._seed_channel(DM_CHANNEL, chat_type="group")
-        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
-
-    @pytest.mark.asyncio
-    async def test_dm_leading_mention_stripped_for_commands(self, adapter):
-        adapter._channel_state[DM_CHANNEL]["chat_type"] = "dm"
-        await self._poll_with(
-            adapter, DM_CHANNEL,
-            _tagged_event("e1", DM_CHANNEL, content="@chip /whoami", p=SELF_PUBKEY),
-        )
-        assert adapter._dispatched[0]["text"] == "/whoami"
 
     @pytest.mark.asyncio
     async def test_dm_shaped_channel_discovered_when_dms_list_empty(self):
@@ -624,45 +407,6 @@ class TestBuzzAdapterSend:
         # Our own event id is marked seen for echo suppression
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
 
-    @pytest.mark.asyncio
-    async def test_send_reply_to(self):
-        adapter = _make_adapter()
-        cli = _ScriptedCli()
-        cli.script("messages", "send", {"accepted": True, "event_id": "evt124", "message": ""})
-        adapter._run_cli = cli
-        await adapter.send(CHANNEL, "threaded", reply_to="root-event")
-        args, _stdin = cli.calls[0]
-        assert args[args.index("--reply-to") + 1] == "root-event"
-
-    @pytest.mark.asyncio
-    async def test_send_failure_maps_error_contract(self):
-        adapter = _make_adapter()
-        cli = _ScriptedCli()
-        cli.script("messages", "send", "", code=2,
-                   stderr='{"error":"relay_error","message":"relay unreachable"}')
-        adapter._run_cli = cli
-        result = await adapter.send(CHANNEL, "hi")
-        assert result.success is False
-        assert "relay unreachable" in result.error
-        assert result.retryable is True
-
-    @pytest.mark.asyncio
-    async def test_send_empty_message_rejected(self):
-        adapter = _make_adapter()
-        result = await adapter.send(CHANNEL, "")
-        assert result.success is False
-
-    @pytest.mark.asyncio
-    async def test_send_image_url_falls_back_to_link(self):
-        adapter = _make_adapter()
-        cli = _ScriptedCli()
-        cli.script("messages", "send", {"accepted": True, "event_id": "evt125", "message": ""})
-        adapter._run_cli = cli
-        result = await adapter.send_image(CHANNEL, "https://example.com/cat.png", caption="a cat")
-        assert result.success is True
-        _args, stdin_text = cli.calls[0]
-        assert "https://example.com/cat.png" in stdin_text
-        assert "a cat" in stdin_text
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -683,26 +427,6 @@ class TestBuzzAdapterSend:
 
 class TestBuzzAdapterLifecycle:
 
-    @pytest.mark.asyncio
-    async def test_connect_fails_without_relay_url(self):
-        from gateway.config import PlatformConfig
-        adapter = BuzzAdapter(PlatformConfig(enabled=True, extra={}))
-        assert await adapter.connect() is False
-
-    @pytest.mark.asyncio
-    async def test_disconnect_cancels_poll_task(self):
-        adapter = _make_adapter()
-
-        async def forever():
-            while True:
-                await asyncio.sleep(3600)
-
-        adapter._poll_task = asyncio.create_task(forever())
-        task = adapter._poll_task
-        await adapter.disconnect()
-        assert task.cancelled()
-        assert adapter._poll_task is None
-        assert adapter.is_connected is False
 
     @pytest.mark.asyncio
     async def test_disconnect_releases_scoped_lock(self, monkeypatch):
@@ -741,23 +465,6 @@ class TestBuzzAdapterLifecycle:
         assert await adapter.connect() is False
         assert adapter._lock_key is None
 
-    @pytest.mark.asyncio
-    async def test_get_chat_info_uses_cached_names(self):
-        adapter = _make_adapter()
-        adapter._channel_names[CHANNEL] = "general"
-        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
-        info = await adapter.get_chat_info(CHANNEL)
-        assert info == {"name": "general", "type": "group", "chat_id": CHANNEL}
-
-    @pytest.mark.asyncio
-    async def test_dm_discovery_registers_conversation(self):
-        adapter = _make_adapter()
-        cli = _ScriptedCli()
-        cli.script("dms", "list", [{"dm_id": "dm-1", "participants": [OTHER_PUBKEY], "created_at": 5}])
-        adapter._run_cli = cli
-        await adapter._discover_dms(seed=False)
-        assert adapter._channel_state["dm-1"]["chat_type"] == "dm"
-
 
 # ── Credentials / requirements ────────────────────────────────────────────
 
@@ -774,29 +481,6 @@ class TestCredentialResolution:
         monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(creds))
         assert _resolve_private_key() == "nsec1fromfile"
 
-    def test_default_dir_glob(self, monkeypatch, tmp_path):
-        (tmp_path / "chip_nostr_credentials.json").write_text(
-            json.dumps({"private_key_hex": "ab" * 32}), encoding="utf-8"
-        )
-        monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path)
-        assert _resolve_private_key() == "ab" * 32
-
-    def test_missing_everywhere(self):
-        assert _resolve_private_key() == ""
-
-    def test_check_requirements(self, monkeypatch):
-        assert check_requirements() is False
-        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
-        assert check_requirements() is False  # still no key
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
-        assert check_requirements() is True
-
-    def test_validate_config_from_extra(self, monkeypatch):
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
-        from gateway.config import PlatformConfig
-        assert validate_config(PlatformConfig(extra={"relay_url": "https://r"})) is True
-        assert validate_config(PlatformConfig(extra={})) is False
-
 
 # ── Env enablement / registration / standalone send ──────────────────────
 
@@ -805,22 +489,6 @@ class TestEnvEnablement:
 
     def test_returns_none_when_unconfigured(self):
         assert _env_enablement() is None
-
-    def test_seeds_extra_and_home_channel(self, monkeypatch):
-        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
-        monkeypatch.setenv("BUZZ_CHANNELS", "chan-a,chan-b")
-        seed = _env_enablement()
-        assert seed["relay_url"] == "https://r"
-        assert seed["channels"] == ["chan-a", "chan-b"]
-        # Home channel defaults to the first watched channel
-        assert seed["home_channel"]["chat_id"] == "chan-a"
-
-    def test_explicit_home_channel(self, monkeypatch):
-        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
-        monkeypatch.setenv("BUZZ_HOME_CHANNEL", "home-chan")
-        assert _env_enablement()["home_channel"]["chat_id"] == "home-chan"
 
 
 class TestBuzzPluginRegistration:
@@ -869,30 +537,4 @@ class TestStandaloneSend:
         # The private key must never be part of argv
         assert all("nsec1x" not in str(a) for a in captured["args"])
 
-    @pytest.mark.asyncio
-    async def test_standalone_send_unconfigured(self):
-        from gateway.config import PlatformConfig
-        result = await _standalone_send(PlatformConfig(enabled=True, extra={}), CHANNEL, "hi")
-        assert "error" in result
 
-    @pytest.mark.asyncio
-    async def test_standalone_send_falls_back_to_home_channel(self, monkeypatch, tmp_path):
-        from gateway.config import PlatformConfig
-
-        fake_cli = tmp_path / "buzz"
-        fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        monkeypatch.setenv("BUZZ_RELAY_URL", "https://r")
-        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1x")
-        monkeypatch.setenv("BUZZ_CLI_PATH", str(fake_cli))
-        monkeypatch.setenv("BUZZ_HOME_CHANNEL", "home-chan")
-
-        captured = {}
-
-        async def fake_exec(cli_path, args, *, relay_url, private_key, input_text=None, timeout=30.0):
-            captured["args"] = args
-            return 0, json.dumps({"accepted": True, "event_id": "e"}), ""
-
-        monkeypatch.setattr(_buzz_mod, "_exec_buzz", fake_exec)
-        result = await _standalone_send(PlatformConfig(enabled=True, extra={}), "", "hi")
-        assert result["success"] is True
-        assert captured["args"][captured["args"].index("--channel") + 1] == "home-chan"

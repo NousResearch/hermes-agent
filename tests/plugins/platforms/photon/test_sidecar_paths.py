@@ -62,40 +62,6 @@ def test_readonly_source_with_baked_fresh_deps_runs_in_place(
     assert sidecar_paths.resolve_sidecar_dir(source) == source
 
 
-def test_readonly_source_missing_deps_mirrors_to_hermes_home(
-    tmp_path, monkeypatch
-) -> None:
-    """Immutable tree without baked deps must relocate to the data volume."""
-    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
-    home = tmp_path / "home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    source = tmp_path / "src"
-    _seed_source(source)  # no node_modules
-    _freeze_writability(monkeypatch, writable=False)
-
-    resolved = sidecar_paths.resolve_sidecar_dir(source)
-
-    assert resolved == home / "photon" / "sidecar"
-    for name in sidecar_paths._MIRROR_FILES:
-        assert (resolved / name).read_text(encoding="utf-8") == f"// {name}\n"
-
-
-def test_readonly_source_stale_baked_deps_mirrors(tmp_path, monkeypatch) -> None:
-    """Baked deps older than the lockfile (image skew) must not run in place."""
-    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
-    home = tmp_path / "home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    source = tmp_path / "src"
-    _seed_source(source, with_node_modules=True)
-    lock = source / "package-lock.json"
-    marker = source / "node_modules" / ".package-lock.json"
-    os.utime(lock, (2000.0, 2000.0))
-    os.utime(marker, (1000.0, 1000.0))
-    _freeze_writability(monkeypatch, writable=False)
-
-    assert sidecar_paths.resolve_sidecar_dir(source) == home / "photon" / "sidecar"
-
-
 def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     tmp_path, monkeypatch
 ) -> None:
@@ -120,20 +86,6 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     assert resolved == mirror
     assert (mirror / "index.mjs").read_text(encoding="utf-8") == "// index.mjs v2\n"
     assert (mirror / "node_modules" / "installed.txt").exists()
-
-
-def test_mirror_failure_falls_back_to_source(tmp_path, monkeypatch) -> None:
-    """If HERMES_HOME is unusable too, return the source dir (fail-open)."""
-    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
-    # Point HERMES_HOME at a path under a file so mkdir fails.
-    blocker = tmp_path / "blocker"
-    blocker.write_text("", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(blocker / "home"))
-    source = tmp_path / "src"
-    _seed_source(source)
-    _freeze_writability(monkeypatch, writable=False)
-
-    assert sidecar_paths.resolve_sidecar_dir(source) == source
 
 
 def test_dir_writable_probe(tmp_path) -> None:

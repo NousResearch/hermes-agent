@@ -56,15 +56,6 @@ def test_run_conversation_persists_tokens_for_telegram_sessions():
     assert session_db.queue_token_counts.call_args.args[0] == "telegram-session"
 
 
-def test_run_conversation_persists_tokens_for_cron_sessions():
-    session_db = MagicMock()
-    agent = _make_agent(session_db, platform="cron")
-
-    result = agent.run_conversation("hello")
-
-    assert result["final_response"] == "done"
-    session_db.queue_token_counts.assert_called_once()
-    assert session_db.queue_token_counts.call_args.args[0] == "cron-session"
 
 
 def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):

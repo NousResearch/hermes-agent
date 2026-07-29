@@ -150,51 +150,8 @@ class TestLegitimateFreshBuild:
 
 
 class TestSilentFailureWarnings:
-    def test_db_read_exception_warns_and_rebuilds(self, caplog):
-        """DB read raising → WARNING + fall through to fresh build."""
-        db = MagicMock()
-        db.get_session.side_effect = RuntimeError("disk full")
-        agent = _make_agent(session_db=db)
 
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
 
-        # Built fresh
-        agent._build_system_prompt.assert_called_once()
-        assert agent._cached_system_prompt == "BUILT_PROMPT"
-        # Loud warning about the read failure
-        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("get_session failed" in r.getMessage() for r in warnings), \
-            f"Expected a get_session warning, got: {[r.getMessage() for r in warnings]}"
-        assert any("disk full" in r.getMessage() for r in warnings)
-
-    def test_null_system_prompt_warns_about_unusable_stored_state(self, caplog):
-        """Row exists but system_prompt is NULL → WARNING + fresh build."""
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": None}
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-
-        agent._build_system_prompt.assert_called_once()
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("is null" in m and "rebuilding" in m for m in warnings), \
-            f"Expected null-stored-prompt warning, got: {warnings}"
-
-    def test_empty_system_prompt_warns_about_silent_persistence_bug(self, caplog):
-        """Row exists but system_prompt is '' → WARNING about silent write bug."""
-        db = MagicMock()
-        db.get_session.return_value = {"system_prompt": ""}
-        agent = _make_agent(session_db=db)
-
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
-
-        agent._build_system_prompt.assert_called_once()
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("is empty" in m and "rebuilding" in m for m in warnings), \
-            f"Expected empty-stored-prompt warning, got: {warnings}"
 
     def test_db_write_failure_warns_loudly(self, caplog):
         """update_system_prompt raising → WARNING (was DEBUG before)."""

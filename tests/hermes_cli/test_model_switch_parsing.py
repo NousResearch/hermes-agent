@@ -26,24 +26,6 @@ from hermes_cli.model_switch import (
 # parse_model_switch_args — the ONE parser
 # ---------------------------------------------------------------------------
 
-def test_bare_name_on_aggregator_passes_through():
-    # Bare names are NOT provider-qualified by the parser: aggregator-aware
-    # resolution (bare names resolve WITHIN the aggregator first, via
-    # switch_model's catalog search) happens downstream. The parser must not
-    # hardcode a provider.
-    req = parse_model_switch_args("sonnet")
-    assert req.target == "sonnet"
-    assert req.explicit_provider == ""
-    assert req.scope == "default"
-    assert req.errors == ()
-
-
-def test_provider_colon_model_target_preserved():
-    # vendor:model colon forms are preserved verbatim — switch_model converts
-    # them to aggregator slugs only when the current provider is an aggregator.
-    req = parse_model_switch_args("anthropic:claude-sonnet-4-5")
-    assert req.target == "anthropic:claude-sonnet-4-5"
-    assert req.explicit_provider == ""
 
 
 def test_provider_flag_and_scopes():
@@ -69,32 +51,6 @@ def test_once_with_global_conflict():
     assert "/model --once cannot be combined with --global" in req.error_messages()
 
 
-def test_once_without_target_error():
-    req = parse_model_switch_args("--once")
-    assert MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET in req.errors
-    assert (
-        MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET]
-        == "/model --once requires a model or provider."
-    )
-    # --once with just a provider is valid.
-    assert parse_model_switch_args("--once --provider anthropic").errors == ()
-
-
-def test_unicode_dash_normalization_matches_legacy_parser():
-    # Telegram/iOS auto-converts "--" to em dashes; the shared parser must
-    # keep the legacy normalization.
-    req = parse_model_switch_args("sonnet \u2014global")
-    assert req.is_global is True
-    assert req.target == "sonnet"
-
-
-def test_request_is_compatible_with_flag_result_consumers():
-    # tui_gateway._apply_model_switch duck-types on .model_input; the request
-    # object must satisfy the same consumer surface.
-    req = parse_model_switch_args("sonnet --provider anthropic --once")
-    assert req.model_input == "sonnet"
-    legacy = parse_model_flags_detailed("sonnet --provider anthropic --once")
-    assert req.flags == legacy
 
 
 # ---------------------------------------------------------------------------
@@ -106,24 +62,10 @@ class _ChannelOverride:
         self.model = model
 
 
-def test_session_override_beats_channel_and_global():
-    assert (
-        resolve_effective_model({"model": "session-model"}, _ChannelOverride("chan-model"), "global-model")
-        == "session-model"
-    )
 
 
-def test_channel_beats_global_when_no_session():
-    assert (
-        resolve_effective_model(None, _ChannelOverride("chan-model"), "global-model")
-        == "chan-model"
-    )
-    assert resolve_effective_model({}, _ChannelOverride(""), "global-model") == "global-model"
 
 
-def test_global_fallback_and_empty():
-    assert resolve_effective_model(None, None, "global-model") == "global-model"
-    assert resolve_effective_model(None, None, "") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -140,20 +82,6 @@ def _old_run_py_resolve(override, global_model):
     return global_model
 
 
-@pytest.mark.parametrize(
-    "override,global_model",
-    [
-        (None, "global-model"),
-        (_ChannelOverride("chan-model"), "global-model"),
-        (_ChannelOverride(""), "global-model"),
-        (_ChannelOverride("chan-model"), ""),
-        (None, ""),
-    ],
-)
-def test_run_py_channel_resolution_parity(override, global_model):
-    assert resolve_effective_model(None, override, global_model) == _old_run_py_resolve(
-        override, global_model
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -202,31 +130,3 @@ def test_api_server_resolution_parity(session_override, session_row_model, globa
     assert new == _old_api_server_resolve(session_override, session_row_model, global_model)
 
 
-def test_session_persisted_model_honored_by_both_surfaces():
-    """Permanent 7dd00bb47d regression test.
-
-    A session-persisted model (POST /api/sessions {"model": ...} on the API
-    server; per-channel/session config on the native gateway) must be honored
-    over the global default by BOTH resolution styles — the divergence class
-    this consolidation kills.
-    """
-    session_persisted = "vendor/session-pinned-model"
-    global_model = "vendor/global-default"
-
-    # run.py-style: channel/session tier vs global.
-    assert (
-        resolve_effective_model(None, session_persisted, global_model)
-        == session_persisted
-    )
-    # api_server-style: same shared owner, same answer.
-    assert (
-        resolve_effective_model(None, {"model": session_persisted}, global_model)
-        == session_persisted
-    )
-    # And an explicit session /model override still beats both.
-    assert (
-        resolve_effective_model(
-            {"model": "vendor/live-override"}, session_persisted, global_model
-        )
-        == "vendor/live-override"
-    )

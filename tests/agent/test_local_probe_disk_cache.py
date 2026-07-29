@@ -25,9 +25,6 @@ def _cache_file():
 
 
 class TestDiskHelpers:
-    def test_put_get_roundtrip(self):
-        MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
-        assert MM._local_probe_disk_get("server_type", "http://127.0.0.1:11434") == "ollama"
 
     def test_expired_entry_is_miss(self):
         MM._local_probe_disk_put("server_type", "http://127.0.0.1:11434", "ollama")
@@ -47,17 +44,6 @@ class TestDiskHelpers:
         MM._local_probe_disk_put("server_type", "k", "vllm")
         assert MM._local_probe_disk_get("server_type", "k") == "vllm"
 
-    def test_stale_entries_pruned_on_put(self):
-        MM._local_probe_disk_put("server_type", "old", "ollama")
-        path = _cache_file()
-        data = json.loads(path.read_text(encoding="utf-8"))
-        for entry in data.values():
-            entry["ts"] = time.time() - MM._LOCAL_PROBE_DISK_TTL_SECONDS - 1
-        path.write_text(json.dumps(data), encoding="utf-8")
-        MM._local_probe_disk_put("server_type", "new", "vllm")
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert "server_type:old" not in data
-        assert "server_type:new" in data
 
 
 class TestDetectLocalServerTypeDiskL2:

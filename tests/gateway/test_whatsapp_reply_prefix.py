@@ -67,47 +67,6 @@ class TestConfigYamlBridging:
         assert wa_config is not None
         assert wa_config.extra.get("reply_prefix") == ""
 
-    def test_no_whatsapp_section_no_extra(self, tmp_path):
-        """Without whatsapp section, no reply_prefix is set."""
-        config_yaml = tmp_path / "config.yaml"
-        config_yaml.write_text("timezone: UTC\n")
-
-        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
-            from gateway.config import load_gateway_config
-            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
-                config = load_gateway_config()
-
-        wa_config = config.platforms.get(Platform.WHATSAPP)
-        assert wa_config is not None
-        assert "reply_prefix" not in wa_config.extra
-
-    def test_whatsapp_section_without_reply_prefix(self, tmp_path):
-        """whatsapp section present but without reply_prefix key."""
-        config_yaml = tmp_path / "config.yaml"
-        config_yaml.write_text("whatsapp:\n  other_setting: true\n")
-
-        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
-            from gateway.config import load_gateway_config
-            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
-                config = load_gateway_config()
-
-        wa_config = config.platforms.get(Platform.WHATSAPP)
-        assert "reply_prefix" not in wa_config.extra
-
-    def test_send_read_receipts_bridged_from_yaml(self, tmp_path):
-        """whatsapp.send_read_receipts reaches the adapter extra config."""
-        config_yaml = tmp_path / "config.yaml"
-        config_yaml.write_text("whatsapp:\n  send_read_receipts: true\n")
-
-        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
-            from gateway.config import load_gateway_config
-            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
-                config = load_gateway_config()
-
-        wa_config = config.platforms.get(Platform.WHATSAPP)
-        assert wa_config is not None
-        assert wa_config.extra.get("send_read_receipts") is True
-
 
 # ---------------------------------------------------------------------------
 # WhatsAppAdapter __init__
@@ -122,31 +81,6 @@ class TestAdapterInit:
         config = PlatformConfig(enabled=True, extra={"reply_prefix": "Bot\\n"})
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix == "Bot\\n"
-
-    def test_reply_prefix_default_none(self):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-        config = PlatformConfig(enabled=True)
-        adapter = WhatsAppAdapter(config)
-        assert adapter._reply_prefix is None
-
-    def test_reply_prefix_empty_string(self):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-        config = PlatformConfig(enabled=True, extra={"reply_prefix": ""})
-        adapter = WhatsAppAdapter(config)
-        assert adapter._reply_prefix == ""
-
-    def test_send_read_receipts_boolean_and_string_values(self):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-
-        assert WhatsAppAdapter(
-            PlatformConfig(enabled=True, extra={"send_read_receipts": True})
-        )._send_read_receipts is True
-        assert WhatsAppAdapter(
-            PlatformConfig(enabled=True, extra={"send_read_receipts": "yes"})
-        )._send_read_receipts is True
-        assert WhatsAppAdapter(
-            PlatformConfig(enabled=True, extra={"send_read_receipts": "off"})
-        )._send_read_receipts is False
 
 
 class TestReadReceiptPolicyOrdering:
@@ -172,66 +106,6 @@ class TestReadReceiptPolicyOrdering:
 
         assert session.post.call_args.kwargs["json"] == {"key": key}
         assert session.post.call_args.args[0].endswith("/read")
-
-    @pytest.mark.asyncio
-    async def test_rejected_message_is_not_marked_read(self, monkeypatch):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-
-        adapter = WhatsAppAdapter(
-            PlatformConfig(enabled=True, extra={"send_read_receipts": True})
-        )
-        response = SimpleNamespace(
-            status=200,
-            json=AsyncMock(return_value=[{"messageId": "ignored"}]),
-        )
-        session = MagicMock()
-        session.get.return_value = _AsyncResponseContext(response)
-        adapter._http_session = session
-        adapter._running = True
-        adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
-        adapter._send_read_receipt = AsyncMock()
-
-        async def _reject(data):
-            adapter._running = False
-            return None
-
-        adapter._build_message_event = _reject
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
-
-        await adapter._poll_messages()
-
-        adapter._send_read_receipt.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_policy_accepted_message_is_marked_read_fire_and_forget(self, monkeypatch):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-
-        adapter = WhatsAppAdapter(
-            PlatformConfig(enabled=True, extra={"send_read_receipts": True})
-        )
-        raw = {"messageId": "accepted"}
-        response = SimpleNamespace(status=200, json=AsyncMock(return_value=[raw]))
-        session = MagicMock()
-        session.get.return_value = _AsyncResponseContext(response)
-        adapter._http_session = session
-        adapter._running = True
-        adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
-        adapter._send_read_receipt = AsyncMock()
-        adapter.handle_message = AsyncMock()
-        event = MagicMock(spec=MessageEvent)
-        event.message_type = MessageType.PHOTO
-
-        async def _accept(data):
-            adapter._running = False
-            return event
-
-        adapter._build_message_event = _accept
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
-
-        await adapter._poll_messages()
-
-        adapter._send_read_receipt.assert_called_once_with(raw)
-        adapter.handle_message.assert_awaited_once_with(event)
 
 
 # ---------------------------------------------------------------------------

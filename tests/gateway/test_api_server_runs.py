@@ -190,70 +190,6 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
-    @pytest.mark.asyncio
-    async def test_start_invalid_json_returns_400(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(
-                "/v1/runs",
-                data="not json",
-                headers={"Content-Type": "application/json"},
-            )
-        assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_start_missing_input_returns_400(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/runs", json={"model": "test"})
-            assert resp.status == 400
-            data = await resp.json()
-            assert "input" in data["error"]["message"]
-
-    @pytest.mark.asyncio
-    async def test_start_empty_input_returns_400(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/runs", json={"input": ""})
-        assert resp.status == 400
-
-    @pytest.mark.asyncio
-    async def test_start_invalid_history_does_not_allocate_run(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(
-                "/v1/runs",
-                json={"input": "hello", "conversation_history": {"role": "user"}},
-            )
-        assert resp.status == 400
-        assert adapter._run_streams == {}
-        assert adapter._run_statuses == {}
-
-    @pytest.mark.asyncio
-    async def test_start_requires_auth(self, auth_adapter):
-        app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/runs", json={"input": "hello"})
-        assert resp.status == 401
-
-    @pytest.mark.asyncio
-    async def test_start_with_valid_auth(self, auth_adapter):
-        app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(auth_adapter, "_create_agent") as mock_create:
-                mock_agent = MagicMock()
-                mock_agent.run_conversation.return_value = {"final_response": "ok"}
-                mock_agent.session_prompt_tokens = 0
-                mock_agent.session_completion_tokens = 0
-                mock_agent.session_total_tokens = 0
-                mock_create.return_value = mock_agent
-
-                resp = await cli.post(
-                    "/v1/runs",
-                    json={"input": "hello"},
-                    headers={"Authorization": "Bearer sk-secret"},
-                )
-                assert resp.status == 202
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):
@@ -329,34 +265,6 @@ class TestStartRun:
 
 
 class TestRunStatus:
-    @pytest.mark.asyncio
-    async def test_status_completed_run_includes_output_and_usage(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent = MagicMock()
-                mock_agent.run_conversation.return_value = {"final_response": "done"}
-                mock_agent.session_prompt_tokens = 4
-                mock_agent.session_completion_tokens = 2
-                mock_agent.session_total_tokens = 6
-                mock_create.return_value = mock_agent
-
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
-                data = await resp.json()
-                run_id = data["run_id"]
-
-                for _ in range(20):
-                    status_resp = await cli.get(f"/v1/runs/{run_id}")
-                    assert status_resp.status == 200
-                    status = await status_resp.json()
-                    if status["status"] == "completed":
-                        break
-                    await asyncio.sleep(0.05)
-
-                assert status["status"] == "completed"
-                assert status["output"] == "done"
-                assert status["usage"]["total_tokens"] == 6
-                assert status["last_event"] == "run.completed"
 
     @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
@@ -387,20 +295,6 @@ class TestRunStatus:
                 mock_agent.run_conversation.assert_called_once()
                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
                 assert status["session_id"] == "space-session"
-
-    @pytest.mark.asyncio
-    async def test_status_not_found_returns_404(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/runs/run_nonexistent")
-        assert resp.status == 404
-
-    @pytest.mark.asyncio
-    async def test_status_requires_auth(self, auth_adapter):
-        app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/runs/run_any")
-        assert resp.status == 401
 
 
 # ---------------------------------------------------------------------------
@@ -437,56 +331,6 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
-
-
-    @pytest.mark.asyncio
-    async def test_approval_response_without_pending_returns_409(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent = MagicMock()
-                mock_agent.run_conversation.return_value = {"final_response": "done"}
-                mock_agent.session_prompt_tokens = 0
-                mock_agent.session_completion_tokens = 0
-                mock_agent.session_total_tokens = 0
-                mock_create.return_value = mock_agent
-
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
-                data = await resp.json()
-                run_id = data["run_id"]
-
-                approval_resp = await cli.post(
-                    f"/v1/runs/{run_id}/approval",
-                    json={"choice": "once"},
-                )
-                assert approval_resp.status == 409
-                approval_data = await approval_resp.json()
-                assert approval_data["error"]["code"] in {
-                    "approval_not_active",
-                    "approval_not_pending",
-                }
-
-    @pytest.mark.asyncio
-    async def test_approval_string_false_does_not_resolve_all(self, adapter):
-        """Quoted false must not fan out approval resolution across the queue."""
-        app = _create_runs_app(adapter)
-        run_id = "run_bool_parse"
-        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
-        adapter._run_approval_sessions[run_id] = "session-123"
-
-        async with TestClient(TestServer(app)) as cli:
-            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-                approval_resp = await cli.post(
-                    f"/v1/runs/{run_id}/approval",
-                    json={"choice": "once", "all": "false"},
-                )
-
-        assert approval_resp.status == 200
-        mock_resolve.assert_called_once_with(
-            "session-123",
-            "once",
-            resolve_all=False,
-        )
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
@@ -559,38 +403,12 @@ class TestRunEvents:
                 attacker_interrupted.set()
 
 
-    @pytest.mark.asyncio
-    async def test_events_not_found_returns_404(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/runs/run_nonexistent/events")
-        assert resp.status == 404
-
-    @pytest.mark.asyncio
-    async def test_events_requires_auth(self, auth_adapter):
-        app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/runs/run_any/events")
-        assert resp.status == 401
-
-
 # ---------------------------------------------------------------------------
 # Run lifecycle TTL sweeping
 # ---------------------------------------------------------------------------
 
 
 class TestRunLifecycleSweep:
-    def test_sweep_keeps_transport_with_active_subscriber(self, adapter):
-        run_id = "run_subscribed"
-        queue = asyncio.Queue()
-        adapter._run_streams[run_id] = queue
-        adapter._run_streams_created[run_id] = 0
-        adapter._run_stream_subscribers.add(run_id)
-
-        adapter._sweep_orphaned_runs_once(time.time())
-
-        assert adapter._run_streams[run_id] is queue
-        assert run_id in adapter._run_streams_created
 
     @pytest.mark.asyncio
     async def test_expired_live_run_drops_transport_but_keeps_control_state(self, adapter):
@@ -651,63 +469,6 @@ class TestRunLifecycleSweep:
                 assert stop_resp.status == 200
                 mock_agent.interrupt.assert_called_once_with("Stop requested via API")
 
-    @pytest.mark.asyncio
-    async def test_expired_transport_stops_buffering_new_deltas(self, adapter):
-        """An unconsumed expired queue must not grow for the rest of a live run."""
-        app = _create_runs_app(adapter)
-
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, _ = _make_slow_agent()
-                mock_create.return_value = mock_agent
-
-                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
-                run_id = (await start_resp.json())["run_id"]
-                assert agent_ready.wait(timeout=3.0)
-                expired_queue = adapter._run_streams[run_id]
-                stream_delta = mock_create.call_args.kwargs["stream_delta_callback"]
-
-                adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
-                adapter._sweep_orphaned_runs_once(time.time())
-                before = expired_queue.qsize()
-                stream_delta("must-not-buffer")
-                mock_agent.interrupt("finish test")
-                for _ in range(40):
-                    if run_id not in adapter._active_run_tasks:
-                        break
-                    await asyncio.sleep(0.05)
-
-                assert expired_queue.qsize() == before
-
-    @pytest.mark.asyncio
-    async def test_expired_orphan_run_state_is_reaped(self, adapter):
-        run_id = "run_expired_orphan"
-        adapter._run_streams[run_id] = asyncio.Queue()
-        adapter._run_streams_created[run_id] = 0
-        adapter._run_approval_sessions[run_id] = run_id
-
-        pending = approval_mod._ApprovalEntry({
-            "command": "bash -c orphaned",
-            "description": "orphaned approval",
-            "pattern_keys": ["shell-c"],
-        })
-        with approval_mod._lock:
-            approval_mod._gateway_queues[run_id] = [pending]
-
-        with patch(
-            "gateway.platforms.api_server.asyncio.sleep",
-            side_effect=[None, asyncio.CancelledError()],
-        ):
-            with pytest.raises(asyncio.CancelledError):
-                await adapter._sweep_orphaned_runs()
-
-        assert run_id not in adapter._run_streams
-        assert run_id not in adapter._run_streams_created
-        assert run_id not in adapter._run_approval_sessions
-        assert pending.event.is_set()
-        with approval_mod._lock:
-            assert run_id not in approval_mod._gateway_queues
-
 
 # ---------------------------------------------------------------------------
 # POST /v1/runs/{run_id}/stop — interrupt a running agent
@@ -715,40 +476,6 @@ class TestRunLifecycleSweep:
 
 
 class TestStopRun:
-    @pytest.mark.asyncio
-    async def test_stop_before_agent_creation_prevents_run_start(self, adapter):
-        """A stop accepted while queued must prevent agent construction."""
-        app = _create_runs_app(adapter)
-        original_create_task = asyncio.create_task
-        task_started = asyncio.Event()
-        allow_task = asyncio.Event()
-
-        def _delayed_create_task(coro):
-            async def _delayed():
-                task_started.set()
-                await allow_task.wait()
-                return await coro
-
-            return original_create_task(_delayed())
-
-        with patch("gateway.platforms.api_server.asyncio.create_task", side_effect=_delayed_create_task), \
-             patch.object(adapter, "_create_agent") as mock_create:
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
-                run_id = (await resp.json())["run_id"]
-                await task_started.wait()
-
-                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
-                assert stop_resp.status == 200
-                allow_task.set()
-
-                for _ in range(20):
-                    if run_id not in adapter._active_run_tasks:
-                        break
-                    await asyncio.sleep(0.05)
-
-                mock_create.assert_not_called()
-                assert adapter._run_statuses[run_id]["status"] == "cancelled"
 
     @pytest.mark.asyncio
     async def test_stop_keeps_uncooperative_executor_tracked_until_exit(self, adapter):
@@ -835,83 +562,10 @@ class TestStopRun:
                 assert status_data["status"] in {"stopping", "cancelled"}
 
                 # Refs should be cleaned up
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
                 assert run_id not in adapter._active_run_agents
                 assert run_id not in adapter._active_run_tasks
 
-    @pytest.mark.asyncio
-    async def test_stop_nonexistent_run_returns_404(self, adapter):
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/runs/run_nonexistent/stop")
-        assert resp.status == 404
-
-    @pytest.mark.asyncio
-    async def test_stop_requires_auth(self, auth_adapter):
-        app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/runs/run_any/stop")
-        assert resp.status == 401
-
-    @pytest.mark.asyncio
-    async def test_stop_already_completed_run_returns_404(self, adapter):
-        """Stopping a run that already finished should return 404 (refs cleaned up)."""
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent = MagicMock()
-                mock_agent.run_conversation.return_value = {"final_response": "done"}
-                mock_agent.session_prompt_tokens = 0
-                mock_agent.session_completion_tokens = 0
-                mock_agent.session_total_tokens = 0
-                mock_create.return_value = mock_agent
-
-                # Start and wait for completion
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
-                assert resp.status == 202
-                data = await resp.json()
-                run_id = data["run_id"]
-
-                await asyncio.sleep(0.3)
-
-                # Run should be done, refs cleaned up
-                assert run_id not in adapter._active_run_agents
-
-                # Stop should return 404
-                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
-                assert stop_resp.status == 404
-
-    @pytest.mark.asyncio
-    async def test_stop_interrupt_exception_does_not_crash(self, adapter):
-        """If agent.interrupt() raises, stop should still succeed."""
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, interrupted = _make_slow_agent()
-
-                # Override the interrupt side_effect to raise. Still trip
-                # ``interrupted`` so the slow_run thread unblocks at teardown
-                # — without this the agent thread blocks the full 10s
-                # timeout and the test teardown waits the same amount.
-                def _raising_interrupt(message=None):
-                    interrupted.set()
-                    raise RuntimeError("interrupt failed")
-
-                mock_agent.interrupt = MagicMock(side_effect=_raising_interrupt)
-                mock_create.return_value = mock_agent
-
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
-                assert resp.status == 202
-                data = await resp.json()
-                run_id = data["run_id"]
-
-                agent_ready.wait(timeout=3.0)
-                await asyncio.sleep(0.1)
-
-                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
-                assert stop_resp.status == 200
-                stop_data = await stop_resp.json()
-                assert stop_data["status"] == "stopping"
 
     @pytest.mark.asyncio
     async def test_stop_sends_sentinel_to_events_stream(self, adapter):

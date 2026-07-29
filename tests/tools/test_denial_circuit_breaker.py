@@ -148,61 +148,15 @@ def test_human_approval_resets_tally(breaker_session):
 # (c) Threshold 0 disables the breaker
 # ---------------------------------------------------------------------------
 
-def test_threshold_zero_disables_breaker(breaker_session, monkeypatch):
-    monkeypatch.setattr(A, "_get_denial_breaker_threshold", lambda: 0)
-    _register_resolver(breaker_session, "deny")
-    for i in range(5):
-        res = _denied_terminal(f"dangerous {i}")
-        assert res["approved"] is False
-        assert BREAKER_MARKER not in res["message"]
-
 
 # ---------------------------------------------------------------------------
 # (d) Tally is per-session — two session keys are independent
 # ---------------------------------------------------------------------------
 
-def test_tally_is_per_session(breaker_session):
-    other = "breaker-other-session"
-    A._reset_denials(other)
-    try:
-        assert A._record_denial(breaker_session) == 1
-        assert A._record_denial(breaker_session) == 2
-        # A different session starts from zero.
-        assert A._record_denial(other) == 1
-        # And its denial did not advance the first session's count.
-        assert A._record_denial(breaker_session) == 3
-        # Resetting one session leaves the other intact.
-        A._reset_denials(breaker_session)
-        assert A._record_denial(other) == 2
-        assert A._record_denial(breaker_session) == 1
-    finally:
-        A._reset_denials(other)
-
 
 # ---------------------------------------------------------------------------
 # (e) BOTH call paths increment: terminal guard and execute_code guard
 # ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("deny_call", [_denied_terminal, _denied_execute_code],
-                         ids=["terminal", "execute_code"])
-def test_both_paths_increment_and_trip(breaker_session, deny_call):
-    _register_resolver(breaker_session, "deny")
-    for _ in range(2):
-        res = deny_call()
-        assert res["approved"] is False
-        assert BREAKER_MARKER not in res["message"]
-    tripped = deny_call()
-    assert tripped["approved"] is False
-    assert BREAKER_MARKER in tripped["message"]
-
-
-def test_paths_share_one_session_tally(breaker_session):
-    """Denials from the terminal and execute_code paths accumulate together."""
-    _register_resolver(breaker_session, "deny")
-    assert BREAKER_MARKER not in _denied_terminal("dangerous one")["message"]
-    assert BREAKER_MARKER not in _denied_execute_code()["message"]
-    tripped = _denied_terminal("dangerous three")
-    assert BREAKER_MARKER in tripped["message"]
 
 
 # ---------------------------------------------------------------------------

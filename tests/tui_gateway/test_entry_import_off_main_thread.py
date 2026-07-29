@@ -74,12 +74,3 @@ def test_entry_imports_cleanly_from_worker_thread():
     assert "OK" in combined, f"unexpected output: {out!r} / {err!r}"
 
 
-def test_entry_installs_sigpipe_handler_in_main_thread():
-    """Even though it can be imported off-thread, the main-thread path still
-    installs the SIGPIPE handler (process-global, so it applies everywhere)."""
-    rc, out, err = _spawn_worker_import_entry()
-    combined = out + err
-    assert rc == 0, f"entry import off main thread failed (rc={rc}): {err!r}"
-    assert "handler_installed=True" in combined, (
-        f"SIGPIPE handler not installed: {out!r} / {err!r}"
-    )

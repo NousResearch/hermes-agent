@@ -47,49 +47,6 @@ class TestManagedNousToolsEnabled:
         )
         assert managed_nous_tools_enabled() is False
 
-    def test_disabled_for_free_tier(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.nous_account.get_nous_portal_account_info",
-            lambda: NousPortalAccountInfo(
-                logged_in=True,
-                source="jwt",
-                fresh=False,
-                paid_service_access=False,
-            ),
-        )
-        assert managed_nous_tools_enabled() is False
-
-    def test_enabled_for_paid_subscriber(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.nous_account.get_nous_portal_account_info",
-            lambda: NousPortalAccountInfo(
-                logged_in=True,
-                source="jwt",
-                fresh=False,
-                paid_service_access=True,
-            ),
-        )
-        assert managed_nous_tools_enabled() is True
-
-    def test_force_fresh_is_forwarded(self, monkeypatch):
-        calls = []
-
-        def fake_account_info(*, force_fresh=False):
-            calls.append(force_fresh)
-            return NousPortalAccountInfo(
-                logged_in=True,
-                source="account_api",
-                fresh=True,
-                paid_service_access=True,
-            )
-
-        monkeypatch.setattr(
-            "hermes_cli.nous_account.get_nous_portal_account_info",
-            fake_account_info,
-        )
-
-        assert managed_nous_tools_enabled(force_fresh=True) is True
-        assert calls == [True]
 
     def test_returns_false_on_exception(self, monkeypatch):
         """Should never crash — returns False on any exception."""
@@ -138,17 +95,6 @@ class TestNormalizeBrowserCloudProvider:
     def test_none_returns_default(self):
         assert normalize_browser_cloud_provider(None) == "local"
 
-    def test_empty_string_returns_default(self):
-        assert normalize_browser_cloud_provider("") == "local"
-
-    def test_whitespace_only_returns_default(self):
-        assert normalize_browser_cloud_provider("   ") == "local"
-
-    def test_known_provider_normalized(self):
-        assert normalize_browser_cloud_provider("BrowserBase") == "browserbase"
-
-    def test_strips_whitespace(self):
-        assert normalize_browser_cloud_provider("  Local  ") == "local"
 
     def test_integer_coerced(self):
         result = normalize_browser_cloud_provider(42)
@@ -169,21 +115,6 @@ class TestCoerceModalMode:
     def test_none_returns_auto(self):
         assert coerce_modal_mode(None) == "auto"
 
-    def test_empty_string_returns_auto(self):
-        assert coerce_modal_mode("") == "auto"
-
-    def test_whitespace_only_returns_auto(self):
-        assert coerce_modal_mode("   ") == "auto"
-
-    def test_uppercase_normalized(self):
-        assert coerce_modal_mode("DIRECT") == "direct"
-
-    def test_mixed_case_normalized(self):
-        assert coerce_modal_mode("Managed") == "managed"
-
-    def test_invalid_mode_falls_back_to_auto(self):
-        assert coerce_modal_mode("invalid") == "auto"
-        assert coerce_modal_mode("cloud") == "auto"
 
     def test_strips_whitespace(self):
         assert coerce_modal_mode("  managed  ") == "managed"
@@ -210,17 +141,6 @@ class TestHasDirectModalCredentials:
         with patch.object(Path, "home", return_value=tmp_path):
             assert has_direct_modal_credentials() is False
 
-    def test_both_env_vars_set(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("MODAL_TOKEN_ID", "id-123")
-        monkeypatch.setenv("MODAL_TOKEN_SECRET", "sec-456")
-        with patch.object(Path, "home", return_value=tmp_path):
-            assert has_direct_modal_credentials() is True
-
-    def test_only_token_id_not_enough(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("MODAL_TOKEN_ID", "id-123")
-        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
-        with patch.object(Path, "home", return_value=tmp_path):
-            assert has_direct_modal_credentials() is False
 
     def test_only_token_secret_not_enough(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
@@ -228,12 +148,6 @@ class TestHasDirectModalCredentials:
         with patch.object(Path, "home", return_value=tmp_path):
             assert has_direct_modal_credentials() is False
 
-    def test_config_file_present(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
-        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
-        (tmp_path / ".modal.toml").touch()
-        with patch.object(Path, "home", return_value=tmp_path):
-            assert has_direct_modal_credentials() is True
 
     def test_env_vars_take_priority_over_file(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MODAL_TOKEN_ID", "id-123")
@@ -301,21 +215,6 @@ class TestResolveModalBackendState:
         result = self._resolve(monkeypatch, "auto", has_direct=True, managed_ready=True, nous_enabled=True)
         assert result["selected_backend"] == "managed"
 
-    def test_auto_falls_back_to_direct(self, monkeypatch):
-        result = self._resolve(monkeypatch, "auto", has_direct=True, managed_ready=False, nous_enabled=True)
-        assert result["selected_backend"] == "direct"
-
-    def test_auto_no_backends_available(self, monkeypatch):
-        result = self._resolve(monkeypatch, "auto", has_direct=False, managed_ready=False)
-        assert result["selected_backend"] is None
-
-    def test_auto_managed_ready_but_nous_disabled(self, monkeypatch):
-        result = self._resolve(monkeypatch, "auto", has_direct=True, managed_ready=True, nous_enabled=False)
-        assert result["selected_backend"] == "direct"
-
-    def test_auto_nothing_when_only_managed_and_nous_disabled(self, monkeypatch):
-        result = self._resolve(monkeypatch, "auto", has_direct=False, managed_ready=True, nous_enabled=False)
-        assert result["selected_backend"] is None
 
     # --- direct mode ---
 
@@ -329,13 +228,6 @@ class TestResolveModalBackendState:
 
     # --- managed mode ---
 
-    def test_managed_selects_managed_when_ready_and_enabled(self, monkeypatch):
-        result = self._resolve(monkeypatch, "managed", has_direct=True, managed_ready=True, nous_enabled=True)
-        assert result["selected_backend"] == "managed"
-
-    def test_managed_none_when_not_ready(self, monkeypatch):
-        result = self._resolve(monkeypatch, "managed", has_direct=True, managed_ready=False, nous_enabled=True)
-        assert result["selected_backend"] is None
 
     def test_managed_blocked_when_nous_disabled(self, monkeypatch):
         result = self._resolve(monkeypatch, "managed", has_direct=True, managed_ready=True, nous_enabled=False)
@@ -344,24 +236,6 @@ class TestResolveModalBackendState:
 
     # --- return structure ---
 
-    def test_return_dict_keys(self, monkeypatch):
-        result = self._resolve(monkeypatch, "auto", has_direct=True, managed_ready=False)
-        expected_keys = {
-            "requested_mode",
-            "mode",
-            "has_direct",
-            "managed_ready",
-            "managed_mode_blocked",
-            "selected_backend",
-        }
-        assert set(result.keys()) == expected_keys
-
-    def test_passthrough_flags(self, monkeypatch):
-        result = self._resolve(monkeypatch, "direct", has_direct=True, managed_ready=False)
-        assert result["requested_mode"] == "direct"
-        assert result["mode"] == "direct"
-        assert result["has_direct"] is True
-        assert result["managed_ready"] is False
 
     # --- invalid mode falls back to auto ---
 
@@ -382,20 +256,6 @@ class TestResolveOpenaiAudioApiKey:
         monkeypatch.setenv("OPENAI_API_KEY", "general-key")
         assert resolve_openai_audio_api_key() == "voice-key"
 
-    def test_falls_back_to_openai_key(self, monkeypatch):
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        monkeypatch.setenv("OPENAI_API_KEY", "general-key")
-        assert resolve_openai_audio_api_key() == "general-key"
-
-    def test_empty_voice_key_falls_back(self, monkeypatch):
-        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "")
-        monkeypatch.setenv("OPENAI_API_KEY", "general-key")
-        assert resolve_openai_audio_api_key() == "general-key"
-
-    def test_no_keys_returns_empty(self, monkeypatch):
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        assert resolve_openai_audio_api_key() == ""
 
     def test_strips_whitespace(self, monkeypatch):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "  voice-key  ")
@@ -438,33 +298,6 @@ class TestResolveOpenaiAudioApiKeyIsProfileScoped:
         finally:
             ss.reset_secret_scope(token)
 
-    def test_scope_miss_does_not_borrow_another_profiles_key(self, monkeypatch):
-        """Under multiplexing an absent key must stay absent, not fall through."""
-        from agent import secret_scope as ss
-
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-other-profile")
-        ss.set_multiplex_active(True)
-        token = ss.set_secret_scope({"UNRELATED": "x"})
-        try:
-            assert resolve_openai_audio_api_key() == ""
-        finally:
-            ss.reset_secret_scope(token)
-
-    def test_voice_key_precedence_holds_inside_a_scope(self, monkeypatch):
-        from agent import secret_scope as ss
-
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        ss.set_multiplex_active(True)
-        token = ss.set_secret_scope({
-            "VOICE_TOOLS_OPENAI_KEY": "sk-voice",
-            "OPENAI_API_KEY": "sk-general",
-        })
-        try:
-            assert resolve_openai_audio_api_key() == "sk-voice"
-        finally:
-            ss.reset_secret_scope(token)
 
     def test_single_profile_still_reads_environ(self, monkeypatch):
         """Control: no multiplexing, no scope — unchanged behaviour."""

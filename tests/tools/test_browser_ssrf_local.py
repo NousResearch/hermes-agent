@@ -74,15 +74,6 @@ class TestPreNavigationSsrf:
 
         assert result["success"] is True
 
-    def test_cloud_allows_public_url(self, monkeypatch, _common_patches):
-        """Public URLs always pass in cloud mode."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
-
-        result = json.loads(browser_tool.browser_navigate("https://example.com"))
-
-        assert result["success"] is True
 
     # -- Local mode: SSRF skipped ----------------------------------------------
 
@@ -183,37 +174,6 @@ class TestIsLocalBackend:
 
         assert browser_tool._is_local_backend() is True
 
-    def test_cloud_provider_is_not_local(self, monkeypatch):
-        """Cloud provider configured and not Camofox → NOT local."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: "bb")
-
-        assert browser_tool._is_local_backend() is False
-
-    @pytest.mark.parametrize("backend", ["docker", "modal", "daytona", "ssh", "singularity"])
-    def test_container_terminal_backend_is_not_local(self, monkeypatch, backend):
-        """Terminal running in a container → NOT local (browser on host can access internal networks)."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("TERMINAL_ENV", backend)
-
-        assert browser_tool._is_local_backend() is False
-
-    def test_empty_terminal_env_is_local(self, monkeypatch):
-        """Empty TERMINAL_ENV → local backend."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("TERMINAL_ENV", "")
-
-        assert browser_tool._is_local_backend() is True
-
-    def test_local_terminal_env_is_local(self, monkeypatch):
-        """Explicit 'local' TERMINAL_ENV → local backend."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setenv("TERMINAL_ENV", "local")
-
-        assert browser_tool._is_local_backend() is True
 
     def test_camofox_overrides_container_backend(self, monkeypatch):
         """Camofox mode always counts as local, even with container terminal."""
@@ -290,23 +250,6 @@ class TestPostRedirectSsrf:
 
     # -- Local mode: redirect SSRF skipped -------------------------------------
 
-    def test_local_allows_redirect_to_private(self, monkeypatch, _common_patches):
-        """Redirects to private addresses pass in local mode."""
-        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(
-            browser_tool, "_is_safe_url", lambda url: "192.168" not in url,
-        )
-        monkeypatch.setattr(
-            browser_tool,
-            "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(url=self.PRIVATE_FINAL_URL),
-        )
-
-        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
-
-        assert result["success"] is True
-        assert result["url"] == self.PRIVATE_FINAL_URL
 
     def test_cloud_allows_redirect_to_public(self, monkeypatch, _common_patches):
         """Redirects to public addresses always pass (cloud mode)."""

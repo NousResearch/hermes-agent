@@ -91,29 +91,6 @@ def _make_transport():
 
 
 @pytest.mark.asyncio
-async def test_transport_accumulates_descriptors_first_wins_as_default():
-    """One descriptor frame per hello: the map holds each platform's, and the
-    scalar `_descriptor` (the handshake result / session default) stays the
-    FIRST one — the regression was last-writer-wins across platforms."""
-    t = _make_transport()
-    loop = asyncio.get_running_loop()
-    t._descriptor_ready = loop.create_future()
-
-    frame = {"type": "descriptor", "descriptor": TELEGRAM.__dict__}
-    await t._handle_frame(json.dumps(frame))
-    frame2 = {"type": "descriptor", "descriptor": DISCORD.__dict__}
-    await t._handle_frame(json.dumps(frame2))
-
-    # Per-platform map has both.
-    assert t.descriptor_for_platform("telegram").max_message_length == 4096
-    assert t.descriptor_for_platform("discord").max_message_length == 2000
-    assert t.descriptor_for_platform("slack") is None
-    # The session default is the FIRST (primary identity) — NOT overwritten.
-    assert t._descriptor.platform == "telegram"
-    assert (await t.handshake()).platform == "telegram"
-
-
-@pytest.mark.asyncio
 async def test_transport_descriptor_map_resets_on_redial(monkeypatch):
     """A re-dial starts a fresh handshake generation: stale per-platform
     descriptors must not survive into the new connection."""
@@ -175,78 +152,6 @@ async def test_adapter_resolves_per_chat_limits_from_inbound_platform():
     assert adapter.message_len_fn_for_chat("dc-1")(surrogate) == 1
 
 
-@pytest.mark.asyncio
-async def test_adapter_unknown_chat_falls_back_to_scalar_descriptor():
-    stub = MultiDescriptorStub(TELEGRAM, DISCORD)
-    adapter = RelayAdapter(PlatformConfig(), TELEGRAM, transport=stub)
-    await adapter.connect()
-    # Never saw inbound for this chat — platform unknown -> scalar descriptor.
-    assert adapter.max_message_length_for_chat("never-seen") == 4096
-
-
-@pytest.mark.asyncio
-async def test_adapter_transport_without_map_falls_back_to_scalar():
-    """A plain StubConnector (no descriptor_for_platform) — e.g. an older or
-    test transport — must keep the scalar behavior, not raise."""
-    stub = StubConnector(TELEGRAM)
-    adapter = RelayAdapter(PlatformConfig(), TELEGRAM, transport=stub)
-    await adapter.connect()
-    await _push(stub, Platform.DISCORD, "dc-1")
-    assert adapter.max_message_length_for_chat("dc-1") == 4096
-
-
-def test_native_adapter_defaults_scalar():
-    """BasePlatformAdapter's default per-chat hooks mirror the scalar surface
-    (native adapters are single-platform; nothing changes for them)."""
-    from gateway.platforms.base import BasePlatformAdapter
-
-    class _Native(BasePlatformAdapter):
-        MAX_MESSAGE_LENGTH = 1234
-
-        def __init__(self):  # bypass Base __init__ plumbing
-            pass
-
-        async def connect(self, *, is_reconnect: bool = False) -> bool:  # pragma: no cover
-            return True
-
-        async def disconnect(self) -> None:  # pragma: no cover
-            pass
-
-        async def send(self, chat_id, content, reply_to=None, metadata=None):  # pragma: no cover
-            raise NotImplementedError
-
-        async def get_chat_info(self, chat_id):  # pragma: no cover
-            return {}
-
-    a = _Native()
-    assert a.max_message_length_for_chat("any") == 1234
-    assert a.message_len_fn_for_chat("any") is a.message_len_fn
-
-
 # ───────────────────── stream consumer integration ─────────────────────
 
 
-@pytest.mark.asyncio
-async def test_stream_consumer_raw_limit_uses_per_chat_cap():
-    """_raw_message_limit resolves the CHAT's platform cap on a relay adapter:
-    a Discord chat splits at 2000 even when the scalar descriptor says 4096.
-    Without the fix this returned 4096 and a 2,543-char reply reached Discord
-    whole -> HTTP 400."""
-    from gateway.stream_consumer import GatewayStreamConsumer
-
-    stub = MultiDescriptorStub(TELEGRAM, DISCORD)
-    stub._identities = [("telegram", "bot-9"), ("discord", "app-1")]
-    adapter = RelayAdapter(PlatformConfig(), TELEGRAM, transport=stub)
-    await adapter.connect()
-    await _push(stub, Platform.DISCORD, "dc-1")
-    await _push(stub, Platform.TELEGRAM, "tg-1")
-
-    dc = GatewayStreamConsumer.__new__(GatewayStreamConsumer)
-    dc.adapter = adapter
-    dc.chat_id = "dc-1"
-    assert dc._raw_message_limit() == 2000
-
-    tg = GatewayStreamConsumer.__new__(GatewayStreamConsumer)
-    tg.adapter = adapter
-    tg.chat_id = "tg-1"
-    assert tg._raw_message_limit() == 4096

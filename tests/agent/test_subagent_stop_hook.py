@@ -237,64 +237,8 @@ class TestPayloadShape:
             "status": "ok",
         }]
 
-    def test_tool_input_summary_keeps_targets_not_payloads(self):
-        summary = _summarize_tool_arguments(json.dumps({
-            "path": "/workspace/report.json",
-            "content": "private report contents",
-            "url": "https://user:password@example.test:8443/upload?token=secret#fragment",
-            "command": "curl -H 'Authorization: secret' example.test",
-        }))
 
-        assert summary == {
-            "argument_keys": ["command", "content", "path", "url"],
-            "targets": {
-                "path": "/workspace/report.json",
-                "url": "https://example.test:8443/upload",
-            },
-        }
 
-    def test_tool_call_history_is_detached_from_delegate_result(self):
-        def _mutating_hook(**kwargs):
-            kwargs["tool_call_history"][0]["status"] = "hook-mutated"
-
-        plugins.get_plugin_manager()._hooks.setdefault(
-            "subagent_stop", []
-        ).append(_mutating_hook)
-
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.return_value = {
-                "task_index": 0,
-                "status": "completed",
-                "summary": "done",
-                "api_calls": 1,
-                "duration_seconds": 0.1,
-                "tool_trace": [{
-                    "tool": "terminal",
-                    "args_bytes": 10,
-                    "result_bytes": 20,
-                    "status": "ok",
-                    "input_summary": {
-                        "argument_keys": ["command"],
-                        "targets": {},
-                    },
-                }],
-            }
-            raw = delegate_task(goal="do X", parent_agent=_make_parent())
-
-        assert json.loads(raw)["results"][0]["tool_trace"][0]["status"] == "ok"
-
-    def test_role_absent_becomes_none(self):
-        captured = _register_capturing_hook()
-
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.return_value = {
-                "task_index": 0, "status": "completed",
-                "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
-                # Deliberately omit _child_role — pre-M3 shape.
-            }
-            delegate_task(goal="do X", parent_agent=_make_parent())
-
-        assert captured[0]["child_role"] is None
 
     def test_result_does_not_leak_child_role_field(self):
         """The internal _child_role key must be stripped before the

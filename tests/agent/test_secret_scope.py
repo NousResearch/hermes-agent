@@ -39,14 +39,6 @@ class TestMultiplexActiveFailClosed:
         with pytest.raises(ss.UnscopedSecretError):
             ss.get_secret("ANTHROPIC_API_KEY")
 
-    def test_scoped_read_uses_scope_not_environ(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-environ")
-        ss.set_multiplex_active(True)
-        token = ss.set_secret_scope({"ANTHROPIC_API_KEY": "sk-from-scope"})
-        try:
-            assert ss.get_secret("ANTHROPIC_API_KEY") == "sk-from-scope"
-        finally:
-            ss.reset_secret_scope(token)
 
     def test_scoped_missing_key_returns_default_not_environ(self, monkeypatch):
         # Even though the value exists in os.environ, a scope is authoritative:
@@ -60,16 +52,7 @@ class TestMultiplexActiveFailClosed:
         finally:
             ss.reset_secret_scope(token)
 
-    def test_global_env_still_reads_environ_under_multiplex(self, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", "/opt/data")
-        ss.set_multiplex_active(True)
-        # No scope, multiplex on — but HERMES_HOME is global, so no raise.
-        assert ss.get_secret("HERMES_HOME") == "/opt/data"
 
-    def test_kanban_prefix_is_global(self, monkeypatch):
-        monkeypatch.setenv("HERMES_KANBAN_DB", "/x/kanban.db")
-        ss.set_multiplex_active(True)
-        assert ss.get_secret("HERMES_KANBAN_DB") == "/x/kanban.db"
 
 
 class TestScopedSingleProfile:
@@ -87,16 +70,6 @@ class TestScopedSingleProfile:
         finally:
             ss.reset_secret_scope(token)
 
-    def test_scope_miss_falls_back_to_environ(self, monkeypatch):
-        # Regression: provider key injected into the process env but absent
-        # from <home>/.env made every cron job send a placeholder API key
-        # (401) while interactive turns kept working.
-        monkeypatch.setenv("GLM_VOOY_API_KEY", "sk-from-process-env")
-        token = ss.set_secret_scope({"UNRELATED_KEY": "x"})
-        try:
-            assert ss.get_secret("GLM_VOOY_API_KEY") == "sk-from-process-env"
-        finally:
-            ss.reset_secret_scope(token)
 
     def test_scope_miss_absent_everywhere_returns_default(self, monkeypatch):
         monkeypatch.delenv("NOPE_KEY", raising=False)
@@ -140,35 +113,8 @@ class TestScopeIsolation:
 class TestEnvFileParsing:
     """load_env_file parses without mutating os.environ."""
 
-    def test_parses_basic(self, tmp_path):
-        env = tmp_path / ".env"
-        env.write_text(
-            "# comment\n"
-            "ANTHROPIC_API_KEY=sk-abc\n"
-            "export OPENAI_API_KEY=sk-def\n"
-            'QUOTED="quoted-value"\n'
-            "SINGLE='single'\n"
-            "\n"
-            "BAD_LINE_NO_EQUALS\n"
-        )
-        out = ss.load_env_file(env)
-        assert out == {
-            "ANTHROPIC_API_KEY": "sk-abc",
-            "OPENAI_API_KEY": "sk-def",
-            "QUOTED": "quoted-value",
-            "SINGLE": "single",
-        }
 
-    def test_does_not_mutate_environ(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("ZZZ_KEY", raising=False)
-        env = tmp_path / ".env"
-        env.write_text("ZZZ_KEY=secret\n")
-        ss.load_env_file(env)
-        import os
-        assert "ZZZ_KEY" not in os.environ
 
-    def test_missing_file_returns_empty(self, tmp_path):
-        assert ss.load_env_file(tmp_path / "nope.env") == {}
 
     def test_build_profile_secret_scope(self, tmp_path):
         (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-profile\n")

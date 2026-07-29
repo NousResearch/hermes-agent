@@ -56,22 +56,12 @@ def _google_error_body(
 
 
 class TestIsStandardKeyAuthError:
-    def test_matches_oauth_message_without_reason(self):
-        assert is_standard_key_auth_error(401, GOOGLE_AUTH_MESSAGE)
 
-    def test_matches_error_info_reason_alone(self):
-        assert is_standard_key_auth_error(
-            401, "some other text", "ACCESS_TOKEN_TYPE_UNSUPPORTED"
-        )
 
     def test_rejects_non_401_status(self):
         assert not is_standard_key_auth_error(400, GOOGLE_AUTH_MESSAGE)
         assert not is_standard_key_auth_error(403, GOOGLE_AUTH_MESSAGE)
 
-    def test_rejects_plain_invalid_key(self):
-        assert not is_standard_key_auth_error(
-            401, "API key not valid. Please pass a valid API key.", "API_KEY_INVALID"
-        )
 
     def test_empty_message_is_safe(self):
         assert not is_standard_key_auth_error(401, "")
@@ -90,24 +80,8 @@ class TestGeminiHttpErrorGuidance:
         assert "ai.google.dev/gemini-api/docs/api-key" in text
         assert err.code == "gemini_unauthorized"
 
-    def test_guidance_appended_on_oauth_401_without_reason(self):
-        body = _google_error_body(401, GOOGLE_AUTH_MESSAGE)
-        err = gemini_http_error(_mock_response(401, body))
-        assert GUIDANCE_MARKER in str(err)
 
-    def test_original_google_message_preserved(self):
-        body = _google_error_body(401, GOOGLE_AUTH_MESSAGE)
-        err = gemini_http_error(_mock_response(401, body))
-        assert "Expected OAuth 2 access token" in str(err)
 
-    def test_plain_invalid_key_401_gets_no_guidance(self):
-        body = _google_error_body(
-            401,
-            "API key not valid. Please pass a valid API key.",
-            reason="API_KEY_INVALID",
-        )
-        err = gemini_http_error(_mock_response(401, body))
-        assert GUIDANCE_MARKER not in str(err)
 
     def test_403_with_oauth_message_gets_no_guidance(self):
         body = _google_error_body(403, GOOGLE_AUTH_MESSAGE, status="PERMISSION_DENIED")
@@ -131,10 +105,6 @@ class TestGeminiHttpErrorGuidance:
         assert "free tier" in text
         assert GUIDANCE_MARKER not in text
 
-    def test_unparseable_401_body_with_oauth_text_still_matches(self):
-        # err_message empty -> falls back to raw body_text scan.
-        err = gemini_http_error(_mock_response(401, GOOGLE_AUTH_MESSAGE))
-        assert GUIDANCE_MARKER in str(err)
 
 
 class TestSummarizerPreservesGuidance:

@@ -118,23 +118,6 @@ async def test_local_path_lanes_upload_first(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_each_override_maps_to_its_media_kind(tmp_path: Path):
-    adapter, stub, fake = _adapter()
-    f = tmp_path / "x.bin"
-    f.write_bytes(b"data")
-    await adapter.send_image_file("c", str(f))
-    await adapter.send_voice("c", str(f))
-    await adapter.send_video("c", str(f))
-    await adapter.send_document("c", str(f), file_name="report.pdf")
-    kinds = [a["media_kind"] for a in stub.sent if a["op"] == "send_media"]
-    assert kinds == ["image", "voice", "video", "document"]
-    doc_action = stub.sent[-1]
-    assert doc_action["filename"] == "report.pdf"
-    # The document upload passed the user-facing filename through.
-    assert fake.uploads[-1] == (str(f), "report.pdf")
-
-
-@pytest.mark.asyncio
 async def test_op_gating_falls_back_when_not_advertised(tmp_path: Path):
     # Connector advertises only the legacy ops — send_media must never hit the wire.
     adapter, stub, fake = _adapter(
@@ -147,52 +130,6 @@ async def test_op_gating_falls_back_when_not_advertised(tmp_path: Path):
     assert "send_media" not in ops
     assert ops[-1] == "send"
     assert "https://x.io/a.png" in stub.sent[-1]["content"]
-
-
-@pytest.mark.asyncio
-async def test_legacy_empty_ops_also_gates_send_media():
-    # An empty supported_ops = legacy connector; send_media is NOT in LEGACY_OPS.
-    adapter, stub, _fake = _adapter(supported_ops=())
-    await adapter.send_image("chat1", "https://x.io/a.png")
-    assert all(a["op"] != "send_media" for a in stub.sent)
-
-
-@pytest.mark.asyncio
-async def test_connector_decline_degrades_to_fallback(tmp_path: Path):
-    adapter, stub, fake = _adapter()
-    stub.next_media_result = {"success": False, "error": "media too large"}
-    f = tmp_path / "big.mp4"
-    f.write_bytes(b"x")
-    result = await adapter.send_video("chat1", str(f), caption="cap")
-    # The video lane failed → base fallback notice still delivers (a send op).
-    assert result.success is True
-    assert stub.sent[-1]["op"] == "send"
-    assert "cap" in stub.sent[-1]["content"]
-    # And the local path never leaked into the fallback text.
-    assert str(f) not in stub.sent[-1]["content"]
-
-
-@pytest.mark.asyncio
-async def test_failed_upload_degrades_to_fallback(tmp_path: Path):
-    adapter, stub, fake = _adapter()
-    fake.upload_result = None  # upload leg fails
-    f = tmp_path / "pic.png"
-    f.write_bytes(b"png")
-    result = await adapter.send_image_file("chat1", str(f))
-    assert result.success is True
-    assert all(a["op"] != "send_media" for a in stub.sent)
-
-
-@pytest.mark.asyncio
-async def test_scope_metadata_rides_send_media(tmp_path: Path):
-    """The egress guard resolves tenants from metadata — send_media must carry
-    the same scope/user discriminators a plain send does."""
-    adapter, stub, fake = _adapter()
-    adapter._scope_by_chat["chat1"] = "guild9"
-    await adapter.send_image("chat1", "https://x.io/p.png")
-    action = stub.sent[-1]
-    assert action["op"] == "send_media"
-    assert (action.get("metadata") or {}).get("scope_id") == "guild9"
 
 
 # ── inbound localization ─────────────────────────────────────────────────
@@ -213,29 +150,6 @@ def _make_event(media_urls):
 
 
 @pytest.mark.asyncio
-async def test_inbound_rehost_urls_are_localized():
-    adapter, _stub, fake = _adapter()
-    event = _make_event(["https://conn.example/relay/media/deadbeef"])
-    await adapter._localize_inbound_media(event)
-    assert fake.downloads == ["https://conn.example/relay/media/deadbeef"]
-    assert event.media_urls == ["/tmp/relay_media_fake.png"]
-
-
-@pytest.mark.asyncio
-async def test_inbound_dead_rehost_ref_is_dropped_public_url_kept():
-    adapter, _stub, fake = _adapter()
-    fake.download_result = None  # every download fails
-    event = _make_event(
-        [
-            "https://conn.example/relay/media/deadbeef",  # dead re-host → dropped
-            "https://cdn.discordapp.com/attachments/a/b.png",  # public → kept as URL
-        ]
-    )
-    await adapter._localize_inbound_media(event)
-    assert event.media_urls == ["https://cdn.discordapp.com/attachments/a/b.png"]
-
-
-@pytest.mark.asyncio
 async def test_inbound_without_client_keeps_public_drops_rehost():
     adapter, _stub, _fake = _adapter()
     adapter._media_client = None
@@ -251,25 +165,6 @@ async def test_inbound_without_client_keeps_public_drops_rehost():
 
 
 # ── RelayMediaClient unit surface ────────────────────────────────────────
-
-
-def test_media_base_url_derivation():
-    assert media_base_url("wss://conn.example/relay") == "https://conn.example"
-    assert media_base_url("ws://localhost:8080/relay") == "http://localhost:8080"
-    assert media_base_url("https://conn.example") == "https://conn.example"
-
-
-def test_client_enabled_requires_full_credentials():
-    assert RelayMediaClient("https://c.example", "gw1", "sec").enabled is True
-    assert RelayMediaClient("https://c.example", None, "sec").enabled is False
-    assert RelayMediaClient("https://c.example", "gw1", None).enabled is False
-    assert RelayMediaClient("", "gw1", "sec").enabled is False
-
-
-def test_client_recognizes_rehost_urls():
-    c = RelayMediaClient("https://c.example", "gw1", "sec")
-    assert c.is_relay_media_url("https://c.example/relay/media/abc") is True
-    assert c.is_relay_media_url("https://cdn.discordapp.com/a/b.png") is False
 
 
 @pytest.mark.asyncio

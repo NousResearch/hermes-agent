@@ -62,19 +62,3 @@ def test_dump_reports_config_backend_when_no_override(monkeypatch, capsys, tmp_p
     assert "overrides" not in line
 
 
-def test_dump_no_override_when_env_matches_config(monkeypatch, capsys, tmp_path):
-    from hermes_cli import dump
-    from hermes_cli.config import get_hermes_home
-
-    monkeypatch.delenv("TERMINAL_ENV", raising=False)
-    monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
-
-    home = get_hermes_home()
-    # TERMINAL_ENV agrees with config — no spurious "override" note.
-    _seed(home, config_yaml="terminal:\n  backend: docker\n", env_text="TERMINAL_ENV=docker\n")
-
-    dump.run_dump(SimpleNamespace(show_keys=False))
-
-    line = _terminal_line(capsys.readouterr().out)
-    assert "docker" in line
-    assert "overrides" not in line

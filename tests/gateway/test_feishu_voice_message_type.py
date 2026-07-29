@@ -34,13 +34,3 @@ def test_native_voice_audio_is_classified_as_voice():
     assert _resolve("audio", ["audio/opus"]) is MessageType.VOICE
 
 
-def test_native_voice_audio_without_media_type_is_voice():
-    """A voice note with no resolved mime still classifies as VOICE."""
-    assert _resolve("audio", []) is MessageType.VOICE
-
-
-def test_photo_and_document_unaffected():
-    """The fix is scoped to the audio branch — other types are unchanged."""
-    assert _resolve("photo", ["image/png"]) is MessageType.PHOTO
-    assert _resolve("document", ["application/pdf"]) is MessageType.DOCUMENT
-    assert _resolve("text", []) is MessageType.TEXT

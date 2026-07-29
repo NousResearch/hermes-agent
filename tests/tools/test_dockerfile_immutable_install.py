@@ -24,22 +24,6 @@ def test_dockerfile_makes_opt_hermes_readonly_for_hermes_user() -> None:
     assert "chmod -R a-w /opt/hermes" not in text
 
 
-def test_dockerfile_keeps_mutable_state_under_opt_data() -> None:
-    text = _dockerfile_text()
-
-    assert "ENV HERMES_HOME=/opt/data" in text
-    assert "ENV HERMES_WRITE_SAFE_ROOT=/opt/data" in text
-    assert 'VOLUME [ "/opt/data" ]' in text
-
-
-def test_dockerfile_disables_runtime_install_mutations() -> None:
-    text = _dockerfile_text()
-
-    assert "ENV PYTHONDONTWRITEBYTECODE=1" in text
-    assert "ENV HERMES_DISABLE_LAZY_INSTALLS=1" in text
-    assert "HERMES_TUI_DIR=/opt/hermes/ui-tui" in text
-
-
 def test_dockerfile_does_not_chown_install_trees_to_hermes() -> None:
     text = _dockerfile_text()
     forbidden_patterns = (

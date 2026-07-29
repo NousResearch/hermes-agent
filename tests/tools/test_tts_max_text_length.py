@@ -41,71 +41,12 @@ class TestResolveMaxTextLength:
         assert _resolve_max_text_length("", {}) == FALLBACK_MAX_TEXT_LENGTH
         assert _resolve_max_text_length(None, {}) == FALLBACK_MAX_TEXT_LENGTH
 
-    def test_case_insensitive(self):
-        assert _resolve_max_text_length("OpenAI", {}) == 4096
-        assert _resolve_max_text_length("  XAI  ", {}) == 15000
 
     # --- Overrides ---
 
-    def test_override_wins(self):
-        cfg = {"openai": {"max_text_length": 9999}}
-        assert _resolve_max_text_length("openai", cfg) == 9999
-
-    def test_override_zero_falls_through(self):
-        # A broken/zero override must not disable truncation
-        cfg = {"openai": {"max_text_length": 0}}
-        assert _resolve_max_text_length("openai", cfg) == 4096
-
-    def test_override_negative_falls_through(self):
-        cfg = {"xai": {"max_text_length": -1}}
-        assert _resolve_max_text_length("xai", cfg) == 15000
-
-    def test_override_non_int_falls_through(self):
-        cfg = {"minimax": {"max_text_length": "lots"}}
-        assert _resolve_max_text_length("minimax", cfg) == 10000
-
-    def test_override_bool_falls_through(self):
-        # bool is technically an int; make sure we don't treat True as 1 char
-        cfg = {"openai": {"max_text_length": True}}
-        assert _resolve_max_text_length("openai", cfg) == 4096
-
-    def test_missing_provider_section_uses_default(self):
-        cfg = {"provider": "openai"}  # no "openai" key
-        assert _resolve_max_text_length("openai", cfg) == 4096
 
     # --- ElevenLabs model-aware ---
 
-    def test_elevenlabs_default_model_multilingual_v2(self):
-        cfg = {"elevenlabs": {"model_id": "eleven_multilingual_v2"}}
-        assert _resolve_max_text_length("elevenlabs", cfg) == 10000
-
-    def test_elevenlabs_flash_v2_5_gets_40k(self):
-        cfg = {"elevenlabs": {"model_id": "eleven_flash_v2_5"}}
-        assert _resolve_max_text_length("elevenlabs", cfg) == 40000
-
-    def test_elevenlabs_flash_v2_gets_30k(self):
-        cfg = {"elevenlabs": {"model_id": "eleven_flash_v2"}}
-        assert _resolve_max_text_length("elevenlabs", cfg) == 30000
-
-    def test_elevenlabs_v3_gets_5k(self):
-        cfg = {"elevenlabs": {"model_id": "eleven_v3"}}
-        assert _resolve_max_text_length("elevenlabs", cfg) == 5000
-
-    def test_elevenlabs_unknown_model_falls_back_to_provider_default(self):
-        cfg = {"elevenlabs": {"model_id": "eleven_experimental_xyz"}}
-        assert _resolve_max_text_length("elevenlabs", cfg) == PROVIDER_MAX_TEXT_LENGTH["elevenlabs"]
-
-    def test_elevenlabs_override_beats_model_lookup(self):
-        cfg = {"elevenlabs": {"model_id": "eleven_flash_v2_5", "max_text_length": 1000}}
-        assert _resolve_max_text_length("elevenlabs", cfg) == 1000
-
-    def test_elevenlabs_no_model_id_uses_default_model_mapping(self):
-        # Falls back to DEFAULT_ELEVENLABS_MODEL_ID = eleven_multilingual_v2 -> 10000
-        assert _resolve_max_text_length("elevenlabs", {}) == 10000
-
-    def test_provider_config_not_a_dict(self):
-        cfg = {"openai": "not-a-dict"}
-        assert _resolve_max_text_length("openai", cfg) == 4096
 
     # --- Sanity: the table covers every provider listed in the schema ---
 

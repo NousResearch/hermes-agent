@@ -241,6 +241,19 @@ Recent installs write both `hermes` and `hermes-acp` launchers into
 older installs. As a manual fallback, configure Buzz's agent command as
 `hermes` with args `["acp"]`.
 
+#### Model picker
+
+Buzz Desktop (v0.5.1+) renders Hermes' full model menu in the agent's runtime
+settings. The list comes from Hermes itself over ACP: it shows every model
+from providers you have authenticated in Hermes (the same inventory behind
+`hermes model` and the `/model` command), so a model missing from the menu
+means its provider has no credentials configured on the Hermes side.
+
+Entry IDs take the form `provider:model` (e.g. `openrouter:z-ai/glm-5.1`), or
+`custom:<name>:<model>` for custom OpenAI-compatible endpoints defined in
+`config.yaml`. Picking a model applies to that agent's session; it does not
+change your Hermes-wide default — use `hermes model` for that.
+
 #### Keep Buzz agents owner-only
 
 Buzz creates every agent with **Who can talk to this agent** set to `Owner only`.

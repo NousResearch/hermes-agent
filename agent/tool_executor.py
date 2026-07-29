@@ -1979,9 +1979,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     return
             break
 
-        if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):
-            time.sleep(agent.tool_delay)
-
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if finalize and num_tools_seq > 0:

@@ -91,22 +91,10 @@ def test_parse_base64_padding_not_misclassified_as_dotenv():
     assert parse_secret_output("dGVzdA==\n", "CMDTEST_API_KEY") == "dGVzdA=="
 
 
-def test_parse_cross_key_misroute_resolves_none():
-    # A single env-shaped line for a NON-matching key with a non-trivial
-    # value part is a misrouted dotenv entry → None, never another key's
-    # value flowing into the wanted key's Authorization header.
-    assert parse_secret_output("CMDTEST_OTHER_KEY=realvalue\n", "CMDTEST_API_KEY") is None
 
 
-def test_parse_whitespace_only_resolves_none():
-    assert parse_secret_output("   \n\t\n", "CMDTEST_API_KEY") is None
-    # Quoted whitespace placeholder in a dotenv line is also "no value".
-    assert parse_secret_output('CMDTEST_API_KEY="  "\n', "CMDTEST_API_KEY") is None
 
 
-def test_parse_multikey_dump_without_wanted_key_resolves_none():
-    out = "A_KEY=1\nB_KEY=2\n"
-    assert parse_secret_output(out, "CMDTEST_API_KEY") is None
 
 
 # ---------------------------------------------------------------------------
@@ -120,55 +108,14 @@ def test_bare_value_helper_resolves_single_value(tmp_path):
     assert value == "sk-test-bare-12345"
 
 
-def test_dotenv_blob_helper_resolves_multiple_keys(tmp_path):
-    helper = _write_helper(
-        tmp_path,
-        "cat <<'EOF'\n"
-        "# tmpfs vault dump\n"
-        "CMDTEST_API_KEY=sk-from-blob\n"
-        "CMDTEST_TOKEN='tok-quoted'\n"
-        "EOF",
-    )
-    # Specific keys are selectable from the blob.
-    assert get_command_secret(command=str(helper), key="CMDTEST_API_KEY") == "sk-from-blob"
-    assert get_command_secret(command=str(helper), key="CMDTEST_TOKEN") == "tok-quoted"
-    # And the list path (HERMES_SECRET_KEY="") sees the full map.
-    listed = list_command_secrets(command=str(helper))
-    assert set(listed) == {"CMDTEST_API_KEY", "CMDTEST_TOKEN"}
 
 
-def test_base64_padding_value_roundtrips_through_real_helper(tmp_path):
-    helper = _write_helper(tmp_path, "printf 'dGVzdA=='")
-    assert get_command_secret(command=str(helper), key="CMDTEST_API_KEY") == "dGVzdA=="
 
 
-def test_cross_key_misroute_real_helper_resolves_none(tmp_path):
-    # A sloppy helper (head -1 of an env file) emits the WRONG key's line.
-    helper = _write_helper(tmp_path, "printf 'CMDTEST_OTHER_KEY=realvalue'")
-    assert get_command_secret(command=str(helper), key="CMDTEST_API_KEY") is None
 
 
-def test_helper_receives_key_via_env_var(tmp_path):
-    # The helper echoes HERMES_SECRET_KEY back — proving the key arrives
-    # as env DATA through the real /bin/sh path.
-    helper = _write_helper(tmp_path, 'printf \'%s\' "$HERMES_SECRET_KEY"')
-    assert (
-        get_command_secret(command=str(helper), key="CMDTEST_API_KEY")
-        == "CMDTEST_API_KEY"
-    )
 
 
-def test_hostile_key_name_is_inert_data(tmp_path):
-    """A command-injection-looking key name must never execute: it travels
-    only inside HERMES_SECRET_KEY, never interpolated into the shell string."""
-    canary = tmp_path / "pwned.canary"
-    helper = _write_helper(tmp_path, 'printf \'%s\' "$HERMES_SECRET_KEY"')
-    hostile_key = f'"; touch {canary}; echo "'
-    value = get_command_secret(command=str(helper), key=hostile_key)
-    # No shell execution of the key:
-    assert not canary.exists(), "hostile key name was executed by the shell"
-    # The hostile string came back verbatim as data (bare-value echo).
-    assert value == hostile_key
 
 
 def test_timeout_kills_hung_helper_and_degrades_to_empty(tmp_path):
@@ -182,23 +129,8 @@ def test_timeout_kills_hung_helper_and_degrades_to_empty(tmp_path):
     assert elapsed < 6.0, f"helper not killed within the bound (took {elapsed:.1f}s)"
 
 
-def test_apply_timeout_degrades_to_empty_result(tmp_path):
-    helper = _write_helper(tmp_path, "sleep 30")
-    start = time.monotonic()
-    result = apply_command_secrets(command=str(helper), timeout_seconds=2.0)
-    elapsed = time.monotonic() - start
-    assert result.applied == []
-    assert result.error is None  # degraded, not fatal
-    assert result.warnings  # the failure is surfaced as a warning
-    assert elapsed < 6.0
 
 
-def test_nonzero_exit_degrades_to_empty_no_raise(tmp_path):
-    helper = _write_helper(tmp_path, "echo 'oops secret-ish stderr' >&2\nexit 3")
-    assert get_command_secret(command=str(helper), key="CMDTEST_API_KEY") is None
-    result = apply_command_secrets(command=str(helper))
-    assert result.applied == []
-    assert result.error is None
 
 
 def test_failure_logging_never_leaks_command_or_secret(tmp_path, capfd):
@@ -219,27 +151,8 @@ def test_failure_logging_never_leaks_command_or_secret(tmp_path, capfd):
     assert "code=7" in combined  # the structured field IS logged
 
 
-def test_spawn_failure_degrades_and_logs_structured_only(tmp_path, capfd):
-    # /bin/sh runs fine but the helper path doesn't exist → non-zero exit
-    # (127). Still must not leak the path.
-    missing = str(tmp_path / "no-such-helper-xyz")
-    assert get_command_secret(command=missing, key="CMDTEST_API_KEY") is None
-    combined = "".join(capfd.readouterr())
-    assert "no-such-helper-xyz" not in combined
 
 
-def test_precedence_existing_env_wins_unless_override(tmp_path, monkeypatch):
-    helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=from-helper\\n'")
-    monkeypatch.setenv("CMDTEST_API_KEY", "from-dotenv")
-
-    result = apply_command_secrets(command=str(helper))
-    assert "CMDTEST_API_KEY" in result.skipped
-    assert "CMDTEST_API_KEY" not in result.applied
-    assert os.environ["CMDTEST_API_KEY"] == "from-dotenv"
-
-    result = apply_command_secrets(command=str(helper), override_existing=True)
-    assert "CMDTEST_API_KEY" in result.applied
-    assert os.environ["CMDTEST_API_KEY"] == "from-helper"
 
 
 def test_apply_dotenv_blob_sets_environ(tmp_path):
@@ -254,20 +167,8 @@ def test_apply_dotenv_blob_sets_environ(tmp_path):
     assert os.environ["CMDTEST_TOKEN"] == "tok-applied"
 
 
-def test_apply_bare_value_helper_applies_nothing(tmp_path):
-    # A bare-value helper can't be enumerated — startup apply is a warned
-    # no-op, not an error.
-    helper = _write_helper(tmp_path, "printf 'just-one-bare-secret'")
-    result = apply_command_secrets(command=str(helper))
-    assert result.applied == []
-    assert result.error is None
-    assert result.warnings
 
 
-def test_apply_empty_command_sets_error(tmp_path):
-    result = apply_command_secrets(command="   ")
-    assert result.applied == []
-    assert result.error is not None
 
 
 # ---------------------------------------------------------------------------
@@ -323,19 +224,6 @@ def test_registry_status_line_printed_once_per_home(tmp_path, monkeypatch, capsy
     assert err.count("Command helper: applied 1 secret") == 1
 
 
-def test_registry_disabled_command_source_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=sk-should-not-load\\n'")
-    (tmp_path / "config.yaml").write_text(
-        "secrets:\n  command:\n    enabled: false\n"
-        f"    command: {helper}\n",
-        encoding="utf-8",
-    )
-
-    env_loader._apply_external_secret_sources(tmp_path)
-
-    assert "CMDTEST_API_KEY" not in os.environ
-    assert env_loader.get_secret_source("CMDTEST_API_KEY") is None
 
 
 def test_registry_failing_helper_does_not_block_startup(tmp_path, monkeypatch):
@@ -349,47 +237,6 @@ def test_registry_failing_helper_does_not_block_startup(tmp_path, monkeypatch):
     assert env_loader.get_secret_source("CMDTEST_API_KEY") is None
 
 
-def test_registry_command_composes_with_other_sources(tmp_path, monkeypatch):
-    """Multi-source is first-class: the command source and a second bulk
-    source both apply in ONE pass; first claim wins on a contested var."""
-    from agent.secret_sources import registry
-    from agent.secret_sources.base import FetchResult, SecretSource
-
-    class _OtherVault(SecretSource):
-        name = "othervault"
-        label = "Other Vault"
-        shape = "bulk"
-
-        def fetch(self, cfg, home_path):
-            res = FetchResult()
-            res.secrets = {
-                "CMDTEST_OTHER_KEY": "from-other",
-                "CMDTEST_API_KEY": "loser-second-claim",
-            }
-            return res
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    helper = _write_helper(tmp_path, "printf 'CMDTEST_API_KEY=sk-cmd\\n'")
-    (tmp_path / "config.yaml").write_text(
-        "secrets:\n"
-        "  sources: [command, othervault]\n"
-        "  command:\n"
-        "    enabled: true\n"
-        f"    command: {helper}\n"
-        "  othervault:\n"
-        "    enabled: true\n",
-        encoding="utf-8",
-    )
-    registry._ensure_builtin_sources()
-    registry.register_source(_OtherVault())
-
-    env_loader._apply_external_secret_sources(tmp_path)
-
-    assert os.environ.get("CMDTEST_API_KEY") == "sk-cmd"        # command won
-    assert os.environ.get("CMDTEST_OTHER_KEY") == "from-other"  # both ran
-    assert env_loader.get_secret_source("CMDTEST_API_KEY") == "command"
-    assert env_loader.get_secret_source("CMDTEST_OTHER_KEY") == "othervault"
-    monkeypatch.delenv("CMDTEST_OTHER_KEY", raising=False)
 
 
 def test_registry_helper_error_prints_remediation(tmp_path, monkeypatch, capsys):

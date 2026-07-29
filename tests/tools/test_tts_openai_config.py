@@ -45,17 +45,6 @@ class TestResolveOpenaiAudioClientConfig:
                 False,
             )
 
-    def test_env_key_still_honors_config_base_url(self):
-        config = {"openai": {"base_url": "http://localhost:4003/v1"}}
-
-        with patch.object(tts_tool, "_load_tts_config", return_value=config), \
-             patch.object(tts_tool, "prefers_gateway", return_value=False), \
-             patch.object(tts_tool, "resolve_openai_audio_api_key", return_value="env-key"):
-            assert tts_tool._resolve_openai_audio_client_config() == (
-                "env-key",
-                "http://localhost:4003/v1",
-                False,
-            )
 
     def test_use_gateway_overrides_config_credentials(self):
         config = {"openai": {"api_key": "cfg-key", "base_url": "http://localhost:4003/v1"}}

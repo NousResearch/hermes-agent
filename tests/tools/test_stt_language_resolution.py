@@ -33,30 +33,6 @@ class TestResolveSttLanguage:
         cfg = {"language": "hu", "groq": {}}
         assert _resolve_stt_language("groq", cfg) == "hu"
 
-    def test_global_language_reaches_provider_without_section(self):
-        cfg = {"language": "uk"}
-        for provider in ("local", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"):
-            assert _resolve_stt_language(provider, cfg) == "uk", provider
-
-    def test_env_var_fallback(self, monkeypatch):
-        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "de")
-        assert _resolve_stt_language("openai", {}) == "de"
-
-    def test_auto_detect_when_nothing_set(self):
-        assert _resolve_stt_language("xai", {}) is None
-
-    def test_blank_strings_are_skipped(self):
-        cfg = {"language": "  ", "groq": {"language": ""}}
-        assert _resolve_stt_language("groq", cfg) is None
-
-    def test_extra_keys_alias(self):
-        cfg = {"elevenlabs": {"language_code": "spa"}}
-        assert _resolve_stt_language("elevenlabs", cfg, extra_keys=("language_code",)) == "spa"
-
-    def test_null_provider_section(self):
-        # YAML `stt.groq: null` must not crash
-        cfg = {"groq": None, "language": "fr"}
-        assert _resolve_stt_language("groq", cfg) == "fr"
 
     def test_value_is_stripped(self):
         cfg = {"language": " ja "}

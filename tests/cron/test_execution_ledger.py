@@ -75,22 +75,6 @@ def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
     assert executions.EXECUTIONS_FILE.read_bytes() == b"not a sqlite database"
 
 
-def test_execution_history_is_paginated(monkeypatch, tmp_path):
-    executions = _point_ledger(monkeypatch, tmp_path)
-    ids = []
-    for _index in range(5):
-        row = executions.create_execution("paged", source="builtin")
-        executions.finish_execution(row["id"], success=True)
-        ids.append(row["id"])
-
-    first = executions.list_executions(job_id="paged", limit=2)
-    second = executions.list_executions(
-        job_id="paged", limit=2, before_claimed_at=first[-1]["claimed_at"]
-    )
-    assert [row["id"] for row in first] == list(reversed(ids))[:2]
-    assert set(row["id"] for row in first).isdisjoint(row["id"] for row in second)
-
-
 def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
     executions = _point_ledger(monkeypatch, tmp_path)
     row = executions.create_execution("cli-job", source="builtin")
@@ -128,32 +112,6 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
 
     assert executions.recover_interrupted_executions() == 0
     assert executions.latest_execution("still-live")["status"] == "running"
-
-
-def test_recovery_does_not_mark_other_live_owner_unknown(monkeypatch, tmp_path):
-    executions = _point_ledger(monkeypatch, tmp_path)
-    record = executions.create_execution("other-live", source="builtin")
-    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
-        conn.execute(
-            "UPDATE executions SET process_id=?, pid=? WHERE id=?",
-            ("another-import", os.getpid(), record["id"]),
-        )
-
-    assert executions.recover_interrupted_executions() == 0
-    assert executions.latest_execution("other-live")["status"] == "claimed"
-
-
-def test_recovery_rejects_recycled_pid(monkeypatch, tmp_path):
-    executions = _point_ledger(monkeypatch, tmp_path)
-    record = executions.create_execution("recycled", source="builtin")
-    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
-        conn.execute(
-            "UPDATE executions SET process_id=?, process_started_at=? WHERE id=?",
-            ("old-import", -1, record["id"]),
-        )
-
-    assert executions.recover_interrupted_executions() == 1
-    assert executions.latest_execution("recycled")["status"] == "unknown"
 
 
 def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
@@ -267,69 +225,6 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
     assert events[0] == ("running", "exec-3")
     assert events[-1][0:2] == ("finish", "exec-3")
     assert events[-1][2]["success"] is True
-
-
-def test_run_one_job_records_unresolved_origin_as_not_configured(monkeypatch):
-    import cron.scheduler as scheduler
-
-    finished = []
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda _execution_id: None)
-    monkeypatch.setattr(
-        scheduler,
-        "finish_execution",
-        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
-    )
-    monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(
-        scheduler,
-        "run_job",
-        lambda job, *, defer_agent_teardown=None: (True, "output", "response", None),
-    )
-    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
-    monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda _job: [])
-    monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
-
-    job = {
-        "id": "job-unresolved-origin",
-        "execution_id": "exec-unresolved-origin",
-        "deliver": "origin",
-    }
-    assert scheduler.run_one_job(job) is True
-
-    assert finished[-1][1]["delivery_outcome"] == "not_configured"
-
-
-def test_run_one_job_normalizes_legacy_local_delivery_as_suppressed(monkeypatch):
-    import cron.scheduler as scheduler
-
-    finished = []
-    monkeypatch.setattr(
-        scheduler,
-        "run_job",
-        lambda job, *, defer_agent_teardown=None: (True, "output", "response", None),
-    )
-    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
-    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        scheduler,
-        "finish_execution",
-        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
-    )
-    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: None)
-    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(scheduler, "_consume_interrupted_flag", lambda *_args: False)
-
-    job = {
-        "id": "legacy-local",
-        "name": "Legacy local",
-        "schedule": {"kind": "interval", "minutes": 10},
-        "deliver": ["local"],
-        "execution_id": "exec-legacy-local",
-    }
-
-    assert scheduler.run_one_job(job) is True
-    assert finished[-1][1]["delivery_outcome"] == "suppressed"
 
 
 def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):

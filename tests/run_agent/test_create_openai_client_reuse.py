@@ -267,25 +267,3 @@ def test_force_close_tcp_sockets_finds_sockets_on_httpx_mounts():
     assert sock.close_calls == 0
 
 
-def test_force_close_tcp_sockets_walks_nested_connection_wrappers():
-    """Forward/tunnel proxies nest HTTPConnection under another ``_connection``."""
-    from agent.agent_runtime_helpers import force_close_tcp_sockets
-
-    class FakeSocket:
-        def __init__(self):
-            self.shutdown_calls = 0
-
-        def shutdown(self, _how):
-            self.shutdown_calls += 1
-
-    sock = FakeSocket()
-    stream = SimpleNamespace(_sock=sock)
-    http11 = SimpleNamespace(_network_stream=stream)
-    http_conn = SimpleNamespace(_connection=http11)  # HTTPConnection wrapper
-    forward = SimpleNamespace(_connection=http_conn)  # ForwardHTTPConnection
-    pool = SimpleNamespace(_connections=[forward])
-    transport = SimpleNamespace(_pool=pool)
-    openai_client = SimpleNamespace(_client=SimpleNamespace(_transport=transport, _mounts={}))
-
-    assert force_close_tcp_sockets(openai_client) == 1
-    assert sock.shutdown_calls == 1

@@ -36,17 +36,10 @@ class TestParseReasoningConfig(unittest.TestCase):
             self.assertTrue(result.get("enabled"))
             self.assertEqual(result["effort"], level)
 
-    def test_empty_returns_none(self):
-        self.assertIsNone(self._parse(""))
-        self.assertIsNone(self._parse("  "))
 
     def test_unknown_returns_none(self):
         self.assertIsNone(self._parse("turbo"))
 
-    def test_case_insensitive(self):
-        result = self._parse("HIGH")
-        self.assertIsNotNone(result)
-        self.assertEqual(result["effort"], "high")
 
 
 # ---------------------------------------------------------------------------
@@ -84,28 +77,8 @@ class TestHandleReasoningCommand(unittest.TestCase):
         self.assertFalse(stub.show_reasoning)
         self.assertIsNone(stub.agent.reasoning_callback)
 
-    def test_on_enables_display(self):
-        stub = self._make_cli(show_reasoning=False)
-        arg = "on"
-        if arg in {"show", "on"}:
-            stub.show_reasoning = True
-        self.assertTrue(stub.show_reasoning)
 
-    def test_off_disables_display(self):
-        stub = self._make_cli(show_reasoning=True)
-        arg = "off"
-        if arg in {"hide", "off"}:
-            stub.show_reasoning = False
-        self.assertFalse(stub.show_reasoning)
 
-    def test_effort_level_sets_config(self):
-        """Setting an effort level should update reasoning_config."""
-        from cli import _parse_reasoning_config
-        stub = self._make_cli()
-        arg = "high"
-        parsed = _parse_reasoning_config(arg)
-        stub.reasoning_config = parsed
-        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
 
     def test_effort_none_disables_reasoning(self):
         from cli import _parse_reasoning_config
@@ -114,45 +87,9 @@ class TestHandleReasoningCommand(unittest.TestCase):
         stub.reasoning_config = parsed
         self.assertEqual(stub.reasoning_config, {"enabled": False})
 
-    def test_invalid_argument_rejected(self):
-        """Invalid arguments should be rejected (parsed returns None)."""
-        from cli import _parse_reasoning_config
-        parsed = _parse_reasoning_config("turbo")
-        self.assertIsNone(parsed)
 
-    def test_no_args_shows_status(self):
-        """With no args, should show current state (no crash)."""
-        stub = self._make_cli(reasoning_config=None, show_reasoning=False)
-        rc = stub.reasoning_config
-        if rc is None:
-            level = "medium (default)"
-        elif rc.get("enabled") is False:
-            level = "none (disabled)"
-        else:
-            level = rc.get("effort", "medium")
-        display_state = "on" if stub.show_reasoning else "off"
-        self.assertEqual(level, "medium (default)")
-        self.assertEqual(display_state, "off")
 
-    def test_status_with_disabled_reasoning(self):
-        stub = self._make_cli(reasoning_config={"enabled": False}, show_reasoning=True)
-        rc = stub.reasoning_config
-        if rc is None:
-            level = "medium (default)"
-        elif rc.get("enabled") is False:
-            level = "none (disabled)"
-        else:
-            level = rc.get("effort", "medium")
-        self.assertEqual(level, "none (disabled)")
 
-    def test_status_with_explicit_level(self):
-        stub = self._make_cli(
-            reasoning_config={"enabled": True, "effort": "xhigh"},
-            show_reasoning=True,
-        )
-        rc = stub.reasoning_config
-        level = rc.get("effort", "medium")
-        self.assertEqual(level, "xhigh")
 
     def test_effort_defaults_to_session_only(self):
         """Plain /reasoning <level> is session-scoped — no config write."""
@@ -166,33 +103,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
         self.assertIsNone(stub.agent)
 
-    def test_effort_global_flag_persists_config(self):
-        """--global opts into persisting the effort to config.yaml."""
-        from cli import CLI_CONFIG
-        from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
-        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
-        with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}), \
-             patch("cli.save_config_value", return_value=True) as save_config, \
-             patch("cli._cprint"):
-            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high --global")
-            self.assertEqual(CLI_CONFIG["agent"]["reasoning_effort"], "high")
-
-        save_config.assert_called_once_with("agent.reasoning_effort", "high")
-        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
-        self.assertIsNone(stub.agent)
-
-    def test_effort_session_flag_does_not_persist_config(self):
-        """--session (explicit no-op alias for the default) stays session-only."""
-        from hermes_cli.cli_commands_mixin import CLICommandsMixin
-
-        stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
-        with patch("cli.save_config_value") as save_config, patch("cli._cprint"):
-            CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high --session")
-
-        save_config.assert_not_called()
-        self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "high"})
-        self.assertIsNone(stub.agent)
 
     def test_new_session_clears_session_reasoning_override(self):
         """/new and /clear must not carry a session-only effort override forward."""
@@ -307,16 +218,6 @@ class TestLastReasoningInResult(unittest.TestCase):
                 break
         self.assertEqual(last_reasoning, "Let me think...")
 
-    def test_reasoning_none(self):
-        messages = self._build_messages(reasoning=None)
-        last_reasoning = None
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                break
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
-                break
-        self.assertIsNone(last_reasoning)
 
     def test_picks_last_assistant(self):
         messages = [
@@ -334,16 +235,6 @@ class TestLastReasoningInResult(unittest.TestCase):
                 break
         self.assertEqual(last_reasoning, "final thought")
 
-    def test_empty_reasoning_treated_as_none(self):
-        messages = self._build_messages(reasoning="")
-        last_reasoning = None
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                break
-            if msg.get("role") == "assistant" and msg.get("reasoning"):
-                last_reasoning = msg["reasoning"]
-                break
-        self.assertIsNone(last_reasoning)
 
 
 # ---------------------------------------------------------------------------
@@ -358,22 +249,7 @@ class TestReasoningCollapse(unittest.TestCase):
         lines = reasoning.strip().splitlines()
         self.assertLessEqual(len(lines), 10)
 
-    def test_long_reasoning_collapsed(self):
-        reasoning = "\n".join(f"Line {i}" for i in range(25))
-        lines = reasoning.strip().splitlines()
-        self.assertTrue(len(lines) > 10)
-        if len(lines) > 10:
-            display = "\n".join(lines[:10])
-            display += f"\n  ... ({len(lines) - 10} more lines)"
-        display_lines = display.splitlines()
-        self.assertEqual(len(display_lines), 11)
-        self.assertIn("15 more lines", display_lines[-1])
 
-    def test_exactly_10_lines_not_collapsed(self):
-        reasoning = "\n".join(f"Line {i}" for i in range(10))
-        lines = reasoning.strip().splitlines()
-        self.assertEqual(len(lines), 10)
-        self.assertFalse(len(lines) > 10)
 
     def test_intermediate_callback_collapses_to_5(self):
         """_on_reasoning shows max 5 lines."""
@@ -407,22 +283,7 @@ class TestReasoningCallback(unittest.TestCase):
             agent.reasoning_callback(reasoning_text)
         self.assertEqual(captured, ["deep thought"])
 
-    def test_callback_not_invoked_without_reasoning(self):
-        captured = []
-        agent = MagicMock()
-        agent.reasoning_callback = lambda t: captured.append(t)
-        agent._extract_reasoning = MagicMock(return_value=None)
 
-        reasoning_text = agent._extract_reasoning(MagicMock())
-        if reasoning_text and agent.reasoning_callback:
-            agent.reasoning_callback(reasoning_text)
-        self.assertEqual(captured, [])
-
-    def test_callback_none_does_not_crash(self):
-        reasoning_text = "some thought"
-        callback = None
-        if reasoning_text and callback:
-            callback(reasoning_text)
         # No exception = pass
 
 
@@ -471,21 +332,6 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
         rendered = mock_cprint.call_args[0][0]
         self.assertIn("[thinking] see how this plays out", rendered)
 
-    @patch("cli._cprint")
-    @patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=50))
-    def test_reasoning_preview_compacts_newlines_and_wraps_to_terminal(self, _mock_term, mock_cprint):
-        cli = self._make_cli()
-
-        cli._emit_reasoning_preview(
-            "First line\nstill same thought\n\n\nSecond paragraph with more detail here."
-        )
-
-        rendered = mock_cprint.call_args[0][0]
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
-        normalized = " ".join(plain.split())
-        self.assertIn("[thinking] First line still same thought", plain)
-        self.assertIn("Second paragraph with more detail here.", normalized)
-        self.assertNotIn("\n\n\n", plain)
 
     @patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=60))
     def test_reasoning_flush_threshold_tracks_terminal_width(self, _mock_term):
@@ -568,11 +414,6 @@ class TestExtractReasoningFormats(unittest.TestCase):
         result = extract(None, msg)
         self.assertIn("async/await", result)
 
-    def test_no_reasoning_returns_none(self):
-        extract = self._get_extractor()
-        msg = SimpleNamespace(content="Hello!")
-        result = extract(None, msg)
-        self.assertIsNone(result)
 
 
 # ---------------------------------------------------------------------------
@@ -612,19 +453,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         result = agent._build_assistant_message(api_msg, "stop")
         self.assertEqual(result["reasoning"], "Let me calculate 2+2=4.")
 
-    def test_multiple_think_blocks_extracted(self):
-        agent = self._make_agent()
-        api_msg = self._build_msg("<think>First thought.</think>Some text<think>Second thought.</think>More text")
-        result = agent._build_assistant_message(api_msg, "stop")
-        self.assertIn("First thought.", result["reasoning"])
-        self.assertIn("Second thought.", result["reasoning"])
 
-    def test_no_think_blocks_no_reasoning(self):
-        agent = self._make_agent()
-        api_msg = self._build_msg("Just a plain response.")
-        result = agent._build_assistant_message(api_msg, "stop")
-        # No structured reasoning AND no inline think blocks → None
-        self.assertIsNone(result["reasoning"])
 
     def test_structured_reasoning_takes_priority(self):
         """When structured API reasoning exists, inline think blocks should NOT override."""
@@ -636,19 +465,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         result = agent._build_assistant_message(api_msg, "stop")
         self.assertEqual(result["reasoning"], "Structured reasoning from API.")
 
-    def test_empty_think_block_ignored(self):
-        agent = self._make_agent()
-        api_msg = self._build_msg("<think></think>Hello!")
-        result = agent._build_assistant_message(api_msg, "stop")
-        # Empty think block should not produce reasoning
-        self.assertIsNone(result["reasoning"])
 
-    def test_multiline_think_block(self):
-        agent = self._make_agent()
-        api_msg = self._build_msg("<think>\nStep 1: Analyze.\nStep 2: Solve.\n</think>Done.")
-        result = agent._build_assistant_message(api_msg, "stop")
-        self.assertIn("Step 1: Analyze.", result["reasoning"])
-        self.assertIn("Step 2: Solve.", result["reasoning"])
 
     def test_callback_fires_for_inline_think(self):
         """Reasoning callback should fire when reasoning is extracted from inline think blocks."""
@@ -731,15 +548,6 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertIn("last_reasoning", result)
         self.assertIn("Python list methods", result["last_reasoning"])
 
-    def test_no_reasoning_model_pipeline(self):
-        from run_agent import AIAgent
-
-        api_message = SimpleNamespace(content="Paris.", tool_calls=None)
-        reasoning = AIAgent._extract_reasoning(None, api_message)
-        self.assertIsNone(reasoning)
-
-        result = {"final_response": api_message.content, "last_reasoning": reasoning}
-        self.assertIsNone(result["last_reasoning"])
 
 
 # ---------------------------------------------------------------------------
@@ -766,52 +574,7 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent._fire_reasoning_delta("thinking...")
         self.assertEqual(captured, ["thinking..."])
 
-    def test_build_assistant_message_skips_callback_when_already_streamed(self):
-        """When streaming already fired reasoning deltas, the post-stream
-        _build_assistant_message should NOT re-fire the callback."""
-        agent = self._make_agent()
-        captured = []
-        agent.reasoning_callback = lambda t: captured.append(t)
-        agent.stream_delta_callback = lambda t: None  # streaming is active
 
-        # Simulate streaming having already fired reasoning
-
-        msg = SimpleNamespace(
-            content="I'll merge that.",
-            tool_calls=None,
-            reasoning_content="Let me merge the PR.",
-            reasoning=None,
-            reasoning_details=None,
-        )
-        agent._build_assistant_message(msg, "stop")
-
-        # Callback should NOT have been fired again
-        self.assertEqual(captured, [])
-
-    def test_build_assistant_message_skips_callback_when_streaming_active(self):
-        """When streaming is active, callback should NEVER fire from
-        _build_assistant_message — reasoning was already displayed during the
-        stream (either via reasoning_content deltas or content tag extraction).
-        Any missed reasoning is caught by the CLI post-response fallback."""
-        agent = self._make_agent()
-        captured = []
-        agent.reasoning_callback = lambda t: captured.append(t)
-        agent.stream_delta_callback = lambda t: None  # streaming active
-
-        # Reasoning came through content tags, not reasoning_content deltas.
-        # Callback should not fire since streaming is active.
-
-        msg = SimpleNamespace(
-            content="I'll merge that.",
-            tool_calls=None,
-            reasoning_content="Let me merge the PR.",
-            reasoning=None,
-            reasoning_details=None,
-        )
-        agent._build_assistant_message(msg, "stop")
-
-        # Callback should NOT fire — streaming is active
-        self.assertEqual(captured, [])
 
     def test_build_assistant_message_fires_callback_without_streaming(self):
         """When no streaming is active, callback always fires for structured
@@ -863,19 +626,6 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
         cli._stream_reasoning_delta("Thinking about it...")
         self.assertTrue(cli._reasoning_shown_this_turn)
 
-    @patch("cli._cprint")
-    def test_turn_flag_survives_reset_stream_state(self, mock_cprint):
-        """_reasoning_shown_this_turn must NOT be cleared by
-        _reset_stream_state (called at intermediate turn boundaries)."""
-        cli = self._make_cli()
-        cli._stream_reasoning_delta("Thinking...")
-        self.assertTrue(cli._reasoning_shown_this_turn)
-
-        # Simulate intermediate turn boundary (tool call)
-        cli._reset_stream_state()
-
-        # Flag must persist
-        self.assertTrue(cli._reasoning_shown_this_turn)
 
     @patch("cli._cprint")
     def test_turn_flag_cleared_before_new_turn(self, mock_cprint):

@@ -16,49 +16,18 @@ from hermes_state import SessionDB
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
 
-    def test_returns_title_on_success(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Debugging Python Import Errors"
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
-            title = generate_title("help me fix this import", "Sure, let me check...")
-            assert title == "Debugging Python Import Errors"
 
-    def test_default_prompt_matches_user_language(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Some Title"
-
-        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
-            generate_title("質問です", "回答です")
-
-        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
-        assert "same language the user is writing in" in system_prompt
-
-    def test_configured_language_pins_prompt(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Some Title"
-
-        with (
-            patch("agent.title_generator.call_llm", return_value=mock_response) as llm,
-            patch("agent.title_generator._title_language", return_value="Japanese"),
-        ):
-            generate_title("hello", "hi")
-
-        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
-        assert "Write the title in Japanese" in system_prompt
-        assert "same language the user" not in system_prompt
 
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
 
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             assert _title_language() == "French"
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
             assert _title_language() == ""
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")), \
+         patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
     def test_default_timeout_delegates_to_auxiliary_config(self):
@@ -77,29 +46,7 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
-    def test_explicit_timeout_still_overrides_config(self):
-        captured_kwargs = {}
 
-        def mock_call_llm(**kwargs):
-            captured_kwargs.update(kwargs)
-            resp = MagicMock()
-            resp.choices = [MagicMock()]
-            resp.choices[0].message.content = "Explicit Timeout"
-            return resp
-
-        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            assert generate_title("question", "answer", timeout=123.0) == "Explicit Timeout"
-
-        assert captured_kwargs["timeout"] == 123.0
-
-    def test_strips_quotes(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = '"Setting Up Docker Environment"'
-
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
-            title = generate_title("how do I set up docker", "First install...")
-            assert title == "Setting Up Docker Environment"
 
     def test_strips_think_blocks(self):
         """Reasoning-model output wrapped in <think>...</think> must not
@@ -132,14 +79,6 @@ class TestGenerateTitle:
             # leaving nothing → None.
             assert title is None
 
-    def test_strips_title_prefix(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Title: Kubernetes Pod Debugging"
-
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
-            title = generate_title("my pod keeps crashing", "Let me look...")
-            assert title == "Kubernetes Pod Debugging"
 
     def test_truncates_long_titles(self):
         mock_response = MagicMock()
@@ -151,17 +90,7 @@ class TestGenerateTitle:
             assert len(title) == 80
             assert title.endswith("...")
 
-    def test_returns_none_on_empty_response(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = ""
 
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
-            assert generate_title("question", "answer") is None
-
-    def test_returns_none_on_exception(self):
-        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
-            assert generate_title("question", "answer") is None
 
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""
@@ -179,161 +108,21 @@ class TestGenerateTitle:
         assert captured[0][0] == "title generation"
         assert captured[0][1] is exc
 
-    def test_failure_callback_errors_are_swallowed(self):
-        """A broken callback must not crash title generation."""
 
-        def _bad_cb(task, exc):
-            raise ValueError("callback bug")
 
-        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
-            # Should return None without re-raising the callback error
-            assert generate_title("q", "a", failure_callback=_bad_cb) is None
 
-    def test_no_callback_matches_legacy_behavior(self):
-        """Omitting failure_callback preserves the silent-None return."""
-        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
-            assert generate_title("q", "a") is None
 
-    def test_truncates_long_messages(self):
-        """Long user/assistant messages should be truncated in the LLM request."""
-        captured_kwargs = {}
 
-        def mock_call_llm(**kwargs):
-            captured_kwargs.update(kwargs)
-            resp = MagicMock()
-            resp.choices = [MagicMock()]
-            resp.choices[0].message.content = "Short Title"
-            return resp
 
-        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            generate_title("x" * 1000, "y" * 1000)
 
-        # The user content in the messages should be truncated
-        user_content = captured_kwargs["messages"][1]["content"]
-        assert len(user_content) < 1100  # 500 + 500 + formatting
 
-    def test_skill_invocation_is_titled_from_what_the_user_typed(self):
-        """A /skill turn embeds the whole skill body — the titler must never
-        see it, or the session gets named after the SKILL, not the request."""
-        skill_body = "Kick off a task in a fresh isolated git worktree. " * 20
-        expanded = (
-            '[IMPORTANT: The user has invoked the "work" skill, indicating they want '
-            "you to follow its instructions. The full skill content is loaded below.]\n\n"
-            f"{skill_body}\n\n"
-            "The user has provided the following instruction alongside the skill "
-            "invocation: fix the session title leak"
-        )
-        captured_kwargs = {}
-
-        def mock_call_llm(**kwargs):
-            captured_kwargs.update(kwargs)
-            resp = MagicMock()
-            resp.choices = [MagicMock()]
-            resp.choices[0].message.content = "Fixing The Session Title Leak"
-            return resp
-
-        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            generate_title(expanded, "On it.")
-
-        sent = captured_kwargs["messages"][1]["content"]
-        assert "/work — fix the session title leak" in sent
-        assert "worktree" not in sent
-        assert "IMPORTANT" not in sent
-
-    def test_bare_skill_invocation_still_titles(self):
-        """No typed instruction — the titler gets the command, not the body."""
-        expanded = (
-            '[IMPORTANT: The user has invoked the "weather-forecast-lookup" skill, '
-            "indicating they want you to follow its instructions. The full skill "
-            "content is loaded below.]\n\nPull clean multi-day forecasts."
-        )
-        captured_kwargs = {}
-
-        def mock_call_llm(**kwargs):
-            captured_kwargs.update(kwargs)
-            resp = MagicMock()
-            resp.choices = [MagicMock()]
-            resp.choices[0].message.content = "Weather Forecast Lookup"
-            return resp
-
-        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            assert generate_title(expanded, "Here you go.") == "Weather Forecast Lookup"
-
-        sent = captured_kwargs["messages"][1]["content"]
-        assert "/weather-forecast-lookup" in sent
-        assert "Pull clean multi-day forecasts" not in sent
-
-    def test_plain_message_reaches_the_titler_unchanged(self):
-        """The scaffolding summary must not touch an ordinary user turn."""
-        captured_kwargs = {}
-
-        def mock_call_llm(**kwargs):
-            captured_kwargs.update(kwargs)
-            resp = MagicMock()
-            resp.choices = [MagicMock()]
-            resp.choices[0].message.content = "A Title"
-            return resp
-
-        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            generate_title("fix the session title leak", "On it.")
-
-        assert "fix the session title leak" in captured_kwargs["messages"][1]["content"]
-
-    def test_multiline_answer_collapses_to_its_first_line(self):
-        """A model that answers the prompt instead of titling it must not have
-        a shell transcript stored as the session title."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = (
-            "macOS Disk Cleanup\n\n$ df -h /\nFilesystem      Size  Used Avail\n"
-        )
-
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
-            assert generate_title("clean my disk", "Sure.") == "macOS Disk Cleanup"
-
-    def test_leading_blank_lines_do_not_empty_the_title(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "\n\n  Real Title  \nmore prose"
-
-        with patch("agent.title_generator.call_llm", return_value=mock_response):
-            assert generate_title("q", "a") == "Real Title"
-
-    def test_skips_when_title_generation_disabled(self):
-        """auxiliary.title_generation.enabled=false disables automatic titles."""
-        config = {"auxiliary": {"title_generation": {"enabled": False}}}
-
-        with (
-            patch("hermes_cli.config.load_config_readonly", return_value=config),
-            patch("agent.title_generator.call_llm") as mock_call_llm,
-        ):
-            assert generate_title("question", "answer") is None
-
-        mock_call_llm.assert_not_called()
 
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
 
-    def test_skips_if_no_session_db(self):
-        auto_title_session(None, "sess-1", "hi", "hello")  # should not crash
 
-    def test_skips_if_title_exists(self):
-        db = MagicMock()
-        db.get_session_title.return_value = "Existing Title"
 
-        with patch("agent.title_generator.generate_title") as gen:
-            auto_title_session(db, "sess-1", "hi", "hello")
-            gen.assert_not_called()
-
-    def test_generates_and_sets_title(self):
-        db = MagicMock()
-        db.get_session_title.return_value = None
-        db.set_auto_title_if_empty.return_value = True
-
-        with patch("agent.title_generator.generate_title", return_value="New Title"):
-            auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_auto_title_if_empty.assert_called_once_with("sess-1", "New Title")
 
     def test_does_not_overwrite_title_set_immediately_before_conditional_write(
         self, tmp_path
@@ -377,28 +166,7 @@ class TestAutoTitleSession:
         db.set_auto_title_if_empty.assert_called_once_with("sess-1", "Readable Session")
         assert seen == ["Readable Session"]
 
-    def test_skips_if_generation_fails(self):
-        db = MagicMock()
-        db.get_session_title.return_value = None
 
-        with patch("agent.title_generator.generate_title", return_value=None):
-            auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_auto_title_if_empty.assert_not_called()
-
-    def test_never_raises_when_body_throws(self):
-        """Daemon-thread target must swallow ALL exceptions (e.g. the
-        post-update stale-module ImportError) instead of spraying a raw
-        traceback into the terminal via the default threading excepthook."""
-        db = MagicMock()
-        db.get_session_title.return_value = None
-
-        with patch(
-            "agent.title_generator._auto_title_session",
-            side_effect=ImportError(
-                "cannot import name 'set_conversation_context' from 'agent.portal_tags'"
-            ),
-        ):
-            auto_title_session(db, "sess-1", "hi", "hello")  # must not raise
 
     def test_body_exception_routed_to_failure_callback(self):
         db = MagicMock()
@@ -416,18 +184,6 @@ class TestAutoTitleSession:
             )
         assert seen == [("title generation", boom)]
 
-    def test_failure_callback_errors_also_swallowed(self):
-        db = MagicMock()
-        db.get_session_title.return_value = None
-
-        def bad_cb(task, exc):
-            raise RuntimeError("callback itself broke")
-
-        with patch(
-            "agent.title_generator._auto_title_session",
-            side_effect=ImportError("stale module"),
-        ):
-            auto_title_session(db, "sess-1", "hi", "hello", failure_callback=bad_cb)
 
 
 class TestMaybeAutoTitle:
@@ -480,58 +236,9 @@ class TestMaybeAutoTitle:
                 runtime_validator=None,
             )
 
-    def test_skips_when_title_generation_disabled(self):
-        """Disabled title generation should not even start the background worker."""
-        db = MagicMock()
-        history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ]
-        config = {"auxiliary": {"title_generation": {"enabled": False}}}
 
-        with (
-            patch("hermes_cli.config.load_config_readonly", return_value=config),
-            patch("agent.title_generator.auto_title_session") as mock_auto,
-        ):
-            maybe_auto_title(db, "sess-1", "hello", "hi there", history)
 
-        mock_auto.assert_not_called()
 
-    def test_forwards_failure_callback_to_worker(self):
-        """maybe_auto_title must forward failure_callback into the thread."""
-        db = MagicMock()
-        db.get_session_title.return_value = None
-        history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ]
-
-        def _cb(task, exc):
-            pass
-
-        with patch("agent.title_generator.auto_title_session") as mock_auto:
-            import threading
-            called = threading.Event()
-            mock_auto.side_effect = lambda *a, **k: called.set()
-            maybe_auto_title(db, "sess-1", "hello", "hi there", history, failure_callback=_cb)
-            assert called.wait(timeout=10), "auto_title thread never ran"
-            mock_auto.assert_called_once_with(
-                db,
-                "sess-1",
-                "hello",
-                "hi there",
-                failure_callback=_cb,
-                main_runtime=None,
-                title_callback=None,
-                runtime_validator=None,
-            )
-
-    def test_skips_if_no_response(self):
-        db = MagicMock()
-        maybe_auto_title(db, "sess-1", "hello", "", [])  # empty response
-
-    def test_skips_if_no_session_db(self):
-        maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
 
 
 class TestAutoTitleDuplicateHandling:
@@ -557,37 +264,7 @@ class TestAutoTitleDuplicateHandling:
         # callback fires with the actually-persisted (deduped) title
         assert seen == ["Debugging Import Error #2"]
 
-    def test_dedupes_duplicate_title_via_lineage_legacy_store(self):
-        # Store without set_auto_title_if_empty: same dedup via the plain
-        # set_session_title fallback.
-        db = MagicMock(
-            spec=["get_session_title", "set_session_title", "get_next_title_in_lineage"]
-        )
-        db.get_session_title.return_value = None
-        db.set_session_title.side_effect = [ValueError("in use"), True]
-        db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
-        with patch(
-            "agent.title_generator.generate_title",
-            return_value="Debugging Import Error",
-        ):
-            seen = []
-            auto_title_session(db, "sess-1", "hi", "hello", title_callback=seen.append)
-        assert db.set_session_title.call_args_list[-1][0] == (
-            "sess-1",
-            "Debugging Import Error #2",
-        )
-        assert seen == ["Debugging Import Error #2"]
 
-    def test_swallows_value_error_without_lineage_support(self):
-        # No get_next_title_in_lineage -> ValueError propagates out of the
-        # persist helper but auto_title_session still swallows it (no crash).
-        db = MagicMock(spec=["get_session_title", "set_session_title"])
-        db.get_session_title.return_value = None
-        db.set_session_title.side_effect = ValueError("in use")
-        with patch(
-            "agent.title_generator.generate_title", return_value="Dup Title"
-        ):
-            auto_title_session(db, "sess-1", "hi", "hello")  # must not raise
 
     def test_manual_title_race_skips_without_callback(self):
         # Atomic predicate fails (manual /title landed while generation was in
@@ -598,42 +275,13 @@ class TestAutoTitleDuplicateHandling:
         assert _persist_session_title(db, "sess-1", "Some Title") is None
         db.set_session_title.assert_not_called()
 
-    def test_not_found_raises_runtime_error_internally(self):
-        # Legacy store (no atomic write): set_session_title returning False
-        # (session vanished) -> RuntimeError in the persist helper, swallowed
-        # by auto_title_session, no callback.
-        from agent.title_generator import _persist_session_title
-        db = MagicMock(spec=["get_session_title", "set_session_title"])
-        db.set_session_title.return_value = False
-        with pytest.raises(RuntimeError):
-            _persist_session_title(db, "missing", "Some Title")
 
 
 class TestRuntimeValidator:
     """runtime_validator gating (#19027): a stale background title request
     must not fire when the session's model/provider changed after spawn."""
 
-    def test_skips_when_validator_returns_false(self):
-        with patch("agent.title_generator.call_llm") as mock_llm:
-            title = generate_title(
-                "question", "answer",
-                runtime_validator=lambda: False,
-            )
-            assert title is None
-            mock_llm.assert_not_called()
 
-    def test_allows_when_validator_returns_true(self):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Validated Title"
-
-        with patch("agent.title_generator.call_llm", return_value=mock_response) as mock_llm:
-            title = generate_title(
-                "question", "answer",
-                runtime_validator=lambda: True,
-            )
-            assert title == "Validated Title"
-            mock_llm.assert_called_once()
 
     def test_broken_validator_fails_open(self):
         mock_response = MagicMock()

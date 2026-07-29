@@ -48,6 +48,8 @@ import time
 from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.secret_scope import get_secret
+
 # Heavy google-cloud + googleapiclient imports are deferred to first
 # adapter use. Importing them eagerly here added ~110ms wall and ~33MB
 # RSS to *every* CLI invocation (the plugin loader imports this module at
@@ -736,28 +738,48 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # end-of-turn by on_processing_complete via patch-to-empty so
         # they don't sit in the chat forever as "Hermes is thinking…".
         self._orphan_typing_messages: Dict[str, List[str]] = {}
-        # FlowControl knobs (env-configurable).
+        # Snapshot profile-scoped settings while adapter construction still
+        # runs inside _profile_runtime_scope. Pub/Sub invokes callbacks from
+        # its own threads, where the ContextVar secret scope is intentionally
+        # unavailable; callbacks must use these instance values rather than
+        # consulting process-global environment state.
+        extra = self.config.extra
         try:
-            self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
+            self._max_messages = int(
+                extra.get("max_messages")
+                or get_secret("GOOGLE_CHAT_MAX_MESSAGES", "1")
+            )
         except (ValueError, TypeError):
             self._max_messages = 1
         try:
-            self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
+            self._max_bytes = int(
+                extra.get("max_bytes")
+                or get_secret("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024))
+            )
         except (ValueError, TypeError):
             self._max_bytes = 16 * 1024 * 1024
+        self._bootstrap_spaces = str(
+            extra.get("bootstrap_spaces")
+            or get_secret("GOOGLE_CHAT_BOOTSTRAP_SPACES", "")
+            or ""
+        ).strip()
+        self._debug_raw = bool(
+            extra.get("debug_raw")
+            or get_secret("GOOGLE_CHAT_DEBUG_RAW")
+        )
         self._http_events_url = (
-            self.config.extra.get("http_events_url")
-            or os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL", "")
+            extra.get("http_events_url")
+            or get_secret("GOOGLE_CHAT_HTTP_EVENTS_URL", "")
             or ""
         ).strip()
         self._http_events_audience = (
-            self.config.extra.get("http_events_audience")
-            or os.getenv("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", "")
+            extra.get("http_events_audience")
+            or get_secret("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", "")
             or self._http_events_url
         ).strip()
         self._http_events_service_account_email = (
-            self.config.extra.get("http_events_service_account_email")
-            or os.getenv("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL", "")
+            extra.get("http_events_service_account_email")
+            or get_secret("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL", "")
             or ""
         ).strip().lower()
 
@@ -779,7 +801,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """
         sa_path = (
             self.config.extra.get("service_account_json")
-            or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            or get_secret("GOOGLE_APPLICATION_CREDENTIALS")
         )
         if sa_path:
             # Inline JSON (rare, but supported).
@@ -952,7 +974,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if self.config.home_channel and self.config.home_channel.chat_id:
             candidate_spaces.append(self.config.home_channel.chat_id)
         # Env-configured allowed spaces (comma-separated). Optional.
-        extra_spaces = os.getenv("GOOGLE_CHAT_BOOTSTRAP_SPACES", "").strip()
+        extra_spaces = self._bootstrap_spaces
         if extra_spaces:
             candidate_spaces.extend(
                 s.strip() for s in extra_spaces.split(",") if s.strip()
@@ -1399,7 +1421,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             list(envelope.keys()),
             ce_type,
         )
-        if os.getenv("GOOGLE_CHAT_DEBUG_RAW"):
+        if self._debug_raw:
             # Dangerous flag: contains message text and sender email. Route
             # through the global redaction filter and gate at DEBUG level so
             # default log configurations never surface it. Operators must
@@ -3351,14 +3373,14 @@ def _check_for_registry() -> bool:
     if not check_google_chat_requirements():
         return False
     project = (
-        os.getenv("GOOGLE_CHAT_PROJECT_ID")
-        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        get_secret("GOOGLE_CHAT_PROJECT_ID")
+        or get_secret("GOOGLE_CLOUD_PROJECT")
     )
     subscription = (
-        os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME")
-        or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
+        get_secret("GOOGLE_CHAT_SUBSCRIPTION_NAME")
+        or get_secret("GOOGLE_CHAT_SUBSCRIPTION")
     )
-    http_events_url = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    http_events_url = get_secret("GOOGLE_CHAT_HTTP_EVENTS_URL")
     return bool(http_events_url or (project and subscription))
 
 
@@ -3382,14 +3404,14 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     ``PlatformConfig`` rather than being merged into ``extra``.
     """
     project = (
-        os.getenv("GOOGLE_CHAT_PROJECT_ID")
-        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        get_secret("GOOGLE_CHAT_PROJECT_ID")
+        or get_secret("GOOGLE_CLOUD_PROJECT")
     )
     subscription = (
-        os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME")
-        or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
+        get_secret("GOOGLE_CHAT_SUBSCRIPTION_NAME")
+        or get_secret("GOOGLE_CHAT_SUBSCRIPTION")
     )
-    http_events_url = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    http_events_url = get_secret("GOOGLE_CHAT_HTTP_EVENTS_URL")
     if not (http_events_url or (project and subscription)):
         return None
     seed: Dict[str, Any] = {}
@@ -3399,23 +3421,32 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         seed["subscription_name"] = subscription
     if http_events_url:
         seed["http_events_url"] = http_events_url
-    http_events_audience = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE")
+    http_events_audience = get_secret("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE")
     if http_events_audience:
         seed["http_events_audience"] = http_events_audience
-    http_events_sa_email = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL")
+    http_events_sa_email = get_secret("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL")
     if http_events_sa_email:
         seed["http_events_service_account_email"] = http_events_sa_email
+    for env_name, extra_name in (
+        ("GOOGLE_CHAT_MAX_MESSAGES", "max_messages"),
+        ("GOOGLE_CHAT_MAX_BYTES", "max_bytes"),
+        ("GOOGLE_CHAT_BOOTSTRAP_SPACES", "bootstrap_spaces"),
+        ("GOOGLE_CHAT_DEBUG_RAW", "debug_raw"),
+    ):
+        value = get_secret(env_name)
+        if value:
+            seed[extra_name] = value
     sa_json = (
-        os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
-        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        get_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+        or get_secret("GOOGLE_APPLICATION_CREDENTIALS")
     )
     if sa_json:
         seed["service_account_json"] = sa_json
-    home = os.getenv("GOOGLE_CHAT_HOME_CHANNEL")
+    home = get_secret("GOOGLE_CHAT_HOME_CHANNEL")
     if home:
         seed["home_channel"] = {
             "chat_id": home,
-            "name": os.getenv("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home"),
+            "name": get_secret("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home"),
         }
     return seed
 
@@ -3565,8 +3596,8 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     sa_value = (
         extra.get("service_account_json")
-        or os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
-        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        or get_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+        or get_secret("GOOGLE_APPLICATION_CREDENTIALS")
     )
 
     if service_account is None:

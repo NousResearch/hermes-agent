@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.secret_scope import set_multiplex_active
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 # Platform uses _missing_() for dynamic members, so "google_chat" is
@@ -312,6 +313,70 @@ class TestEnvConfigLoading:
             cfg.platforms[_GC].extra["http_events_service_account_email"]
             == "chat-callback@example.iam.gserviceaccount.com"
         )
+
+    def test_multiplex_profile_uses_scoped_google_chat_config(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.run import _profile_runtime_scope
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "active-project")
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_SUBSCRIPTION_NAME",
+            "projects/active-project/subscriptions/chat",
+        )
+        monkeypatch.setenv(
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "/secrets/active-profile.json",
+        )
+        profile_home = tmp_path / "worker"
+        profile_home.mkdir()
+        (profile_home / ".env").write_text(
+            "GOOGLE_CHAT_PROJECT_ID=worker-project\n"
+            "GOOGLE_CHAT_SUBSCRIPTION_NAME="
+            "projects/worker-project/subscriptions/chat\n"
+            "GOOGLE_APPLICATION_CREDENTIALS=/secrets/worker-profile.json\n",
+            encoding="utf-8",
+        )
+        set_multiplex_active(True)
+        try:
+            with _profile_runtime_scope(profile_home):
+                cfg = load_gateway_config()
+        finally:
+            set_multiplex_active(False)
+
+        google_chat = cfg.platforms[_GC]
+        assert google_chat.extra["project_id"] == "worker-project"
+        assert (
+            google_chat.extra["subscription_name"]
+            == "projects/worker-project/subscriptions/chat"
+        )
+        assert (
+            google_chat.extra["service_account_json"]
+            == "/secrets/worker-profile.json"
+        )
+
+    def test_multiplex_bare_profile_does_not_inherit_google_chat(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.run import _profile_runtime_scope
+
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_PROJECT_ID", "active-project")
+        monkeypatch.setenv(
+            "GOOGLE_CHAT_SUBSCRIPTION_NAME",
+            "projects/active-project/subscriptions/chat",
+        )
+        profile_home = tmp_path / "bare"
+        profile_home.mkdir()
+        set_multiplex_active(True)
+        try:
+            with _profile_runtime_scope(profile_home):
+                cfg = load_gateway_config()
+        finally:
+            set_multiplex_active(False)
+
+        assert _GC not in cfg.platforms
 
 
 # ===========================================================================
@@ -646,6 +711,20 @@ class TestOnPubsubMessage:
         adapter._on_pubsub_message(msg)
         msg.nack.assert_called_once()
         msg.ack.assert_not_called()
+
+    def test_callback_uses_settings_captured_before_scope_is_gone(self, adapter):
+        """Pub/Sub callback threads do not inherit the profile ContextVar."""
+        set_multiplex_active(True)
+        try:
+            msg = _make_pubsub_message(
+                _make_chat_envelope(sender_type="BOT")
+            )
+            adapter._on_pubsub_message(msg)
+        finally:
+            set_multiplex_active(False)
+
+        msg.ack.assert_called_once()
+        msg.nack.assert_not_called()
 
     def test_malformed_json_acks_without_dispatch(self, adapter):
         msg = MagicMock()

@@ -80,15 +80,19 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
     """
     lines = patch_content.split('\n')
     operations: List[PatchOperation] = []
-    
-    # Find patch boundaries
+
+    # Find patch boundaries. Markers must occupy the whole line at column 0:
+    # content lines like "+*** End Patch" or " *** End Patch" (e.g. docs
+    # about the patch format) must not truncate the patch or reset the
+    # start boundary.
     start_idx = None
     end_idx = None
-    
+    begin_marker = re.compile(r'^\*\*\*\s*Begin\s+Patch\s*$')
+    end_marker = re.compile(r'^\*\*\*\s*End\s+Patch\s*$')
     for i, line in enumerate(lines):
-        if '*** Begin Patch' in line or '***Begin Patch' in line:
+        if begin_marker.match(line):
             start_idx = i
-        elif '*** End Patch' in line or '***End Patch' in line:
+        elif end_marker.match(line):
             end_idx = i
             break
     

@@ -13,7 +13,7 @@ import {
   SiWhatsapp
 } from '@icons-pack/react-simple-icons'
 import type { ComponentPropsWithoutRef, ComponentType, SVGProps } from 'react'
-import { forwardRef } from 'react'
+import { forwardRef, memo } from 'react'
 
 import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -82,48 +82,50 @@ interface PlatformAvatarProps extends Omit<ComponentPropsWithoutRef<'span'>, 'ch
 // component and injects a ref plus pointer/focus/aria handlers onto it. A
 // plain function component with no ref/rest forwarding drops all of that
 // silently — the tooltip renders but never opens (#67500).
-export const PlatformAvatar = forwardRef<HTMLSpanElement, PlatformAvatarProps>(function PlatformAvatar(
-  { className, platformId, platformName, style, ...rest },
-  ref
-) {
-  const spec = PLATFORM_ICONS[platformId]
+export const PlatformAvatar = memo(
+  forwardRef<HTMLSpanElement, PlatformAvatarProps>(function PlatformAvatar(
+    { className, platformId, platformName, style, ...rest },
+    ref
+  ) {
+    const spec = PLATFORM_ICONS[platformId]
 
-  const baseClass = cn(
-    'inline-grid size-6 shrink-0 place-items-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
-    className
-  )
+    const baseClass = cn(
+      'inline-grid size-6 shrink-0 place-items-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
+      className
+    )
 
-  if (!spec) {
+    if (!spec) {
+      return (
+        <span
+          aria-hidden="true"
+          className={cn(baseClass, 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)')}
+          ref={ref}
+          style={style}
+          {...rest}
+        >
+          {platformName.charAt(0).toUpperCase()}
+        </span>
+      )
+    }
+
+    const { Icon, color } = spec
+
     return (
       <span
         aria-hidden="true"
-        className={cn(baseClass, 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)')}
+        className={baseClass}
         ref={ref}
-        style={style}
+        style={{
+          // 16% tint of the brand color so the glyph reads against any surface
+          // without the avatar dominating the row.
+          backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)`,
+          color,
+          ...style
+        }}
         {...rest}
       >
-        {platformName.charAt(0).toUpperCase()}
+        {Icon ? <Icon className="size-3.5" /> : spec.monogram || platformName.charAt(0).toUpperCase()}
       </span>
     )
-  }
-
-  const { Icon, color } = spec
-
-  return (
-    <span
-      aria-hidden="true"
-      className={baseClass}
-      ref={ref}
-      style={{
-        // 16% tint of the brand color so the glyph reads against any surface
-        // without the avatar dominating the row.
-        backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)`,
-        color,
-        ...style
-      }}
-      {...rest}
-    >
-      {Icon ? <Icon className="size-3.5" /> : spec.monogram || platformName.charAt(0).toUpperCase()}
-    </span>
-  )
-})
+  })
+)

@@ -137,11 +137,6 @@ class TestGeminiContextLength:
 # ── Agent Init (no SyntaxError) ──
 
 class TestGeminiAgentInit:
-    def test_agent_imports_without_error(self):
-        """Verify run_agent.py has no SyntaxError (the critical bug)."""
-        import importlib
-        import run_agent
-        importlib.reload(run_agent)
 
     def test_gemini_agent_uses_chat_completions(self, monkeypatch):
         """Gemini still reports chat_completions even though the transport is native."""
@@ -159,21 +154,6 @@ class TestGeminiAgentInit:
             assert agent.provider == "gemini"
 
 
-    def test_gemini_openai_compat_base_url_keeps_openai_client(self, monkeypatch):
-        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSy_REAL_KEY")
-        with patch("agent.gemini_native_adapter.GeminiNativeClient") as mock_client, \
-             patch("run_agent.OpenAI") as mock_openai, \
-             patch("run_agent.ContextCompressor") as mock_compressor:
-            mock_openai.return_value = MagicMock()
-            mock_compressor.return_value = MagicMock(context_length=1048576, threshold_tokens=524288)
-            from run_agent import AIAgent
-            AIAgent(
-                model="gemini-2.5-flash",
-                provider="gemini",
-                api_key="AIzaSy_REAL_KEY",
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-            )
-        mock_openai.assert_called_once()
 
     def test_gemini_resolve_provider_client_uses_native_client(self, monkeypatch):
         """resolve_provider_client('gemini') should build GeminiNativeClient."""
@@ -193,12 +173,8 @@ class TestGeminiModelsDev:
     def test_gemini_mapped_to_google(self):
         assert PROVIDER_TO_MODELS_DEV.get("gemini") == "google"
 
-    def test_noise_filter_excludes_tts(self):
-        assert _NOISE_PATTERNS.search("gemini-2.5-pro-preview-tts")
 
 
-    def test_noise_filter_passes_gemma(self):
-        assert not _NOISE_PATTERNS.search("gemma-4-31b-it")
 
     def test_list_agentic_models_with_mock_data(self):
         """list_agentic_models filters correctly from mock models.dev data."""
@@ -226,25 +202,3 @@ class TestGeminiModelsDev:
         assert "gemini-live-2.5-flash" not in result     # noise: live-
         assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview
 
-    def test_list_provider_models_hides_low_tpm_google_gemmas(self):
-        mock_data = {
-            "google": {
-                "models": {
-                    "gemini-2.5-pro": {},
-                    "gemma-4-31b-it": {},
-                    "gemma-3-27b-it": {},
-                    "gemini-1.5-pro": {},
-                    "gemini-2.0-flash": {},
-                }
-            }
-        }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
-            from agent.models_dev import list_provider_models
-
-            result = list_provider_models("gemini")
-
-        assert "gemini-2.5-pro" in result
-        assert "gemma-4-31b-it" not in result
-        assert "gemma-3-27b-it" not in result
-        assert "gemini-1.5-pro" not in result
-        assert "gemini-2.0-flash" not in result

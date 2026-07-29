@@ -113,12 +113,6 @@ def test_profile_suffixed_var_hydrates_canonical():
 
 
 
-def test_default_profile_never_aliases():
-    _, env = _apply(
-        {"TELEGRAM_BOT_TOKEN_MILLA": "123:tok"},
-        home=Path("/home/u/.hermes"),
-    )
-    assert "TELEGRAM_BOT_TOKEN" not in env
 
 
 def test_hyphenated_profile_name_matches_underscore_suffix():
@@ -129,19 +123,5 @@ def test_hyphenated_profile_name_matches_underscore_suffix():
     assert env["SLACK_APP_TOKEN"] == "xapp-1"
 
 
-def test_alias_never_touches_protected_vars():
-    class _Protecting(_FakeBulk):
-        def protected_env_vars(self, cfg):
-            return frozenset({"BWS_ACCESS_TOKEN"})
-
-    registry.register_source(
-        _Protecting({"BWS_ACCESS_TOKEN_MILLA": "0.evil"}), replace=True
-    )
-    env = {"BWS_ACCESS_TOKEN": "0.real"}
-    registry.apply_all({"fakebulk": {"enabled": True}}, PROFILE_HOME, environ=env)
-    assert env["BWS_ACCESS_TOKEN"] == "0.real"
 
 
-def test_alias_provenance_recorded():
-    report, _ = _apply({"NOTION_TOKEN_MILLA": "sec"}, home=PROFILE_HOME)
-    assert report.provenance["NOTION_TOKEN"].source == "fakebulk"

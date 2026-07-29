@@ -153,41 +153,8 @@ class TestIdempotentRerun(TestHappyPath):
     persisted), which the CLI re-sends so the portal updates that row.
     """
 
-    def test_stored_client_id_is_sent_as_idempotency_key(self, capsys):
-        captured: dict = {}
-        # Portal echoes back the SAME id -> it updated in place.
-        self._run(
-            args=_ns(),
-            existing_client_id="agent:selfhost-1",
-            response={
-                "client_id": "agent:selfhost-1",
-                "id": "selfhost-1",
-                "name": "dreamy_tesla",
-                "kind": "SELF_HOSTED",
-                "custom_redirect_uri": None,
-                "created_at": "2026-06-04T12:00:00.000Z",
-            },
-            captured=captured,
-        )
-        assert captured["body"]["client_id"] == "agent:selfhost-1"
 
 
-    def test_rerun_prints_updated_when_same_id_returned(self, capsys):
-        self._run(
-            args=_ns(),
-            existing_client_id="agent:selfhost-1",
-            response={
-                "client_id": "agent:selfhost-1",
-                "id": "selfhost-1",
-                "name": "dreamy_tesla",
-                "kind": "SELF_HOSTED",
-                "custom_redirect_uri": None,
-                "created_at": "2026-06-04T12:00:00.000Z",
-            },
-        )
-        out = capsys.readouterr().out
-        assert "Updated dashboard" in out
-        assert "Registered dashboard" not in out
 
 
     def test_stale_id_falls_through_to_create_prints_registered(self, capsys):

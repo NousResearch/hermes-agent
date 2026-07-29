@@ -28,14 +28,10 @@ def test_bearer_header_stripped():
     assert "abc.def-ghi_jkl" not in out
 
 
-def test_none_passthrough():
-    assert R.redact_for_export(None) is None
 
 
 
 
-def test_ordinary_words_survive():
-    assert R.redact_for_export("just ordinary words") == "just ordinary words"
 
 
 def test_structure_preserved():

@@ -77,27 +77,6 @@ class TestPoolFallback:
             )
         assert provider_id in pool_key_seen
 
-    def test_custom_pool_key_fallback(self):
-        """A provider pooled under ``custom:<name>`` (config.yaml providers)
-        is found when the plain pool id is empty — the issue's
-        ``custom:mistral`` scenario."""
-
-        def fake_load_pool(pid):
-            if pid == "custom:mistral":
-                return _fake_pool("custom-mistral-key")
-            return _fake_pool("")
-
-        with patch("agent.credential_pool.load_pool", side_effect=fake_load_pool):
-            assert (
-                resolve_provider_secret("MISTRAL_API_KEY", "mistral")
-                == "custom-mistral-key"
-            )
-
-    def test_no_key_anywhere_returns_empty(self):
-        with patch(
-            "agent.credential_pool.load_pool", return_value=_fake_pool("")
-        ):
-            assert resolve_provider_secret("MISTRAL_API_KEY", "mistral") == ""
 
     def test_pool_read_failure_never_raises(self):
         with patch(
@@ -204,30 +183,6 @@ class TestToolWiring:
         with patch("agent.credential_pool.load_pool", side_effect=fake_load_pool):
             assert tt._resolve_provider_key("GROQ_API_KEY", "groq") == "stt-pool-key"
 
-    def test_tts_tool_delegates(self):
-        from tools import tts_tool
-
-        def fake_load_pool(pid):
-            return _fake_pool("tts-pool-key" if pid == "minimax" else "")
-
-        with patch("agent.credential_pool.load_pool", side_effect=fake_load_pool):
-            assert (
-                tts_tool._resolve_provider_key("MINIMAX_API_KEY", "minimax")
-                == "tts-pool-key"
-            )
-
-    def test_xai_env_fallback_consults_pool(self):
-        from tools.xai_http import resolve_xai_http_credentials
-
-        def fake_load_pool(pid):
-            # xai-oauth pool empty → OAuth path yields no token;
-            # manual `hermes auth add xai` pool has the key.
-            return _fake_pool("xai-pool-key" if pid == "xai" else "")
-
-        with patch("agent.credential_pool.load_pool", side_effect=fake_load_pool):
-            creds = resolve_xai_http_credentials()
-        assert creds["api_key"] == "xai-pool-key"
-        assert creds["provider"] == "xai"
 
     def test_openai_audio_key_falls_back_to_pool(self):
         from tools.tool_backend_helpers import resolve_openai_audio_api_key

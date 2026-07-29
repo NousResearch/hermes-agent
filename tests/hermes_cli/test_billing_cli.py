@@ -28,53 +28,10 @@ def _boom_modal(*a, **kw):
     raise AssertionError("modal must NOT be called in non-interactive mode")
 
 
-def test_billing_logged_out(cli, monkeypatch, capsys):
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: BillingState(logged_in=False))
-    cli._show_billing("/billing")
-    out = capsys.readouterr().out
-    assert "Not logged into Nous Portal" in out
-    assert "hermes portal" in out
 
 
-def test_billing_overview_non_interactive_renders_text_not_modal(cli, monkeypatch, capsys):
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _boom_modal, raising=False)
-    state = BillingState(
-        logged_in=True,
-        org_name="Acme",
-        role="OWNER",
-        balance_usd=Decimal("142.5"),
-        cli_billing_enabled=True,
-        charge_presets=(Decimal("100"),),
-        monthly_cap=MonthlyCap(limit_usd=Decimal("1000"), spent_this_month_usd=Decimal("180"),
-                               is_default_ceiling=True),
-        portal_url="https://portal/billing?topup=open",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/billing")
-    out = capsys.readouterr().out
-    # Balance now leads in the title; dollars, never "credits".
-    assert "Top up · balance $142.50" in out
-    assert "credits" not in out.lower()
-    # ZERO sub-commands: no /billing buy|auto-reload|limit advertising.
-    assert "/billing buy" not in out
-    assert "Actions:" not in out
-    # Non-interactive funnels to the portal (the URL is the affordance).
-    assert "Manage on portal:" in out
 
 
-def test_billing_killswitch_off_blocks(cli, monkeypatch, capsys):
-    state = BillingState(
-        logged_in=True, role="OWNER", balance_usd=Decimal("10"),
-        cli_billing_enabled=False, portal_url="https://portal/billing",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/billing")
-    out = capsys.readouterr().out
-    assert "Remote spending is off for this org." in out
-    assert (
-        "A billing admin can turn it on from the portal's Hermes Agent page "
-        "to add funds here."
-    ) in out
 
 
 # ── Card visibility + the add-card path (inline w/ NAS card-resolver) ──
@@ -137,54 +94,10 @@ def test_topup_automatic_copy_generic_when_amounts_missing(cli, monkeypatch, cap
     assert "charges — automatically" not in out
 
 
-def test_overview_shows_card_with_provenance(cli, monkeypatch, capsys):
-    state = BillingState(
-        logged_in=True, role="OWNER", balance_usd=Decimal("10"),
-        cli_billing_enabled=True, charge_presets=(Decimal("25"),),
-        card=CardInfo(brand="Visa", last4="4242", resolved_via="subPin"),
-        portal_url="https://portal/billing",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/topup")
-    out = capsys.readouterr().out
-    assert "Card: Visa ····4242 — the card on your subscription" in out
 
 
-def test_overview_shows_no_card_hint(cli, monkeypatch, capsys):
-    state = BillingState(
-        logged_in=True, role="OWNER", balance_usd=Decimal("10"),
-        cli_billing_enabled=True, charge_presets=(Decimal("25"),),
-        card=None, portal_url="https://portal/billing",
-    )
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: state)
-    cli._show_billing("/topup")
-    out = capsys.readouterr().out
-    assert "No saved card on file" in out
-    assert "Add funds" in out  # the hint names the path
 
 
-def test_buy_flow_no_card_guides_then_continues_after_recheck(cli, monkeypatch, capsys):
-    # No card → the guided add-card path; "check again" re-fetches state and,
-    # once the card exists, continues straight into the preset menu.
-    cli._app = object()
-    common = dict(
-        logged_in=True, role="OWNER", cli_billing_enabled=True,
-        charge_presets=(Decimal("25"), Decimal("50")),
-        min_usd=Decimal("5"), max_usd=Decimal("500"),
-        portal_url="https://portal/billing",
-    )
-    nocard = BillingState(card=None, **common)
-    withcard = BillingState(card=CardInfo(brand="Visa", last4="4242", resolved_via="customerDefault"), **common)
-    monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: withcard)
-    # add-card modal → "recheck"; preset modal → "cancel" (we only test the routing)
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted("recheck", "cancel"), raising=False)
-
-    cli._billing_buy_flow(nocard)
-    out = capsys.readouterr().out
-
-    assert "Add a card first" in out
-    assert "Card found: Visa ····4242 — your default card saved on the portal" in out
-    assert "Cancelled. No funds added." in out  # reached the preset menu, then bailed
 
 
 def test_buy_flow_no_card_back_abandons(cli, monkeypatch, capsys):

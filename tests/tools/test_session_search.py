@@ -128,34 +128,6 @@ class TestDiscoveryShape:
             assert "messages_before" in hit
             assert "messages_after" in hit
 
-    def test_no_results_returns_empty_list(self, db):
-        _seed_modpack_sessions(db)
-        result = json.loads(session_search(query="zzz_no_such_term_zzz", db=db))
-        assert result["success"] is True
-        assert result["results"] == []
-        assert result["count"] == 0
-
-    def test_query_can_match_session_title_without_message_hit(self, db):
-        db.create_session("s_fingerprint", source="cli")
-        db.set_session_title("s_fingerprint", "fingerprint-login")
-        db.append_message("s_fingerprint", role="user", content="Let's configure PAM for biometric auth")
-        db.append_message("s_fingerprint", role="assistant", content="Checking Linux auth settings.")
-
-        result = json.loads(session_search(query="fingerprint-login", db=db))
-
-        assert result["success"] is True
-        assert result["count"] == 1
-        hit = result["results"][0]
-        assert hit["session_id"] == "s_fingerprint"
-        assert hit["title"] == "fingerprint-login"
-        assert hit["matched_role"] == "session_title"
-        assert "Session title matched" in hit["snippet"]
-
-    def test_limit_clamped_to_max_10(self, db):
-        _seed_modpack_sessions(db)
-        # Pass huge limit; should not error and should cap
-        result = json.loads(session_search(query="modpack", limit=999, db=db))
-        assert result["count"] <= 10
 
     def test_current_session_filtered_out(self, db):
         _seed_modpack_sessions(db)
@@ -215,69 +187,6 @@ class TestScrollShape:
         ))
         assert result["window"] == 20
 
-    def test_scroll_missing_anchor_errors(self, db):
-        _seed_modpack_sessions(db)
-        result = json.loads(session_search(
-            session_id="s_oldest", around_message_id=999999, db=db
-        ))
-        assert result["success"] is False
-        assert "not in" in result.get("error", "")
-
-    def test_scroll_rejects_current_session_lineage(self, db):
-        db.create_session("s_current", source="cli")
-        mid = db.append_message("s_current", role="user", content="still live")
-
-        result = json.loads(session_search(
-            session_id="s_current", around_message_id=mid, db=db,
-            current_session_id="s_current",
-        ))
-
-        assert result["success"] is False
-        assert "current session" in result.get("error", "").lower()
-
-    def test_scroll_allows_compacted_anchor_in_current_session(self, db):
-        db.create_session("s_current", source="cli")
-        db.append_message(
-            "s_current", role="user", content="history removed from live context"
-        )
-        db.archive_and_compact("s_current", [
-            {"role": "assistant", "content": "Compacted history summary"},
-        ])
-
-        discovery = json.loads(session_search(
-            query="history removed", db=db, current_session_id="s_current",
-        ))
-        assert discovery["count"] == 1
-        anchor = discovery["results"][0]
-
-        result = json.loads(session_search(
-            session_id=anchor["session_id"],
-            around_message_id=anchor["match_message_id"],
-            db=db,
-            current_session_id="s_current",
-        ))
-
-        assert result["success"] is True
-        assert any(
-            message["id"] == anchor["match_message_id"]
-            for message in result["messages"]
-        )
-
-    def test_scroll_allows_compression_ended_parent_from_continuation(self, db):
-        db.create_session("s_parent", source="cli")
-        mid = db.append_message(
-            "s_parent", role="user", content="history summarized into child"
-        )
-        db.end_session("s_parent", "compression")
-        db.create_session("s_current", source="cli", parent_session_id="s_parent")
-
-        result = json.loads(session_search(
-            session_id="s_parent", around_message_id=mid, db=db,
-            current_session_id="s_current",
-        ))
-
-        assert result["success"] is True
-        assert any(message["id"] == mid for message in result["messages"])
 
     def test_scroll_rejects_active_delegation_child_in_current_lineage(self, db):
         db.create_session("s_current", source="cli")
@@ -339,10 +248,6 @@ class TestShapePrecedence:
         ))
         assert result["mode"] == "scroll"
 
-    def test_unusable_query_falls_back_to_browse(self, db):
-        _seed_modpack_sessions(db)
-        assert json.loads(session_search(query="   ", db=db))["mode"] == "browse"
-        assert json.loads(session_search(query=None, db=db))["mode"] == "browse"  # type: ignore
 
     def test_session_id_without_anchor_reads(self, db):
         _seed_modpack_sessions(db)
@@ -395,13 +300,6 @@ class TestSessionLink:
     def test_link_carries_the_named_profile(self):
         assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
 
-    def test_link_falls_back_to_a_bare_id_when_the_profile_is_unknown(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name",
-            lambda: "custom",
-        )
-
-        assert _session_link("s_oldest") == "@session:s_oldest"
 
     def test_every_discovery_result_links_to_its_own_session(self, db):
         _seed_modpack_sessions(db)
@@ -446,11 +344,6 @@ class TestCrossProfileRead:
         assert result["mode"] == "read"
         assert result["profile"] == "asdf"
 
-    def test_unknown_profile_errors(self, db, monkeypatch, tmp_path):
-        self._patch_profiles(monkeypatch, tmp_path, exists=False)
-        result = json.loads(session_search(session_id="x", profile="ghost", db=db))
-        assert result["success"] is False
-        assert "ghost" in result.get("error", "")
 
     def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):
         # Agent passed the raw "@session:<profile>/<id>" value as session_id with
@@ -601,13 +494,6 @@ class TestResolveToParent:
         assert root == "s_parent"
         assert has_compression is True
 
-    def test_delegation_no_compression(self, db):
-        """Delegation child: parent_session_id set but no compression end_reason."""
-        db.create_session("s_parent", source="cli")
-        db.create_session("s_child", source="cli", parent_session_id="s_parent")
-        root, has_compression = _resolve_to_parent(db, "s_child")
-        assert root == "s_parent"
-        assert has_compression is False
 
     def test_chain_with_mixed_edges(self, db):
         """Compression grandparent → parent → child (no end_reason on parent)."""

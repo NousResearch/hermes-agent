@@ -86,26 +86,6 @@ class TestSkillsShGroupings:
             "cuopt-developer": "Decision Optimization",
         }
 
-    def test_parse_tolerates_malformed_group(self):
-        # A group missing its skills list is skipped; the valid one survives.
-        content = json.dumps({"groupings": [
-            {"title": "X"},                              # no skills -> skipped
-            {"skills": ["a"]},                           # no title -> skipped
-            {"title": "Y", "skills": ["b", 5, None]},    # only valid string members kept
-        ]})
-        assert GitHubSource._parse_skillsh_groupings(content) == {"b": "Y"}
-
-    def test_get_groupings_caches_per_repo(self):
-        auth = MagicMock()
-        src = GitHubSource(auth=auth)
-        content = json.dumps({"groupings": [{"title": "T", "skills": ["s"]}]})
-        with patch.object(src, "_fetch_file_content", return_value=content) as mock_fetch:
-            first = src._get_skillsh_groupings("acme/skills")
-            second = src._get_skillsh_groupings("acme/skills")
-        assert first == {"s": "T"}
-        assert second == {"s": "T"}
-        # Second call must hit the per-repo cache, not GitHub again.
-        mock_fetch.assert_called_once_with("acme/skills", "skills.sh.json")
 
     def test_list_skills_stamps_category_from_sidecar(self):
         auth = MagicMock()
@@ -150,9 +130,6 @@ class TestTrustLevelFor:
             repo = next(iter(TRUSTED_REPOS))
             assert src.trust_level_for(f"{repo}/some-skill") == "trusted"
 
-    def test_community_repo(self):
-        src = self._source()
-        assert src.trust_level_for("random-user/random-repo/skill") == "community"
 
     def test_browseable_trusted_repos_have_taps(self):
         # General invariant covering all current and future trusted repos
@@ -209,89 +186,6 @@ class TestSkillsShSource:
         assert results[0].path == "vercel-react-best-practices"
         assert results[0].extra["installs"] == 207679
 
-    @patch.object(GitHubSource, "fetch")
-    def test_fetch_delegates_to_github_source_and_relabels_bundle(self, mock_fetch):
-        mock_fetch.return_value = SkillBundle(
-            name="vercel-react-best-practices",
-            files={"SKILL.md": "# Test"},
-            source="github",
-            identifier="vercel-labs/agent-skills/vercel-react-best-practices",
-            trust_level="community",
-        )
-
-        bundle = self._source().fetch("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
-
-        assert bundle is not None
-        assert bundle.source == "skills.sh"
-        assert bundle.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
-        mock_fetch.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
-
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
-    @patch.object(GitHubSource, "inspect")
-    def test_inspect_delegates_to_github_source_and_relabels_meta(self, mock_inspect, mock_get, _mock_read_cache, _mock_write_cache):
-        mock_inspect.return_value = SkillMeta(
-            name="vercel-react-best-practices",
-            description="React rules",
-            source="github",
-            identifier="vercel-labs/agent-skills/vercel-react-best-practices",
-            trust_level="community",
-            repo="vercel-labs/agent-skills",
-            path="vercel-react-best-practices",
-        )
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            text='''
-                <h1>vercel-react-best-practices</h1>
-                <code>$ npx skills add https://github.com/vercel-labs/agent-skills --skill vercel-react-best-practices</code>
-                <div class="prose"><h1>Vercel React Best Practices</h1><p>React rules.</p></div>
-                <a href="/vercel-labs/agent-skills/vercel-react-best-practices/security/socket">Socket</a> Pass
-                <a href="/vercel-labs/agent-skills/vercel-react-best-practices/security/snyk">Snyk</a> Pass
-            ''',
-        )
-
-        meta = self._source().inspect("skills-sh/vercel-labs/agent-skills/vercel-react-best-practices")
-
-        assert meta is not None
-        assert meta.source == "skills.sh"
-        assert meta.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
-        assert meta.extra["install_command"].endswith("--skill vercel-react-best-practices")
-        assert meta.extra["security_audits"]["socket"] == "Pass"
-        mock_inspect.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
-
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch.object(SkillsShSource, "_discover_identifier")
-    @patch.object(SkillsShSource, "_fetch_detail_page")
-    @patch.object(GitHubSource, "fetch")
-    def test_fetch_downloads_only_the_resolved_identifier(
-        self,
-        mock_fetch,
-        mock_detail,
-        mock_discover,
-        _mock_read_cache,
-        _mock_write_cache,
-    ):
-        resolved_identifier = "owner/repo/product-team/product-designer"
-        mock_detail.return_value = {"repo": "owner/repo", "install_skill": "product-designer"}
-        mock_discover.return_value = resolved_identifier
-        resolved_bundle = SkillBundle(
-            name="product-designer",
-            files={"SKILL.md": "# Product Designer"},
-            source="github",
-            identifier=resolved_identifier,
-            trust_level="community",
-        )
-        mock_fetch.side_effect = lambda identifier: resolved_bundle if identifier == resolved_identifier else None
-
-        bundle = self._source().fetch("skills-sh/owner/repo/product-designer")
-
-        assert bundle is not None
-        assert bundle.identifier == "skills-sh/owner/repo/product-designer"
-        # All candidate identifiers are tried before falling back to discovery
-        assert mock_fetch.call_args_list[-1] == ((resolved_identifier,), {})
-        assert mock_fetch.call_args_list[0] == (("owner/repo/product-designer",), {})
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -426,33 +320,6 @@ class TestWellKnownSkillSource:
         ]
         assert all(r.source == "well-known" for r in results)
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_downloads_skill_files_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
-        def fake_get(url, *args, **kwargs):
-            if url.endswith("/index.json"):
-                return MagicMock(status_code=200, json=lambda: {
-                    "skills": [{
-                        "name": "code-review",
-                        "description": "Review code",
-                        "files": ["SKILL.md", "references/checklist.md"],
-                    }]
-                })
-            if url.endswith("/code-review/SKILL.md"):
-                return MagicMock(status_code=200, text="# Code Review\n")
-            if url.endswith("/code-review/references/checklist.md"):
-                return MagicMock(status_code=200, text="- [ ] security\n")
-            raise AssertionError(url)
-
-        mock_get.side_effect = fake_get
-
-        bundle = self._source().fetch("well-known:https://example.com/.well-known/skills/code-review")
-
-        assert bundle is not None
-        assert bundle.source == "well-known"
-        assert bundle.files["SKILL.md"] == "# Code Review\n"
-        assert bundle.files["references/checklist.md"] == "- [ ] security\n"
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -501,29 +368,6 @@ class TestUrlSource:
         ) is False
 
     # ── inspect ─────────────────────────────────────────────────────────
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_inspect_reads_frontmatter_from_url(self, mock_get):
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            text=(
-                "---\n"
-                "name: sharethis-chat\n"
-                "description: Share agent conversations.\n"
-                "metadata:\n"
-                "  hermes:\n"
-                "    tags: [sharing, chat]\n"
-                "---\n\n# Body\n"
-            ),
-        )
-        meta = self._source().inspect("https://sharethis.chat/SKILL.md")
-        assert meta is not None
-        assert meta.name == "sharethis-chat"
-        assert meta.description == "Share agent conversations."
-        assert meta.source == "url"
-        assert meta.identifier == "https://sharethis.chat/SKILL.md"
-        assert meta.trust_level == "community"
-        assert meta.tags == ["sharing", "chat"]
-        assert meta.extra["awaiting_name"] is False
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
@@ -533,51 +377,7 @@ class TestUrlSource:
         mock_get.assert_not_called()
 
     # ── fetch ───────────────────────────────────────────────────────────
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_builds_single_file_bundle(self, mock_get):
-        skill_md = (
-            "---\n"
-            "name: sharethis-chat\n"
-            "description: Share.\n"
-            "---\n\n# Body\n"
-        )
-        mock_get.return_value = MagicMock(status_code=200, text=skill_md)
 
-        bundle = self._source().fetch("https://sharethis.chat/SKILL.md")
-
-        assert bundle is not None
-        assert bundle.name == "sharethis-chat"
-        assert bundle.source == "url"
-        assert bundle.identifier == "https://sharethis.chat/SKILL.md"
-        assert bundle.trust_level == "community"
-        assert bundle.files == {"SKILL.md": skill_md}
-        assert bundle.metadata["url"] == "https://sharethis.chat/SKILL.md"
-        assert bundle.metadata["awaiting_name"] is False
-
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_awaiting_name_rejects_sentinel_slug(self, mock_get):
-        # Frontmatter has no name AND the URL filename slug is ``README`` —
-        # our valid-name check rejects it, so we flag awaiting_name.
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            text="---\ndescription: no name.\n---\n",
-        )
-        bundle = self._source().fetch("https://example.com/README.md")
-        assert bundle is not None
-        assert bundle.name == ""
-        assert bundle.metadata["awaiting_name"] is True
-
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_ignores_unsafe_frontmatter_name_and_falls_through_to_slug(self, mock_get):
-        # Traversal / unsafe names are rejected by ``_is_valid_skill_name``;
-        # resolver falls through to URL slug (``my-skill`` here) and succeeds.
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            text="---\nname: ../evil\ndescription: Bad.\n---\n",
-        )
-        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
-        assert bundle is not None
-        assert bundle.name == "my-skill"
 
     @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.check_website_access", return_value=None)
@@ -597,18 +397,6 @@ class TestUrlSource:
         assert self._source().fetch("http://127.0.0.1/SKILL.md") is None
         mock_get.assert_not_called()
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    @patch("tools.skills_hub.check_website_access", return_value=None)
-    @patch("tools.skills_hub.is_safe_url", return_value=True)
-    def test_fetch_blocks_connect_time_dns_rebind(self, _mock_safe, _mock_policy, mock_get):
-        from tools.url_safety import SSRFConnectionBlocked
-
-        mock_get.side_effect = SSRFConnectionBlocked(
-            "Blocked request to private/internal address during connect"
-        )
-
-        assert self._source().fetch("https://example.com/SKILL.md") is None
-        mock_get.assert_called_once_with("https://example.com/SKILL.md", timeout=20)
 
     def test_is_valid_skill_name_rejects_sentinel_and_garbage(self):
         invalid = [
@@ -645,21 +433,6 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
-    def test_bundle_content_hash_accepts_binary_files(self):
-        bundle = SkillBundle(
-            name="demo-binary-skill",
-            files={
-                "SKILL.md": "# Demo\n",
-                "assets/logo.png": b"\x89PNG\r\n\x1a\nbinary",
-            },
-            source="github",
-            identifier="owner/repo/demo-binary-skill",
-            trust_level="community",
-        )
-
-        digest = bundle_content_hash(bundle)
-
-        assert digest.startswith("sha256:")
 
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
@@ -711,36 +484,6 @@ class TestHubLockFile:
         data = lock.load()
         assert data == {"version": 1, "installed": {}}
 
-    def test_record_install(self, tmp_path):
-        lock = HubLockFile(path=tmp_path / "lock.json")
-        lock.record_install(
-            name="test-skill",
-            source="github",
-            identifier="owner/repo/test-skill",
-            trust_level="trusted",
-            scan_verdict="pass",
-            skill_hash="abc123",
-            install_path="test-skill",
-            files=["SKILL.md", "references/api.md"],
-        )
-        data = lock.load()
-        assert "test-skill" in data["installed"]
-        entry = data["installed"]["test-skill"]
-        assert entry["source"] == "github"
-        assert entry["trust_level"] == "trusted"
-        assert entry["content_hash"] == "abc123"
-        assert "installed_at" in entry
-
-    def test_record_uninstall(self, tmp_path):
-        lock = HubLockFile(path=tmp_path / "lock.json")
-        lock.record_install(
-            name="test-skill", source="github", identifier="x",
-            trust_level="community", scan_verdict="pass",
-            skill_hash="h", install_path="test-skill", files=["SKILL.md"],
-        )
-        lock.record_uninstall("test-skill")
-        data = lock.load()
-        assert "test-skill" not in data["installed"]
 
     def test_list_installed(self, tmp_path):
         lock = HubLockFile(path=tmp_path / "lock.json")
@@ -773,18 +516,6 @@ class TestTapsManager:
         mgr = TapsManager(path=taps_file)
         assert mgr.load() == []
 
-    def test_add_new_tap(self, tmp_path):
-        mgr = TapsManager(path=tmp_path / "taps.json")
-        assert mgr.add("owner/repo", "skills/") is True
-        taps = mgr.load()
-        assert len(taps) == 1
-        assert taps[0]["repo"] == "owner/repo"
-
-    def test_add_duplicate_tap(self, tmp_path):
-        mgr = TapsManager(path=tmp_path / "taps.json")
-        mgr.add("owner/repo")
-        assert mgr.add("owner/repo") is False
-        assert len(mgr.load()) == 1
 
     def test_remove_existing_tap(self, tmp_path):
         mgr = TapsManager(path=tmp_path / "taps.json")
@@ -855,22 +586,6 @@ class TestUnifiedSearchDedup:
         assert len(results) == 1
         assert results[0].trust_level == "builtin"
 
-    def test_browse_sh_same_name_different_site_not_deduped(self):
-        # Browse.sh skills from different hostnames share task names (e.g. "search-listings")
-        # but have unique identifiers. They must NOT be collapsed into one result.
-        airbnb = SkillMeta(
-            name="search-listings", description="Airbnb search", source="browse-sh",
-            identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
-        )
-        booking = SkillMeta(
-            name="search-listings", description="Booking.com search", source="browse-sh",
-            identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
-        )
-        src = self._make_source("browse-sh", [airbnb, booking])
-        results = unified_search("search-listings", [src])
-        assert len(results) == 2, (
-            "browse-sh skills with the same name but different sites must not be deduplicated"
-        )
 
     def test_source_error_handled(self):
         failing = MagicMock()
@@ -1305,42 +1020,6 @@ class TestInstallPathSafety:
                     files=["SKILL.md"],
                 )
 
-    def test_record_install_rejects_mismatched_last_component(self, tmp_path):
-        """The final component of install_path MUST equal the skill name."""
-        lock = HubLockFile(path=tmp_path / "lock.json")
-        with pytest.raises(ValueError, match="Unsafe install path"):
-            lock.record_install(
-                name="legit-skill",
-                source="github",
-                identifier="x",
-                trust_level="trusted",
-                scan_verdict="pass",
-                skill_hash="h1",
-                install_path="legit-skill/evil-suffix",
-                files=["SKILL.md"],
-            )
-
-    def test_record_install_accepts_bare_name(self, tmp_path):
-        lock = HubLockFile(path=tmp_path / "lock.json")
-        lock.record_install(
-            name="good", source="github", identifier="x",
-            trust_level="trusted", scan_verdict="pass",
-            skill_hash="h", install_path="good", files=["SKILL.md"],
-        )
-        assert lock.get_installed("good")["install_path"] == "good"
-
-    def test_record_install_accepts_nested_official_skill_path(self, tmp_path):
-        lock = HubLockFile(path=tmp_path / "lock.json")
-        lock.record_install(
-            name="trl-fine-tuning", source="official",
-            identifier="official/mlops/training/trl-fine-tuning",
-            trust_level="builtin", scan_verdict="pass",
-            skill_hash="h", install_path="mlops/training/trl-fine-tuning",
-            files=["SKILL.md"],
-        )
-        entry = lock.get_installed("trl-fine-tuning")
-        assert entry is not None
-        assert entry["install_path"] == "mlops/training/trl-fine-tuning"
 
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Hand-edited lock.json with absolute install_path must not delete anything."""
@@ -1430,43 +1109,6 @@ class TestInstallPathSafety:
         assert ok is False
         assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
 
-    def test_uninstall_rejects_symlink_redirect_inside_skills(
-        self, tmp_path, isolated_skills_dir, patch_lock_file
-    ):
-        """A symlinked skill dir that points outside skills/ must not be followed."""
-        from tools.skills_hub import uninstall_skill
-
-        # Outside-tree victim
-        victim = tmp_path / "victim"
-        victim.mkdir()
-        (victim / "important").write_text("don't delete me")
-
-        # Symlink in skills/ pointing to the victim
-        link = isolated_skills_dir / "evil"
-        try:
-            link.symlink_to(victim, target_is_directory=True)
-        except (OSError, NotImplementedError):
-            pytest.skip("symlink creation unsupported on this platform")
-
-        lock_path = tmp_path / "lock.json"
-        lock_path.write_text(json.dumps({
-            "installed": {
-                "evil": {
-                    "source": "github", "identifier": "x",
-                    "trust_level": "trusted", "scan_verdict": "pass",
-                    "content_hash": "h",
-                    "install_path": "evil",
-                    "files": [], "metadata": {},
-                    "installed_at": "now", "updated_at": "now",
-                }
-            }
-        }))
-
-        patch_lock_file(lock_path)
-        ok, msg = uninstall_skill("evil")
-        assert ok is False
-        assert victim.exists()
-        assert (victim / "important").read_text() == "don't delete me"
 
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents

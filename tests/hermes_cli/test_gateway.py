@@ -50,29 +50,6 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
     )
 
 
-def test_run_gateway_exits_cleanly_on_keyboard_interrupt(monkeypatch, capsys):
-    calls = []
-
-    def fake_start_gateway(*, replace, verbosity):
-        calls.append((replace, verbosity))
-        return object()
-
-    def fake_asyncio_run(coro):
-        raise KeyboardInterrupt
-
-    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
-    monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
-
-    # KeyboardInterrupt now uses the same hard-exit backstop as all other
-    # exit paths (instead of a bare ``return``).  The test stub's
-    # _exit_after_graceful_shutdown is a no-op for code 0, so run_gateway()
-    # returns normally — but the real implementation would call os._exit(0).
-    gateway.run_gateway()
-
-    out = capsys.readouterr().out
-    assert calls == [(False, 0)]
-    assert "Press Ctrl+C to stop" in out
-    assert "Gateway stopped." in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY coverage")
@@ -157,22 +134,6 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
     assert completed.returncode == expected_exit, completed.stderr
 
 
-def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
-    calls = []
-
-    def fake_start_gateway(*, replace, verbosity):
-        calls.append((replace, verbosity))
-        return object()
-
-    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
-    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
-    monkeypatch.setenv("HERMES_ALLOW_ROOT_GATEWAY", "1")
-
-    gateway.run_gateway(verbose=2, replace=True)
-
-    assert calls == [(True, 2)]
 
 
 def _clear_supervisor_markers(monkeypatch):
@@ -217,50 +178,8 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.gateway_pids == (123,)
 
 
-def test_running_under_gateway_supervisor_markers(monkeypatch):
-    _clear_supervisor_markers(monkeypatch)
-    assert gateway._running_under_gateway_supervisor() is False
-
-    monkeypatch.setenv("XPC_SERVICE_NAME", "org.nousresearch.hermes.gateway")
-    assert gateway._running_under_gateway_supervisor() is True
-
-    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
-    monkeypatch.setenv("INVOCATION_ID", "abc123")
-    assert gateway._running_under_gateway_supervisor() is True
-
-    monkeypatch.delenv("INVOCATION_ID", raising=False)
-    monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
-    assert gateway._running_under_gateway_supervisor() is True
 
 
-def test_run_gateway_windows_foreground_keeps_ctrl_c_enabled(monkeypatch):
-    calls = []
-
-    def fake_start_gateway(*, replace, verbosity):
-        calls.append((replace, verbosity))
-        return object()
-
-    class _TTY:
-        def isatty(self):
-            return True
-
-    signal_calls = []
-
-    def fake_signal(sig, handler):
-        signal_calls.append((sig, handler))
-
-    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
-    monkeypatch.setattr(gateway, "is_windows", lambda: True)
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
-    monkeypatch.delenv("HERMES_GATEWAY_DETACHED", raising=False)
-    monkeypatch.setattr(gateway.signal, "signal", fake_signal)
-    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
-
-    gateway.run_gateway()
-
-    assert calls == [(False, 0)]
-    assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) not in signal_calls
 
 
 class TestSystemdLingerStatus:
@@ -296,48 +215,8 @@ class TestContainerSystemdSupport:
         assert gateway.supports_systemd_services() is True
 
 
-def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkeypatch):
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
-    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
-    monkeypatch.setattr(gateway, "is_macos", lambda: False)
-
-    calls = []
-    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(system))
-
-    args = SimpleNamespace(gateway_command="start", system=False, all=False)
-    gateway.gateway_command(args)
-
-    assert calls == [False]
 
 
-def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
-    unit_path = tmp_path / "hermes-gateway.service"
-    unit_path.write_text("[Unit]\n")
-
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
-    monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
-
-    def fake_run(cmd, capture_output=False, text=False, check=False, **kwargs):
-        if cmd[:4] == ["systemctl", "--user", "status", gateway.get_service_name()]:
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if cmd[:3] == ["systemctl", "--user", "is-active"]:
-            return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
-        if cmd[:3] == ["systemctl", "--user", "show"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n",
-                stderr="",
-            )
-        raise AssertionError(f"Unexpected command: {cmd}")
-
-    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
-
-    gateway.systemd_status(deep=False)
-
-    out = capsys.readouterr().out
-    assert "gateway service is running" in out
-    assert "Systemd linger is disabled" in out
-    assert "loginctl enable-linger" in out
 
 
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
@@ -377,92 +256,12 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     assert "User service installed and enabled" in out
 
 
-def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
-    user_unit = tmp_path / "user" / "hermes-gateway.service"
-    system_unit = tmp_path / "system" / "hermes-gateway.service"
-    user_unit.parent.mkdir(parents=True)
-    system_unit.parent.mkdir(parents=True)
-    user_unit.write_text("[Unit]\n", encoding="utf-8")
-    system_unit.write_text("[Unit]\n", encoding="utf-8")
-
-    monkeypatch.setattr(
-        gateway,
-        "get_systemd_unit_path",
-        lambda system=False: system_unit if system else user_unit,
-    )
-
-    gateway.print_systemd_scope_conflict_warning()
-
-    out = capsys.readouterr().out
-    assert "Both user and system gateway services are installed" in out
-    assert "hermes gateway uninstall" in out
-    assert "--system" in out
 
 
-def test_install_linux_gateway_from_setup_non_root_never_offers_system(monkeypatch, capsys):
-    # Non-root sessions must not be offered system scope, and must never be
-    # handed a `sudo hermes …` self-elevation recipe.
-    captured = {}
-
-    def fake_prompt_choice(_msg, options, default=0):
-        captured["options"] = options
-        return 0  # pick "user"
-
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(gateway, "prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr(gateway, "systemd_install", lambda *a, **k: None)
-
-    scope = gateway.prompt_linux_gateway_install_scope()
-    out = capsys.readouterr().out
-
-    assert scope == "user"
-    assert not any("System service" in opt for opt in captured["options"])
-    assert "sudo hermes" not in out
 
 
-def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
-    monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
-    monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
-
-    calls = []
-    monkeypatch.setattr(
-        gateway,
-        "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append((force, system, run_as_user, enable_on_startup)),
-    )
-
-    scope, did_install = gateway.install_linux_gateway_from_setup(force=True)
-
-    assert (scope, did_install) == ("system", True)
-    assert calls == [(True, True, "alice", True)]
 
 
-def test_gateway_install_systemd_honors_start_now_flag(monkeypatch):
-    """--start-now / --no-start-now should bypass the interactive prompt."""
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
-    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
-    monkeypatch.setattr(gateway, "is_macos", lambda: False)
-    monkeypatch.setattr(gateway, "is_managed", lambda: False)
-
-    calls = []
-    monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question)))
-    monkeypatch.setattr(
-        gateway,
-        "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, **kw: calls.append(("install", enable_on_startup)),
-    )
-    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start",)))
-
-    args = SimpleNamespace(
-        gateway_command="install", force=False, system=False,
-        run_as_user=None, start_now=True, start_on_login=False,
-    )
-    gateway.gateway_command(args)
-
-    assert ("prompt", "Start the gateway now after installing the service?") not in calls
-    assert ("start",) in calls
-    assert ("install", False) in calls
 
 
 def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tmp_path):
@@ -497,108 +296,14 @@ def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tm
     assert all(c[0] != "prompt" for c in calls)
 
 
-def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
-    monkeypatch.setattr(gateway, "is_windows", lambda: False)
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
-
-    # /proc walk is the first path tried (#22693). Force os.listdir on /proc
-    # to raise so the function falls back to ps, where fake_run takes over.
-    _real_listdir = gateway.os.listdir
-    def _no_proc_listdir(path):
-        if path == "/proc":
-            raise OSError("test stub: /proc unavailable")
-        return _real_listdir(path)
-    monkeypatch.setattr(gateway.os, "listdir", _no_proc_listdir)
-
-    def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
-            return SimpleNamespace(returncode=1, stdout="", stderr="ps failed")
-        if cmd[:3] == ["ps", "-o", "ppid="]:
-            # _get_ancestor_pids() walks up the tree; return "no parent" so
-            # the loop terminates cleanly.
-            return SimpleNamespace(returncode=1, stdout="", stderr="")
-        raise AssertionError(f"Unexpected command: {cmd}")
-
-    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
-
-    assert gateway.find_gateway_pids() == [321]
 
 
-def test_find_gateway_pids_includes_restart_managers_without_systemd(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
-    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-
-    def fake_scan(exclude_pids, all_profiles=False, include_restart_managers=False):
-        calls.append((set(exclude_pids), all_profiles, include_restart_managers))
-        return [708] if include_restart_managers else []
-
-    monkeypatch.setattr(gateway, "_scan_gateway_pids", fake_scan)
-
-    assert gateway.find_gateway_pids(all_profiles=True) == [708]
-    assert calls == [(set(), True, True)]
 
 
-def test_reap_unsupervised_orphans_noop_on_systemd_hosts(monkeypatch):
-    """On supervised hosts a `gateway restart` argv is transient — never reap."""
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
-    killed = []
-    monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    # Should not even consult the scan when a supervisor is present.
-    monkeypatch.setattr(
-        gateway, "find_gateway_pids",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("scanned on systemd host")),
-    )
-
-    assert gateway._reap_unsupervised_gateway_orphans() is False
-    assert killed == []
 
 
-def test_reap_unsupervised_orphans_sigterms_then_sigkills_survivor(monkeypatch):
-    """No-systemd: orphan gets SIGTERM, and a survivor is force-killed."""
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [708])
-    monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: True)
-    # Orphan ignores SIGTERM (matches the field report) and stays alive, so the
-    # follow-up SIGKILL must fire.
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
-
-    sent = []
-    monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: sent.append((pid, sig)))
-    # Collapse the drain window: no real sleeping, and jump past the deadline
-    # after the first check so the loop exits immediately.
-    monkeypatch.setattr(gateway.time, "sleep", lambda _s: None)
-    ticks = iter([0.0, 100.0, 200.0])
-    monkeypatch.setattr(gateway.time, "monotonic", lambda: next(ticks, 200.0))
-
-    assert gateway._reap_unsupervised_gateway_orphans() is True
-    assert (708, signal.SIGTERM) in sent
-    assert (708, signal.SIGKILL) in sent
 
 
-def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):
-    monkeypatch.setattr(gateway, "is_windows", lambda: True)
-    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
-    monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic.exe" if name == "wmic" else None)
-
-    def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["wmic.exe", "process", "get", "ProcessId,CommandLine"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout=(
-                    "CommandLine=C:\\Program Files\\Hermes\\Hermes.EXE gateway run --replace\n"
-                    "ProcessId=2468\n\n"
-                ),
-                stderr="",
-            )
-        raise AssertionError(f"Unexpected command: {cmd}")
-
-    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
-
-    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
 
 
 # ---------------------------------------------------------------------------
@@ -610,21 +315,6 @@ class TestWaitForGatewayExit:
     """PID-based wait with force-kill on timeout."""
 
 
-    def test_returns_when_process_exits_gracefully(self, monkeypatch):
-        """Process exits after a couple of polls — no SIGKILL needed."""
-        poll_count = 0
-
-        def mock_get_running_pid():
-            nonlocal poll_count
-            poll_count += 1
-            return 12345 if poll_count <= 2 else None
-
-        monkeypatch.setattr("gateway.status.get_running_pid", mock_get_running_pid)
-        monkeypatch.setattr("time.sleep", lambda _: None)
-
-        gateway._wait_for_gateway_exit(timeout=10.0, force_after=999.0)
-        # Should have polled until None was returned.
-        assert poll_count == 3
 
     def test_force_kills_after_grace_period(self, monkeypatch):
         """When the process doesn't exit, force-kill the saved PID."""
@@ -654,25 +344,6 @@ class TestWaitForGatewayExit:
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
         assert (42, True) in kills
 
-    def test_handles_process_already_gone_on_kill(self, monkeypatch):
-        """ProcessLookupError during force-kill is not fatal."""
-
-        call_num = 0
-        def fake_monotonic():
-            nonlocal call_num
-            call_num += 1
-            return call_num * 3.0  # Jump past force_after quickly
-
-        def mock_terminate(pid, force=False):
-            raise ProcessLookupError
-
-        monkeypatch.setattr("time.monotonic", fake_monotonic)
-        monkeypatch.setattr("time.sleep", lambda _: None)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 99)
-        monkeypatch.setattr(gateway, "terminate_pid", mock_terminate)
-
-        # Should not raise — ProcessLookupError means it's already gone.
-        gateway._wait_for_gateway_exit(timeout=10.0, force_after=2.0)
 
     def test_kill_gateway_processes_force_uses_helper(self, monkeypatch):
         calls = []

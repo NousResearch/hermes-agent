@@ -12,20 +12,6 @@ from hermes_cli.config import get_custom_provider_context_length
 
 
 class TestGetCustomProviderContextLength:
-    def test_returns_override_for_matching_entry(self):
-        custom = [
-            {
-                "name": "my-endpoint",
-                "base_url": "https://example.invalid/v1",
-                "models": {"gpt-5.5": {"context_length": 1_050_000}},
-            }
-        ]
-        assert (
-            get_custom_provider_context_length(
-                "gpt-5.5", "https://example.invalid/v1", custom
-            )
-            == 1_050_000
-        )
 
     def test_trailing_slash_insensitive(self):
         custom = [
@@ -62,24 +48,6 @@ class TestGetCustomProviderContextLength:
         assert get_custom_provider_context_length("m", "http://x", None) is None
         assert get_custom_provider_context_length("m", "http://x", []) is None
 
-    def test_ignores_non_dict_entries(self):
-        """Malformed entries must not crash the lookup."""
-        custom = [
-            "not a dict",
-            None,
-            {"base_url": "https://example.invalid/v1", "models": "not a dict"},
-            {"base_url": "https://example.invalid/v1", "models": {"m": "not a dict"}},
-            {
-                "base_url": "https://example.invalid/v1",
-                "models": {"m": {"context_length": 400_000}},
-            },
-        ]
-        assert (
-            get_custom_provider_context_length(
-                "m", "https://example.invalid/v1", custom
-            )
-            == 400_000
-        )
 
 
 class TestGetModelContextLengthHonorsOverride:

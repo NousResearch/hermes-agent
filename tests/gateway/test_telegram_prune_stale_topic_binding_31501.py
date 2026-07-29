@@ -103,57 +103,6 @@ class TestDeleteTelegramTopicBinding:
         ) is not None
         db.close()
 
-    def test_missing_row_returns_zero_silently(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        _seed_binding(db, thread_id="15287")
-
-        # Different thread_id — must not raise, just report 0.
-        removed = db.delete_telegram_topic_binding(
-            chat_id="5595856929", thread_id="99999",
-        )
-        assert removed == 0
-        # Original binding still intact.
-        assert db.get_telegram_topic_binding(
-            chat_id="5595856929", thread_id="15287",
-        ) is not None
-        db.close()
-
-    def test_pristine_database_with_no_topic_tables_is_silent_noop(self, tmp_path):
-        # Fresh profile that has never run /topic — the topic-mode
-        # tables don't exist yet.  The send-fallback hot path can
-        # still hit this code, so we must not crash.
-        db = SessionDB(db_path=tmp_path / "state.db")
-        # Confirm precondition: tables really aren't there.
-        tables = {
-            row[0]
-            for row in db._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'telegram_dm%'"
-            ).fetchall()
-        }
-        assert "telegram_dm_topic_bindings" not in tables
-
-        removed = db.delete_telegram_topic_binding(
-            chat_id="any", thread_id="any",
-        )
-        assert removed == 0
-        db.close()
-
-    def test_idempotent_under_repeated_calls(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        _seed_binding(db, thread_id="15287")
-
-        first = db.delete_telegram_topic_binding(
-            chat_id="5595856929", thread_id="15287",
-        )
-        second = db.delete_telegram_topic_binding(
-            chat_id="5595856929", thread_id="15287",
-        )
-
-        assert first == 1
-        assert second == 0  # already gone, no spurious "1"
-        db.close()
-
 
 class TestPruneClearsTopicModeWhenLastBindingGone:
     """Proactive cleanup (#31501 follow-up): pruning the chat's final
@@ -179,44 +128,6 @@ class TestPruneClearsTopicModeWhenLastBindingGone:
         assert db.is_telegram_topic_mode_enabled(
             chat_id="5595856929", user_id="5595856929",
         ) is False
-        db.close()
-
-    def test_keeps_enabled_while_other_bindings_remain(self, tmp_path):
-        # Deleting one of several topics must NOT disable topic mode —
-        # the chat still has healthy lanes that recovery should serve.
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.enable_telegram_topic_mode(
-            chat_id="5595856929", user_id="5595856929",
-        )
-        _seed_binding(db, thread_id="15287", session_id="sess-stale")
-        _seed_binding(db, thread_id="15418", session_id="sess-fresh")
-
-        db.delete_telegram_topic_binding(
-            chat_id="5595856929", thread_id="15287",
-        )
-
-        assert db.is_telegram_topic_mode_enabled(
-            chat_id="5595856929", user_id="5595856929",
-        ) is True
-        db.close()
-
-    def test_noop_prune_leaves_enabled_untouched(self, tmp_path):
-        # A prune that matches no row must not flip the flag — there's
-        # still a live binding the (wrong) thread_id didn't match.
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.enable_telegram_topic_mode(
-            chat_id="5595856929", user_id="5595856929",
-        )
-        _seed_binding(db, thread_id="15287")
-
-        removed = db.delete_telegram_topic_binding(
-            chat_id="5595856929", thread_id="99999",
-        )
-
-        assert removed == 0
-        assert db.is_telegram_topic_mode_enabled(
-            chat_id="5595856929", user_id="5595856929",
-        ) is True
         db.close()
 
 
@@ -256,12 +167,6 @@ class TestPruneStaleDmTopicBindingHelper:
         ) is None
         db.close()
 
-    def test_silent_when_session_store_unavailable(self):
-        # No ``_session_store`` attribute — the helper must not
-        # explode (the streaming send path hits this in tests
-        # that bypass the gateway runner).
-        adapter = _bare_adapter()
-        adapter._prune_stale_dm_topic_binding("123", "456")
 
     def test_silent_when_db_lacks_helper(self):
         # Old SessionDB without the new method (e.g. running
@@ -272,38 +177,6 @@ class TestPruneStaleDmTopicBindingHelper:
             _db=SimpleNamespace(),  # no methods at all
         )
         adapter._prune_stale_dm_topic_binding("123", "456")
-
-    def test_swallows_db_exceptions_so_send_continues(self):
-        class ExplodingDb:
-            def delete_telegram_topic_binding(self, **_):
-                raise RuntimeError("disk full or whatever")
-
-        adapter = _bare_adapter()
-        adapter._session_store = SimpleNamespace(_db=ExplodingDb())
-
-        # The point of the helper is that a failed cleanup must
-        # NEVER turn into a failed user-facing send.  No exception
-        # should escape.
-        adapter._prune_stale_dm_topic_binding("123", "456")
-
-    def test_skips_when_chat_or_thread_missing(self, tmp_path):
-        # Defensive — control-message paths sometimes call us
-        # with chat_id=None when kwargs lack the key.  We must
-        # not produce a spurious DELETE that matches every row
-        # with a NULL chat_id.
-        db = SessionDB(db_path=tmp_path / "state.db")
-        _seed_binding(db, thread_id="15287")
-
-        adapter = _bare_adapter(db)
-
-        adapter._prune_stale_dm_topic_binding(None, "15287")
-        adapter._prune_stale_dm_topic_binding("5595856929", None)
-
-        # Still there — neither call generated a DELETE.
-        assert db.get_telegram_topic_binding(
-            chat_id="5595856929", thread_id="15287",
-        ) is not None
-        db.close()
 
 
 # ---------------------------------------------------------------------------

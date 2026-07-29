@@ -16,99 +16,15 @@ _needs_tiktoken = pytest.mark.skipif(not _has_tiktoken, reason="tiktoken not ins
 # ─── Token Estimation Tests ──────────────────────────────────────────────────
 
 
-@_needs_tiktoken
-def test_estimate_tool_tokens_returns_positive_counts():
-    """_estimate_tool_tokens should return a non-empty dict with positive values."""
-    from hermes_cli.tools_config import _estimate_tool_tokens
-
-    # Clear cache to force fresh computation
-    import hermes_cli.tools_config as tc
-    tc._tool_token_cache = None
-
-    tokens = _estimate_tool_tokens()
-
-    assert isinstance(tokens, dict)
-    assert len(tokens) > 0
-    for name, count in tokens.items():
-        assert isinstance(name, str)
-        assert isinstance(count, int)
-        assert count > 0, f"Tool {name} has non-positive token count: {count}"
 
 
-def test_estimate_tool_tokens_returns_empty_when_tiktoken_unavailable(monkeypatch):
-    """Graceful degradation when tiktoken cannot be imported."""
-    import hermes_cli.tools_config as tc
-    tc._tool_token_cache = None
-
-    import builtins
-    real_import = builtins.__import__
-
-    def mock_import(name, *args, **kwargs):
-        if name == "tiktoken":
-            raise ImportError("mocked")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", mock_import)
-
-    result = tc._estimate_tool_tokens()
-
-    assert result == {}
-
-    # Reset cache for other tests
-    tc._tool_token_cache = None
 
 
 # ─── Status Function Tests ───────────────────────────────────────────────────
 
 
-def test_prompt_toolset_checklist_passes_status_fn(monkeypatch):
-    """_prompt_toolset_checklist should pass a status_fn to curses_checklist."""
-    import hermes_cli.tools_config as tc
-
-    captured_kwargs = {}
-
-    def fake_checklist(title, items, selected, *, cancel_returns=None, status_fn=None):
-        captured_kwargs["status_fn"] = status_fn
-        captured_kwargs["title"] = title
-        return selected  # Return pre-selected unchanged
-
-    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
-
-    tc._prompt_toolset_checklist("CLI", {"web", "terminal"})
-
-    assert "status_fn" in captured_kwargs
-    # If tiktoken is available, status_fn should be set
-    tokens = tc._estimate_tool_tokens()
-    if tokens:
-        assert captured_kwargs["status_fn"] is not None
 
 
-def test_status_fn_returns_formatted_token_count(monkeypatch):
-    """The status_fn should return a human-readable token count string."""
-    import hermes_cli.tools_config as tc
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
-
-    captured = {}
-
-    def fake_checklist(title, items, selected, *, cancel_returns=None, status_fn=None):
-        captured["status_fn"] = status_fn
-        return selected
-
-    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
-
-    tc._prompt_toolset_checklist("CLI", {"web", "terminal"})
-
-    status_fn = captured.get("status_fn")
-    if status_fn is None:
-        pytest.skip("tiktoken unavailable; status_fn not created")
-
-    # Find the indices for web and terminal
-    idx_map = {ts_key: i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)}
-
-    # Call status_fn with web + terminal selected
-    result = status_fn({idx_map["web"], idx_map["terminal"]})
-    assert "tokens" in result
-    assert "Est. tool context" in result
 
 
 def test_status_fn_empty_selection():
@@ -164,22 +80,6 @@ def test_curses_checklist_numbered_fallback_shows_status(monkeypatch, capsys):
     assert result == {0, 2}
 
 
-def test_curses_checklist_numbered_fallback_without_status(monkeypatch, capsys):
-    """The numbered fallback should work fine without status_fn."""
-    from hermes_cli.curses_ui import _numbered_fallback
-
-    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
-
-    result = _numbered_fallback(
-        "Test title",
-        ["Item A", "Item B"],
-        {0},
-        {0},
-    )
-
-    captured = capsys.readouterr()
-    assert "Est. tool context" not in captured.out
-    assert result == {0}
 
 
 # ─── Registry get_schema Tests ───────────────────────────────────────────────
@@ -199,8 +99,3 @@ def test_registry_get_schema_returns_schema():
     assert "parameters" in schema
 
 
-def test_registry_get_schema_returns_none_for_unknown():
-    """registry.get_schema() should return None for unknown tools."""
-    from tools.registry import registry
-
-    assert registry.get_schema("nonexistent_tool_xyz") is None

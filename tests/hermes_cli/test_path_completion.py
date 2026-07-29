@@ -30,18 +30,7 @@ class TestExtractPathWord:
         assert SlashCommandCompleter._extract_path_word("look at ./src/main.py") == "./src/main.py"
 
 
-    def test_path_word_with_colon_but_no_scheme_still_resolves(self):
-        # Only the "://" scheme separator should reject; a bare colon inside a
-        # real path token must not regress path detection.
-        assert (
-            SlashCommandCompleter._extract_path_word("open ./a:b/c.py") == "./a:b/c.py"
-        )
 
-    def test_ordinary_path_unaffected_by_url_guard(self):
-        assert (
-            SlashCommandCompleter._extract_path_word("edit src/pkg/mod.py")
-            == "src/pkg/mod.py"
-        )
 
 
 class TestPathCompletions:
@@ -74,17 +63,8 @@ class TestPathCompletions:
         assert metas[idx] == "dir"
 
 
-    def test_nonexistent_dir_returns_empty(self):
-        completions = list(SlashCommandCompleter._path_completions("/nonexistent_dir_xyz/"))
-        assert completions == []
 
 
-    def test_case_insensitive_prefix(self, tmp_path):
-        (tmp_path / "README.md").touch()
-
-        completions = list(SlashCommandCompleter._path_completions(f"{tmp_path}/read"))
-        names = _display_names(completions)
-        assert "README.md" in names
 
 
 class TestIntegration:

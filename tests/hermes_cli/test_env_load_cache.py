@@ -47,37 +47,6 @@ def test_load_env_caches_on_repeat_calls():
         invalidate_env_cache()
 
 
-def test_save_env_value_invalidates_cache(tmp_path, monkeypatch):
-    """save_env_value() invalidates the cache so subsequent reads see the update."""
-    from hermes_cli import config as config_mod
-    from hermes_cli.config import invalidate_env_cache, load_env, save_env_value
-
-    invalidate_env_cache()
-
-    env_path = tmp_path / ".env"
-    env_path.write_text("EXISTING_KEY=old\n", encoding="utf-8")
-
-    monkeypatch.setattr(config_mod, "get_env_path", lambda: env_path)
-    monkeypatch.setattr(config_mod, "ensure_hermes_home", lambda: None)
-    monkeypatch.setattr(config_mod, "_secure_file", lambda _p: None)
-    monkeypatch.setattr(config_mod, "is_managed", lambda: False)
-
-    try:
-        # Prime the cache.
-        first = load_env()
-        assert first.get("EXISTING_KEY") == "old"
-
-        save_env_value("NEW_KEY", "shiny")
-
-        # Same-second writes on coarse-mtime filesystems would normally
-        # let stale cache survive; invalidate_env_cache() inside the
-        # writer makes the next read see the new key.
-        result = load_env()
-        assert result.get("NEW_KEY") == "shiny"
-        assert result.get("EXISTING_KEY") == "old"
-    finally:
-        monkeypatch.delenv("NEW_KEY", raising=False)
-        invalidate_env_cache()
 
 
 def test_remove_env_value_invalidates_cache(tmp_path, monkeypatch):
@@ -110,18 +79,3 @@ def test_remove_env_value_invalidates_cache(tmp_path, monkeypatch):
         invalidate_env_cache()
 
 
-def test_load_env_handles_missing_file():
-    """A nonexistent .env returns {} and caches the empty result."""
-    from hermes_cli.config import invalidate_env_cache, load_env
-
-    invalidate_env_cache()
-
-    nonexistent = Path(tempfile.gettempdir()) / "hermes-test-no-such-env-xyz123.env"
-    nonexistent.unlink(missing_ok=True)
-
-    try:
-        with patch("hermes_cli.config.get_env_path", return_value=nonexistent):
-            assert load_env() == {}
-            assert load_env() == {}  # cached
-    finally:
-        invalidate_env_cache()

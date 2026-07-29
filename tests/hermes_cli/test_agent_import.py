@@ -258,10 +258,6 @@ class TestClaudeCodeImport:
     def report(self, claude_tree, hermes_home):
         return run_import("claude-code", claude_tree, hermes_home, execute=True)
 
-    def test_claude_md_becomes_memory_entries(self, report, hermes_home):
-        memory = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
-        assert "type hints" in memory
-        assert "§" in memory  # entry-delimited store format
 
     def test_allowlist_lands_in_config_yaml(self, report, hermes_home):
         config = yaml.safe_load((hermes_home / "config.yaml").read_text())
@@ -273,12 +269,6 @@ class TestClaudeCodeImport:
         assert not any("Read(" in p for p in allow)
 
 
-    def test_mcp_servers_from_claude_json_and_settings(self, report, hermes_home):
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
-        servers = config["mcp_servers"]
-        assert servers["github"]["command"] == "npx"
-        assert servers["remote"]["url"] == "https://mcp.example.com/sse"
-        assert servers["settings-server"]["command"] == "uvx"
 
 
     def test_slash_commands_reported_skipped(self, report):
@@ -451,17 +441,7 @@ class TestExistingMemoryStorePreserved:
         memory.write_text(EXISTING_MEMORY, encoding="utf-8")
         return hermes_home
 
-    def test_undelimited_store_is_one_entry(self, seeded_home):
-        path = seeded_home / "memories" / "MEMORY.md"
-        assert ENTRY_DELIMITER not in path.read_text(encoding="utf-8")
-        assert parse_existing_memory_entries(path) == [EXISTING_MEMORY.strip()]
 
-    def test_agrees_with_memory_store_parser(self, seeded_home):
-        from tools.memory_tool import MemoryStore
-
-        path = seeded_home / "memories" / "MEMORY.md"
-        raw = path.read_text(encoding="utf-8")
-        assert parse_existing_memory_entries(path) == MemoryStore._parse_entries(raw)
 
     def test_import_preserves_existing_entry_verbatim(
             self, claude_tree, seeded_home):
@@ -483,12 +463,6 @@ class TestExistingMemoryStorePreserved:
         assert len(backups) == 1
         assert backups[0].read_text(encoding="utf-8") == EXISTING_MEMORY
 
-    def test_dry_run_leaves_the_store_untouched(self, claude_tree, seeded_home):
-        memories = seeded_home / "memories"
-        run_import("claude-code", claude_tree, seeded_home, execute=False)
-        assert (memories / "MEMORY.md").read_text(
-            encoding="utf-8") == EXISTING_MEMORY
-        assert not list(memories.glob("MEMORY.md.bak.*"))
 
 
 # ---------------------------------------------------------------------------

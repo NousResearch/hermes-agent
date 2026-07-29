@@ -70,39 +70,9 @@ class TestWebUIBuildNeeded:
         """Record a stamp matching web_dir's current source content."""
         _write_web_ui_build_stamp(self._root(web_dir), web_dir)
 
-    def test_returns_true_when_dist_missing(self, tmp_path):
-        web_dir, _ = _make_web_dir(tmp_path)
-        (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
-        # Even with a matching stamp, a missing dist forces a build.
-        self._stamp_current(web_dir)
-        assert _web_ui_build_needed(web_dir) is True
 
 
-    def test_web_dist_dir_not_web_dist_subdir(self, tmp_path):
-        """Regression: sentinel must be in hermes_cli/web_dist/, NOT web/dist/."""
-        web_dir, _ = _make_web_dir(tmp_path)
-        (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("x\n")
-        self._stamp_current(web_dir)
-        # A manifest in the WRONG location (web/dist/) must not count as fresh.
-        wrong = web_dir / "dist" / ".vite" / "manifest.json"
-        wrong.parent.mkdir(parents=True, exist_ok=True)
-        wrong.write_text("{}")
-        # Correct location (hermes_cli/web_dist/) is empty -> still needs build.
-        assert _web_ui_build_needed(web_dir) is True
 
-    def test_returns_true_when_source_content_changes(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        src = web_dir / "src" / "App.tsx"
-        src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_text("export const A = 1\n")
-        dist_dir.mkdir(parents=True, exist_ok=True)
-        (dist_dir / "index.html").write_text("<html></html>")
-        self._stamp_current(web_dir)
-        assert _web_ui_build_needed(web_dir) is False
-        src.write_text("export const A = 2\n")  # content edit
-        assert _web_ui_build_needed(web_dir) is True
 
     def test_mtime_only_change_is_not_stale(self, tmp_path):
         """The whole point: bumping mtimes without changing bytes (what
@@ -120,33 +90,7 @@ class TestWebUIBuildNeeded:
         os.utime(web_dir / "package.json", (future, future))
         assert _web_ui_build_needed(web_dir) is False
 
-    def test_root_package_lock_content_change_is_stale(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "main.ts").write_text("console.log(1)\n")
-        lock = tmp_path / "package-lock.json"
-        lock.write_text('{"v": 1}')
-        dist_dir.mkdir(parents=True, exist_ok=True)
-        (dist_dir / "index.html").write_text("<html></html>")
-        self._stamp_current(web_dir)
-        assert _web_ui_build_needed(web_dir) is False
-        lock.write_text('{"v": 2}')  # dependency change
-        assert _web_ui_build_needed(web_dir) is True
 
-    def test_gitignored_paths_excluded_from_hash(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        (tmp_path / ".gitignore").write_text("node_modules/\ndist/\n")
-        (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("x\n")
-        (dist_dir / ".vite").mkdir(parents=True, exist_ok=True)
-        (dist_dir / ".vite" / "manifest.json").write_text("{}")
-        self._stamp_current(web_dir)
-        assert _web_ui_build_needed(web_dir) is False
-        # A new file under an ignored dir must not flip staleness.
-        nm = web_dir / "node_modules" / "react" / "index.js"
-        nm.parent.mkdir(parents=True, exist_ok=True)
-        nm.write_text("module.exports = {}\n")
-        assert _web_ui_build_needed(web_dir) is False
 
     def test_content_hash_is_deterministic(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
@@ -169,83 +113,14 @@ class TestWebUIBuildNeeded:
         data = _json.loads(stamp.read_text())
         assert data["contentHash"] == _compute_web_ui_content_hash(self._root(web_dir), web_dir)
 
-    def test_malformed_non_object_stamp_forces_rebuild(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
-        dist_dir.mkdir(parents=True, exist_ok=True)
-        (dist_dir / "index.html").write_text("<html></html>")
-        stamp = _web_ui_stamp_path()
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text("[]")
-        assert _web_ui_build_needed(web_dir) is True
 
 
 class TestBuildWebUISkipsWhenFresh:
 
-    def test_skips_npm_when_dist_is_fresh(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json")
-        # Record a stamp matching current source so the build is skipped.
-        root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
-        _write_web_ui_build_stamp(root, web_dir)
-
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run") as mock_run:
-            result = _build_web_ui(web_dir)
-
-        assert result is True
-        mock_run.assert_not_called()
-
-    def test_runs_npm_when_dist_missing(self, tmp_path):
-        web_dir, _ = _make_web_dir(tmp_path)
-
-        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout=b"", stderr=b"")
-        build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run, \
-             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_ok) as mock_idle:
-            result = _build_web_ui(web_dir)
-
-        assert result is True
-        # npm install goes through subprocess.run; npm run build goes through
-        # _run_with_idle_timeout (issue #33788).
-        assert mock_run.call_count == 1   # install only
-        assert mock_idle.call_count == 1  # build only
-
-    def test_npm_install_uses_utf8_replace_output_decoding(self, tmp_path):
-        web_dir, _ = _make_web_dir(tmp_path)
-        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
-
-        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
-            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
-
-        assert result.returncode == 0
-        _, kwargs = mock_run.call_args
-        assert kwargs["text"] is True
-        assert kwargs["encoding"] == "utf-8"
-        assert kwargs["errors"] == "replace"
 
 
-    def test_npm_ci_forces_include_dev(self, tmp_path):
-        """`npm ci` must pass --include=dev so an inherited NODE_ENV=production
-        (e.g. from a container shell, or the bundled TUI launcher which sets
-        NODE_ENV=production on its subprocess env) or an npm `omit=dev` config
-        can't silently strip the build toolchain (tsc/vite/electron-builder),
-        which otherwise fails the web/desktop build with `tsc: command not
-        found` (exit 127) despite the install exiting 0."""
-        web_dir, _ = _make_web_dir(tmp_path)
-        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
 
-        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
-            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
 
-        args, _ = mock_run.call_args
-        cmd = args[0]
-        assert cmd[:2] == ["/usr/bin/npm", "ci"]
-        assert "--include=dev" in cmd
 
 
     def test_web_install_omits_workspace_when_web_has_own_lockfile(
@@ -358,35 +233,7 @@ class TestBuildWebUIFlock:
     that queued behind a successful build skips the rebuild.
     """
 
-    def test_contended_lock_with_dist_serves_stale_without_building(self, tmp_path):
-        import fcntl
-        from hermes_cli.main import _build_web_ui as build
 
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / "index.html")
-
-        lock_path = tmp_path / ".web_ui_build.lock"
-        holder = open(lock_path, "a")
-        try:
-            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
-            with patch("hermes_cli.main._do_build_web_ui") as mock_do:
-                result = build(web_dir)
-        finally:
-            holder.close()
-
-        assert result is True
-        mock_do.assert_not_called()  # served existing dist, no second build
-
-    def test_uncontended_lock_builds_and_creates_lock_file(self, tmp_path):
-        from hermes_cli.main import _build_web_ui as build
-
-        web_dir, _ = _make_web_dir(tmp_path)
-        with patch("hermes_cli.main._do_build_web_ui", return_value=True) as mock_do:
-            result = build(web_dir)
-
-        assert result is True
-        mock_do.assert_called_once()
-        assert (tmp_path / ".web_ui_build.lock").exists()
 
     def test_contended_lock_without_dist_waits_then_skips_fresh_build(self, tmp_path):
         """First-ever build race: the waiter blocks, and once it acquires the

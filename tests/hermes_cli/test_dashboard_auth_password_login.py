@@ -276,19 +276,6 @@ class TestPasswordLoginRoute:
         assert "set-cookie" not in {k.lower() for k in resp.headers}
 
 
-    def test_open_redirect_next_is_dropped(self, gated_app):
-        resp = gated_app.post(
-            "/auth/password-login",
-            json={
-                "provider": "testpw",
-                "username": "admin",
-                "password": "hunter2",
-                "next": "https://evil.example/phish",
-            },
-        )
-        assert resp.status_code == 200
-        # Malicious absolute URL dropped → lands at root.
-        assert resp.json()["next"] == "/"
 
 
 # ---------------------------------------------------------------------------

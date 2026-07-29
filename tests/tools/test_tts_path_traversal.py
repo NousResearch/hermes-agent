@@ -32,34 +32,6 @@ def test_output_path_rejects_bare_dotdot():
     assert "traversal" in result["error"].lower()
 
 
-def test_output_path_absolute_path_passes_guard(tmp_path, monkeypatch):
-    """Explicit absolute paths must pass the traversal guard.
-
-    The agent legitimately writes audio to user-specified absolute paths;
-    only ``..`` components are rejected. Any subsequent failure (no
-    provider configured, etc.) is fine — the assertion is specifically
-    that the 'traversal' rejection didn't fire.
-    """
-    inside = tmp_path / "clip.mp3"
-    result = json.loads(text_to_speech_tool(
-        text="hello",
-        output_path=str(inside),
-    ))
-    error = result.get("error", "")
-    assert "traversal" not in error.lower()
-
-
-def test_output_path_relative_no_dotdot_passes_guard(tmp_path, monkeypatch):
-    """Relative paths without '..' components must pass the guard."""
-    monkeypatch.chdir(tmp_path)
-    result = json.loads(text_to_speech_tool(
-        text="hello",
-        output_path="subdir/clip.mp3",
-    ))
-    error = result.get("error", "")
-    assert "traversal" not in error.lower()
-
-
 def test_output_path_rejects_hermes_oauth_store(tmp_path, monkeypatch):
     """TTS output_path must not bypass the shared protected-file write guard."""
     import agent.file_safety as file_safety

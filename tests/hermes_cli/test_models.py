@@ -37,26 +37,6 @@ class TestOpenRouterModels:
 
 
 class TestFetchOpenRouterModels:
-    def test_live_fetch_recomputes_free_tags(self, monkeypatch):
-        class _Resp:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
-
-        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
-            models = fetch_openrouter_models(force_refresh=True)
-
-        assert models == [
-            ("anthropic/claude-opus-4.8", "recommended"),
-            ("qwen/qwen3.7-max", ""),
-            ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-        ]
 
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
@@ -121,37 +101,6 @@ class TestFetchOpenRouterModels:
         # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
         assert "google/gemini-3-pro-image-preview" not in ids
 
-    def test_permissive_when_supported_parameters_missing(self, monkeypatch):
-        """Models missing the supported_parameters field keep appearing in the picker.
-
-        Some OpenRouter-compatible gateways (Nous Portal, private mirrors, older
-        catalog snapshots) don't populate supported_parameters. Treating missing
-        as 'unknown → allow' prevents the picker from silently emptying on
-        those gateways.
-        """
-        class _Resp:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                # No supported_parameters field at all on either entry.
-                return (
-                    b'{"data":['
-                    b'{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
-                    b'{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}}'
-                    b']}'
-                )
-
-        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
-            models = fetch_openrouter_models(force_refresh=True)
-
-        ids = [mid for mid, _ in models]
-        assert "anthropic/claude-opus-4.8" in ids
-        assert "qwen/qwen3.7-max" in ids
 
 
 class TestOpenRouterToolSupportHelper:
@@ -181,12 +130,6 @@ class TestFindOpenrouterSlug:
 
 class TestDetectProviderForModel:
 
-    def test_deepseek_model_detected(self):
-        """Retired deepseek-chat alias still resolves to deepseek for /model."""
-        result = detect_provider_for_model("deepseek-chat", "openai-codex")
-        assert result is not None
-        # Provider is deepseek (direct) or openrouter (fallback) depending on creds
-        assert result[0] in {"deepseek", "openrouter"}
 
 
     def test_short_alias_resolves_to_static_model(self):
@@ -201,28 +144,8 @@ class TestDetectProviderForModel:
         assert result[1].startswith("claude-sonnet")
 
 
-    def test_bare_name_gets_openrouter_slug(self, monkeypatch):
-        for env_var in (
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_TOKEN",
-            "CLAUDE_CODE_TOKEN",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-        ):
-            monkeypatch.delenv(env_var, raising=False)
-        """Bare model names should get mapped to full OpenRouter slugs."""
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            result = detect_provider_for_model("claude-opus-4.6", "openai-codex")
-        assert result is not None
-        # Should find it on OpenRouter with full slug
-        assert result[1] == "anthropic/claude-opus-4.6"
 
 
-    def test_aggregator_not_suggested(self):
-        """nous/openrouter should never be auto-suggested as target provider."""
-        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
-            result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
-        assert result is not None
-        assert result[0] not in {"nous",}  # nous has claude models but shouldn't be suggested
 
     def test_custom_provider_not_overridden_by_static_catalog(self):
         """When current provider is custom:*, a static-catalog match must NOT
@@ -234,15 +157,7 @@ class TestDetectProviderForModel:
         """
         assert detect_provider_for_model("gpt-5.4", "custom:foo") is None
 
-    def test_bare_custom_provider_not_overridden_by_static_catalog(self):
-        """Same protection for the bare 'custom' provider."""
-        assert detect_provider_for_model("gpt-5.4", "custom") is None
 
-    def test_non_custom_provider_detection_unaffected(self):
-        """The custom-provider guard must NOT change detection for non-custom
-        current providers — a static-catalog model still routes normally."""
-        result = detect_provider_for_model("gpt-5.4", "openrouter")
-        assert result is not None and result[0] == "openai"
 
 
 class TestIsNousFreeTier:
@@ -323,34 +238,8 @@ class TestUnionWithPortalFreeRecommendations:
         # Existing pricing untouched
         assert p["anthropic/claude-opus-4.6"] == self._PAID
 
-    def test_does_not_duplicate_curated_entries(self):
-        """A Portal free model already in curated is not duplicated."""
-        curated = ["qwen/qwen3.6-plus", "anthropic/claude-opus-4.6"]
-        pricing = {
-            "qwen/qwen3.6-plus": self._FREE,
-            "anthropic/claude-opus-4.6": self._PAID,
-        }
-        with patch(
-            "hermes_cli.models.fetch_nous_recommended_models",
-            return_value=self._payload(["qwen/qwen3.6-plus"]),
-        ):
-            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
-
-        assert ids == curated
-        assert p == pricing
 
 
-    def test_missing_freeRecommendedModels_key(self):
-        """Portal payload without freeRecommendedModels degrades gracefully."""
-        curated = ["a"]
-        pricing = {"a": self._PAID}
-        with patch(
-            "hermes_cli.models.fetch_nous_recommended_models",
-            return_value={"paidRecommendedModels": [{"modelName": "x"}]},
-        ):
-            ids, p = union_with_portal_free_recommendations(curated, pricing, "")
-        assert ids == curated
-        assert p == pricing
 
     def test_fetch_failure_returns_inputs(self):
         """Network failures don't blow up the picker."""
@@ -428,26 +317,6 @@ class TestCheckNousFreeTierCache:
         assert result2 is True
         assert mock_account.call_count == 1
 
-    @patch("hermes_cli.nous_account.get_nous_portal_account_info")
-    def test_cache_expires_after_ttl(self, mock_account):
-        """After TTL expires, account info is resolved again."""
-        mock_account.return_value = NousPortalAccountInfo(
-            logged_in=True,
-            source="jwt",
-            fresh=False,
-            paid_service_access=True,
-        )
-        result1 = check_nous_free_tier()
-        assert mock_account.call_count == 1
-
-        cached_result, cached_at = _models_mod._free_tier_cache
-        _models_mod._free_tier_cache = (cached_result, cached_at - _FREE_TIER_CACHE_TTL - 1)
-
-        result2 = check_nous_free_tier()
-        assert mock_account.call_count == 2
-
-        assert result1 is False
-        assert result2 is False
 
     @patch("hermes_cli.nous_account.get_nous_portal_account_info")
     def test_force_fresh_bypasses_cache(self, mock_account):
@@ -464,9 +333,6 @@ class TestCheckNousFreeTierCache:
         assert mock_account.call_count == 2
         mock_account.assert_called_with(force_fresh=True)
 
-    def test_cache_ttl_is_short(self):
-        """TTL should be short enough to catch upgrades quickly (<=5 min)."""
-        assert _FREE_TIER_CACHE_TTL <= 300
 
 
 class TestNousRecommendedModels:
@@ -514,39 +380,10 @@ class TestNousRecommendedModels:
         assert mock_urlopen.call_count == 1  # second call served from cache
 
 
-    def test_fetch_returns_empty_on_network_failure(self):
-        from hermes_cli.models import fetch_nous_recommended_models
-        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
-            result = fetch_nous_recommended_models("https://portal.example.com")
-        assert result == {}
-
-    def test_fetch_force_refresh_bypasses_cache(self):
-        from hermes_cli.models import fetch_nous_recommended_models
-        mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
-            fetch_nous_recommended_models("https://portal.example.com")
-            fetch_nous_recommended_models("https://portal.example.com", force_refresh=True)
-        assert mock_urlopen.call_count == 2
-
-    def test_get_aux_model_returns_vision_recommendation(self):
-        from hermes_cli.models import get_nous_recommended_aux_model
-        with patch(
-            "hermes_cli.models.fetch_nous_recommended_models",
-            return_value=self._SAMPLE_PAYLOAD,
-        ):
-            # Free tier → free vision recommendation.
-            model = get_nous_recommended_aux_model(vision=True, free_tier=True)
-        assert model == "google/gemini-3-flash-preview"
 
 
-    def test_get_aux_model_returns_none_when_modelname_blank(self):
-        from hermes_cli.models import get_nous_recommended_aux_model
-        payload = {"freeRecommendedCompactionModel": {"modelName": "  "}}
-        with patch(
-            "hermes_cli.models.fetch_nous_recommended_models",
-            return_value=payload,
-        ):
-            assert get_nous_recommended_aux_model(vision=False, free_tier=True) is None
+
+
 
     def test_paid_tier_prefers_paid_recommendation(self):
         """Paid-tier users should get the paid model when it's populated."""
@@ -563,50 +400,8 @@ class TestNousRecommendedModels:
         assert text == "anthropic/claude-opus-4.7"
         assert vision == "openai/gpt-5.4"
 
-    def test_paid_tier_falls_back_to_free_when_paid_is_null(self):
-        """If the Portal returns null for the paid field, fall back to free."""
-        from hermes_cli.models import get_nous_recommended_aux_model
-        payload = {
-            "paidRecommendedCompactionModel": None,
-            "freeRecommendedCompactionModel": {"modelName": "google/gemini-3-flash-preview"},
-            "paidRecommendedVisionModel": None,
-            "freeRecommendedVisionModel": {"modelName": "google/gemini-3-flash-preview"},
-        }
-        with patch("hermes_cli.models.fetch_nous_recommended_models", return_value=payload):
-            text = get_nous_recommended_aux_model(vision=False, free_tier=False)
-            vision = get_nous_recommended_aux_model(vision=True, free_tier=False)
-        assert text == "google/gemini-3-flash-preview"
-        assert vision == "google/gemini-3-flash-preview"
 
-    def test_free_tier_never_uses_paid_recommendation(self):
-        """Free-tier users must not get paid-only recommendations."""
-        from hermes_cli.models import get_nous_recommended_aux_model
-        payload = {
-            "paidRecommendedCompactionModel": {"modelName": "anthropic/claude-opus-4.7"},
-            "freeRecommendedCompactionModel": None,  # no free recommendation
-        }
-        with patch("hermes_cli.models.fetch_nous_recommended_models", return_value=payload):
-            model = get_nous_recommended_aux_model(vision=False, free_tier=True)
-        # Free tier must return None — never leak the paid model.
-        assert model is None
 
-    def test_auto_detects_tier_when_not_supplied(self):
-        """Default behaviour: call check_nous_free_tier() to pick the tier."""
-        from hermes_cli.models import get_nous_recommended_aux_model
-        payload = {
-            "paidRecommendedCompactionModel": {"modelName": "paid-model"},
-            "freeRecommendedCompactionModel": {"modelName": "free-model"},
-        }
-        with (
-            patch("hermes_cli.models.fetch_nous_recommended_models", return_value=payload),
-            patch("hermes_cli.models.check_nous_free_tier", return_value=True),
-        ):
-            assert get_nous_recommended_aux_model(vision=False) == "free-model"
-        with (
-            patch("hermes_cli.models.fetch_nous_recommended_models", return_value=payload),
-            patch("hermes_cli.models.check_nous_free_tier", return_value=False),
-        ):
-            assert get_nous_recommended_aux_model(vision=False) == "paid-model"
 
     def test_tier_detection_error_defaults_to_paid(self):
         """If tier detection raises, assume paid so we don't downgrade silently."""

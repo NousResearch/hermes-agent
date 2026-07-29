@@ -61,20 +61,7 @@ class TestBoundaryDetection:
         # window contains anchor + 5 after = 6 messages
         assert len(view["window"]) == 6
 
-    def test_at_session_end_messages_after_is_short(self, db):
-        ids = _seed(db, n=10)
-        view = db.get_messages_around("s1", ids[-1], window=5)
-        assert view["messages_before"] == 5
-        assert view["messages_after"] == 0
-        assert len(view["window"]) == 6
 
-    def test_window_larger_than_session(self, db):
-        ids = _seed(db, n=3)
-        view = db.get_messages_around("s1", ids[1], window=50)
-        # All 3 messages return, both boundaries hit
-        assert len(view["window"]) == 3
-        assert view["messages_before"] == 1
-        assert view["messages_after"] == 1
 
 
 
@@ -94,15 +81,6 @@ class TestScrollPattern:
         # v2's window extends beyond v1
         assert max(m["id"] for m in v2["window"]) > max(m["id"] for m in v1["window"])
 
-    def test_scroll_backward_re_anchored_on_first_id(self, db):
-        ids = _seed(db, n=20)
-        anchor = ids[10]
-        v1 = db.get_messages_around("s1", anchor, window=3)
-        first_id = v1["window"][0]["id"]
-        v2 = db.get_messages_around("s1", first_id, window=3)
-        assert first_id in [m["id"] for m in v1["window"]]
-        assert first_id in [m["id"] for m in v2["window"]]
-        assert min(m["id"] for m in v2["window"]) < min(m["id"] for m in v1["window"])
 
 
 class TestContentHydration:

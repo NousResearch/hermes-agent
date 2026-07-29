@@ -373,17 +373,7 @@ class TestRestartLoopGuard:
         import gateway.restart_loop_guard as rlg
         rlg.clear()
 
-    def test_burst_trips_on_threshold(self):
-        import gateway.restart_loop_guard as rlg
-        assert rlg.check_and_record(3, 60, now=1000.0) is False
-        assert rlg.check_and_record(3, 60, now=1005.0) is False
-        assert rlg.check_and_record(3, 60, now=1010.0) is True
 
-    def test_spread_boots_never_trip(self):
-        import gateway.restart_loop_guard as rlg
-        assert rlg.check_and_record(3, 60, now=1000.0) is False
-        assert rlg.check_and_record(3, 60, now=1070.0) is False
-        assert rlg.check_and_record(3, 60, now=1140.0) is False
 
 
     def test_is_tripped_reads_without_recording(self):

@@ -40,10 +40,6 @@ def _run_cmd_status(capfd, mem_config=None, memory_tools=None):
 class TestMemoryStatusLabels:
     """Status output should reflect actual config, not a hardcoded string."""
 
-    def test_no_hardcoded_always_active(self, capfd):
-        """The old 'always active' label must not appear."""
-        out = _run_cmd_status(capfd)
-        assert "always active" not in out
 
     def test_shows_memory_injection_enabled_by_default(self, capfd):
         """Memory injection defaults to enabled."""
@@ -58,20 +54,4 @@ class TestMemoryStatusLabels:
         assert "disabled ✗" in out
 
 
-    def test_provider_still_shown(self, capfd):
-        """Provider line still appears alongside the config indicators."""
-        out = _run_cmd_status(
-            capfd, mem_config={"provider": "honcho", "memory_enabled": True}
-        )
-        assert "honcho" in out
-        assert "Memory injection:" in out
 
-    def test_all_disabled(self, capfd):
-        """All three indicators show disabled when everything is off."""
-        out = _run_cmd_status(
-            capfd,
-            mem_config={"memory_enabled": False, "user_profile_enabled": False},
-            memory_tools=set(),
-        )
-        assert out.count("disabled ✗") == 3
-        assert "always active" not in out

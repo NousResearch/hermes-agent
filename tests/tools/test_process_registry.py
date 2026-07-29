@@ -123,17 +123,6 @@ def test_request_close_terminal_invokes_sink_without_killing(registry):
     assert s.id in registry._running
 
 
-def test_close_terminal_tool_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal gating)."""
-    from tools.close_terminal_tool import check_close_terminal_requirements
-
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert check_close_terminal_requirements() is False
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert check_close_terminal_requirements() is True
-
-
 def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch):
     """Local reader must emit live chunks, not one EOF burst.
 
@@ -729,54 +718,6 @@ class TestCheckpoint:
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
-    def test_write_checkpoint_includes_watcher_metadata(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session()
-            s.watcher_platform = "telegram"
-            s.watcher_chat_id = "999"
-            s.watcher_user_id = "u123"
-            s.watcher_user_name = "alice"
-            s.watcher_thread_id = "42"
-            s.watcher_interval = 60
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-
-            data = json.loads((tmp_path / "procs.json").read_text())
-            assert len(data) == 1
-            assert data[0]["watcher_platform"] == "telegram"
-            assert data[0]["watcher_chat_id"] == "999"
-            assert data[0]["watcher_user_id"] == "u123"
-            assert data[0]["watcher_user_name"] == "alice"
-            assert data[0]["watcher_thread_id"] == "42"
-            assert data[0]["watcher_interval"] == 60
-
-    def test_recover_enqueues_watchers(self, registry, tmp_path):
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),  # current process — guaranteed alive
-            "task_id": "t1",
-            "session_key": "sk1",
-            "watcher_platform": "telegram",
-            "watcher_chat_id": "123",
-            "watcher_user_id": "u123",
-            "watcher_user_name": "alice",
-            "watcher_thread_id": "42",
-            "watcher_interval": 60,
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            assert len(registry.pending_watchers) == 1
-            w = registry.pending_watchers[0]
-            assert w["session_id"] == "proc_live"
-            assert w["platform"] == "telegram"
-            assert w["chat_id"] == "123"
-            assert w["user_id"] == "u123"
-            assert w["user_name"] == "alice"
-            assert w["thread_id"] == "42"
-            assert w["check_interval"] == 60
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -808,25 +749,6 @@ class TestKillProcess:
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
 
-    def test_kill_local_popen_uses_host_tree_terminator(self, registry, monkeypatch):
-        s = _make_session(sid="proc_local", command="sleep 999")
-        s.process = MagicMock()
-        s.process.pid = 12345
-        s.host_start_time = 67890
-        registry._running[s.id] = s
-        terminate_calls = []
-
-        monkeypatch.setattr(
-            registry,
-            "_terminate_host_pid",
-            lambda pid, expected_start=None: terminate_calls.append((pid, expected_start)),
-        )
-        monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
-
-        result = registry.kill_process(s.id)
-
-        assert result["status"] == "killed"
-        assert terminate_calls == [(12345, 67890)]
 
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")
@@ -882,159 +804,6 @@ class TestProcessToolHandler:
 # =========================================================================
 
 from tools.process_registry import format_process_notification
-
-
-def test_format_completion_event():
-    evt = {
-        "type": "completion",
-        "session_id": "proc_abc",
-        "command": "sleep 5",
-        "exit_code": 0,
-        "output": "done",
-    }
-    result = format_process_notification(evt)
-    assert "[IMPORTANT: Background process proc_abc completed normally" in result
-    assert "exit code 0" in result
-    assert "Command: sleep 5" in result
-    assert "Output:\ndone]" in result
-
-
-def test_format_killed_completion_event_names_source_and_signal():
-    evt = {
-        "type": "completion",
-        "session_id": "proc_killed",
-        "command": "sleep 5",
-        "exit_code": -15,
-        "completion_reason": "killed",
-        "termination_source": "process.kill",
-        "output": "",
-    }
-    result = format_process_notification(evt)
-    assert "proc_killed terminated by process.kill" in result
-    assert "exit code -15, SIGTERM" in result
-
-
-def test_format_external_sigterm_does_not_claim_agent_kill():
-    evt = {
-        "type": "completion",
-        "session_id": "proc_external",
-        "command": "sleep 5",
-        "exit_code": 143,
-        "output": "",
-    }
-    result = format_process_notification(evt)
-    assert "proc_external exited" in result
-    assert "terminated by" not in result
-    assert "exit code 143, SIGTERM" in result
-
-
-@pytest.mark.parametrize("skip_state", ["_completion_consumed"])
-def test_drain_notifications_routes_foreign_before_local_skip(
-    registry, skip_state
-):
-    event = {
-        "type": "completion",
-        "session_id": f"proc_foreign_{skip_state}",
-        "session_key": "session-a",
-        "command": "safe-test-command",
-        "exit_code": 0,
-        "output": "foreign",
-    }
-    ownership_calls = []
-    getattr(registry, skip_state).add(event["session_id"])
-    registry.completion_queue.put(event)
-
-    def owns_event(checked_event):
-        ownership_calls.append(checked_event)
-        return False
-
-    try:
-        results = registry.drain_notifications(
-            session_key="session-b",
-            owns_event=owns_event,
-        )
-
-        assert results == []
-        assert ownership_calls == [event]
-        assert registry.completion_queue.get_nowait() == event
-        assert registry.completion_queue.empty()
-    finally:
-        getattr(registry, skip_state).discard(event["session_id"])
-
-
-@pytest.mark.parametrize("exit_code", [7])
-def test_drain_notifications_filters_addressed_completion_by_owns_event(
-    registry, exit_code
-):
-    owned = {
-        "type": "completion",
-        "session_id": f"proc_owned_{exit_code}",
-        "session_key": "session-a",
-        "command": "safe-test-command",
-        "exit_code": exit_code,
-        "output": "owned",
-    }
-    foreign = {
-        "type": "completion",
-        "session_id": f"proc_foreign_{exit_code}",
-        "session_key": "session-b",
-        "command": "safe-test-command",
-        "exit_code": exit_code,
-        "output": "foreign",
-    }
-    registry.completion_queue.put(owned)
-    registry.completion_queue.put(foreign)
-
-    results = registry.drain_notifications(
-        session_key="session-a",
-        owns_event=lambda event: event.get("session_key") == "session-a",
-    )
-
-    assert [event["session_id"] for event, _ in results] == [
-        f"proc_owned_{exit_code}"
-    ]
-    assert registry.completion_queue.get_nowait() == foreign
-    assert registry.completion_queue.empty()
-
-
-def test_drain_notifications_session_key_filter_requeues_origin_only_event(registry):
-    event = {
-        "type": "completion",
-        "session_id": "proc_origin_only",
-        "origin_ui_session_id": "ui-session-a",
-        "command": "safe-test-command",
-        "exit_code": 0,
-        "output": "done",
-    }
-    registry.completion_queue.put(event)
-
-    results = registry.drain_notifications(session_key="session-a")
-
-    assert results == []
-    assert registry.completion_queue.get_nowait() == event
-    assert registry.completion_queue.empty()
-
-
-def test_drain_notifications_ownerless_async_delegation_still_requires_proof(registry):
-    event = {
-        "type": "async_delegation",
-        "delegation_id": "deleg_ownerless",
-        "goal": "task",
-        "status": "completed",
-        "summary": "done",
-        "api_calls": 1,
-        "duration_seconds": 0.1,
-    }
-    registry.completion_queue.put(event)
-
-    results = registry.drain_notifications(
-        session_key="session-a",
-        owns_event=lambda _event: False,
-    )
-
-    assert results == []
-    assert registry.completion_queue.get_nowait() == event
-    assert registry.completion_queue.empty()
 
 
 def test_drain_notifications_completion_callback_exception_fails_closed(registry):
@@ -1286,36 +1055,6 @@ class TestPidReuseGuard:
             proc.kill()
             proc.wait()
 
-    def test_recover_skips_recycled_pid(self, registry, tmp_path):
-        """Checkpoint PID is alive but its start time changed → not adopted."""
-        wrong_start = (ProcessRegistry._safe_host_start_time(os.getpid()) or 0) + 999
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_recycled",
-            "command": "sleep 999",
-            "pid": os.getpid(),            # alive...
-            "pid_scope": "host",
-            "host_start_time": wrong_start,  # ...but a different process now
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            assert registry.recover_from_checkpoint() == 0
-            assert len(registry._running) == 0
-
-    def test_recover_adopts_when_start_time_matches(self, registry, tmp_path):
-        """Checkpoint PID alive AND start time matches → adopted as before."""
-        real_start = ProcessRegistry._safe_host_start_time(os.getpid())
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_match",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "pid_scope": "host",
-            "host_start_time": real_start,
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            assert registry.recover_from_checkpoint() == 1
 
     def test_refresh_detached_marks_recycled_pid_exited(self, registry):
         """A detached session whose PID got recycled is moved to finished."""

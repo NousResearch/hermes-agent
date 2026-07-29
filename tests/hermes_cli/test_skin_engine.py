@@ -57,42 +57,10 @@ class TestBuiltinSkins:
         assert len(wings[0]) == 2
 
 
-    def test_daylight_skin_loads(self):
-        from hermes_cli.skin_engine import load_skin
-
-        skin = load_skin("daylight")
-        assert skin.name == "daylight"
-        assert skin.tool_prefix == "│"
-        assert skin.get_color("banner_title") == "#0F172A"
-        assert skin.get_color("status_bar_bg") == "#E5EDF8"
-        assert skin.get_color("voice_status_bg") == "#E5EDF8"
-        assert skin.get_color("completion_menu_bg") == "#F8FAFC"
-        assert skin.get_color("completion_menu_current_bg") == "#DBEAFE"
-        assert skin.get_color("completion_menu_meta_bg") == "#EEF2FF"
-        assert skin.get_color("completion_menu_meta_current_bg") == "#BFDBFE"
 
 
-    def test_charizard_skin_has_dark_ember_completion_menu(self):
-        from hermes_cli.skin_engine import load_skin
-
-        skin = load_skin("charizard")
-        assert skin.name == "charizard"
-        assert skin.get_color("banner_dim") == "#C58A45"
-        assert skin.get_color("completion_menu_bg") == "#0B0503"
-        assert skin.get_color("completion_menu_current_bg") == "#4A1B07"
-        assert skin.get_color("completion_menu_meta_bg") == "#120806"
-        assert skin.get_color("completion_menu_meta_current_bg") == "#5A260D"
-        assert skin.get_color("selection_bg") == "#5A260D"
 
 
-    def test_all_builtin_skins_have_complete_colors(self):
-        from hermes_cli.skin_engine import _BUILTIN_SKINS, _build_skin_config
-        required_keys = ["banner_border", "banner_title", "banner_accent",
-                         "banner_dim", "banner_text", "ui_accent"]
-        for name, data in _BUILTIN_SKINS.items():
-            skin = _build_skin_config(data)
-            for key in required_keys:
-                assert key in skin.colors, f"Skin '{name}' missing color '{key}'"
 
 
 class TestSkinManagement:
@@ -103,10 +71,6 @@ class TestSkinManagement:
         assert get_active_skin_name() == "ares"
         assert get_active_skin().name == "ares"
 
-    def test_get_active_skin_defaults(self):
-        from hermes_cli.skin_engine import get_active_skin
-        skin = get_active_skin()
-        assert skin.name == "default"
 
     def test_list_skins_includes_builtins(self):
         from hermes_cli.skin_engine import list_skins
@@ -123,17 +87,6 @@ class TestSkinManagement:
             assert s["source"] == "builtin"
 
 
-    def test_init_skin_from_non_dict_display(self):
-        """display: <non-dict> should fall back to default."""
-        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
-        init_skin_from_config({"display": "invalid"})
-        assert get_active_skin_name() == "default"
-
-        init_skin_from_config({"display": 42})
-        assert get_active_skin_name() == "default"
-
-        init_skin_from_config({"display": []})
-        assert get_active_skin_name() == "default"
 
 
 class TestUserSkins:

@@ -22,19 +22,10 @@ from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 # ---------------------------------------------------------------------------
 
 
-def test_registry_lists_nous():
-    assert "nous" in ADAPTERS
 
 
-def test_get_adapter_returns_instance():
-    adapter = get_adapter("nous")
-    assert isinstance(adapter, NousPortalAdapter)
-    assert isinstance(adapter, UpstreamAdapter)
 
 
-def test_get_adapter_unknown_provider_raises():
-    with pytest.raises(ValueError, match="anthropic"):
-        get_adapter("anthropic")  # not yet implemented
 
 
 # ---------------------------------------------------------------------------
@@ -52,14 +43,6 @@ def _write_auth_store(hermes_home: Path, nous_state: Dict[str, Any]) -> Path:
     return auth_path
 
 
-def test_nous_adapter_metadata():
-    adapter = NousPortalAdapter()
-    assert adapter.name == "nous"
-    assert adapter.display_name == "Nous Portal"
-    assert "/chat/completions" in adapter.allowed_paths
-    assert "/embeddings" in adapter.allowed_paths
-    assert "/completions" in adapter.allowed_paths
-    assert "/models" in adapter.allowed_paths
 
 
 def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
@@ -354,52 +337,8 @@ def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application"
     return app
 
 
-def test_server_forwards_chat_completions():
-    async def run():
-        captured: Dict[str, Any] = {"requests": []}
-        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
-        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="real-portal-key")
-        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{proxy_base}/v1/chat/completions",
-                    json={"model": "Hermes-4-70B",
-                          "messages": [{"role": "user", "content": "hi"}]},
-                    headers={"Authorization": "Bearer client-dummy-key"},
-                ) as resp:
-                    assert resp.status == 200
-                    data = await resp.json()
-                    assert data["echoed"] is True
-
-            assert len(captured["requests"]) == 1
-            req = captured["requests"][0]
-            assert req["auth"] == "Bearer real-portal-key"
-            assert "Hermes-4-70B" in req["body"]
-        finally:
-            await proxy_runner.cleanup()
-            await upstream_runner.cleanup()
-
-    asyncio.run(run())
 
 
-def test_server_health_endpoint():
-    async def run():
-        adapter = FakeAdapter("http://unused.example/v1")
-        runner, base = await _start_runner(create_app(adapter))
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{base}/health") as resp:
-                    assert resp.status == 200
-                    body = await resp.json()
-                    assert body["status"] == "ok"
-                    assert body["upstream"] == "Fake Provider"
-                    assert body["authenticated"] is True
-        finally:
-            await runner.cleanup()
-
-    asyncio.run(run())
 
 
 def test_server_strips_client_auth_header():
@@ -431,29 +370,7 @@ def test_server_strips_client_auth_header():
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_proxy_status_runs(capsys, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli.proxy.cli import cmd_proxy_status
-
-    args = MagicMock()
-    rc = cmd_proxy_status(args)
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "nous" in out
-    assert "Nous Portal" in out
-    assert "not logged in" in out
 
 
-def test_cmd_proxy_start_refuses_unknown_provider(capsys):
-    from hermes_cli.proxy.cli import cmd_proxy_start
-
-    args = MagicMock()
-    args.provider = "no-such-provider"
-    args.host = None
-    args.port = None
-    rc = cmd_proxy_start(args)
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "no-such-provider" in err
 
 

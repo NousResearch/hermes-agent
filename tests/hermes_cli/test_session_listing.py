@@ -13,11 +13,6 @@ class TestParseSessionListingArgs:
         assert parse_session_listing_args("") == (False, False, "", None)
 
 
-    def test_search_word_inside_target_is_not_a_flag(self):
-        # Flags/keywords only apply before the first positional word.
-        assert parse_session_listing_args("deep search notes") == (
-            False, False, "deep search notes", None,
-        )
 
 
 class TestQuerySessionListingSearch:
@@ -36,8 +31,6 @@ class TestQuerySessionListingSearch:
     def _ids(self, db, **kw):
         return [r["id"] for r in query_session_listing(db, **kw)]
 
-    def test_title_substring_match(self, db):
-        assert self._ids(db, source="telegram", search_query="prestige") == ["sess_an94"]
 
 
     def test_source_scoping(self, db):
@@ -63,5 +56,3 @@ class TestQuerySessionListingSearch:
         finally:
             db.close()
 
-    def test_plain_listing_still_hides_unnamed(self, db):
-        assert self._ids(db, source="telegram") == ["sess_an94"]

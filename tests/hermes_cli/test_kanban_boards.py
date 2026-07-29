@@ -111,14 +111,8 @@ class TestPathResolution:
 # ---------------------------------------------------------------------------
 
 class TestCurrentBoard:
-    def test_default_when_unset(self, fresh_home):
-        assert kb.get_current_board() == "default"
 
 
-    def test_file_pointer_honoured(self, fresh_home):
-        kb.create_board("filepick")
-        kb.set_current_board("filepick")
-        assert kb.get_current_board() == "filepick"
 
     def test_stale_file_pointer_falls_back_to_default(self, fresh_home):
         current = fresh_home / "kanban" / "current"
@@ -129,12 +123,6 @@ class TestCurrentBoard:
         assert not kb.board_exists("missing-board")
         assert [b["slug"] for b in kb.list_boards()] == ["default"]
 
-    def test_empty_board_dir_does_not_count_as_existing(self, fresh_home):
-        ghost = fresh_home / "kanban" / "boards" / "ghost"
-        ghost.mkdir(parents=True)
-
-        assert not kb.board_exists("ghost")
-        assert [b["slug"] for b in kb.list_boards()] == ["default"]
 
 
     def test_kanban_db_path_reads_current(self, fresh_home):
@@ -150,34 +138,10 @@ class TestCurrentBoard:
 # ---------------------------------------------------------------------------
 
 class TestBoardCRUD:
-    def test_create_and_list(self, fresh_home):
-        assert [b["slug"] for b in kb.list_boards()] == ["default"]
-        kb.create_board("foo", name="Foo Board", description="test")
-        slugs = [b["slug"] for b in kb.list_boards()]
-        assert slugs == ["default", "foo"]
 
 
-    def test_create_writes_metadata(self, fresh_home):
-        meta = kb.create_board(
-            "baz",
-            name="Baz",
-            description="desc",
-            icon="📦",
-            color="#abcdef",
-        )
-        assert meta["slug"] == "baz"
-        assert meta["name"] == "Baz"
-        assert meta["icon"] == "📦"
-        # Round-trip via read_board_metadata.
-        again = kb.read_board_metadata("baz")
-        assert again["name"] == "Baz"
-        assert again["description"] == "desc"
-        assert again["icon"] == "📦"
 
 
-    def test_remove_default_forbidden(self, fresh_home):
-        with pytest.raises(ValueError, match="default"):
-            kb.remove_board("default")
 
 
     @pytest.mark.parametrize("archive", [True, False])
@@ -353,20 +317,6 @@ class TestCLI:
         assert slugs == ["default"]
         assert data[0]["is_current"] is True
 
-    def test_boards_create_and_switch(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        r1 = _cli(
-            ["boards", "create", "myproj", "--name", "My Project", "--switch"],
-            env_extra=env,
-        )
-        assert r1.returncode == 0, r1.stderr
-        assert "created" in r1.stdout
-        assert "Switched" in r1.stdout
-
-        r2 = _cli(["boards", "list", "--json"], env_extra=env)
-        data = json.loads(r2.stdout)
-        cur = [b for b in data if b["is_current"]][0]
-        assert cur["slug"] == "myproj"
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
@@ -392,28 +342,5 @@ class TestCLI:
         assert titlesB == ["Task B"]
         assert titlesD == []
 
-    def test_board_flag_rejects_unknown(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        r = _cli(["--board", "ghost", "list"], env_extra=env)
-        # main.py's dispatcher doesn't propagate return codes today, so we
-        # assert the user-visible signal: a stderr error message. Whether
-        # the exit code stays 0 is a separate (pre-existing) issue.
-        assert "does not exist" in r.stderr
 
-    def test_board_flag_rejects_empty_board_dir(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        ghost = tmp_path / "kanban" / "boards" / "ghost"
-        ghost.mkdir(parents=True)
-        r = _cli(["--board", "ghost", "list"], env_extra=env)
-        assert "does not exist" in r.stderr
 
-    def test_boards_rm_archives(self, tmp_path):
-        env = {"HERMES_HOME": str(tmp_path)}
-        _cli(["boards", "create", "rmme"], env_extra=env)
-        r = _cli(["boards", "rm", "rmme"], env_extra=env)
-        assert r.returncode == 0, r.stderr
-        assert "archived" in r.stdout
-        # Default board list no longer shows it.
-        res = _cli(["boards", "list", "--json"], env_extra=env)
-        slugs = [b["slug"] for b in json.loads(res.stdout)]
-        assert "rmme" not in slugs

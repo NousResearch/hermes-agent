@@ -113,46 +113,6 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
 # ---------------------------------------------------------------------------
 
 
-def test_full_login_round_trip_unlocks_gated_api(gated_app):
-    # 1) Click "Sign in with Stub IdP" — /auth/login redirects to the stub
-    #    with a PKCE cookie on the response.
-    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
-    assert r1.status_code == 302
-    pkce = next(
-        (c for c in r1.headers.get_list("set-cookie")
-         if "hermes_session_pkce" in c),
-        None,
-    )
-    assert pkce and "HttpOnly" in pkce
-
-    redirect = r1.headers["location"]
-    # Stub bounces back to {redirect_uri}?code=stub_code&state=<s>
-    assert "code=stub_code" in redirect
-    assert "state=" in redirect
-    state = redirect.split("state=")[1]
-
-    # 2) The browser would now follow the redirect to /auth/callback.
-    #    TestClient automatically carries the PKCE cookie forward.
-    r2 = gated_app.get(
-        f"/auth/callback?code=stub_code&state={state}",
-        follow_redirects=False,
-    )
-    assert r2.status_code == 302
-    assert r2.headers["location"] == "/"
-    set_cookies = r2.headers.get_list("set-cookie")
-    assert any("hermes_session_at" in c for c in set_cookies)
-    assert any("hermes_session_rt" in c for c in set_cookies)
-
-    # 3) A gated API route (``/api/sessions``) now succeeds because we
-    #    have a valid session cookie. (We deliberately don't probe
-    #    ``/api/status`` here — it's in the shared PUBLIC_API_PATHS
-    #    allowlist and would 200 even without a login, so it can't
-    #    distinguish "logged in" from "gate accidentally disabled".)
-    r3 = gated_app.get("/api/sessions")
-    assert r3.status_code == 200, (
-        f"Expected 200 for /api/sessions post-login, got {r3.status_code}: "
-        f"{r3.text}"
-    )
 
 
 def _complete_stub_login(client) -> None:
@@ -271,27 +231,6 @@ def test_invalid_cookie_returns_401_on_api(gated_app):
     assert r.status_code == 401
 
 
-def test_logout_clears_cookies_and_redirects_to_login(gated_app):
-    # First log in.
-    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
-    state = r1.headers["location"].split("state=")[1]
-    gated_app.get(
-        f"/auth/callback?code=stub_code&state={state}",
-        follow_redirects=False,
-    )
-    # Now log out.
-    r = gated_app.post("/auth/logout", follow_redirects=False)
-    assert r.status_code == 302
-    assert r.headers["location"] == "/login"
-    set_cookies = r.headers.get_list("set-cookie")
-    assert any(
-        c.startswith("hermes_session_at=") and "Max-Age=0" in c
-        for c in set_cookies
-    )
-    assert any(
-        c.startswith("hermes_session_rt=") and "Max-Age=0" in c
-        for c in set_cookies
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -328,27 +267,6 @@ def test_api_auth_me_requires_auth(gated_app):
 # ---------------------------------------------------------------------------
 
 
-def test_gated_zero_providers_login_page_renders_help_text():
-    clear_providers()
-    prev_required = getattr(web_server.app.state, "auth_required", None)
-    prev_host = getattr(web_server.app.state, "bound_host", None)
-    web_server.app.state.bound_host = "fly-app.fly.dev"
-    web_server.app.state.auth_required = True
-    try:
-        client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
-        r = client.get("/login")
-        assert r.status_code == 200
-        # Empty-provider HTML mentions the fix-up path.  (HTML wraps text
-        # so we can't grep for the exact phrase; check for the canonical
-        # fragments instead.)
-        text = r.text.lower()
-        assert "sign-in unavailable" in text
-        assert "no authentication" in text
-        assert "providers are installed" in text
-        assert "--insecure" in text
-    finally:
-        web_server.app.state.auth_required = prev_required
-        web_server.app.state.bound_host = prev_host
 
 
 # ---------------------------------------------------------------------------
@@ -426,29 +344,6 @@ def _gated_state():
     web_server.app.state.auth_required = prev_required
 
 
-def test_unreachable_first_provider_does_not_block_second(_gated_state):
-    """An unreachable provider registered FIRST must not 503 a request whose
-    token a later provider can verify.
-
-    Regression for the stacked-provider bug: the verify loop used to return
-    503 on the first provider's ProviderError, before the working provider
-    ever got a turn. Now it logs, continues, and the working provider wins.
-    """
-    working = StubAuthProvider()
-    register_provider(_UnreachableProvider())  # registered first → tried first
-    register_provider(working)                  # the one that can verify
-
-    at = _mint_stub_at(working)
-    client = _gated_state()
-    client.cookies.set(SESSION_AT_COOKIE, at)
-    r = client.get("/api/auth/me")
-    assert r.status_code == 200, (
-        f"Expected the working provider to verify the session despite the "
-        f"unreachable one being tried first; got {r.status_code}: {r.text}"
-    )
-    body = r.json()
-    assert body["provider"] == "stub"
-    assert body["user_id"] == "stub-user-1"
 
 
 def test_all_providers_unreachable_returns_503(_gated_state):

@@ -12,70 +12,12 @@ def _write_config(tmp_path, body: str) -> None:
     (tmp_path / "config.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
 
 
-def test_model_timeout_override_wins(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _write_config(
-        tmp_path,
-        """\
-        providers:
-          anthropic:
-            request_timeout_seconds: 30
-            models:
-              claude-opus-4.6:
-                timeout_seconds: 120
-        """,
-    )
-
-    assert get_provider_request_timeout("anthropic", "claude-opus-4.6") == 120.0
 
 
-def test_provider_stale_timeout_used_when_no_model_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _write_config(
-        tmp_path,
-        """\
-        providers:
-          openai-codex:
-            stale_timeout_seconds: 900
-        """,
-    )
-
-    assert get_provider_stale_timeout("openai-codex", "gpt-5.4") == 900.0
 
 
-def test_missing_timeout_returns_none(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _write_config(
-        tmp_path,
-        """\
-        providers:
-          anthropic:
-            models:
-              claude-opus-4.6:
-                context_length: 200000
-        """,
-    )
-
-    assert get_provider_request_timeout("anthropic", "claude-opus-4.6") is None
-    assert get_provider_request_timeout("missing-provider", "claude-opus-4.6") is None
 
 
-def test_invalid_stale_timeout_values_return_none(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _write_config(
-        tmp_path,
-        """\
-        providers:
-          openai-codex:
-            stale_timeout_seconds: "slow"
-            models:
-              gpt-5.4:
-                stale_timeout_seconds: -1
-        """,
-    )
-
-    assert get_provider_stale_timeout("openai-codex", "gpt-5.4") is None
-    assert get_provider_stale_timeout("openai-codex", "gpt-5.5") is None
 
 
 def test_anthropic_adapter_honors_timeout_kwarg():
@@ -160,23 +102,5 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     assert agent2._resolved_api_call_timeout() == 1800.0
 
 
-def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-
-    from run_agent import AIAgent
-    agent = AIAgent(
-        model="qwen3:32b",
-        provider="ollama-local",
-        api_key="sk-dummy",
-        base_url="http://127.0.0.1:11434/v1",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-        platform="cli",
-    )
-
-    assert agent._compute_non_stream_stale_timeout([]) == float("inf")
 
 

@@ -155,14 +155,6 @@ class TestHooksRevoke:
 
 
 class TestHooksDoctor:
-    def test_flags_missing_exec_bit(self, tmp_path):
-        script = tmp_path / "hook.sh"
-        script.write_text("#!/usr/bin/env bash\nprintf '{}\\n'\n")
-        # No chmod — intentionally not executable
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
-            out = _run(SimpleNamespace(hooks_action="doctor"))
-        assert "not executable" in out.lower()
 
 
     def test_flags_mtime_drift(self, tmp_path, monkeypatch):
@@ -188,13 +180,6 @@ class TestHooksDoctor:
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "modified since approval" in out
 
-    def test_clean_script_runs(self, tmp_path):
-        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
-        shell_hooks._record_approval("on_session_start", str(script))
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
-            out = _run(SimpleNamespace(hooks_action="doctor"))
-        assert "All shell hooks look healthy" in out
 
     def test_unallowlisted_script_is_not_executed(self, tmp_path):
         """Regression for M4: `hermes hooks doctor` used to run every

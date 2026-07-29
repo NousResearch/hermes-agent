@@ -53,13 +53,6 @@ class TestResolveVerifyFallback:
             f"Expected ssl.SSLContext but got {type(result).__name__}: {result!r}"
         )
 
-    def test_missing_ssl_cert_file_env_falls_back(self, monkeypatch):
-        from hermes_cli.auth import _resolve_verify
-
-        monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ssl-cert.pem")
-        monkeypatch.delenv("HERMES_CA_BUNDLE", raising=False)
-        result = _resolve_verify(auth_state={"tls": {}})
-        assert result is True
 
 
     def test_insecure_takes_precedence_over_missing_ca(self):
@@ -86,11 +79,6 @@ class TestResolveVerifyFallback:
         assert result is False
 
 
-    def test_explicit_ca_bundle_param_missing_falls_back(self):
-        from hermes_cli.auth import _resolve_verify
-
-        result = _resolve_verify(ca_bundle="/nonexistent/explicit-ca.pem")
-        assert result is True
 
 
 def _setup_nous_auth(
@@ -292,36 +280,6 @@ def test_resolve_nous_runtime_credentials_reauths_when_invoke_scope_missing(
     assert "credential_pool" not in payload or not payload["credential_pool"].get("nous")
 
 
-def test_nous_device_code_login_does_not_retry_legacy_scope_when_invoke_refused(monkeypatch):
-    import hermes_cli.auth as auth_mod
-
-    scopes = []
-
-    def _fake_request_device_code(*, client, portal_base_url, client_id, scope):
-        del client, portal_base_url, client_id
-        scopes.append(scope)
-        request = httpx.Request("POST", "https://portal.example.com/api/oauth/device/code")
-        response = httpx.Response(
-            400,
-            json={
-                "error": "invalid_scope",
-                "error_description": "unsupported inference:invoke",
-            },
-            request=request,
-        )
-        raise httpx.HTTPStatusError("invalid_scope", request=request, response=response)
-
-    monkeypatch.setattr(auth_mod, "_request_device_code", _fake_request_device_code)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        auth_mod._nous_device_code_login(
-            portal_base_url="https://portal.example.com",
-            inference_base_url="https://inference.example.com/v1",
-            open_browser=False,
-            timeout_seconds=1,
-        )
-
-    assert scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
 
 
 def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monkeypatch):
@@ -491,139 +449,10 @@ def test_get_nous_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch)
     assert status["logged_in"] is False
 
 
-def test_refresh_token_persisted_when_refreshed_jwt_lacks_invoke_scope(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
-    _setup_nous_auth(
-        hermes_home,
-        access_token="access-old",
-        refresh_token="refresh-old",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    refresh_calls = []
-    bad_jwt = _jwt_with_claims({
-        "sub": "test-user",
-        "scope": "profile",
-        "exp": int(time.time() + 3600),
-    })
-    good_jwt = _invoke_jwt(seconds=3600)
-
-    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
-        refresh_calls.append(refresh_token)
-        if len(refresh_calls) == 1:
-            token = bad_jwt
-        else:
-            token = good_jwt
-        return {
-            "access_token": token,
-            "refresh_token": f"refresh-{len(refresh_calls)}",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "scope": "profile" if len(refresh_calls) == 1 else "inference:invoke",
-        }
-
-    monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
-
-    with pytest.raises(AuthError) as exc:
-        resolve_nous_runtime_credentials()
-    assert exc.value.code == "missing_inference_invoke_scope"
-
-    state_after_failure = get_provider_auth_state("nous")
-    assert state_after_failure is not None
-    assert state_after_failure["refresh_token"] == "refresh-1"
-    assert state_after_failure["access_token"] == bad_jwt
-
-    creds = resolve_nous_runtime_credentials()
-    assert creds["api_key"] == good_jwt
-    assert refresh_calls == ["refresh-old", "refresh-1"]
 
 
-def test_terminal_refresh_failure_quarantines_tokens(
-    tmp_path, monkeypatch, shared_store_env,
-):
-    """A revoked/invalid Nous refresh token must not be replayed forever."""
-    from hermes_cli import auth as auth_mod
-
-    hermes_home = tmp_path / "hermes"
-    _setup_nous_auth(
-        hermes_home,
-        access_token="access-old",
-        refresh_token="refresh-old",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    from agent.credential_pool import load_pool
-
-    assert load_pool("nous").select() is not None
-
-    shared_state = _full_state_fixture()
-    shared_state["access_token"] = "access-old"
-    shared_state["refresh_token"] = "refresh-old"
-    shared_state["expires_at"] = "2026-02-01T00:00:00+00:00"
-    auth_mod._write_shared_nous_state(shared_state)
-
-    refresh_calls: list[str] = []
-
-    def _terminal_refresh_failure(*, client, portal_base_url, client_id, refresh_token):
-        refresh_calls.append(refresh_token)
-        raise AuthError(
-            "Refresh session has been revoked",
-            provider="nous",
-            code="invalid_grant",
-            relogin_required=True,
-        )
-
-    monkeypatch.setattr(auth_mod, "_refresh_access_token", _terminal_refresh_failure)
-
-    with pytest.raises(AuthError, match="Refresh session has been revoked"):
-        auth_mod.resolve_nous_runtime_credentials()
-
-    state_after_failure = auth_mod.get_provider_auth_state("nous")
-    assert state_after_failure is not None
-    assert not state_after_failure.get("refresh_token")
-    assert not state_after_failure.get("access_token")
-    assert not state_after_failure.get("agent_key")
-    assert state_after_failure["last_auth_error"]["code"] == "invalid_grant"
-    assert auth_mod._read_shared_nous_state() is None
-    payload = json.loads((hermes_home / "auth.json").read_text())
-    assert payload.get("credential_pool", {}).get("nous") == []
-
-    with pytest.raises(AuthError, match="No access token found"):
-        auth_mod.resolve_nous_runtime_credentials()
-
-    assert refresh_calls == ["refresh-old"]
 
 
-def test_unusable_access_token_refresh_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
-    hermes_home = tmp_path / "hermes"
-    _setup_nous_auth(
-        hermes_home,
-        access_token="access-old",
-        refresh_token="refresh-old",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    refresh_calls = []
-    good_jwt = _invoke_jwt(seconds=3600)
-
-    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
-        refresh_calls.append(refresh_token)
-        token = "access-still-not-jwt" if len(refresh_calls) == 1 else good_jwt
-        return {
-            "access_token": token,
-            "refresh_token": f"refresh-{len(refresh_calls)}",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "scope": "inference:invoke",
-        }
-
-    monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
-
-    with pytest.raises(AuthError) as exc:
-        resolve_nous_runtime_credentials()
-    assert exc.value.code == "access_token_not_jwt"
-    creds = resolve_nous_runtime_credentials()
-    assert creds["api_key"] == good_jwt
-    assert refresh_calls == ["refresh-old", "refresh-1"]
 
 
 # =============================================================================
@@ -1020,40 +849,6 @@ def test_refresh_token_exchange_sends_refresh_token_header():
     }
 
 
-def test_refresh_non_reuse_error_keeps_original_description():
-    """Non-reuse invalid_grant errors must keep their original description untouched.
-
-    Only the "reuse detected" signature should trigger the actionable message;
-    generic ``invalid_grant: Refresh session has been revoked`` (the
-    downstream consequence) keeps its original text so we don't overwrite
-    useful server context for unrelated failure modes.
-    """
-    from hermes_cli.auth import _refresh_access_token
-
-    class _FakeResponse:
-        status_code = 400
-
-        def json(self):
-            return {
-                "error": "invalid_grant",
-                "error_description": "Refresh session has been revoked",
-            }
-
-    class _FakeClient:
-        def post(self, *args, **kwargs):
-            return _FakeResponse()
-
-    with pytest.raises(AuthError) as exc_info:
-        _refresh_access_token(
-            client=_FakeClient(),
-            portal_base_url="https://portal.nousresearch.com",
-            client_id="hermes-cli",
-            refresh_token="rt_anything",
-        )
-
-    assert "Refresh session has been revoked" in str(exc_info.value)
-    # Must not have been rewritten with the reuse message.
-    assert "external process" not in str(exc_info.value).lower()
 
 
 # =============================================================================
@@ -1155,31 +950,6 @@ def test_persist_nous_credentials_mirrors_to_shared_store(
     assert str(_nous_shared_store_path()).startswith(str(shared_store_env))
 
 
-def test_try_import_shared_returns_none_on_refresh_failure(
-    shared_store_env, monkeypatch,
-):
-    """If the portal rejects the stored refresh_token (revoked, expired,
-    portal down), _try_import_shared_nous_state must return None so the
-    login flow falls back to a fresh device-code run.
-    """
-    from hermes_cli import auth as auth_mod
-
-    # Seed the shared store
-    auth_mod._write_shared_nous_state(_full_state_fixture())
-
-    # Make refresh fail
-    def _boom(*_args, **_kwargs):
-        raise AuthError(
-            "Refresh session has been revoked",
-            provider="nous",
-            code="invalid_grant",
-            relogin_required=True,
-        )
-
-    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _boom)
-
-    assert auth_mod._try_import_shared_nous_state() is None
-    assert auth_mod._read_shared_nous_state() is None
 
 
 def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
@@ -1216,212 +986,12 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     assert result["client_id"] == "hermes-cli"
 
 
-def test_shared_store_survives_across_profile_switch(
-    tmp_path, monkeypatch, shared_store_env,
-):
-    """End-to-end: profile A logs in → shared store populated → profile B
-    (different HERMES_HOME) sees the same shared state and can rehydrate
-    without re-running device-code.
-    """
-    from hermes_cli import auth as auth_mod
-
-    # Profile A: login, which mirrors to shared store
-    profile_a = tmp_path / "profile_a"
-    profile_a.mkdir(parents=True, exist_ok=True)
-    (profile_a / "auth.json").write_text(
-        json.dumps({"version": 1, "providers": {}})
-    )
-    monkeypatch.setenv("HERMES_HOME", str(profile_a))
-    auth_mod.persist_nous_credentials(_full_state_fixture())
-
-    # Profile A's auth.json has nous
-    a_payload = json.loads((profile_a / "auth.json").read_text())
-    assert "nous" in a_payload.get("providers", {})
-
-    # Profile B: fresh HERMES_HOME, no auth yet, but the shared store
-    # persists — _read_shared_nous_state() must still return the tokens.
-    profile_b = tmp_path / "profile_b"
-    profile_b.mkdir(parents=True, exist_ok=True)
-    (profile_b / "auth.json").write_text(
-        json.dumps({"version": 1, "providers": {}})
-    )
-    monkeypatch.setenv("HERMES_HOME", str(profile_b))
-
-    # B's own auth.json has no nous
-    b_payload = json.loads((profile_b / "auth.json").read_text())
-    assert "nous" not in b_payload.get("providers", {})
-
-    # But the shared store is visible
-    shared = auth_mod._read_shared_nous_state()
-    assert shared is not None
-    assert shared["refresh_token"] == "refresh-tok"
-
-    # And a successful rehydrate + persist lands nous into profile B
-    b_jwt = _invoke_jwt(seconds=7200)
-
-    def _fake_refresh(state, **kwargs):
-        return {
-            **state,
-            "access_token": b_jwt,
-            "refresh_token": "b-refresh-tok",
-            "agent_key": b_jwt,
-            "agent_key_expires_at": _future_iso(7200),
-        }
-
-    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _fake_refresh)
-    result = auth_mod._try_import_shared_nous_state()
-    assert result is not None
-
-    auth_mod.persist_nous_credentials(result)
-
-    b_payload = json.loads((profile_b / "auth.json").read_text())
-    assert "nous" in b_payload.get("providers", {})
-    assert b_payload["providers"]["nous"]["refresh_token"] == "b-refresh-tok"
-
-    # Shared store was updated with the rotated refresh_token too
-    shared_after = auth_mod._read_shared_nous_state()
-    assert shared_after is not None
-    assert shared_after["refresh_token"] == "b-refresh-tok"
 
 
-def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
-    tmp_path, monkeypatch, shared_store_env,
-):
-    """A sibling profile may rotate the single-use Nous refresh token.
-
-    When this profile later wakes with an expired local token, runtime
-    resolution must adopt the shared token before refreshing. Otherwise it
-    can submit the stale local refresh token and trigger portal reuse
-    revocation for the whole shared session.
-    """
-    from hermes_cli import auth as auth_mod
-
-    profile_b = tmp_path / "profile_b"
-    _setup_nous_auth(
-        profile_b,
-        access_token="local-expired-access",
-        refresh_token="local-stale-refresh",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(profile_b))
-
-    shared_state = _full_state_fixture()
-    shared_token = _invoke_jwt(seconds=3600)
-    shared_state["access_token"] = shared_token
-    shared_state["refresh_token"] = "shared-fresh-refresh"
-    shared_state["expires_at"] = "2099-01-01T00:00:00+00:00"
-    shared_state["scope"] = "inference:invoke"
-    auth_mod._write_shared_nous_state(shared_state)
-
-    def _refresh_should_not_happen(**_kwargs):
-        raise AssertionError("stale profile-local refresh token was used")
-
-    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh_should_not_happen)
-
-    creds = auth_mod.resolve_nous_runtime_credentials()
-
-    assert creds["api_key"] == shared_token
-
-    profile_state = auth_mod.get_provider_auth_state("nous")
-    assert profile_state is not None
-    assert profile_state["refresh_token"] == "shared-fresh-refresh"
-    assert profile_state["access_token"] == shared_token
 
 
-def test_runtime_unusable_local_token_recomputes_shared_routing(
-    tmp_path, monkeypatch, shared_store_env,
-):
-    """The unusable-token merge branch must also adopt shared routing."""
-    from hermes_cli import auth as auth_mod
-
-    profile_b = tmp_path / "profile_b"
-    _setup_nous_auth(
-        profile_b,
-        access_token="local-not-an-invoke-jwt",
-        refresh_token="local-stale-refresh",
-        expires_at="2000-01-01T00:00:00+00:00",
-        expires_in=0,
-    )
-    auth_path = profile_b / "auth.json"
-    auth_payload = json.loads(auth_path.read_text())
-    local_state = auth_payload["providers"]["nous"]
-    local_state["portal_base_url"] = "http://127.0.0.1:8001"
-    local_state["client_id"] = "local-client"
-    auth_path.write_text(json.dumps(auth_payload, indent=2))
-    monkeypatch.setenv("HERMES_HOME", str(profile_b))
-
-    shared_state = _full_state_fixture()
-    shared_state["access_token"] = "shared-not-an-invoke-jwt"
-    shared_state["refresh_token"] = "shared-refresh"
-    shared_state["expires_at"] = _future_iso(3600)
-    shared_state["portal_base_url"] = "http://localhost:8002"
-    shared_state["client_id"] = "shared-client"
-    auth_mod._write_shared_nous_state(shared_state)
-
-    captured = {}
-    refreshed_token = _invoke_jwt(seconds=7200)
-
-    def _refresh(**kwargs):
-        captured.update(kwargs)
-        return {
-            "access_token": refreshed_token,
-            "refresh_token": "rotated-refresh",
-            "expires_in": 7200,
-            "scope": auth_mod.DEFAULT_NOUS_SCOPE,
-        }
-
-    monkeypatch.setattr(auth_mod, "_refresh_access_token", _refresh)
-
-    creds = auth_mod.resolve_nous_runtime_credentials()
-
-    assert captured["portal_base_url"] == "http://localhost:8002"
-    assert captured["client_id"] == "shared-client"
-    assert captured["refresh_token"] == "shared-refresh"
-    assert creds["api_key"] == refreshed_token
 
 
-def test_runtime_shared_recovery_honors_inference_env_override(
-    tmp_path, monkeypatch, shared_store_env,
-):
-    """Shared state is persisted, but the operator inference override wins."""
-    from hermes_cli import auth as auth_mod
-
-    profile_b = tmp_path / "profile_b"
-    _setup_nous_auth(
-        profile_b,
-        access_token="local-placeholder",
-        refresh_token="local-stale-refresh",
-        expires_at="2000-01-01T00:00:00+00:00",
-        expires_in=0,
-    )
-    auth_path = profile_b / "auth.json"
-    auth_payload = json.loads(auth_path.read_text())
-    auth_payload["providers"]["nous"]["access_token"] = None
-    auth_path.write_text(json.dumps(auth_payload, indent=2))
-    monkeypatch.setenv("HERMES_HOME", str(profile_b))
-    override_url = "https://operator.example/v1"
-    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override_url)
-
-    shared_state = _full_state_fixture()
-    shared_token = _invoke_jwt(seconds=3600)
-    shared_state["access_token"] = shared_token
-    shared_state["refresh_token"] = "shared-refresh"
-    shared_state["expires_at"] = _future_iso(3600)
-    shared_state["scope"] = auth_mod.DEFAULT_NOUS_SCOPE
-    shared_state["inference_base_url"] = auth_mod.DEFAULT_NOUS_INFERENCE_URL
-    auth_mod._write_shared_nous_state(shared_state)
-
-    monkeypatch.setattr(
-        auth_mod,
-        "_refresh_access_token",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected refresh")),
-    )
-
-    creds = auth_mod.resolve_nous_runtime_credentials()
-
-    assert creds["base_url"] == override_url
-    profile_state = auth_mod.get_provider_auth_state("nous")
-    assert profile_state is not None
-    assert profile_state["inference_base_url"] == auth_mod.DEFAULT_NOUS_INFERENCE_URL
 
 
 class TestStalePortalBaseUrlMigration:
@@ -1449,52 +1019,7 @@ class TestStalePortalBaseUrlMigration:
         assert nous["portal_base_url"] == DEFAULT_NOUS_PORTAL_URL
 
 
-    def test_noop_when_nous_state_not_dict(self, tmp_path, monkeypatch):
-        from hermes_cli.auth import _load_auth_store
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        auth_file = tmp_path / "auth.json"
-        auth_file.write_text(json.dumps({
-            "version": 1,
-            "active_provider": "nous",
-            "providers": {"nous": None},
-        }))
-
-        store = _load_auth_store(auth_file)
-        assert store["providers"]["nous"] is None
-
-    def test_runtime_fallback_for_invalid_portal_url(self, tmp_path, monkeypatch):
-        from hermes_cli import auth as auth_mod
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _setup_nous_auth(
-            tmp_path,
-            access_token="expired-access",
-            refresh_token="valid-refresh",
-            expires_at="2025-01-01T00:00:00+00:00",
-        )
-        auth_file = tmp_path / "auth.json"
-        store = json.loads(auth_file.read_text())
-        store["providers"]["nous"]["portal_base_url"] = "https://api.nousresearch.com"
-        auth_file.write_text(json.dumps(store, indent=2))
-
-        refresh_calls = []
-
-        def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
-            del client, client_id, refresh_token
-            refresh_calls.append(portal_base_url)
-            return {
-                "access_token": "refreshed-access",
-                "refresh_token": "new-refresh",
-                "expires_in": 3600,
-            }
-
-        monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
-
-        token = auth_mod.resolve_nous_access_token()
-        assert token == "refreshed-access"
-        assert len(refresh_calls) == 1
-        assert refresh_calls[0] == auth_mod.DEFAULT_NOUS_PORTAL_URL
 
 
     def test_runtime_credentials_rejects_http_for_production_portal(

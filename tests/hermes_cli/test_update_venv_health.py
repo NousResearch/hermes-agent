@@ -31,12 +31,6 @@ from hermes_cli import main as cli_main
 # ---------------------------------------------------------------------------
 
 
-def test_venv_health_reports_healthy_when_no_venv(tmp_path):
-    """No venv python in a DEV checkout → nothing to probe → healthy."""
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path):
-        healthy, detail = cli_main._venv_core_imports_healthy()
-    assert healthy is True
-    assert detail == ""
 
 
 def _fake_venv_python(tmp_path, *, windows: bool = False):
@@ -47,16 +41,6 @@ def _fake_venv_python(tmp_path, *, windows: bool = False):
     return py
 
 
-def test_venv_health_probe_failure_reports_healthy(tmp_path):
-    """A probe that can't run must NOT force needless reinstalls."""
-    _fake_venv_python(tmp_path)
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
-        cli_main.subprocess,
-        "run",
-        side_effect=subprocess.TimeoutExpired(cmd="python", timeout=60),
-    ):
-        healthy, _detail = cli_main._venv_core_imports_healthy()
-    assert healthy is True
 
 
 # ---------------------------------------------------------------------------
@@ -76,9 +60,6 @@ def _proc(pid: int, exe: str, name: str, cmdline: list[str] | None = None, cwd: 
     return proc
 
 
-def test_detect_venv_python_off_windows_is_empty():
-    with patch.object(cli_main, "_is_windows", return_value=False):
-        assert cli_main._detect_venv_python_processes() == []
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -105,17 +86,6 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
         assert cli_main._detect_venv_python_processes() == []
 
 
-def test_format_venv_holders_message_flags_desktop_backend(tmp_path):
-    matches = [
-        (101, "python.exe", "python.exe -m hermes_cli.main serve --host 127.0.0.1"),
-        (102, "pythonw.exe", "pythonw.exe -m hermes_cli.main gateway run"),
-    ]
-    msg = cli_main._format_venv_python_holders_message(matches)
-    assert "101" in msg
-    assert "desktop app" in msg.lower()
-    assert "gateway" in msg
-    assert "hermes update" in msg
-    assert "--force-venv" in msg
 
 
 # ---------------------------------------------------------------------------

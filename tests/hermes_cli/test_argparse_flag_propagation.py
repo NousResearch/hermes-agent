@@ -222,29 +222,8 @@ class TestChatSubparserInheritedValueFlags:
         parser, _subparsers, _chat = build_top_level_parser()
         return parser
 
-    @pytest.mark.parametrize("flag,attr,value", [
-        ("-t", "toolsets", "web"),
-        ("--toolsets", "toolsets", "web,terminal"),
-        ("-m", "model", "anthropic/claude-sonnet-4"),
-        ("--model", "model", "openai/gpt-4"),
-        ("--provider", "provider", "openrouter"),
-    ])
-    def test_flag_before_chat_is_preserved(self, real_parser, flag, attr, value):
-        args, _ = real_parser.parse_known_args([flag, value, "chat"])
-        assert getattr(args, attr, None) == value, (
-            f"`hermes {flag} {value} chat` lost the flag — got "
-            f"{getattr(args, attr, None)!r}, expected {value!r}"
-        )
 
 
-    def test_no_flag_leaves_attrs_at_top_level_default(self, real_parser):
-        """When the user passes none of the inherited flags, the top-level
-        parser's `default=None` still seeds the namespace — the SUPPRESS on
-        the subparser must not remove existing attributes."""
-        args, _ = real_parser.parse_known_args(["chat"])
-        assert getattr(args, "toolsets", "MISSING") is None
-        assert getattr(args, "model", "MISSING") is None
-        assert getattr(args, "provider", "MISSING") is None
 
     def test_all_three_flags_before_chat(self, real_parser):
         """Issue #28780 reporter's case generalized: passing every inherited

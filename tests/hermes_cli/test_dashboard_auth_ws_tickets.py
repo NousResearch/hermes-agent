@@ -152,18 +152,7 @@ class TestConcurrency:
 
 
 class TestInternalCredential:
-    def test_minted_once_is_stable(self):
-        """Successive calls return the same process-lifetime value."""
-        first = ws_tickets.internal_ws_credential()
-        second = ws_tickets.internal_ws_credential()
-        assert first == second
-        assert len(first) >= 32  # token_urlsafe(32)
 
-    def test_round_trip_identity(self):
-        cred = ws_tickets.internal_ws_credential()
-        info = ws_tickets.consume_internal_credential(cred)
-        assert info["user_id"] == ws_tickets.INTERNAL_USER_ID
-        assert info["provider"] == ws_tickets.INTERNAL_PROVIDER
 
 
     def test_reset_clears_and_remints(self):

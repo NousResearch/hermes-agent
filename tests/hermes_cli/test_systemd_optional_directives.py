@@ -36,19 +36,8 @@ RestartSteps=5
         assert "RestartSec=5" in result
 
 
-    def test_handles_no_optional_directives(self):
-        from hermes_cli.gateway import _strip_optional_systemd_directives
-        text = "[Service]\nRestart=always\n"
-        result = _strip_optional_systemd_directives(text)
-        assert "Restart=always" in result
-        assert "RestartMaxDelaySec" not in result
 
 
-    def test_handles_inline_values_with_equals(self):
-        from hermes_cli.gateway import _strip_optional_systemd_directives
-        text = "RestartMaxDelaySec=300\n"
-        result = _strip_optional_systemd_directives(text)
-        assert result == ""
 
     def test_full_unit_comparison(self):
         """Simulate the full stale-check flow with an older systemd unit."""

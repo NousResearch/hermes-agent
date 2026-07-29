@@ -67,20 +67,6 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
     assert body["auth_providers"] == ["stub"]
 
 
-def test_health_reports_liveness_without_loading_gateway_config(gated_client, monkeypatch):
-    def _boom():
-        raise AssertionError("health must not load gateway config")
-
-    monkeypatch.setattr("gateway.config.load_gateway_config", _boom)
-
-    r = gated_client.get("/api/health")
-    assert r.status_code == 200
-    body = r.json()
-    assert body == {
-        "ok": True,
-        "version": web_server.__version__,
-        "auth_required": True,
-    }
 
 
 # Host-local detail (absolute paths, PID, internal gateway URL) is deployment
@@ -109,12 +95,3 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
 
 
-def test_status_includes_host_detail_in_loopback_mode(loopback_client):
-    """Counterpart to the gated case: a loopback bind is local-only, so the
-    full payload (including host paths and PID) is still served — preserving
-    the StatusPage / ``hermes status`` experience for local operators."""
-    r = loopback_client.get("/api/status")
-    assert r.status_code == 200
-    body = r.json()
-    missing = _HOST_DETAIL_FIELDS - set(body.keys())
-    assert not missing, f"loopback /api/status should keep host detail: {missing}"

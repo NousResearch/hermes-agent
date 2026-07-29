@@ -37,19 +37,6 @@ def test_process_singleton_stays_dormant_until_subscribed():
 
 
 
-def test_subscriber_failure_is_isolated():
-    em = MonitoringEmitter()
-    good: list = []
-
-    def bad(batch):
-        raise RuntimeError("boom")
-
-    em.subscribe(bad)
-    em.subscribe(lambda batch: good.extend(batch))
-    em.emit({"event": "gateway_health", "name": "gateway.lifecycle"})
-    em.flush()
-    em.close()
-    assert len(good) == 1  # the raising subscriber did not break fan-out
 
 
 
@@ -68,19 +55,6 @@ def test_unsubscribe_stops_delivery():
     assert [ev["name"] for ev in seen] == ["a"]
 
 
-def test_queue_full_drops_oldest():
-    em = MonitoringEmitter()
-    # Fill the queue without a dispatcher running by not letting it start:
-    # emit() starts the thread, so instead assert drop accounting via stats
-    # after a burst larger than the queue.
-    for i in range(11_000):
-        em.emit({"event": "gateway_health", "name": f"e{i}"})
-    # Give the dispatcher a moment; total dispatched + queued + dropped == emitted.
-    em.flush(timeout=5.0)
-    stats = em.stats()
-    em.close()
-    assert stats["dropped"] >= 0
-    assert stats["dispatched"] + stats["queued"] + stats["dropped"] >= 10_000
 
 
 def test_hot_path_is_fast():

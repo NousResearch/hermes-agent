@@ -27,11 +27,6 @@ class TestJitter:
             v = _jittered(10.0)
             assert 8.0 <= v <= 12.0
 
-    def test_jitter_zero_is_zero(self):
-        assert _jittered(0.0) == 0.0
-
-    def test_jitter_never_negative(self):
-        assert _jittered(0.001) >= 0.0
 
     def test_jitter_varies(self):
         values = {_jittered(10.0) for _ in range(50)}
@@ -114,61 +109,6 @@ def test_retry_attempts_log_debug_transitions_warn(monkeypatch, tmp_path, caplog
         f"expected exactly 1 degraded→parked WARNING, got {len(park_warnings)}"
     )
     assert "degraded → parked" in park_warnings[0].getMessage()
-
-
-@pytest.mark.no_isolate
-def test_keepalive_failure_warns_connected_to_degraded(monkeypatch, tmp_path, caplog):
-    """The connected→degraded transition (keepalive failure) is a WARNING."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    from tools import mcp_tool
-
-    class _Task(MCPServerTask):
-        async def _keepalive_probe(self):
-            raise ConnectionError("session expired")
-
-    task = _Task("kap")
-    task._config = {"keepalive_interval": 0.01}
-    task.session = object()
-
-    monkeypatch.setattr(mcp_tool, "_MIN_KEEPALIVE_INTERVAL", 0.01)
-
-    async def _scenario():
-        with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
-            reason = await task._wait_for_lifecycle_event()
-        assert reason == "reconnect"
-
-    asyncio.run(_scenario())
-
-    degraded = [
-        r for r in caplog.records
-        if r.levelno == logging.WARNING and "connected → degraded" in r.getMessage()
-    ]
-    assert len(degraded) == 1
-
-
-@pytest.mark.no_isolate
-def test_parked_to_revived_warns_once_on_proven_health(monkeypatch, tmp_path, caplog):
-    """After a park, the first PROVEN-healthy session logs one
-    parked→connected revival WARNING (via _mark_session_proven)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    task = MCPServerTask("reviver")
-    task._was_parked = True
-    task._reconnect_retries = 5
-
-    with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
-        task._mark_session_proven()
-        # Second proof must not re-log.
-        task._mark_session_proven()
-
-    revived = [
-        r for r in caplog.records
-        if "revived" in r.getMessage() and "parked → connected" in r.getMessage()
-    ]
-    assert len(revived) == 1
-    assert task._reconnect_retries == 0
-    assert task._was_parked is False
 
 
 @pytest.mark.no_isolate

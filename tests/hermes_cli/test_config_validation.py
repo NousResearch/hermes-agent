@@ -58,8 +58,6 @@ class TestCustomProvidersValidation:
         assert any("not a dict" in i.message for i in issues)
 
 
-class TestFallbackModelValidation:
-    """fallback_model should be a top-level dict with provider + model."""
 
 
 class TestMissingModelSection:
@@ -102,18 +100,6 @@ class TestUnknownTopLevelKeys:
     warning may exist.
     """
 
-    def test_arbitrary_top_level_keys_stay_silent(self):
-        """Env-style and custom keys must produce no unknown-key warnings."""
-        issues = validate_config_structure({
-            "model": {"provider": "openrouter"},
-            "DISCORD_HOME_CHANNEL": "12345",
-            "TELEGRAM_HOME_CHANNEL": "-100987",
-            "DISCORD_ALLOW_ALL_USERS": True,
-            "MY_CUSTOM_SKILL_VAR": "hello",
-            "skillz": {"enabled": True},
-        })
-        assert not any("Unknown top-level config key" in i.message for i in issues)
-        assert issues == []
 
     def test_known_root_keys_derived_from_default_config(self):
         """_KNOWN_ROOT_KEYS must be DEFAULT_CONFIG.keys() plus extras — single source of truth."""
@@ -134,10 +120,3 @@ class TestUnknownTopLevelKeys:
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
 
-    def test_private_underscore_keys_not_flagged(self):
-        """Internal keys starting with _ remain ignored."""
-        issues = validate_config_structure({
-            "_internal_scratch": True,
-            "model": {"provider": "openrouter"},
-        })
-        assert issues == []

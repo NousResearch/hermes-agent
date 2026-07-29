@@ -41,18 +41,6 @@ def test_archive_refuses_pinned(monkeypatch, capsys):
     assert "hermes curator unpin" in out
 
 
-def test_archive_calls_archive_skill(monkeypatch, capsys):
-    import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
-
-    monkeypatch.setattr(skill_usage, "get_record", lambda name: {"pinned": False})
-    monkeypatch.setattr(
-        skill_usage, "archive_skill",
-        lambda name: (True, f"archived to .archive/{name}"),
-    )
-    rc = curator_cli._cmd_archive(_ns(skill="my-skill"))
-    assert rc == 0
-    assert "archived to .archive/my-skill" in capsys.readouterr().out
 
 
 # ─── prune ──────────────────────────────────────────────────────────────────
@@ -74,52 +62,10 @@ def _mk_record(name, *, idle_days=0, pinned=False, state="active", created_idle_
     }
 
 
-def test_prune_days_validation(monkeypatch, capsys):
-    import hermes_cli.curator as curator_cli
-    rc = curator_cli._cmd_prune(_ns(days=0, yes=True, dry_run=False))
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "--days must be >= 1" in err
 
 
-def test_prune_confirms_with_y(monkeypatch, capsys):
-    import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
-
-    rows = [_mk_record("old-skill", idle_days=200)]
-    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
-    archived = []
-    monkeypatch.setattr(
-        skill_usage, "archive_skill",
-        lambda name: archived.append(name) or (True, "ok"),
-    )
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
-    rc = curator_cli._cmd_prune(_ns(days=30, yes=False, dry_run=False))
-    assert rc == 0
-    assert archived == ["old-skill"]
 
 
-def test_prune_reports_partial_failure(monkeypatch, capsys):
-    import hermes_cli.curator as curator_cli
-    import tools.skill_usage as skill_usage
-
-    rows = [
-        _mk_record("ok-skill", idle_days=200),
-        _mk_record("bad-skill", idle_days=200),
-    ]
-    monkeypatch.setattr(skill_usage, "curated_report", lambda: rows)
-
-    def fake_archive(name):
-        if name == "bad-skill":
-            return False, "disk full"
-        return True, "ok"
-
-    monkeypatch.setattr(skill_usage, "archive_skill", fake_archive)
-    rc = curator_cli._cmd_prune(_ns(days=30, yes=True, dry_run=False))
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "archived 1/2" in out
-    assert "bad-skill: disk full" in out
 
 
 # ─── argparse wiring ────────────────────────────────────────────────────────

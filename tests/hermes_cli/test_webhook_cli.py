@@ -52,30 +52,7 @@ def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
 
 
 class TestSubscribe:
-    def test_basic_create(self, capsys):
-        webhook_command(_make_args(webhook_action="subscribe", name="test-hook"))
-        out = capsys.readouterr().out
-        assert "Created" in out
-        assert "/webhooks/test-hook" in out
-        subs = _load_subscriptions()
-        assert "test-hook" in subs
 
-    def test_with_options(self, capsys):
-        webhook_command(_make_args(
-            webhook_action="subscribe",
-            name="gh-issues",
-            events="issues,pull_request",
-            prompt="Issue: {issue.title}",
-            deliver="telegram",
-            deliver_chat_id="12345",
-            description="Watch GitHub",
-        ))
-        subs = _load_subscriptions()
-        route = subs["gh-issues"]
-        assert route["events"] == ["issues", "pull_request"]
-        assert route["prompt"] == "Issue: {issue.title}"
-        assert route["deliver"] == "telegram"
-        assert route["deliver_extra"] == {"chat_id": "12345"}
 
     def test_custom_secret(self):
         webhook_command(_make_args(

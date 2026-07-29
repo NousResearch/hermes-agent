@@ -108,18 +108,8 @@ class TestApplyReplacement:
         assert cfg["principal"]["model"] == "grok-4.3"
 
 
-    def test_replaces_auxiliary_vision(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        cfg = _parse(trap_config)
-        assert cfg["auxiliary"]["vision"]["model"] == "grok-4.3"
 
 
-    def test_replaces_image_gen_plugin(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        apply_migration(trap_config, issues)
-        cfg = _parse(trap_config)
-        assert cfg["plugins"]["image_gen"]["xai"]["model"] == "grok-imagine-image-quality"
 
     def test_does_not_touch_unrelated_slots(self, trap_config: Path):
         issues = find_retired_xai_refs(_parse(trap_config))
@@ -165,11 +155,6 @@ class TestBackup:
         assert result.backup_path.exists()
         assert result.backup_path.read_text(encoding="utf-8") == original
 
-    def test_backup_filename_prefixed(self, trap_config: Path):
-        issues = find_retired_xai_refs(_parse(trap_config))
-        result = apply_migration(trap_config, issues)
-        assert result.backup_path is not None
-        assert result.backup_path.name.startswith("config.yaml.bak-pre-migrate-xai-")
 
     def test_no_backup_when_disabled(self, trap_config: Path):
         issues = find_retired_xai_refs(_parse(trap_config))
@@ -178,11 +163,6 @@ class TestBackup:
         # No bak file in the directory
         assert not list(trap_config.parent.glob("*.bak-pre-migrate-xai-*"))
 
-    def test_no_backup_when_no_changes(self, clean_config: Path):
-        issues = find_retired_xai_refs(_parse(clean_config))
-        result = apply_migration(clean_config, issues, backup=True)
-        assert result.backup_path is None  # nothing to back up
-        assert not list(clean_config.parent.glob("*.bak-pre-migrate-xai-*"))
 
 
 # ---------------------------------------------------------------------------

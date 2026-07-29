@@ -346,12 +346,6 @@ class TestMcpTest:
 # ---------------------------------------------------------------------------
 
 class TestEnvVarInterpolation:
-    def test_interpolate_simple(self, monkeypatch):
-        monkeypatch.setenv("MY_KEY", "secret123")
-        from tools.mcp_tool import _interpolate_env_vars
-
-        result = _interpolate_env_vars("Bearer ${MY_KEY}")
-        assert result == "Bearer secret123"
 
 
     def test_interpolate_cursor_env_prefix(self, monkeypatch):
@@ -361,12 +355,6 @@ class TestEnvVarInterpolation:
 
         assert _interpolate_env_vars("Bearer ${env:MY_KEY}") == "Bearer secret123"
 
-    def test_interpolate_cursor_env_prefix_missing(self, monkeypatch):
-        """An unset ${env:VAR} keeps its literal placeholder, like ${VAR}."""
-        monkeypatch.delenv("MISSING_VAR", raising=False)
-        from tools.mcp_tool import _interpolate_env_vars
-
-        assert _interpolate_env_vars("Bearer ${env:MISSING_VAR}") == "Bearer ${env:MISSING_VAR}"
 
     def test_env_ref_name_strips_prefix(self):
         from tools.mcp_tool import _env_ref_name

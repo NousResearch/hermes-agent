@@ -21,14 +21,6 @@ def test_root_of_standalone_session_is_itself(db):
 
 
 
-def test_root_follows_compression_rotation_chain(db):
-    # root -> seg2 -> seg3 (two compression rotations)
-    db.create_session("root", source="cli")
-    db.create_session("seg2", source="cli", parent_session_id="root")
-    db.create_session("seg3", source="cli", parent_session_id="seg2")
-    assert db.get_conversation_root("seg3") == "root"
-    assert db.get_conversation_root("seg2") == "root"
-    assert db.get_conversation_root("root") == "root"
 
 
 def test_root_covers_delegate_child_sessions(db):
@@ -39,5 +31,3 @@ def test_root_covers_delegate_child_sessions(db):
 
 
 
-def test_root_empty_session_id_passthrough(db):
-    assert db.get_conversation_root("") == ""

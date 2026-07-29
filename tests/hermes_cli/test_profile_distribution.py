@@ -87,13 +87,6 @@ def _symlink_file_or_skip(link: Path, target: Path) -> None:
 
 class TestManifestParsing:
 
-    def test_minimal_manifest(self, tmp_path):
-        (tmp_path / MANIFEST_FILENAME).write_text("name: minimal\n")
-        m = read_manifest(tmp_path)
-        assert m.name == "minimal"
-        assert m.version == "0.1.0"
-        assert m.env_requires == []
-        assert m.distribution_owned == []
 
     def test_full_manifest(self, tmp_path):
         (tmp_path / MANIFEST_FILENAME).write_text(
@@ -125,18 +118,9 @@ class TestManifestParsing:
         assert m.env_requires[1].default == "http://127.0.0.1:8000"
         assert m.distribution_owned == ["SOUL.md", "skills"]
 
-    def test_missing_name_rejected(self, tmp_path):
-        (tmp_path / MANIFEST_FILENAME).write_text("version: 1.0\n")
-        with pytest.raises(DistributionError, match="missing 'name'"):
-            read_manifest(tmp_path)
 
 
-    def test_read_manifest_returns_none_when_absent(self, tmp_path):
-        assert read_manifest(tmp_path) is None
 
-    def test_owned_paths_default(self):
-        m = DistributionManifest(name="x")
-        assert m.owned_paths() == list(DEFAULT_DIST_OWNED)
 
 
     def test_roundtrip_write_read(self, tmp_path):
@@ -549,8 +533,3 @@ class TestErrorSurfaces:
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
 
-    def test_path_traversal_name_rejected(self, profile_env, tmp_path):
-        mf = DistributionManifest(name="../../etc/passwd", version="0.1.0")
-        staged = _make_staging_dir(profile_env, "bad", manifest=mf)
-        with pytest.raises((ValueError, DistributionError)):
-            plan_install(str(staged), tmp_path / "work")

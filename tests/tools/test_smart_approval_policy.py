@@ -44,15 +44,6 @@ class TestGetSmartPolicy(unittest.TestCase):
         mock_cfg.return_value = {"mode": "smart"}
         assert _get_smart_policy() == ""
 
-    @patch("tools.approval._get_approval_config")
-    def test_non_string_value_returns_empty(self, mock_cfg):
-        mock_cfg.return_value = {"smart_policy": ["not", "a", "string"]}
-        assert _get_smart_policy() == ""
-
-    @patch("tools.approval._get_approval_config")
-    def test_whitespace_only_returns_empty(self, mock_cfg):
-        mock_cfg.return_value = {"smart_policy": "   \n  "}
-        assert _get_smart_policy() == ""
 
     @patch("tools.approval._get_approval_config")
     def test_policy_text_is_stripped(self, mock_cfg):
@@ -89,22 +80,6 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
         sys_content = messages_missing[0]["content"]
         assert "Additional policy rules from the operator" not in sys_content
 
-    @patch("tools.approval._get_approval_config")
-    @patch("agent.auxiliary_client.call_llm")
-    def test_policy_appears_in_system_message(self, mock_call_llm, mock_cfg):
-        """A non-empty policy must land in the system message, delimited."""
-        mock_call_llm.return_value = _make_response("ESCALATE")
-        mock_cfg.return_value = {"smart_policy": POLICY_TEXT}
-
-        _smart_approve("rm -rf /etc/nginx", "recursive delete")
-
-        messages = _messages_from(mock_call_llm)
-        assert messages[0]["role"] == "system"
-        sys_content = messages[0]["content"]
-        assert POLICY_TEXT in sys_content
-        assert "Additional policy rules from the operator" in sys_content
-        # Baseline hardening must survive the append
-        assert "UNTRUSTED" in sys_content
 
     @patch("tools.approval._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")

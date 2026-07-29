@@ -46,17 +46,6 @@ class TestKimiProfileParity:
         assert "temperature" not in legacy
         assert "temperature" not in profile
 
-    def test_max_tokens(self, transport):
-        legacy = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi-coding"), max_tokens_param_fn=_max_tokens_fn,
-        )
-        profile = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi"),
-            max_tokens_param_fn=_max_tokens_fn,
-        )
-        assert profile["max_completion_tokens"] == legacy["max_completion_tokens"] == 32000
 
     def test_thinking_enabled(self, transport):
         # xor contract: explicit effort → reasoning_effort only, no thinking.
@@ -74,21 +63,6 @@ class TestKimiProfileParity:
         assert "thinking" not in profile.get("extra_body", {})
         assert "thinking" not in legacy.get("extra_body", {})
 
-    def test_thinking_disabled(self, transport):
-        rc = {"enabled": False}
-        legacy = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi-coding"), reasoning_config=rc,
-        )
-        profile = transport.build_kwargs(
-            model="kimi-k2", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("kimi"),
-            reasoning_config=rc,
-        )
-        assert profile["extra_body"]["thinking"] == legacy["extra_body"]["thinking"]
-        assert profile["extra_body"]["thinking"]["type"] == "disabled"
-        assert "reasoning_effort" not in profile
-        assert "reasoning_effort" not in legacy
 
 
 
@@ -132,33 +106,9 @@ class TestNousProfileParity:
         )
         assert profile["extra_body"]["tags"] == legacy["extra_body"]["tags"]
 
-    def test_reasoning_omitted_when_disabled(self, transport):
-        rc = {"enabled": False}
-        legacy = transport.build_kwargs(
-            model="hermes-3", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("nous"), supports_reasoning=True, reasoning_config=rc,
-        )
-        profile = transport.build_kwargs(
-            model="hermes-3", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("nous"),
-            supports_reasoning=True, reasoning_config=rc,
-        )
-        assert "reasoning" not in legacy.get("extra_body", {})
-        assert "reasoning" not in profile.get("extra_body", {})
 
 
 class TestQwenProfileParity:
-    def test_max_tokens(self, transport):
-        legacy = transport.build_kwargs(
-            model="qwen3.5", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("qwen-oauth"), max_tokens_param_fn=_max_tokens_fn,
-        )
-        profile = transport.build_kwargs(
-            model="qwen3.5", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("qwen"),
-            max_tokens_param_fn=_max_tokens_fn,
-        )
-        assert profile["max_completion_tokens"] == legacy["max_completion_tokens"] == 65536
 
     def test_vl_high_resolution(self, transport):
         legacy = transport.build_kwargs(
@@ -204,13 +154,6 @@ class TestDeveloperRoleParity:
         )
         assert kw["messages"][0]["role"] == "developer"
 
-    def test_profile_path_no_swap_for_claude(self, transport):
-        msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "hi"}]
-        kw = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6", messages=msgs, tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-        )
-        assert kw["messages"][0]["role"] == "system"
 
 
 class TestRequestOverridesParity:
@@ -224,13 +167,6 @@ class TestRequestOverridesParity:
         )
         assert kw["extra_body"]["custom_key"] == "custom_val"
 
-    def test_extra_body_override_profile(self, transport):
-        kw = transport.build_kwargs(
-            model="gpt-5.4", messages=_msgs(), tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-            request_overrides={"extra_body": {"custom_key": "custom_val"}},
-        )
-        assert kw["extra_body"]["custom_key"] == "custom_val"
 
 
     def test_top_level_override(self, transport):

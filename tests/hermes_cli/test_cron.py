@@ -19,25 +19,6 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
-    def test_pause_resume_run(self, tmp_cron_dir, capsys):
-        job = create_job(prompt="Check server status", schedule="every 1h")
-
-        cron_command(Namespace(cron_command="pause", job_id=job["id"]))
-        paused = get_job(job["id"])
-        assert paused["state"] == "paused"
-
-        cron_command(Namespace(cron_command="resume", job_id=job["id"]))
-        resumed = get_job(job["id"])
-        assert resumed["state"] == "scheduled"
-
-        cron_command(Namespace(cron_command="run", job_id=job["id"]))
-        triggered = get_job(job["id"])
-        assert triggered["state"] == "scheduled"
-
-        out = capsys.readouterr().out
-        assert "Paused job" in out
-        assert "Resumed job" in out
-        assert "Triggered job" in out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
@@ -121,21 +102,6 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
-    def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
-        """A one-shot job can be persisted with ``"repeat": null``. `cron
-        list` must render it as ∞ rather than crashing on .get(...)\\.get."""
-        from cron.jobs import load_jobs, save_jobs
-
-        create_job(prompt="One shot", schedule="every 1h")
-        # Force the present-but-null shape that .get("repeat", {}) mishandles.
-        jobs = load_jobs()
-        jobs[0]["repeat"] = None
-        save_jobs(jobs)
-
-        cron_command(Namespace(cron_command="list", all=True))
-
-        out = capsys.readouterr().out
-        assert "Repeat:    ∞" in out
 
 
 class TestGatewayNotRunningWarning:

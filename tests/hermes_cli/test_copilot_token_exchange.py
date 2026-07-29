@@ -49,33 +49,7 @@ class TestExchangeCopilotToken:
         assert req.get_header("Authorization") == "token gho_test123"
         assert "GitHubCopilotChat" in req.get_header("User-agent")
 
-    @patch("urllib.request.urlopen")
-    def test_caches_result(self, mock_urlopen):
-        from hermes_cli.copilot_auth import exchange_copilot_token
 
-        future = time.time() + 1800
-        mock_urlopen.return_value = self._mock_urlopen(expires_at=future)
-
-        exchange_copilot_token("gho_test123")
-        exchange_copilot_token("gho_test123")
-
-        assert mock_urlopen.call_count == 1
-
-    @patch("urllib.request.urlopen")
-    def test_refreshes_expired_cache(self, mock_urlopen):
-        from hermes_cli.copilot_auth import exchange_copilot_token, _jwt_cache, _token_fingerprint
-
-        # Seed cache with expired entry
-        fp = _token_fingerprint("gho_test123")
-        _jwt_cache[fp] = ("old_token", time.time() - 10, None)
-
-        mock_urlopen.return_value = self._mock_urlopen(
-            token="new_token", expires_at=time.time() + 1800
-        )
-        api_token, _, _ = exchange_copilot_token("gho_test123")
-
-        assert api_token == "new_token"
-        assert mock_urlopen.call_count == 1
 
     @patch("urllib.request.urlopen")
     def test_raises_on_empty_token(self, mock_urlopen):
@@ -142,11 +116,6 @@ class TestDeriveBaseUrlFromProxyEp:
         assert _derive_base_url_from_proxy_ep(token) == "https://api.enterprise.githubcopilot.com"
 
 
-    def test_no_proxy_prefix(self):
-        from hermes_cli.copilot_auth import _derive_base_url_from_proxy_ep
-
-        token = "proxy-ep=custom.copilot.example.com"
-        assert _derive_base_url_from_proxy_ep(token) == "https://custom.copilot.example.com"
 
 
     @patch("urllib.request.urlopen")

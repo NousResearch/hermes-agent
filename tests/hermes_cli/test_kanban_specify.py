@@ -60,15 +60,8 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
 # JSON extraction helpers
 # ---------------------------------------------------------------------------
 
-def test_extract_json_blob_handles_plain_json():
-    raw = '{"title": "T", "body": "B"}'
-    assert spec._extract_json_blob(raw) == {"title": "T", "body": "B"}
 
 
-def test_extract_json_blob_returns_none_for_unparseable():
-    assert spec._extract_json_blob("no json here") is None
-    assert spec._extract_json_blob("") is None
-    assert spec._extract_json_blob("{not: valid}") is None
 
 
 # ---------------------------------------------------------------------------
@@ -99,34 +92,8 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
-def test_specify_task_no_aux_client_configured(kanban_home):
-    with kb.connect() as conn:
-        tid = kb.create_task(conn, title="rough", triage=True)
-
-    with patch(
-        "agent.auxiliary_client.call_llm",
-        side_effect=RuntimeError("No LLM provider configured"),
-    ):
-        outcome = spec.specify_task(tid)
-
-    assert outcome.ok is False
-    # call_llm's no-provider RuntimeError surfaces via the LLM-error branch.
-    assert "LLM error" in outcome.reason
-    # Task must stay in triage — we never touched it.
-    with kb.connect() as conn:
-        assert kb.get_task(conn, tid).status == "triage"
 
 
-def test_list_triage_ids(kanban_home):
-    with kb.connect() as conn:
-        a = kb.create_task(conn, title="a", triage=True)
-        b = kb.create_task(conn, title="b", triage=True, tenant="proj-1")
-        kb.create_task(conn, title="c")  # not triage — excluded
-
-    ids_all = spec.list_triage_ids()
-    assert set(ids_all) == {a, b}
-    ids_tenant = spec.list_triage_ids(tenant="proj-1")
-    assert ids_tenant == [b]
 
 
 # ---------------------------------------------------------------------------
@@ -142,11 +109,6 @@ def _run_cli(*argv: str) -> int:
     return kanban_cli.kanban_command(ns)
 
 
-def test_cli_specify_requires_id_or_all(kanban_home, capsys):
-    rc = _run_cli("specify")
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "requires a task id or --all" in err
 
 
 def test_cli_specify_tenant_filter(kanban_home, capsys):

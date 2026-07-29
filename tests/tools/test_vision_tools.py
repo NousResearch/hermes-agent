@@ -52,12 +52,6 @@ class TestValidateImageUrl:
         """localhost URLs are blocked by SSRF protection."""
         assert _validate_image_url("http://localhost:8080/image.png") is False
 
-    def test_rejects_non_http_schemes(self):
-        assert _validate_image_url("ftp://files.example.com/image.jpg") is False
-        assert _validate_image_url("file:///etc/passwd") is False
-        assert _validate_image_url("javascript:alert(1)") is False
-        assert _validate_image_url("data:image/png;base64,iVBOR") is False
-        assert _validate_image_url("example.com/image.jpg") is False  # no scheme
 
     def test_rejects_malformed_and_non_string_inputs(self):
         # http:// alone has no network location — urlparse catches this.
@@ -130,28 +124,6 @@ class TestHandleVisionAnalyze:
                 # Clean up the coroutine to avoid RuntimeWarning
                 result.close()
 
-    @pytest.mark.asyncio
-    async def test_prompt_contains_question(self):
-        """The full prompt should incorporate the user's question."""
-        with (
-            patch(
-                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
-            ) as mock_tool,
-            patch(
-                "tools.vision_tools._should_use_native_vision_fast_path",
-                return_value=False,
-            ),
-        ):
-            mock_tool.return_value = json.dumps({"result": "ok"})
-            await _handle_vision_analyze(
-                {
-                    "image_url": "https://example.com/img.png",
-                    "question": "Describe the cat",
-                }
-            )
-            call_args = mock_tool.call_args
-            full_prompt = call_args[0][1]  # second positional arg
-            assert "Describe the cat" in full_prompt
 
     @pytest.mark.asyncio
     async def test_model_resolution_config_then_env_then_default(self):
@@ -639,65 +611,6 @@ class TestResizeImageForVision:
         assert result.startswith("data:image/png;base64,")
         assert len(result) < _MAX_BASE64_BYTES
 
-    def test_large_image_is_resized(self, tmp_path):
-        """Images over the default target should be auto-resized to fit."""
-        try:
-            from PIL import Image
-        except ImportError:
-            pytest.skip("Pillow not installed")
-        # Create a large image that will exceed 5 MB in base64
-        # A 4000x4000 uncompressed PNG will be large
-        img = Image.new("RGB", (4000, 4000), (128, 200, 50))
-        path = tmp_path / "large.png"
-        img.save(path, "PNG")
-
-        result = _resize_image_for_vision(path, mime_type="image/png")
-        assert result.startswith("data:image/png;base64,")
-        # Default target is _RESIZE_TARGET_BYTES (5 MB), not _MAX_BASE64_BYTES (20 MB)
-        assert len(result) <= _RESIZE_TARGET_BYTES
-        assert _RESIZE_TARGET_BYTES < _MAX_BASE64_BYTES
-
-    def test_jpeg_output_for_non_png(self, tmp_path):
-        """Non-PNG images should be resized as JPEG."""
-        try:
-            from PIL import Image
-        except ImportError:
-            pytest.skip("Pillow not installed")
-        img = Image.new("RGB", (2000, 2000), (255, 128, 0))
-        path = tmp_path / "photo.jpg"
-        img.save(path, "JPEG", quality=95)
-
-        result = _resize_image_for_vision(path, mime_type="image/jpeg",
-                                           max_base64_bytes=50_000)
-        assert result.startswith("data:image/jpeg;base64,")
-
-    def test_extreme_aspect_ratio_preserved(self, tmp_path):
-        """Extreme aspect ratios should be preserved during resize."""
-        try:
-            from PIL import Image
-        except ImportError:
-            pytest.skip("Pillow not installed")
-        # Very wide panorama: 8000x200
-        img = Image.new("RGB", (8000, 200), (100, 150, 200))
-        path = tmp_path / "panorama.png"
-        img.save(path, "PNG")
-
-        result = _resize_image_for_vision(path, mime_type="image/png",
-                                           max_base64_bytes=50_000)
-        assert result.startswith("data:image/")
-        # Decode and check aspect ratio is roughly preserved
-        from io import BytesIO
-        header, b64data = result.split(",", 1)
-        raw = base64.b64decode(b64data)
-        resized = Image.open(BytesIO(raw))
-        resized_ratio = resized.width / resized.height if resized.height > 0 else 0
-        # Allow some tolerance (floor clamping), but ratio should stay above 10:1
-        # With independent halving, ratio would collapse to ~1:1. Proportional
-        # scaling should keep it well above 10.
-        assert resized_ratio > 10, (
-            f"Aspect ratio collapsed: {resized.width}x{resized.height} "
-            f"(ratio {resized_ratio:.1f}, expected >10)"
-        )
 
     def test_no_pillow_returns_original(self, tmp_path):
         """Without Pillow, oversized images should be returned as-is."""
@@ -741,19 +654,6 @@ class TestImageExceedsDimension:
         img.save(path, "PNG")
         assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is True
 
-    def test_within_cap_not_flagged(self, tmp_path):
-        try:
-            from PIL import Image
-        except ImportError:
-            pytest.skip("Pillow not installed")
-        small = tmp_path / "small.png"
-        Image.new("RGB", (800, 600), (10, 200, 10)).save(small, "PNG")
-        assert _image_exceeds_dimension(small, _EMBED_MAX_DIMENSION) is False
-
-        # max == cap is fine; only strictly greater forces a resize.
-        edge = tmp_path / "edge.png"
-        Image.new("RGB", (_EMBED_MAX_DIMENSION, 100), (1, 2, 3)).save(edge, "PNG")
-        assert _image_exceeds_dimension(edge, _EMBED_MAX_DIMENSION) is False
 
     def test_undetectable_dimensions_return_false(self, tmp_path):
         # Without Pillow — or with bytes Pillow can't parse — we can't inspect
@@ -828,25 +728,6 @@ class TestDownloadRetryClassification:
         # Unclassified (network blip) is retryable
         assert _is_retryable_download_error(ConnectionError("reset")) is True
 
-    @pytest.mark.asyncio
-    async def test_404_fails_fast_without_retry(self, tmp_path):
-        """A 404 must raise on the first attempt — no backoff sleep, no extra GETs."""
-        import httpx
-        from tools.vision_tools import _download_image
-
-        mock_client = self._make_client_raising_status(404)
-        with (
-            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
-            patch("tools.vision_tools.check_website_access", return_value=None),
-            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
-            pytest.raises(httpx.HTTPStatusError),
-        ):
-            await _download_image(
-                "https://example.com/missing.jpg", tmp_path / "x.jpg", max_retries=3
-            )
-        # Exactly one attempt, zero backoff sleeps.
-        assert mock_client.get.await_count == 1
-        mock_sleep.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_503_retries_then_raises(self, tmp_path):

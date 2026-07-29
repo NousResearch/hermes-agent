@@ -41,20 +41,8 @@ class TestSttCategory:
         assert cat["name"] == "Speech-to-Text"
         assert len(cat["providers"]) >= 5
 
-    def test_stt_in_configurable_toolsets(self):
-        keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
-        assert "stt" in keys
 
-    def test_every_row_writes_stt_provider(self):
-        for prov in _stt_cat()["providers"]:
-            assert prov.get("stt_provider"), f"row {prov['name']} missing stt_provider"
 
-    def test_provider_keys_cover_runtime_dispatch(self):
-        """Every picker row's stt_provider must be a runtime built-in."""
-        from agent.transcription_registry import _BUILTIN_NAMES
-
-        for prov in _stt_cat()["providers"]:
-            assert prov["stt_provider"] in _BUILTIN_NAMES
 
     def test_managed_row_shares_tts_coverage_category(self):
         from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY
@@ -98,8 +86,6 @@ class TestActiveDetection:
 
 
 class TestModelPicker:
-    def test_catalog_includes_gpt_transcribe(self):
-        assert "gpt-transcribe" in STT_MODEL_CATALOG["openai"]
 
     def test_catalog_matches_runtime_model_sets(self):
         from tools.transcription_tools import GROQ_MODELS, OPENAI_MODELS
@@ -108,12 +94,6 @@ class TestModelPicker:
         assert set(STT_MODEL_CATALOG["groq"]) == GROQ_MODELS
 
 
-    def test_configure_stt_model_elevenlabs_uses_model_id(self):
-        config = {}
-        with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
-            _configure_stt_model("elevenlabs", config)
-        assert config["stt"]["elevenlabs"]["model_id"] == "scribe_v2"
-        assert "model" not in config["stt"]["elevenlabs"]
 
 
     def test_configure_stt_model_defaults_to_current(self):

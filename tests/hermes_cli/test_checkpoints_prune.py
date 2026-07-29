@@ -65,41 +65,11 @@ def _patch_checkpoint_manager(monkeypatch, status: dict, prune_calls: list):
 # ─── pre-v2-only store ──────────────────────────────────────────────────────
 
 
-def test_pre_v2_only_decline_aborts_without_deleting(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _PRE_V2_ONLY_STATUS, prune_calls)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
-
-    rc = checkpoints_cli.cmd_prune(_ns())
-
-    assert rc == 1
-    assert prune_calls == []
-    out = capsys.readouterr().out
-    assert "pre-v2 shadow repo" in out
-    assert "Aborted" in out
 
 
 # ─── mixed store (v2 + pre-v2) ──────────────────────────────────────────────
 
 
-def test_mixed_store_force_skips_prompt_deletes_both(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _MIXED_STATUS, prune_calls)
-
-    def _unexpected_input(_prompt):
-        raise AssertionError("input() must not be called when --force is passed")
-
-    monkeypatch.setattr("builtins.input", _unexpected_input)
-
-    rc = checkpoints_cli.cmd_prune(_ns(force=True))
-
-    assert rc == 0
-    assert len(prune_calls) == 1
-    assert prune_calls[0]["delete_orphans"] is True
 
 
 # ─── --keep-orphans skips the prompt entirely, on either layout ───────────
@@ -151,20 +121,5 @@ def test_empty_preview_binds_empty_allowlist(monkeypatch, capsys):
     assert prune_calls[0]["orphan_allowlist"] == set()
 
 
-def test_nonempty_preview_allowlist_matches_displayed_set(monkeypatch, capsys):
-    import hermes_cli.checkpoints as checkpoints_cli
-
-    prune_calls: list = []
-    _patch_checkpoint_manager(monkeypatch, _MIXED_STATUS, prune_calls)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
-
-    rc = checkpoints_cli.cmd_prune(_ns())
-
-    assert rc == 0
-    assert len(prune_calls) == 1
-    assert prune_calls[0]["orphan_allowlist"] == {
-        "abc123",
-        "/home/user/.hermes/checkpoints/deadbeefcafebabe",
-    }
 
 

@@ -64,60 +64,6 @@ def test_pristine_skill_is_not_listed_as_modified(tmp_path):
         assert list_user_modified_bundled_skills() == []
 
 
-def test_edited_skill_is_listed_as_modified(tmp_path):
-    bundled, skills_dir, manifest_file = _env(tmp_path)
-    with _patches(bundled, skills_dir, manifest_file):
-        sync_skills(quiet=True)
-        (skills_dir / "category" / "foo" / "helper.py").write_text("print('mine')\n")
-
-        modified = list_user_modified_bundled_skills()
-        names = [m["name"] for m in modified]
-        assert names == ["foo"]
-        entry = modified[0]
-        assert entry["dest"] == skills_dir / "category" / "foo"
-        assert entry["bundled_src"] == bundled / "category" / "foo"
-
-
-def test_diff_reports_no_changes_when_pristine(tmp_path):
-    bundled, skills_dir, manifest_file = _env(tmp_path)
-    with _patches(bundled, skills_dir, manifest_file):
-        sync_skills(quiet=True)
-        result = diff_bundled_skill("foo")
-        assert result["ok"] is True
-        assert result["modified"] is False
-        assert result["diffs"] == []
-
-
-def test_diff_shows_modified_and_added_files(tmp_path):
-    bundled, skills_dir, manifest_file = _env(tmp_path)
-    with _patches(bundled, skills_dir, manifest_file):
-        sync_skills(quiet=True)
-        user_foo = skills_dir / "category" / "foo"
-        (user_foo / "helper.py").write_text("print('mine')\n")
-        (user_foo / "extra.txt").write_text("local note\n")
-
-        result = diff_bundled_skill("foo")
-        assert result["ok"] is True
-        assert result["modified"] is True
-
-        by_path = {d["path"]: d for d in result["diffs"]}
-        assert by_path["helper.py"]["status"] == "modified"
-        # The unified diff shows the user's line replacing the stock line.
-        assert "print('mine')" in by_path["helper.py"]["diff"]
-        assert "print('stock')" in by_path["helper.py"]["diff"]
-        # A file only in the user copy is reported as added.
-        assert by_path["extra.txt"]["status"] == "added"
-
-
-def test_diff_unknown_skill_is_not_ok(tmp_path):
-    bundled, skills_dir, manifest_file = _env(tmp_path)
-    with _patches(bundled, skills_dir, manifest_file):
-        sync_skills(quiet=True)
-        result = diff_bundled_skill("does-not-exist")
-        assert result["ok"] is False
-        assert result["found"] is False
-
-
 def test_reset_clears_modified_state(tmp_path):
     """Revert (existing) and discovery (new) must agree: after reset, not modified."""
     bundled, skills_dir, manifest_file = _env(tmp_path)

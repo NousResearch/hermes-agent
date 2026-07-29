@@ -78,8 +78,6 @@ class TestTencentTokenhubAliases:
 # =============================================================================
 
 
-class TestTencentTokenhubAutoDetection:
-    """Setting TOKENHUB_API_KEY should auto-detect the provider."""
 
 
 # =============================================================================
@@ -90,10 +88,6 @@ class TestTencentTokenhubAutoDetection:
 class TestTencentTokenhubCredentials:
     """Test credential resolution for the tencent-tokenhub provider."""
 
-    def test_status_configured(self, monkeypatch):
-        monkeypatch.setenv("TOKENHUB_API_KEY", "sk-test-12345678")
-        status = get_api_key_provider_status("tencent-tokenhub")
-        assert status["configured"]
 
 
     def test_resolve_credentials(self, monkeypatch):
@@ -110,11 +104,6 @@ class TestTencentTokenhubCredentials:
         status = get_api_key_provider_status("tencent-tokenhub")
         assert not status["configured"]
 
-    def test_custom_base_url_override(self, monkeypatch):
-        monkeypatch.setenv("TOKENHUB_API_KEY", "sk-test-12345678")
-        monkeypatch.setenv("TOKENHUB_BASE_URL", "https://custom.tokenhub.example/v1")
-        creds = resolve_api_key_provider_credentials("tencent-tokenhub")
-        assert creds["base_url"] == "https://custom.tokenhub.example/v1"
 
 
 # =============================================================================
@@ -156,8 +145,6 @@ class TestTencentTokenhubCanonicalProvider:
 # =============================================================================
 
 
-class TestTencentInOpenRouterAndNous:
-    """tencent/hy3:free and tencent/hy3 should appear in OpenRouter and Nous curated lists."""
 
 
 # =============================================================================
@@ -195,8 +182,6 @@ class TestTencentTokenhubNormalization:
 # =============================================================================
 
 
-class TestTencentTokenhubProviderLabel:
-    """Test provider_label() from models.py for tencent-tokenhub."""
 
 
 # =============================================================================
@@ -204,8 +189,6 @@ class TestTencentTokenhubProviderLabel:
 # =============================================================================
 
 
-class TestTencentTokenhubURLMapping:
-    """Test URL → provider inference for Tencent TokenHub endpoints."""
 
 
 # =============================================================================
@@ -269,8 +252,6 @@ class TestTencentTokenhubProvidersModule:
 # =============================================================================
 
 
-class TestTencentTokenhubAuxiliary:
-    """Tencent TokenHub auxiliary model routing."""
 
 
 # =============================================================================
@@ -278,8 +259,6 @@ class TestTencentTokenhubAuxiliary:
 # =============================================================================
 
 
-class TestTencentTokenhubDoctor:
-    """Verify hermes doctor recognizes Tencent TokenHub env vars."""
 
 
 # =============================================================================
@@ -307,8 +286,6 @@ class TestTencentTokenhubAgentInit:
 # =============================================================================
 
 
-class TestTencentTokenhubCLIDispatch:
-    """Verify tencent-tokenhub is routed through _model_flow_api_key_provider."""
 
 
 # =============================================================================

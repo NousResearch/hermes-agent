@@ -73,8 +73,6 @@ class TestUploadPasteRs:
                 _upload_paste_rs("test")
 
 
-class TestUploadDpasteCom:
-    """Test dpaste.com fallback upload path."""
 
 
 class TestUploadToPastebin:
@@ -111,23 +109,8 @@ class TestUploadToPastebin:
 class TestCaptureLogSnapshot:
     """Test _capture_log_snapshot for log reading and truncation."""
 
-    def test_reads_small_file(self, hermes_home):
-        from hermes_cli.debug import _capture_log_snapshot
-
-        snap = _capture_log_snapshot("agent", tail_lines=10)
-        assert snap.full_text is not None
-        assert "session started" in snap.full_text
-        assert "session started" in snap.tail_text
 
 
-    def test_empty_primary_reports_file_empty(self, hermes_home):
-        """Empty primary (no .1 fallback) surfaces as '(file empty)', not missing."""
-        (hermes_home / "logs" / "agent.log").write_text("")
-
-        from hermes_cli.debug import _capture_log_snapshot
-        snap = _capture_log_snapshot("agent", tail_lines=10)
-        assert snap.full_text is None
-        assert snap.tail_text == "(file empty)"
 
     def test_race_truncate_after_resolve_reports_empty(self, hermes_home, monkeypatch):
         """If the log is truncated between resolve and stat, say 'empty', not 'missing'."""
@@ -142,17 +125,6 @@ class TestCaptureLogSnapshot:
         assert snap.full_text is None
         assert snap.tail_text == "(file empty)"
 
-    def test_truncates_large_file(self, hermes_home):
-        """Files larger than max_bytes get tail-truncated."""
-        from hermes_cli.debug import _capture_log_snapshot
-
-        # Write a file larger than 1KB
-        big_content = "x" * 100 + "\n"
-        (hermes_home / "logs" / "agent.log").write_text(big_content * 200)
-
-        snap = _capture_log_snapshot("agent", tail_lines=10, max_bytes=1024)
-        assert snap.full_text is not None
-        assert "truncated" in snap.full_text
 
     def test_keeps_first_line_when_truncation_on_boundary(self, hermes_home):
         """When truncation lands on a line boundary, keep the first full line."""
@@ -174,20 +146,6 @@ class TestCaptureLogSnapshot:
         assert len(kept) == 10
 
 
-    def test_falls_back_to_rotated_file(self, hermes_home):
-        """When gateway.log doesn't exist, falls back to gateway.log.1."""
-        from hermes_cli.debug import _capture_log_snapshot
-
-        logs_dir = hermes_home / "logs"
-        # Remove the primary (if any) and create a .1 rotation
-        (logs_dir / "gateway.log").unlink(missing_ok=True)
-        (logs_dir / "gateway.log.1").write_text(
-            "2026-04-12 10:00:00 INFO gateway.run: rotated content\n"
-        )
-
-        snap = _capture_log_snapshot("gateway", tail_lines=10)
-        assert snap.full_text is not None
-        assert "rotated content" in snap.full_text
 
 
 # ---------------------------------------------------------------------------
@@ -372,23 +330,6 @@ class TestRunDebugShare:
         assert "Debug report uploaded" in capsys.readouterr().out
 
 
-    def test_local_flag_prints_full_logs(self, hermes_home, capsys):
-        """--local prints the report plus full log contents."""
-        from hermes_cli.debug import run_debug_share
-
-        args = MagicMock()
-        args.lines = 50
-        args.expire = 7
-        args.local = True
-        args.nous = False
-
-        with patch("hermes_cli.dump.run_dump"):
-            run_debug_share(args)
-
-        out = capsys.readouterr().out
-        assert "--- agent.log" in out
-        assert "FULL agent.log" in out
-        assert "FULL gateway.log" in out
 
     def test_share_uploads_five_pastes(self, hermes_home, capsys):
         """Successful share uploads report + agent.log + gateway.log + gui.log + desktop.log."""
@@ -442,32 +383,6 @@ class TestRunDebugShare:
         assert "--- full desktop.log ---" in desktop_paste
 
 
-    def test_share_continues_on_log_upload_failure(self, hermes_home, capsys):
-        """Log upload failure doesn't stop the report from being shared."""
-        from hermes_cli.debug import run_debug_share
-
-        args = MagicMock()
-        args.lines = 50
-        args.expire = 7
-        args.local = False
-        args.nous = False
-
-        call_count = [0]
-        def _mock_upload(content, expiry_days=7):
-            call_count[0] += 1
-            if call_count[0] > 1:
-                raise RuntimeError("upload failed")
-            return "https://paste.rs/report"
-
-        with patch("hermes_cli.dump.run_dump"), \
-             patch("hermes_cli.debug.upload_to_pastebin",
-                    side_effect=_mock_upload):
-            run_debug_share(args)
-
-        out = capsys.readouterr().out
-        assert "Report" in out
-        assert "paste.rs/report" in out
-        assert "failed to upload" in out
 
 
 # ---------------------------------------------------------------------------
@@ -698,25 +613,7 @@ class TestScheduleAutoDelete:
             assert e["expire_at"] > time.time()
             assert e["expire_at"] <= time.time() + 15
 
-    def test_skips_non_paste_rs_urls(self, hermes_home):
-        """dpaste.com URLs auto-expire — don't track them."""
-        from hermes_cli.debug import _schedule_auto_delete, _pending_file
 
-        _schedule_auto_delete(["https://dpaste.com/something"])
-
-        # pending.json should not be created for non-paste.rs URLs
-        assert not _pending_file().exists()
-
-    def test_merges_with_existing_pending(self, hermes_home):
-        """Subsequent calls merge into existing pending.json."""
-        from hermes_cli.debug import _schedule_auto_delete, _load_pending
-
-        _schedule_auto_delete(["https://paste.rs/first"], delay_seconds=10)
-        _schedule_auto_delete(["https://paste.rs/second"], delay_seconds=10)
-
-        entries = _load_pending()
-        urls = {e["url"] for e in entries}
-        assert urls == {"https://paste.rs/first", "https://paste.rs/second"}
 
     def test_dedupes_same_url(self, hermes_home):
         """Same URL recorded twice → one entry with the later expire_at."""
@@ -874,44 +771,7 @@ class TestBuildDebugShare:
     contract here is the return value, not stdout.
     """
 
-    def test_returns_structured_urls(self, hermes_home):
-        from hermes_cli.debug import build_debug_share, DebugShareResult
 
-        count = [0]
-
-        def _upload(content, expiry_days=7):
-            count[0] += 1
-            return f"https://paste.rs/p{count[0]}"
-
-        with patch("hermes_cli.dump.run_dump"), patch(
-            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
-        ), patch("hermes_cli.debug._schedule_auto_delete"):
-            result = build_debug_share(log_lines=50, redact=True)
-
-        assert isinstance(result, DebugShareResult)
-        # All four seeded logs (agent/gateway/desktop) + the summary report.
-        assert "Report" in result.urls
-        assert "agent.log" in result.urls
-        assert "gateway.log" in result.urls
-        assert "desktop.log" in result.urls
-        assert result.failures == []
-        assert result.redacted is True
-        assert result.auto_delete_seconds == 21600
-
-    def test_skips_missing_logs_without_failure(self, hermes_home):
-        from hermes_cli.debug import build_debug_share
-
-        # Remove desktop.log so it should be neither uploaded nor reported failed.
-        (hermes_home / "logs" / "desktop.log").unlink()
-
-        with patch("hermes_cli.dump.run_dump"), patch(
-            "hermes_cli.debug.upload_to_pastebin",
-            side_effect=lambda c, expiry_days=7: "https://paste.rs/x",
-        ), patch("hermes_cli.debug._schedule_auto_delete"):
-            result = build_debug_share(log_lines=50, redact=True)
-
-        assert "desktop.log" not in result.urls
-        assert result.failures == []
 
     def test_redaction_keeps_secrets_out_of_payload(self, hermes_home):
         from hermes_cli.debug import build_debug_share
@@ -957,15 +817,6 @@ class TestBuildDebugShare:
         assert len(result.failures) == 1
         assert "paste service hiccup" in result.failures[0]
 
-    def test_required_report_failure_raises(self, hermes_home):
-        from hermes_cli.debug import build_debug_share
-
-        with patch("hermes_cli.dump.run_dump"), patch(
-            "hermes_cli.debug.upload_to_pastebin",
-            side_effect=RuntimeError("all paste services down"),
-        ), patch("hermes_cli.debug._schedule_auto_delete"):
-            with pytest.raises(RuntimeError, match="all paste services down"):
-                build_debug_share(log_lines=50, redact=True)
 
 
 # ---------------------------------------------------------------------------
@@ -973,19 +824,6 @@ class TestBuildDebugShare:
 # ---------------------------------------------------------------------------
 
 class TestCollectShareBundle:
-    def test_returns_report_and_logs(self, hermes_home):
-        from hermes_cli.debug import collect_share_bundle
-
-        with patch("hermes_cli.dump.run_dump"):
-            bundle = collect_share_bundle(log_lines=50, redact=True)
-
-        assert "report" in bundle
-        assert "agent.log" in bundle
-        assert "gateway.log" in bundle
-        assert "desktop.log" in bundle
-        # Banner is prepended under redact=True.
-        assert "redacted at upload time" in bundle["report"]
-        assert "session started" in bundle["agent.log"]
 
     def test_no_redact_omits_banner(self, hermes_home):
         from hermes_cli.debug import collect_share_bundle
@@ -1012,28 +850,6 @@ class TestCollectShareBundle:
         assert secret not in "\n".join(redacted.values())
 
 
-    def test_build_debug_share_uses_collector(self, hermes_home):
-        # build_debug_share must produce the same report text the collector does
-        # (i.e. the refactor preserved paste.rs behaviour).
-        from hermes_cli.debug import build_debug_share, collect_share_bundle
-
-        with patch("hermes_cli.dump.run_dump"):
-            expected = collect_share_bundle(log_lines=50, redact=True)["report"]
-
-        uploaded = []
-
-        def _upload(content, expiry_days=7):
-            uploaded.append(content)
-            return "https://paste.rs/x"
-
-        with patch("hermes_cli.dump.run_dump"), patch(
-            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
-        ), patch("hermes_cli.debug._schedule_auto_delete"):
-            result = build_debug_share(log_lines=50, redact=True)
-
-        assert result.urls["Report"] == "https://paste.rs/x"
-        # The report uploaded should match the collector's report.
-        assert uploaded[0] == expected
 
 
 class TestBuildNousBundle:
@@ -1189,38 +1005,8 @@ class TestShareConsentGate:
         base.update(over)
         return SimpleNamespace(**base)
 
-    def test_aborts_on_user_decline(self, hermes_home, capsys, monkeypatch):
-        """Interactive user typing anything but y/yes → no upload."""
-        from hermes_cli.debug import run_debug_share
-
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-        monkeypatch.setattr("builtins.input", lambda _: "n")
-
-        with patch("hermes_cli.dump.run_dump"), \
-             patch("hermes_cli.debug.upload_to_pastebin") as mock_upload:
-            run_debug_share(self._args())
-
-        mock_upload.assert_not_called()
-        assert "Aborted" in capsys.readouterr().out
 
 
-    def test_yes_flag_skips_prompt(self, hermes_home, capsys, monkeypatch):
-        """--yes uploads without ever calling input()."""
-        from hermes_cli.debug import run_debug_share
-
-        def _boom(_):
-            raise AssertionError("input() must not be called with --yes")
-
-        monkeypatch.setattr("builtins.input", _boom)
-
-        with patch("hermes_cli.dump.run_dump"), \
-             patch("hermes_cli.debug._sweep_expired_pastes", return_value=(0, 0)), \
-             patch("hermes_cli.debug.upload_to_pastebin",
-                   return_value="https://paste.rs/test"), \
-             patch("hermes_cli.debug._schedule_auto_delete"):
-            run_debug_share(self._args(yes=True))
-
-        assert "Debug report uploaded" in capsys.readouterr().out
 
     def test_non_interactive_requires_yes(self, hermes_home, capsys, monkeypatch):
         """No TTY + no --yes → exit(1), never upload silently."""

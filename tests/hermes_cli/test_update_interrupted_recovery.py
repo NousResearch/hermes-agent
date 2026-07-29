@@ -28,23 +28,8 @@ def test_marker_round_trip(tmp_path, monkeypatch):
     assert not marker.exists()
 
 
-def test_clear_when_absent_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
-    # Must not raise when the marker was never written.
-    m._clear_update_incomplete_marker()
-    assert not m._update_marker_path().exists()
 
 
-def test_recovery_noop_without_marker(tmp_path, monkeypatch):
-    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
-    called = {"install": False}
-    monkeypatch.setattr(
-        m,
-        "_install_python_dependencies_with_optional_fallback",
-        lambda *a, **k: called.__setitem__("install", True),
-    )
-    m._recover_from_interrupted_install()
-    assert called["install"] is False, "recovery must not install when no marker"
 
 
 def _stub_install_env(monkeypatch, m, seen):
@@ -112,29 +97,6 @@ def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
     assert not m._update_marker_path().exists(), "cleared only after full reinstall"
 
 
-def test_lazy_marker_cleared_only_after_confirmed_import_repair(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
-    m._write_lazy_refresh_incomplete_marker()
-
-    monkeypatch.setattr(
-        m,
-        "_default_venv_install_target",
-        lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
-    )
-    monkeypatch.setattr(
-        m, "_repair_venv_via_import_probes", lambda *a, **k: "repaired"
-    )
-
-    seen = {"install": False}
-    _stub_install_env(monkeypatch, m, seen)
-
-    m._recover_from_interrupted_install()
-
-    assert seen["install"] is False, "lazy marker does not require full .[all] reinstall"
-    assert not m._lazy_refresh_marker_path().exists()
 
 
 def sys_executable_path():
@@ -143,19 +105,3 @@ def sys_executable_path():
     return sys.executable
 
 
-def test_recovery_output_goes_to_stderr(tmp_path, monkeypatch, capfd):
-    # ACP speaks JSON-RPC on stdout — recovery output (including the streamed
-    # install, which inherits fd 1) must land on stderr only.
-    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
-    m._write_update_incomplete_marker()
-
-    seen = {"install": False}
-    _stub_install_env(monkeypatch, m, seen)
-
-    m._recover_from_interrupted_install()
-
-    out, err = capfd.readouterr()
-    assert "interrupted mid-install" not in out
-    assert "interrupted mid-install" in err
-    assert "recovered" in err

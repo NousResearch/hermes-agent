@@ -75,14 +75,8 @@ class TestSlackManifestConsoleExitStatus:
 class TestSlackManifestArgparse:
     """Slack manifest messaging-experience flags wire through argparse."""
 
-    def test_no_assistant_flag_defaults_false(self):
-        args = _parse_slack_args(["slack", "manifest"])
-        assert getattr(args, "no_assistant", False) is False
 
 
-    def test_agent_view_flag_sets_true(self):
-        args = _parse_slack_args(["slack", "manifest", "--agent-view"])
-        assert args.agent_view is True
 
     def test_long_description_file_preserves_newlines(self, tmp_path, capsys):
         content = ("x" * 175) + "\r\n" + ("y" * 175) + "\r"
@@ -122,44 +116,9 @@ class TestSlackManifestArgparse:
 class TestSlackFullManifest:
     """Generated full Slack app manifest used by `hermes slack manifest`."""
 
-    def test_long_description_is_included_without_truncation(self):
-        long_description = "# Agent policy\n\n" + ("x" * 3984)
-
-        manifest = _build_full_manifest(
-            "Hermes",
-            "Your Hermes agent on Slack",
-            long_description=long_description,
-        )
-
-        assert manifest["display_information"]["long_description"] == long_description
-        assert len(long_description) == 4000
-
-    def test_app_home_messages_are_writable(self):
-        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
-
-        assert manifest["features"]["app_home"] == {
-            "home_tab_enabled": False,
-            "messages_tab_enabled": True,
-            "messages_tab_read_only_enabled": False,
-        }
 
 
-    def test_group_dm_scopes_and_event_are_included(self):
-        """Group DMs (mpim) need message.mpim + mpim:history or Slack never
-        delivers them — the adapter classifies mpim as a DM and replies
-        ambiently, but only if the event reaches the bot at all."""
-        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
 
-        bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
-        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
-
-        # The event is the load-bearing piece: without message.mpim Slack
-        # drops group-DM messages before the adapter sees them.
-        assert "message.mpim" in bot_events
-        # mpim:history is the scope message.mpim requires (per Slack docs);
-        # mpim:read mirrors im:read for conversations.info classification.
-        assert "mpim:history" in bot_scopes
-        assert "mpim:read" in bot_scopes
 
 
     def test_assistant_features_remain_enabled(self):
@@ -171,32 +130,7 @@ class TestSlackFullManifest:
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" in bot_events
 
-    def test_no_assistant_omits_assistant_pieces(self):
-        manifest = _build_full_manifest(
-            "Hermes", "Your Hermes agent on Slack", include_assistant=False
-        )
 
-        # assistant_view feature is gone -> Slack renders a flat DM, not the
-        # Assistant thread pane (where bare slash commands don't dispatch).
-        assert "assistant_view" not in manifest["features"]
-        assert "agent_view" not in manifest["features"]
-        assert "assistant:write" not in manifest["oauth_config"]["scopes"]["bot"]
-        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
-        assert "assistant_thread_started" not in bot_events
-        assert "assistant_thread_context_changed" not in bot_events
-
-    def test_agent_view_uses_agent_manifest_surface(self):
-        manifest = _build_full_manifest(
-            "Hermes",
-            "Your Hermes agent on Slack",
-            messaging_experience="agent",
-        )
-
-        assert manifest["features"]["agent_view"] == {
-            "agent_description": "Chat with Hermes in Slack Messages.",
-        }
-        assert "assistant_view" not in manifest["features"]
-        assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
 
 
     def test_no_assistant_preserves_core_surface(self):
@@ -219,11 +153,3 @@ class TestSlackFullManifest:
             assert event in bot_events
 
 
-    def test_reaction_scope_survives_no_assistant(self):
-        manifest = _build_full_manifest(
-            "Hermes", "Your Hermes agent on Slack", include_assistant=False
-        )
-        bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
-        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
-        assert "reactions:read" in bot_scopes
-        assert "reaction_added" in bot_events

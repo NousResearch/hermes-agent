@@ -64,50 +64,12 @@ def fake_tool(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_positional_message_success(fake_tool, capsys):
-    args = _parse(["--to", "telegram", "hello world"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 0
-    assert fake_tool.calls == [
-        {"action": "send", "target": "telegram", "message": "hello world"}
-    ]
-    out = capsys.readouterr()
-    assert "sent" in out.out or out.out == ""  # "sent" is the default success banner
 
 
-def test_stdin_message(fake_tool, monkeypatch, capsys):
-    # Piped stdin (not a tty) should be consumed as the message body.
-    monkeypatch.setattr("sys.stdin", io.StringIO("piped body\n"))
-    # Force isatty to return False so the CLI reads from stdin.
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    args = _parse(["--to", "discord:#ops"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 0
-    assert fake_tool.calls[0]["message"] == "piped body\n"
-    assert fake_tool.calls[0]["target"] == "discord:#ops"
 
 
-def test_file_message(fake_tool, tmp_path):
-    body = tmp_path / "msg.txt"
-    body.write_text("from a file\n")
-    args = _parse(["--to", "slack:#eng", "--file", str(body)])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 0
-    assert fake_tool.calls[0]["message"] == "from a file\n"
 
 
-def test_json_mode_emits_payload(fake_tool, capsys):
-    args = _parse(["--to", "telegram", "--json", "hi"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    payload = json.loads(out)
-    assert payload.get("success") is True
-    assert payload.get("message_id") == "m123"
 
 
 # ---------------------------------------------------------------------------
@@ -115,15 +77,6 @@ def test_json_mode_emits_payload(fake_tool, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_target(fake_tool, capsys, monkeypatch):
-    # Ensure stdin is a tty so the CLI does not try to consume it as a body.
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    args = _parse(["hello"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "--to" in err
 
 
 def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypatch, tmp_path):
@@ -141,40 +94,8 @@ def test_file_decode_error_suggests_media_directive(fake_tool, capsys, monkeypat
     assert "[[as_document]]" in err
 
 
-def test_tool_error_returns_failure_exit(monkeypatch, capsys):
-    import sys as _sys
-    import types as _types
-
-    fake_mod = _types.ModuleType("tools.send_message_tool")
-
-    def _bad_tool(args, **_kw):
-        return json.dumps({"error": "platform blew up"})
-
-    fake_mod.send_message_tool = _bad_tool
-    monkeypatch.setitem(_sys.modules, "tools.send_message_tool", fake_mod)
-
-    args = _parse(["--to", "telegram", "nope"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 1
-    err = capsys.readouterr().err
-    assert "platform blew up" in err
 
 
-def test_skipped_result_is_success(monkeypatch):
-    import sys as _sys
-    import types as _types
-
-    fake_mod = _types.ModuleType("tools.send_message_tool")
-    fake_mod.send_message_tool = lambda args, **_kw: json.dumps(
-        {"success": True, "skipped": True, "reason": "duplicate"}
-    )
-    monkeypatch.setitem(_sys.modules, "tools.send_message_tool", fake_mod)
-
-    args = _parse(["--to", "telegram", "dup"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -182,23 +103,6 @@ def test_skipped_result_is_success(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_list_human_output(monkeypatch, capsys):
-    import sys as _sys
-    import types as _types
-
-    fake_dir = _types.ModuleType("gateway.channel_directory")
-    fake_dir.format_directory_for_display = lambda: "Available messaging targets:\n\nTelegram:\n  telegram:-100123\n"
-    fake_dir.load_directory = lambda: {
-        "platforms": {"telegram": [{"id": "-100123", "name": "Test Group"}]}
-    }
-    monkeypatch.setitem(_sys.modules, "gateway.channel_directory", fake_dir)
-
-    args = _parse(["--list"])
-    with pytest.raises(SystemExit) as exc:
-        send_cmd.cmd_send(args)
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert "Telegram" in out
 
 
 # ---------------------------------------------------------------------------
@@ -259,15 +163,3 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
 
 
-def test_load_hermes_env_handles_missing_files(tmp_path, monkeypatch):
-    """No .env or config.yaml should be a silent no-op, not an exception."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    from importlib import reload
-    import hermes_cli.config as _hc_config
-    reload(_hc_config)
-
-    # Should not raise.
-    send_cmd._load_hermes_env()

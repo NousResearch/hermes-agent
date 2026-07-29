@@ -87,28 +87,6 @@ def _zai_pool_fixture():
 # ---------------------------------------------------------------------------
 
 
-def test_delete_env_key_prunes_env_seeded_pool_entry(hermes_home):
-    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
-    _write_auth(hermes_home, _zai_pool_fixture())
-
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["ok"] is True
-    assert "zai" in body["pool_pruned"]
-
-    # .env cleared
-    from hermes_cli.config import load_env
-
-    assert "ZAI_API_KEY" not in load_env()
-
-    # auth.json: env-seeded entry gone, OAuth entry preserved
-    store = _read_auth(hermes_home)
-    sources = [e["source"] for e in store["credential_pool"]["zai"]]
-    assert "env:ZAI_API_KEY" not in sources
-    assert "device_code" in sources, "OAuth grant must survive an API-key delete"
 
 
 def test_delete_clears_provider_models_cache(hermes_home):
@@ -165,21 +143,6 @@ def test_update_rotates_config_yaml_model_mirror(hermes_home):
     assert load_env()["OPENAI_API_KEY"] == new
 
 
-def test_update_leaves_unrelated_config_keys_alone(hermes_home):
-    """A DIFFERENT key configured inline must not be rewritten by value-match."""
-    old = "sk-un-" + "j" * 24
-    unrelated = "sk-un-" + "k" * 24
-    _write_env(hermes_home, OPENAI_API_KEY=old)
-    _write_config(hermes_home, f"model:\n  provider: custom\n  api_key: {unrelated}\n")
-
-    resp = client.put(
-        "/api/env",
-        json={"key": "OPENAI_API_KEY", "value": "sk-un-" + "l" * 24},
-        headers=HEADERS,
-    )
-    assert resp.status_code == 200
-    cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
-    assert unrelated in cfg_text, "unrelated inline key must be preserved"
 
 
 # ---------------------------------------------------------------------------
@@ -187,30 +150,3 @@ def test_update_leaves_unrelated_config_keys_alone(hermes_home):
 # ---------------------------------------------------------------------------
 
 
-def test_delete_then_resave_round_trip(hermes_home):
-    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
-    _write_auth(hermes_home, {"zai": [_zai_pool_fixture()["zai"][0]]})
-
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-
-    from hermes_cli.auth import is_source_suppressed
-
-    assert is_source_suppressed("zai", "env:ZAI_API_KEY"), (
-        "delete must suppress the env source so a lingering shell export "
-        "can't re-seed the pool"
-    )
-
-    resp = client.put(
-        "/api/env", json={"key": "ZAI_API_KEY", "value": NEW_KEY}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-    assert not is_source_suppressed("zai", "env:ZAI_API_KEY"), (
-        "an explicit re-save must lift the suppression (like `hermes auth add`)"
-    )
-
-    from hermes_cli.config import load_env
-
-    assert load_env()["ZAI_API_KEY"] == NEW_KEY

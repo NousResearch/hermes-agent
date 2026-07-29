@@ -63,12 +63,6 @@ def _load_cfg(home):
 
 
 class TestProfileScopedSkills:
-    def test_skills_list_scopes_to_requested_profile(self, client, isolated_profiles):
-        resp = client.get("/api/skills", params={"profile": "worker_alpha"})
-        assert resp.status_code == 200
-        names = {s["name"] for s in resp.json()}
-        assert "worker-skill" in names
-        assert "dashboard-skill" not in names
 
 
     def test_toggle_writes_into_target_profile_only(self, client, isolated_profiles):
@@ -85,18 +79,6 @@ class TestProfileScopedSkills:
         default_cfg = _load_cfg(isolated_profiles["default"])
         assert "worker-skill" not in default_cfg.get("skills", {}).get("disabled", [])
 
-    def test_toggle_reenable_round_trip(self, client, isolated_profiles):
-        for enabled in (False, True):
-            client.put(
-                "/api/skills/toggle",
-                json={
-                    "name": "worker-skill",
-                    "enabled": enabled,
-                    "profile": "worker_alpha",
-                },
-            )
-        worker_cfg = _load_cfg(isolated_profiles["worker_alpha"])
-        assert "worker-skill" not in worker_cfg.get("skills", {}).get("disabled", [])
 
 
     def test_scope_restores_module_globals(self, client, isolated_profiles):

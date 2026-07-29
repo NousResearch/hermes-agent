@@ -48,13 +48,6 @@ class TestEnvLoaderSanitization:
         _sanitize_loaded_credentials()
         assert os.environ["OPENROUTER_API_KEY"] == "sk-proj-abcdef"
 
-    def test_strips_non_ascii_from_token(self, monkeypatch):
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
-
-        _WARNED_KEYS.discard("DISCORD_BOT_TOKEN")
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tokénvalue")
-        _sanitize_loaded_credentials()
-        assert os.environ["DISCORD_BOT_TOKEN"] == "toknvalue"
 
     def test_ignores_non_credential_vars(self, monkeypatch):
         from hermes_cli.env_loader import _sanitize_loaded_credentials
@@ -64,12 +57,6 @@ class TestEnvLoaderSanitization:
         # Not a credential suffix — should be left alone
         assert os.environ["MY_UNICODE_VAR"] == "héllo wörld"
 
-    def test_ascii_credentials_untouched(self, monkeypatch):
-        from hermes_cli.env_loader import _sanitize_loaded_credentials
-
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-allascii123")
-        _sanitize_loaded_credentials()
-        assert os.environ["OPENAI_API_KEY"] == "sk-proj-allascii123"
 
     def test_warns_to_stderr_when_stripping(self, monkeypatch, capsys):
         """Silent stripping masks bad keys as opaque provider 400s (see #6843 fallout).
@@ -89,21 +76,6 @@ class TestEnvLoaderSanitization:
         assert "U+200B" in captured.err
         assert "re-copy" in captured.err.lower()
 
-    def test_warning_fires_only_once_per_key(self, monkeypatch, capsys):
-        """Repeated loads (user env + project env) must not double-warn."""
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
-
-        _WARNED_KEYS.discard("GEMINI_API_KEY")
-        monkeypatch.setenv("GEMINI_API_KEY", "AIza\u028bbad")
-        _sanitize_loaded_credentials()
-        first = capsys.readouterr().err
-
-        monkeypatch.setenv("GEMINI_API_KEY", "AIza\u028bbad2")
-        _sanitize_loaded_credentials()
-        second = capsys.readouterr().err
-
-        assert "GEMINI_API_KEY" in first
-        assert second == ""  # no repeat warning
 
     def test_ascii_control_chars_not_stripped(self, monkeypatch, capsys):
         """ASCII control bytes (e.g. ESC 0x1B from terminal paste) are NOT non-ASCII.

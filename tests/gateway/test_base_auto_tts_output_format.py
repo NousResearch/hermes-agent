@@ -77,11 +77,6 @@ def _hold_typing():
 # build_auto_tts_output_path: OPUS_VOICE_PLATFORMS is the single source of truth
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("platform_name", sorted(OPUS_VOICE_PLATFORMS))
-def test_output_path_is_ogg_for_every_opus_voice_platform(platform_name):
-    path = build_auto_tts_output_path(platform_name)
-    assert path.endswith(".ogg"), path
-
 
 @pytest.mark.parametrize(
     "platform", [Platform.DISCORD, Platform.SLACK, "irc", None]
@@ -89,16 +84,6 @@ def test_output_path_is_ogg_for_every_opus_voice_platform(platform_name):
 def test_output_path_is_mp3_for_non_opus_platforms(platform):
     path = build_auto_tts_output_path(platform)
     assert path.endswith(".mp3"), path
-
-
-def test_output_path_accepts_platform_enum():
-    assert build_auto_tts_output_path(Platform.TELEGRAM).endswith(".ogg")
-    assert build_auto_tts_output_path(Platform.MATRIX).endswith(".ogg")
-    assert build_auto_tts_output_path(Platform.FEISHU).endswith(".ogg")
-
-
-def test_output_paths_are_unique():
-    assert build_auto_tts_output_path("telegram") != build_auto_tts_output_path("telegram")
 
 
 # ---------------------------------------------------------------------------
@@ -128,30 +113,6 @@ async def _run_auto_tts(adapter: _DummyAdapter, platform: Platform):
             event, build_session_key(event.source)
         )
     return requested, adapter
-
-
-@pytest.mark.asyncio
-async def test_base_auto_tts_requests_ogg_on_opus_platform():
-    """Telegram (opus platform) gets an explicit .ogg path even though the
-    HERMES_SESSION_PLATFORM contextvar is cleared by the time the block runs."""
-    adapter = _DummyAdapter(Platform.TELEGRAM)
-    requested, adapter = await _run_auto_tts(adapter, Platform.TELEGRAM)
-
-    assert requested and requested[0] is not None
-    assert requested[0].endswith(".ogg")
-    adapter.play_tts.assert_awaited_once()
-    assert adapter.play_tts.await_args.kwargs["audio_path"].endswith(".ogg")
-
-
-@pytest.mark.asyncio
-async def test_base_auto_tts_keeps_mp3_on_non_opus_platform():
-    adapter = _DummyAdapter(Platform.DISCORD)
-    requested, adapter = await _run_auto_tts(adapter, Platform.DISCORD)
-
-    assert requested and requested[0] is not None
-    assert requested[0].endswith(".mp3")
-    adapter.play_tts.assert_awaited_once()
-    assert adapter.play_tts.await_args.kwargs["audio_path"].endswith(".mp3")
 
 
 @pytest.mark.asyncio

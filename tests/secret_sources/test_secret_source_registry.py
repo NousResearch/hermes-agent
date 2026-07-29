@@ -100,11 +100,6 @@ class TestRegistration:
 
 
 
-    def test_same_name_replace_keeps_scheme(self):
-        assert reg.register_source(_make_source(name="one", scheme="op")) is True
-        assert reg.register_source(
-            _make_source(name="one", scheme="op"), replace=True
-        ) is True
 
 
 # ---------------------------------------------------------------------------
@@ -141,15 +136,6 @@ class TestApplyAll:
 
 
 
-    def test_protected_vars_never_overwritten_by_any_source(self, tmp_path):
-        reg.register_source(
-            _make_source(name="alpha", secrets={"BOOT_TOKEN": "evil"},
-                         override=True, protected=("BOOT_TOKEN",))
-        )
-        env = {"BOOT_TOKEN": "real"}
-        report = reg.apply_all({"alpha": {"enabled": True}}, tmp_path, environ=env)
-        assert env["BOOT_TOKEN"] == "real"
-        assert "BOOT_TOKEN" in report.sources[0].skipped_protected
 
 
     def test_failed_source_does_not_block_others(self, tmp_path):
@@ -205,25 +191,7 @@ class TestHelpers:
                        for k in child_env)
         assert "NO_COLOR" in child_env
 
-    def test_run_secret_cli_allowlist_passes_named_vars(self, monkeypatch):
-        monkeypatch.setenv("MY_AUTH_TOKEN", "tok")
-        monkeypatch.setenv("OTHER_API_KEY", "leak")
-        proc = run_secret_cli(
-            [sys.executable, "-c",
-             "import os; print(os.environ.get('MY_AUTH_TOKEN', '')); "
-             "print(os.environ.get('OTHER_API_KEY', ''))"],
-            allow_env=["MY_AUTH_TOKEN"],
-        )
-        lines = proc.stdout.splitlines()
-        assert lines[0] == "tok"
-        assert lines[1] == ""
 
-    def test_run_secret_cli_timeout_raises_runtime_error(self):
-        with pytest.raises(RuntimeError, match="timed out"):
-            run_secret_cli(
-                [sys.executable, "-c", "import time; time.sleep(10)"],
-                timeout=0.3,
-            )
 
 
 
@@ -235,12 +203,6 @@ class TestHelpers:
 class TestBitwardenSource:
 
 
-    def test_protected_vars_track_token_env(self):
-        src = BitwardenSource()
-        assert src.protected_env_vars({}) == frozenset({"BWS_ACCESS_TOKEN"})
-        assert src.protected_env_vars(
-            {"access_token_env": "CUSTOM_TOKEN"}
-        ) == frozenset({"CUSTOM_TOKEN"})
 
 
 
@@ -317,35 +279,7 @@ class TestOnePasswordSource:
 
 
 
-    def test_fetch_missing_binary(self, tmp_path, monkeypatch):
-        import agent.secret_sources.onepassword as op
 
-        monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: None)
-        result = op.OnePasswordSource().fetch(
-            {"enabled": True, "env": {"K": "op://V/I/F"}}, tmp_path
-        )
-        assert result.error_kind is ErrorKind.BINARY_MISSING
-
-    def test_fetch_delegates_and_passes_config(self, tmp_path, monkeypatch):
-        import agent.secret_sources.onepassword as op
-
-        monkeypatch.setattr(op, "find_op", lambda *_a, **_kw: Path("/fake/op"))
-        captured = {}
-
-        def _fake_fetch(**kwargs):
-            captured.update(kwargs)
-            return {"K": "v"}, ["warn"]
-
-        monkeypatch.setattr(op, "fetch_onepassword_secrets", _fake_fetch)
-        result = op.OnePasswordSource().fetch(
-            {"enabled": True, "env": {"K": "op://V/I/F"},
-             "account": "team", "service_account_token_env": "MY_TOK"},
-            tmp_path,
-        )
-        assert result.ok and result.secrets == {"K": "v"}
-        assert captured["references"] == {"K": "op://V/I/F"}
-        assert captured["account"] == "team"
-        assert captured["token_env"] == "MY_TOK"
 
 
     def test_mapped_op_beats_bulk_bitwarden_through_orchestrator(

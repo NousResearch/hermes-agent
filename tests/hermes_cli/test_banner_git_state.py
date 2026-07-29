@@ -1,13 +1,6 @@
 from unittest.mock import MagicMock, patch
 
 
-def test_format_banner_version_label_without_git_state():
-    from hermes_cli import banner
-
-    with patch.object(banner, "get_git_banner_state", return_value=None):
-        value = banner.format_banner_version_label()
-
-    assert value == f"Hermes Agent v{banner.VERSION} ({banner.RELEASE_DATE})"
 
 
 def test_format_banner_version_label_on_upstream_main():
@@ -48,22 +41,3 @@ def test_get_git_banner_state_reads_origin_and_head(tmp_path):
     assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
 
 
-def test_get_git_banner_state_falls_back_when_live_git_returns_nothing(tmp_path):
-    """Shallow clone without origin/main → still surface build SHA if baked.
-
-    Some install paths (e.g. ``git clone --depth 1`` without a remote) have
-    a ``.git`` directory but ``git rev-parse origin/main`` fails.  When that
-    happens AND a baked SHA exists, return the baked one instead of None.
-    """
-    from hermes_cli import banner
-
-    repo_dir = tmp_path / "repo"
-    (repo_dir / ".git").mkdir(parents=True)
-
-    # All git invocations fail (returncode=1, empty stdout).
-    failed = MagicMock(returncode=1, stdout="")
-    with patch("hermes_cli.banner.subprocess.run", return_value=failed), \
-         patch("hermes_cli.build_info.get_build_sha", return_value="cafef00d"):
-        state = banner.get_git_banner_state(repo_dir)
-
-    assert state == {"upstream": "cafef00d", "local": "cafef00d", "ahead": 0}

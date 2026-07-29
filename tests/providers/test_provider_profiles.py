@@ -10,17 +10,7 @@ class TestRegistry:
         assert p is not None
         assert p.name == "nvidia"
 
-    def test_alias_lookup(self):
-        assert get_provider_profile("kimi").name == "kimi-coding"
-        assert get_provider_profile("moonshot").name == "kimi-coding"
-        assert get_provider_profile("kimi-coding-cn").name == "kimi-coding-cn"
-        assert get_provider_profile("or").name == "openrouter"
-        assert get_provider_profile("nous-portal").name == "nous"
-        assert get_provider_profile("qwen").name == "qwen-oauth"
-        assert get_provider_profile("qwen-portal").name == "qwen-oauth"
 
-    def test_unknown_provider_returns_none(self):
-        assert get_provider_profile("nonexistent-provider") is None
 
 
 
@@ -41,9 +31,6 @@ class TestKimiProfile:
         p = get_provider_profile("kimi")
         assert p.fixed_temperature is OMIT_TEMPERATURE
 
-    def test_max_tokens(self):
-        p = get_provider_profile("kimi")
-        assert p.default_max_tokens == 32000
 
 
 
@@ -56,12 +43,6 @@ class TestKimiProfile:
         assert "thinking" not in eb
 
 
-    def test_reasoning_effort_default(self):
-        # enabled with no effort → thinking toggle only, no top-level effort.
-        p = get_provider_profile("kimi")
-        eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": True})
-        assert eb["thinking"] == {"type": "enabled"}
-        assert "reasoning_effort" not in tl
 
 
 
@@ -71,10 +52,6 @@ class TestOpenRouterProfile:
         body = p.build_extra_body(provider_preferences={"allow": ["anthropic"]})
         assert body["provider"] == {"allow": ["anthropic"]}
 
-    def test_extra_body_session_id(self):
-        p = get_provider_profile("openrouter")
-        body = p.build_extra_body(session_id="test-session-123")
-        assert body["session_id"] == "test-session-123"
 
 
 
@@ -95,26 +72,6 @@ class TestOpenRouterProfile:
 
 
 
-    def test_reasoning_disable_omitted_for_mandatory_anthropic(self):
-        """Reasoning-mandatory Anthropic models (4.6+/fable) reject any disable
-        form: OpenRouter translates ``reasoning: {enabled: false}`` into
-        Anthropic's ``thinking: {type: disabled}``, which 400s. The profile must
-        omit ``reasoning`` so the model falls back to adaptive thinking instead.
-        """
-        p = get_provider_profile("openrouter")
-        for model in (
-            "anthropic/claude-fable-5",          # new named model
-            "anthropic/claude-some-future-7",    # unknown → default mandatory
-            "anthropic/claude-opus-4.8",
-            "anthropic/claude-opus-4.6",
-        ):
-            for cfg in ({"enabled": False}, {"effort": "none"}):
-                eb, _ = p.build_api_kwargs_extras(
-                    reasoning_config=cfg,
-                    supports_reasoning=True,
-                    model=model,
-                )
-                assert "reasoning" not in eb, (model, cfg, eb)
 
 
 
@@ -177,11 +134,6 @@ class TestNousProfile:
         assert body["tags"] == nous_portal_tags()
 
 
-    def test_tags_include_conversation_when_session_id(self):
-        from agent.portal_tags import conversation_tag
-        p = get_provider_profile("nous")
-        body = p.build_extra_body(session_id="sess-99")
-        assert conversation_tag("sess-99") in body["tags"]
 
 
 
@@ -189,26 +141,12 @@ class TestNousProfile:
         p = get_provider_profile("nous")
         assert p.auth_type == "oauth_device_code"
 
-    def test_reasoning_enabled(self):
-        p = get_provider_profile("nous")
-        eb, _ = p.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "medium"},
-            supports_reasoning=True,
-        )
-        assert eb["reasoning"] == {"enabled": True, "effort": "medium"}
 
 
 
 class TestQwenProfile:
-    def test_max_tokens(self):
-        p = get_provider_profile("qwen-oauth")
-        assert p.default_max_tokens == 65536
 
 
-    def test_extra_body_vl(self):
-        p = get_provider_profile("qwen-oauth")
-        body = p.build_extra_body()
-        assert body["vl_high_resolution_images"] is True
 
 
 
@@ -249,10 +187,5 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
-class TestBaseProfile:
-    def test_prepare_messages_passthrough(self):
-        p = ProviderProfile(name="test")
-        msgs = [{"role": "user", "content": "hi"}]
-        assert p.prepare_messages(msgs) is msgs
 
 

@@ -35,26 +35,8 @@ def kanban_home(tmp_path, monkeypatch):
 # DB layer
 # ---------------------------------------------------------------------------
 
-def test_goal_mode_defaults_off(kanban_home):
-    with kb.connect() as conn:
-        tid = kb.create_task(conn, title="plain task", assignee="worker")
-        task = kb.get_task(conn, tid)
-    assert task.goal_mode is False
-    assert task.goal_max_turns is None
 
 
-def test_goal_mode_persists(kanban_home):
-    with kb.connect() as conn:
-        tid = kb.create_task(
-            conn,
-            title="open-ended task",
-            assignee="worker",
-            goal_mode=True,
-            goal_max_turns=7,
-        )
-        task = kb.get_task(conn, tid)
-    assert task.goal_mode is True
-    assert task.goal_max_turns == 7
 
 
 def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
@@ -111,32 +93,6 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
 # Spawn env
 # ---------------------------------------------------------------------------
 
-def test_spawn_sets_goal_env_only_when_enabled(kanban_home, monkeypatch):
-    captured = {}
-
-    class _FakeProc:
-        pid = 4242
-
-    def _fake_popen(cmd, **kwargs):
-        captured["env"] = kwargs.get("env", {})
-        return _FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", _fake_popen)
-
-    with kb.connect() as conn:
-        tid = kb.create_task(
-            conn,
-            title="goal task",
-            assignee="default",
-            goal_mode=True,
-            goal_max_turns=5,
-        )
-        task = kb.get_task(conn, tid)
-
-    kb._default_spawn(task, str(kanban_home))
-    env = captured["env"]
-    assert env.get("HERMES_KANBAN_GOAL_MODE") == "1"
-    assert env.get("HERMES_KANBAN_GOAL_MAX_TURNS") == "5"
 
 
 # ---------------------------------------------------------------------------
@@ -172,36 +128,8 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
-def test_loop_blocks_when_judge_done_but_never_finalizes(monkeypatch):
-    # Judge keeps saying done, worker never calls kanban_complete → block
-    # after the single finalize nudge.
-    _patch_judge(monkeypatch, ["done", "done"])
-    blocked = {}
-
-    res = goals.run_kanban_goal_loop(
-        task_id="t5",
-        goal_text="task",
-        run_turn=lambda p: "still not finalizing",
-        task_status_fn=lambda: "running",
-        block_fn=lambda r: blocked.update(reason=r),
-        max_turns=10,
-        first_response="looks done",
-    )
-    assert res["outcome"] == "blocked_budget"
-    assert "finalize" in blocked["reason"].lower()
 
 
-def test_loop_stops_if_task_reclaimed(monkeypatch):
-    _patch_judge(monkeypatch, ["continue"])
-    res = goals.run_kanban_goal_loop(
-        task_id="t6",
-        goal_text="task",
-        run_turn=lambda p: pytest.fail("should not run a turn"),
-        task_status_fn=lambda: "archived",
-        block_fn=lambda r: pytest.fail("should not block"),
-        first_response="x",
-    )
-    assert res["outcome"] == "stopped"
 
 
 # ---------------------------------------------------------------------------

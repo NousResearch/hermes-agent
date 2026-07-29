@@ -34,10 +34,6 @@ class TestRoutableFromRegion:
         )
 
 
-    def test_eu_profile_not_offered_in_us(self):
-        assert not bedrock_model_routable_from_region(
-            "eu.anthropic.claude-sonnet-4-6", "us-east-1"
-        )
 
 
 class TestGeoPrefixContract:

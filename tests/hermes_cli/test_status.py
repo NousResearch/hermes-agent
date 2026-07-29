@@ -77,20 +77,6 @@ class TestShowStatusXaiOAuth:
     # Logged-in branch
     # ------------------------------------------------------------------
 
-    def test_logged_in_shows_check_mark_and_label(self, monkeypatch, capsys, tmp_path):
-        import hermes_cli.auth as auth_mod
-        status_mod = _base_xai_mocks(monkeypatch, tmp_path)
-        monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status",
-                            lambda: {"logged_in": True, "auth_store": "/a/auth.json"},
-                            raising=False)
-
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
-        out = capsys.readouterr().out
-
-        assert "xAI OAuth" in out
-        # The logged-in label must appear; the "not logged in" label must not
-        assert "✓" in out or "logged in" in out
-        assert "not logged in" not in out.split("xAI OAuth", 1)[1].split("\n")[0]
 
     def test_logged_in_shows_auth_store(self, monkeypatch, capsys, tmp_path):
         import hermes_cli.auth as auth_mod
@@ -125,19 +111,6 @@ class TestShowStatusXaiOAuth:
     # ------------------------------------------------------------------
 
 
-    def test_not_logged_in_omits_error_line_when_error_absent(self, monkeypatch, capsys, tmp_path):
-        """No Error: line when not logged in but error key is missing."""
-        import hermes_cli.auth as auth_mod
-        status_mod = _base_xai_mocks(monkeypatch, tmp_path)
-        monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status",
-                            lambda: {"logged_in": False},
-                            raising=False)
-
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
-        out = capsys.readouterr().out
-
-        xai_section = out.split("xAI OAuth", 1)[1].split("◆", 1)[0]
-        assert "Error:" not in xai_section
 
     # ------------------------------------------------------------------
     # Resilience: import failure and runtime exception

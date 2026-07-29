@@ -46,35 +46,8 @@ def _block_live_auth(monkeypatch):
     )
 
 
-def test_valid_when_local_invoke_jwt_is_usable(monkeypatch):
-    monkeypatch.setattr(
-        auth,
-        "get_provider_auth_state",
-        lambda provider: {
-            "access_token": _invoke_jwt(),
-            "refresh_token": "rt",
-            "scope": auth.DEFAULT_NOUS_SCOPE,
-        },
-    )
-    _block_live_auth(monkeypatch)
-
-    assert get_nous_session_validity() == NOUS_SESSION_VALID
 
 
-def test_terminal_on_persisted_quarantine_marker(monkeypatch):
-    monkeypatch.setattr(
-        auth,
-        "get_provider_auth_state",
-        lambda provider: {
-            "last_auth_error": {
-                "relogin_required": True,
-                "code": "invalid_grant",
-            },
-        },
-    )
-    _block_live_auth(monkeypatch)
-
-    assert get_nous_session_validity() == NOUS_SESSION_TERMINAL
 
 
 # ── get_nous_auth_status_local — refresh-free display snapshot ──

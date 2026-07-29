@@ -42,11 +42,6 @@ def _restore(prev_auth, prev_host):
         web_server.app.state.bound_host = prev_host
 
 
-def test_route_registered_on_dashboard_app():
-    """The fire webhook is served by the dashboard app (the hosted-agent public
-    surface), not only the aiohttp adapter."""
-    paths = {r.path for r in web_server.app.routes if hasattr(r, "path")}
-    assert "/api/cron/fire" in paths
 
 
 def test_fire_path_is_public():

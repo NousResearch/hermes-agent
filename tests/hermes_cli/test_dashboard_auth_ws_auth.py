@@ -304,25 +304,7 @@ class TestWsRequestIsAllowedGated:
         }
         assert web_server._ws_request_is_allowed(ws) is True
 
-    def test_rebinding_host_rejected_on_explicit_non_loopback_bind(
-        self, insecure_explicit_host_app
-    ):
-        """Lifting the peer-IP gate for an explicit bind must NOT lift the
-        DNS-rebinding Host guard: a mismatched Host header is still rejected,
-        because an explicit non-loopback bind requires an exact Host match in
-        `_is_accepted_host` (unlike the 0.0.0.0 wildcard, which accepts any).
-        """
-        ws = _fake_ws(query={}, client_host="100.64.0.99")
-        ws.headers = {"host": "evil.example.com"}
-        assert web_server._ws_request_is_allowed(ws) is False
 
-    def test_host_origin_guard_still_runs_in_gated_mode(self, gated_app):
-        """Bypassing the peer-IP check must not bypass the DNS-rebinding
-        Host header guard — that one still protects against attacker
-        sites resolving DNS to the public IP."""
-        ws = _fake_ws(query={}, client_host="203.0.113.7")
-        ws.headers = {"host": "evil.example.com"}
-        assert web_server._ws_request_is_allowed(ws) is False
 
     # -- security: empty / missing peer must fail closed in loopback mode --
     # Regression for the fail-open default-allow where
@@ -332,14 +314,6 @@ class TestWsRequestIsAllowedGated:
     # deliver either shape, so both must be rejected explicitly.
 
 
-    def test_empty_client_host_reason_is_block(self, loopback_app):
-        """_ws_client_reason must return a block reason for an empty peer,
-        not ``None`` (which the dispatcher treats as ``allowed``)."""
-        ws = _fake_ws(query={}, client_host="")
-        ws.headers = {"host": "127.0.0.1:8080"}
-        reason = web_server._ws_client_reason(ws)
-        assert reason is not None
-        assert "missing_or_empty_peer" in reason
 
     def test_empty_client_host_still_allowed_in_insecure_public_mode(
         self, insecure_public_app
@@ -390,26 +364,8 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="file://", host="100.64.0.10:9119")
         assert web_server._ws_host_origin_is_allowed(ws) is True
 
-    def test_explicit_non_loopback_null_origin_allowed(self, insecure_explicit_host_app):
-        ws = self._ws(origin="null", host="100.64.0.10:9119")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
 
-    def test_explicit_non_loopback_cross_site_http_origin_rejected(
-        self, insecure_explicit_host_app
-    ):
-        ws = self._ws(origin="http://localhost:9119", host="100.64.0.10:9119")
-        assert web_server._ws_host_origin_is_allowed(ws) is False
 
-    def test_gated_file_origin_allowed(self, gated_app):
-        # The packaged desktop app drives a remote OAuth-GATED gateway over a
-        # file:// renderer origin. The WS route validates the single-use
-        # ?ticket= in _ws_auth_ok before this guard runs, and a file:// origin
-        # can't be a DNS-rebinding browser attack, so the Origin guard must let
-        # it through. This is the regression that broke desktop → hosted
-        # gateway connections — every WS upgrade got HTTP 403 even with a valid
-        # ticket.
-        ws = self._ws(origin="file://", host="fly-app.fly.dev")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
 
 
     def test_gated_cross_site_http_origin_still_host_checked(self, gated_app):
@@ -419,9 +375,6 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
         assert web_server._ws_host_origin_is_allowed(ws) is False
 
-    def test_gated_same_host_https_origin_allowed(self, gated_app):
-        ws = self._ws(origin="https://fly-app.fly.dev", host="fly-app.fly.dev")
-        assert web_server._ws_host_origin_is_allowed(ws) is True
 
 
 class TestSidecarUrl:

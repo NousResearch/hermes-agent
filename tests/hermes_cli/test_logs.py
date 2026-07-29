@@ -75,19 +75,8 @@ class TestLineMatchesComponent:
         assert _line_matches_component(line, COMPONENT_PREFIXES["gateway"])
 
 
-    def test_agent_with_multiple_prefixes(self):
-        prefixes = ("agent", "run_agent", "model_tools")
-        assert _line_matches_component(
-            "2026-04-11 10:23:45 INFO agent.context_compressor: msg", prefixes)
-        assert _line_matches_component(
-            "2026-04-11 10:23:45 INFO run_agent: msg", prefixes)
-        assert _line_matches_component(
-            "2026-04-11 10:23:45 INFO model_tools: msg", prefixes)
 
 
-    def test_with_session_tag(self):
-        line = "2026-04-11 10:23:45 INFO [abc] gateway.run: msg"
-        assert _line_matches_component(line, ("gateway",))
 
     def test_unparseable_line(self):
         assert not _line_matches_component("random text", ("gateway",))

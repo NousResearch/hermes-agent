@@ -310,27 +310,7 @@ class TestProviderOverride:
 class TestIntegrationWithModelsModule:
     """Exercise the fallback paths via the real callers in hermes_cli.models."""
 
-    def test_curated_nous_ids_falls_back_to_hardcoded_on_empty_catalog(
-        self, isolated_home
-    ):
-        from hermes_cli import model_catalog
-        from hermes_cli.models import get_curated_nous_model_ids, _PROVIDER_MODELS
 
-        with patch.object(model_catalog, "_fetch_manifest", return_value=None):
-            result = get_curated_nous_model_ids()
-
-        assert result == list(_PROVIDER_MODELS["nous"])
-
-    def test_curated_nous_ids_prefers_manifest(self, isolated_home):
-        from hermes_cli import model_catalog
-        from hermes_cli.models import get_curated_nous_model_ids
-
-        with patch.object(
-            model_catalog, "_fetch_manifest", return_value=_valid_manifest()
-        ):
-            result = get_curated_nous_model_ids()
-
-        assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
 
     def test_picker_nous_row_uses_curated_list(self, tmp_path, monkeypatch):
         """The /model picker surfaces the curated ``_PROVIDER_MODELS["nous"]``

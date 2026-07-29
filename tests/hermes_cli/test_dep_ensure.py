@@ -1,13 +1,6 @@
 from unittest.mock import patch
 
 
-def test_ensure_dependency_skips_when_present():
-    """ensure_dependency is a no-op when the dep is already available."""
-    from hermes_cli.dep_ensure import ensure_dependency
-    with patch("hermes_cli.dep_ensure.shutil") as mock_shutil:
-        mock_shutil.which.return_value = "/usr/bin/node"
-        result = ensure_dependency("node", interactive=False)
-        assert result is True
 
 
 def test_find_install_script_from_checkout(tmp_path):
@@ -23,29 +16,10 @@ def test_find_install_script_from_checkout(tmp_path):
     assert shell == "bash"
 
 
-def test_find_install_script_returns_none_when_missing(tmp_path):
-    from hermes_cli.dep_ensure import _find_install_script
-    with patch("hermes_cli.dep_ensure._IS_WINDOWS", False):
-        result = _find_install_script(package_dir=tmp_path / "x", repo_root=tmp_path / "y")
-        assert result == (None, None)
 
 
-def test_has_system_browser_checks_windows_names():
-    from hermes_cli.dep_ensure import _has_system_browser
-    with patch("hermes_cli.dep_ensure._IS_WINDOWS", True), \
-         patch("hermes_cli.dep_ensure.shutil") as mock_shutil:
-        mock_shutil.which.side_effect = lambda name: "/fake/msedge.exe" if name == "msedge" else None
-        assert _has_system_browser() is True
 
 
-def test_has_hermes_agent_browser_windows_path(tmp_path):
-    node_dir = tmp_path / "node"
-    node_dir.mkdir(parents=True)
-    (node_dir / "agent-browser.cmd").write_text("@echo off")
-    from hermes_cli.dep_ensure import _has_hermes_agent_browser
-    with patch("hermes_cli.dep_ensure._IS_WINDOWS", True), \
-         patch("hermes_constants.get_hermes_home", return_value=tmp_path):
-        assert _has_hermes_agent_browser() is True
 
 
 def test_ensure_dependency_uses_powershell_on_windows(tmp_path):

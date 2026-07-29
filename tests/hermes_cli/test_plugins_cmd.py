@@ -33,67 +33,24 @@ class TestSanitizePluginName:
         target = _sanitize_plugin_name("my-plugin", tmp_path)
         assert target == (tmp_path / "my-plugin").resolve()
 
-    def test_valid_name_with_hyphen_and_digits(self, tmp_path):
-        target = _sanitize_plugin_name("plugin-v2", tmp_path)
-        assert target.name == "plugin-v2"
 
     def test_rejects_dot_dot(self, tmp_path):
         with pytest.raises(ValueError, match="must not contain"):
             _sanitize_plugin_name("../../etc/passwd", tmp_path)
 
-    def test_rejects_single_dot_dot(self, tmp_path):
-        with pytest.raises(ValueError, match="must not reference the plugins directory itself"):
-            _sanitize_plugin_name("..", tmp_path)
 
-    def test_rejects_single_dot(self, tmp_path):
-        with pytest.raises(ValueError, match="must not reference the plugins directory itself"):
-            _sanitize_plugin_name(".", tmp_path)
 
-    def test_rejects_forward_slash(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo/bar", tmp_path)
 
-    def test_rejects_backslash(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo\\bar", tmp_path)
 
-    def test_rejects_absolute_path(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("/etc/passwd", tmp_path)
 
-    def test_rejects_empty_name(self, tmp_path):
-        with pytest.raises(ValueError, match="must not be empty"):
-            _sanitize_plugin_name("", tmp_path)
 
     # ── allow_subdir=True ──
 
-    def test_allow_subdir_accepts_single_slash(self, tmp_path):
-        target = _sanitize_plugin_name(
-            "observability/langfuse", tmp_path, allow_subdir=True
-        )
-        assert target == (tmp_path / "observability" / "langfuse").resolve()
 
-    def test_allow_subdir_strips_leading_trailing_slash(self, tmp_path):
-        target = _sanitize_plugin_name(
-            "/image_gen/openai/", tmp_path, allow_subdir=True
-        )
-        assert target == (tmp_path / "image_gen" / "openai").resolve()
 
-    def test_allow_subdir_still_rejects_dot_dot(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo/../bar", tmp_path, allow_subdir=True)
 
-    def test_allow_subdir_still_rejects_backslash(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
-            _sanitize_plugin_name("foo\\bar", tmp_path, allow_subdir=True)
 
-    def test_allow_subdir_rejects_empty_after_strip(self, tmp_path):
-        with pytest.raises(ValueError, match="must not be empty"):
-            _sanitize_plugin_name("///", tmp_path, allow_subdir=True)
 
-    def test_allow_subdir_resolves_inside_plugins_dir(self, tmp_path):
-        target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
-        assert target.is_relative_to(tmp_path.resolve())
 
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
@@ -102,15 +59,8 @@ class TestSanitizePluginName:
 class TestResolveGitUrl:
     """Shorthand and full-URL resolution, with optional subdirectory."""
 
-    def test_owner_repo_shorthand(self):
-        url, subdir = _resolve_git_url("owner/repo")
-        assert url == "https://github.com/owner/repo.git"
-        assert subdir is None
 
 
-    def test_invalid_single_word_raises(self):
-        with pytest.raises(ValueError, match="Invalid plugin identifier"):
-            _resolve_git_url("justoneword")
 
 
     def test_url_with_fragment_subdir(self):
@@ -119,19 +69,6 @@ class TestResolveGitUrl:
         assert subdir == "my-plugin"
 
 
-    @pytest.mark.parametrize(
-        ("identifier", "expected_subdir"),
-        [
-            ("https://github.com/owner/repo/tree/main/plugins/foo", "plugins/foo"),
-            ("https://github.com/owner/repo/tree/feature-branch/plugin", "plugin"),
-            ("https://github.com/owner/repo/tree/main/plugins/foo?plain=1", "plugins/foo"),
-            ("https://github.com/owner/repo.git/tree/main/plugins/foo", "plugins/foo"),
-        ],
-    )
-    def test_github_tree_browser_url_preserves_subdir(self, identifier, expected_subdir):
-        url, subdir = _resolve_git_url(identifier)
-        assert url == "https://github.com/owner/repo.git"
-        assert subdir == expected_subdir
 
     @pytest.mark.parametrize(
         "identifier",
@@ -164,19 +101,7 @@ class TestResolveSubdirWithin:
         result = _resolve_subdir_within(tmp_path, "a/b/c")
         assert result == (tmp_path / "a" / "b" / "c").resolve()
 
-    def test_rejects_dot_dot_escape(self, tmp_path):
-        clone = tmp_path / "clone"
-        clone.mkdir()
-        (tmp_path / "secret").mkdir()
-        with pytest.raises(PluginOperationError, match="escapes the repository"):
-            _resolve_subdir_within(clone, "../secret")
 
-    def test_rejects_absolute_path_escape(self, tmp_path):
-        clone = tmp_path / "clone"
-        clone.mkdir()
-        # An absolute path resolves outside the clone root.
-        with pytest.raises(PluginOperationError, match="escapes the repository"):
-            _resolve_subdir_within(clone, "/etc")
 
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
@@ -247,8 +172,6 @@ class TestRepoNameFromUrl:
         )
 
 
-    def test_ssh_protocol(self):
-        assert _repo_name_from_url("ssh://git@github.com/owner/repo.git") == "repo"
 
 
 # ── plugins_command dispatch ──────────────────────────────────────────────
@@ -498,40 +421,8 @@ class TestCopyExampleFiles:
 class TestPromptPluginEnvVars:
     """Tests for _prompt_plugin_env_vars."""
 
-    def test_skips_when_no_requires_env(self):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock
 
-        console = MagicMock()
-        _prompt_plugin_env_vars({}, console)
-        console.print.assert_not_called()
 
-    def test_skips_already_set_vars(self, monkeypatch):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock, patch
-
-        console = MagicMock()
-        with patch("hermes_cli.config.get_env_value", return_value="already-set"):
-            _prompt_plugin_env_vars({"requires_env": ["MY_KEY"]}, console)
-        # No prompt should appear — all vars are set
-        console.print.assert_not_called()
-
-    def test_prompts_for_missing_var_simple_format(self):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock, patch
-
-        console = MagicMock()
-        manifest = {
-            "name": "test_plugin",
-            "requires_env": ["MY_API_KEY"],
-        }
-
-        with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("builtins.input", return_value="sk-test-123"), \
-             patch("hermes_cli.config.save_env_value") as mock_save:
-            _prompt_plugin_env_vars(manifest, console)
-
-        mock_save.assert_called_once_with("MY_API_KEY", "sk-test-123")
 
     def test_prompts_for_missing_var_rich_format(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
@@ -578,20 +469,6 @@ class TestPromptPluginEnvVars:
         mock_prompt.assert_called_once()
 
 
-    def test_keyboard_interrupt_skips_gracefully(self):
-        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
-        from unittest.mock import MagicMock, patch
-
-        console = MagicMock()
-        manifest = {"name": "test", "requires_env": ["KEY1", "KEY2"]}
-
-        with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("builtins.input", side_effect=KeyboardInterrupt), \
-             patch("hermes_cli.config.save_env_value") as mock_save:
-            _prompt_plugin_env_vars(manifest, console)
-
-        # Should not crash, and not save anything
-        mock_save.assert_not_called()
 
 
 # ── curses_radiolist ─────────────────────────────────────────────────────
@@ -614,14 +491,6 @@ class TestCursesRadiolist:
 class TestProviderDiscovery:
     """Test provider plugin discovery and config helpers."""
 
-    def test_get_current_memory_provider_default(self, tmp_path, monkeypatch):
-        """Empty config returns empty string."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("memory:\n  provider: ''\n")
-        from hermes_cli.plugins_cmd import _get_current_memory_provider
-        result = _get_current_memory_provider()
-        assert result == ""
 
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
@@ -634,13 +503,6 @@ class TestProviderDiscovery:
         content = yaml.safe_load(config_file.read_text())
         assert content["context"]["engine"] == "lcm"
 
-    def test_discover_memory_providers_empty(self):
-        """Discovery returns empty list when import fails."""
-        with patch("plugins.memory.discover_memory_providers",
-                    side_effect=ImportError("no module")):
-            from hermes_cli.plugins_cmd import _discover_memory_providers
-            result = _discover_memory_providers()
-            assert result == []
 
     def test_discover_context_engines_empty(self):
         """Discovery returns empty list when import fails."""

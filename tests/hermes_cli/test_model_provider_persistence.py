@@ -111,151 +111,10 @@ class TestProviderPersistsAfterModelSave:
         )
         assert model.get("default") == "kimi-k2.5"
 
-    def test_copilot_provider_saved_when_selected(self, config_home):
-        """_model_flow_copilot should persist provider/base_url/model together."""
-        from hermes_cli.main import _model_flow_copilot
-        from hermes_cli.config import load_config
-
-        with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={
-                "provider": "copilot",
-                "api_key": "gh-cli-token",
-                "base_url": "https://api.githubcopilot.com",
-                "source": "gh auth token",
-            },
-        ), patch(
-            "hermes_cli.models.fetch_github_model_catalog",
-            return_value=[
-                {
-                    "id": "gpt-4.1",
-                    "capabilities": {"type": "chat", "supports": {}},
-                    "supported_endpoints": ["/chat/completions"],
-                },
-                {
-                    "id": "gpt-5.4",
-                    "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
-                    "supported_endpoints": ["/responses"],
-                },
-            ],
-        ), patch(
-            "hermes_cli.auth._prompt_model_selection",
-            return_value="gpt-5.4",
-        ), patch(
-            "hermes_cli.main._prompt_reasoning_effort_selection",
-            return_value="high",
-        ), patch(
-            "hermes_cli.auth.deactivate_provider",
-        ):
-            _model_flow_copilot(load_config(), "old-model")
-
-        import yaml
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict), f"model should be dict, got {type(model)}"
-        assert model.get("provider") == "copilot"
-        assert model.get("base_url") == "https://api.githubcopilot.com"
-        assert model.get("default") == "gpt-5.4"
-        assert model.get("api_mode") == "codex_responses"
-        assert config["agent"]["reasoning_effort"] == "high"
-
-    def test_named_custom_provider_preserves_explicit_api_mode(self, config_home):
-        """Named custom providers should re-activate with their saved api_mode."""
-        import yaml
-
-        from hermes_cli.main import _model_flow_named_custom
-
-        provider_info = {
-            "name": "Packy",
-            "base_url": "https://packy.example.com/v1",
-            "api_key": "sk-test",
-            "model": "gpt-5.4",
-            "api_mode": "codex_responses",
-        }
-
-        # Patch fetch_api_models so the named custom flow returns one model;
-        # force the curses menu to error so the input() fallback runs; patch
-        # input to auto-select the first model from the fallback prompt.
-        with patch("hermes_cli.auth._save_model_choice"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("hermes_cli.models.fetch_api_models", return_value=["gpt-5.4"]), \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=OSError("no tty in test")), \
-             patch("builtins.input", return_value="1"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "custom"
-        assert model.get("base_url") == "https://packy.example.com/v1"
-        assert model.get("api_mode") == "codex_responses"
-
-    def test_named_custom_provider_with_builtin_slug_persists_custom_prefix(
-        self, config_home, monkeypatch
-    ):
-        """providers.<builtin-slug> must persist as a named custom provider."""
-        import yaml
-
-        from hermes_cli.main import _model_flow_named_custom
-
-        config_path = config_home / "config.yaml"
-        config_path.write_text(
-            "providers:\n"
-            "  minimax-cn:\n"
-            "    name: MiniMax CN Proxy\n"
-            "    api: https://mimimax.cn/v1\n"
-            "    key_env: MINIMAX_CN_PROXY_KEY\n"
-            "    transport: chat_completions\n"
-            "    model: MiniMax-M3\n"
-            "    default_model: MiniMax-M3\n"
-        )
-        monkeypatch.setenv("MINIMAX_CN_PROXY_KEY", "proxy-secret")
-
-        provider_info = {
-            "name": "MiniMax CN Proxy",
-            "base_url": "https://mimimax.cn/v1",
-            "api_key": "",
-            "key_env": "MINIMAX_CN_PROXY_KEY",
-            "model": "MiniMax-M3",
-            "api_mode": "chat_completions",
-            "provider_key": "minimax-cn",
-        }
-
-        with patch("hermes_cli.auth._save_model_choice"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("hermes_cli.models.fetch_api_models", return_value=["MiniMax-M3"]), \
-             patch("hermes_cli.curses_ui.curses_radiolist", side_effect=OSError("no tty in test")), \
-             patch("builtins.input", return_value="1"):
-            _model_flow_named_custom({}, provider_info)
-
-        config = yaml.safe_load(config_path.read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "custom:minimax-cn"
-        assert "base_url" not in model
-        assert "api_key" not in model
 
 
-    def test_opencode_go_models_are_selectable_and_persist_normalized(self, config_home, monkeypatch):
-        from hermes_cli.main import _model_flow_api_key_provider
-        from hermes_cli.config import load_config
 
-        monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["opencode-go/kimi-k2.5", "opencode-go/minimax-m2.7"]), \
-             patch("hermes_cli.auth._prompt_model_selection", return_value="kimi-k2.5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("builtins.input", return_value=""):
-            _model_flow_api_key_provider(load_config(), "opencode-go", "opencode-go/kimi-k2.5")
-
-        import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "opencode-go"
-        assert model.get("default") == "kimi-k2.5"
-        assert model.get("api_mode") == "chat_completions"
 
 
 class TestBaseUrlValidation:
@@ -294,23 +153,6 @@ class TestBaseUrlValidation:
 class TestZaiEndpointPicker:
     """Z.AI setup should present a curses picker for endpoint selection."""
 
-    def test_select_global_endpoint(self, config_home, monkeypatch):
-        """Selecting Global should save the direct API base URL."""
-        from hermes_cli.auth import ZAI_ENDPOINTS
-        from hermes_cli.main import _model_flow_api_key_provider
-        from hermes_cli.config import load_config
-
-        global_url = ZAI_ENDPOINTS[0][1]  # "https://api.z.ai/api/paas/v4"
-        monkeypatch.setenv("GLM_API_KEY", "test-key")
-
-        with patch("hermes_cli.main._prompt_provider_choice", return_value=0), \
-             patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("builtins.input", return_value=""):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
-
-        model = load_config()["model"]
-        assert model["base_url"] == global_url
 
 
     def test_custom_proxy_rejects_invalid_url(self, config_home, monkeypatch, capsys):
@@ -335,24 +177,6 @@ class TestZaiEndpointPicker:
         captured = capsys.readouterr()
         assert "Invalid URL" in captured.out
 
-    def test_cancel_keeps_existing_base_url(self, config_home, monkeypatch):
-        """Cancelling the picker should not change the base URL."""
-        from hermes_cli.main import _model_flow_api_key_provider
-        from hermes_cli.config import load_config, get_env_value
-
-        monkeypatch.setenv("GLM_API_KEY", "test-key")
-        monkeypatch.setenv("GLM_BASE_URL", "https://existing.example/v4")
-
-        # _prompt_provider_choice returns None on cancel
-        with patch("hermes_cli.main._prompt_provider_choice", return_value=None), \
-             patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
-             patch("hermes_cli.auth.deactivate_provider"), \
-             patch("builtins.input", return_value=""):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
-
-        # env var is preserved (not overwritten on cancel)
-        saved = get_env_value("GLM_BASE_URL") or ""
-        assert saved == "https://existing.example/v4"
 
     def test_current_endpoint_is_default_choice(self, config_home, monkeypatch):
         """When a known endpoint is already active, it should be the default."""

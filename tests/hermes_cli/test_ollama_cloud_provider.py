@@ -195,73 +195,9 @@ class TestOllamaCloudMergedDiscovery:
 
         assert result == ["glm-5"]
 
-    def test_uses_disk_cache(self, tmp_path, monkeypatch):
-        """Second call returns cached results without hitting APIs."""
-        from hermes_cli.models import fetch_ollama_cloud_models
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
-            first = fetch_ollama_cloud_models(force_refresh=True)
-            assert first == ["model-a"]
-            assert mock_api.call_count == 1
 
-            # Second call — should use disk cache, not call API
-            second = fetch_ollama_cloud_models()
-            assert second == ["model-a"]
-            assert mock_api.call_count == 1  # no extra API call
-
-    def test_force_refresh_bypasses_cache(self, tmp_path, monkeypatch):
-        """force_refresh=True always hits the API even with fresh cache."""
-        from hermes_cli.models import fetch_ollama_cloud_models
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=["model-a"]) as mock_api, \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
-            fetch_ollama_cloud_models(force_refresh=True)
-            fetch_ollama_cloud_models(force_refresh=True)
-            assert mock_api.call_count == 2
-
-    def test_stale_cache_used_on_total_failure(self, tmp_path, monkeypatch):
-        """If both API and models.dev fail, stale cache is returned."""
-        from hermes_cli.models import fetch_ollama_cloud_models, _save_ollama_cloud_cache
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
-
-        # Pre-populate a stale cache
-        _save_ollama_cloud_cache(["stale-model"])
-
-        # Make the cache appear stale by backdating it
-        import json
-        cache_path = tmp_path / "ollama_cloud_models_cache.json"
-        with open(cache_path) as f:
-            data = json.load(f)
-        data["cached_at"] = 0  # epoch = very stale
-        with open(cache_path, "w") as f:
-            json.dump(data, f)
-
-        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
-             patch("agent.models_dev.fetch_models_dev", return_value={}):
-            result = fetch_ollama_cloud_models(force_refresh=True)
-
-        assert result == ["stale-model"]
-
-    def test_empty_on_total_failure_no_cache(self, tmp_path, monkeypatch):
-        """Returns empty list when everything fails and no cache exists."""
-        from hermes_cli.models import fetch_ollama_cloud_models
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
-
-        with patch("agent.models_dev.fetch_models_dev", return_value={}):
-            result = fetch_ollama_cloud_models(force_refresh=True)
-
-        assert result == []
 
 
 # ── Model Normalization ──

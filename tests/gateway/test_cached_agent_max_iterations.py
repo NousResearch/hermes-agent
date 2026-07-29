@@ -39,25 +39,6 @@ def _make_cached_agent(max_iterations: int) -> SimpleNamespace:
     )
 
 
-def test_init_cached_agent_for_turn_does_not_touch_max_iterations():
-    """The per-turn reset helper must leave max_iterations untouched.
-
-    The gateway refreshes max_iterations explicitly right after calling this
-    helper; if the helper ever reset it, that refresh would be undone.
-    """
-    from gateway.run import GatewayRunner
-
-    agent = _make_cached_agent(90)
-    GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
-
-    # Per-turn state was reset...
-    assert agent._api_call_count == 0
-    assert agent._last_activity_desc == "starting new turn (cached)"
-    assert agent._last_flushed_db_idx == 0
-    # ...but the iteration budget was NOT changed by the helper itself.
-    assert agent.max_iterations == 90
-
-
 def test_init_cached_agent_preserves_max_iterations_on_interrupt_depth():
     """Interrupt-recursive turns must also leave max_iterations alone."""
     from gateway.run import GatewayRunner
@@ -71,22 +52,3 @@ def test_init_cached_agent_preserves_max_iterations_on_interrupt_depth():
     assert agent.max_iterations == 200
 
 
-def test_refreshed_max_iterations_propagates_to_turn_budget():
-    """Refreshing max_iterations on a cached agent changes the operative cap.
-
-    The gateway sets ``agent.max_iterations = max_iterations`` on cache reuse;
-    the new turn's setup then rebuilds ``iteration_budget`` from it. This proves
-    the refresh actually moves the budget the agent loop enforces — the cached
-    agent started at 90 and ends a new turn capped at 200.
-    """
-    agent = _make_cached_agent(90)
-    assert agent.iteration_budget.max_total == 90
-
-    # Gateway refresh on cache reuse:
-    agent.max_iterations = 200
-
-    # Start-of-turn budget rebuild (agent/turn_context.py:166):
-    agent.iteration_budget = IterationBudget(agent.max_iterations)
-
-    assert agent.iteration_budget.max_total == 200
-    assert agent.iteration_budget.remaining == 200

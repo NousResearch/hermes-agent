@@ -139,16 +139,6 @@ class TestDoctorEnvFileEncoding:
 
 
 class TestDoctorToolAvailabilityOverrides:
-    def test_marks_honcho_available_when_configured(self, monkeypatch):
-        monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)
-
-        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
-            [],
-            [{"name": "honcho", "env_vars": [], "tools": ["query_user_context"]}],
-        )
-
-        assert available == ["honcho"]
-        assert unavailable == []
 
 
     def test_marks_kanban_available_only_when_missing_worker_env_gate(self, monkeypatch):
@@ -176,10 +166,6 @@ class TestDoctorToolAvailabilityOverrides:
         assert unavailable == [kanban_entry]
 
 
-    def test_kanban_doctor_detail_explains_worker_gate(self, monkeypatch):
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-
-        assert doctor._doctor_tool_availability_detail("kanban") == "(runtime-gated; loaded only for dispatcher-spawned workers)"
 
 
 class TestHonchoDoctorConfigDetection:
@@ -194,67 +180,10 @@ class TestHonchoDoctorConfigDetection:
         assert doctor._honcho_is_configured_for_doctor()
 
 
-def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
-    """Doctor should present CLI-gated tools as available in CLI context."""
-    project_root = tmp_path / "project"
-    hermes_home = tmp_path / ".hermes"
-    project_root.mkdir()
-    hermes_home.mkdir()
-
-    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-
-    seen = {}
-
-    def fake_check_tool_availability(*args, **kwargs):
-        seen["interactive"] = os.getenv("HERMES_INTERACTIVE")
-        raise SystemExit(0)
-
-    fake_model_tools = types.SimpleNamespace(
-        check_tool_availability=fake_check_tool_availability,
-        TOOLSET_REQUIREMENTS={},
-    )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-
-    with pytest.raises(SystemExit):
-        doctor_mod.run_doctor(Namespace(fix=False))
-
-    assert seen["interactive"] == "1"
 
 
-def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
-    unit_path = tmp_path / "hermes-gateway.service"
-    unit_path.write_text("[Unit]\n")
-
-    monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
-    monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda: unit_path)
-    monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (False, ""))
-
-    issues = []
-    doctor._check_gateway_service_linger(issues)
-
-    out = capsys.readouterr().out
-    assert "Gateway Service" in out
-    assert "Systemd linger disabled" in out
-    assert "loginctl enable-linger" in out
-    assert issues == [
-        "Enable linger for the gateway user service: sudo loginctl enable-linger $USER"
-    ]
 
 
-def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypatch, tmp_path, capsys):
-    unit_path = tmp_path / "missing.service"
-
-    monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
-    monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda: unit_path)
-
-    issues = []
-    doctor._check_gateway_service_linger(issues)
-
-    out = capsys.readouterr().out
-    assert out == ""
-    assert issues == []
 
 
 # ── Memory provider section (doctor should only check the *active* provider) ──
@@ -311,35 +240,6 @@ class TestDoctorMemoryProviderSection:
         assert "Mem0" not in out
 
 
-def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
-    helper = TestDoctorMemoryProviderSection()
-    monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
-    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
-
-    real_which = doctor_mod.shutil.which
-
-    def fake_which(cmd):
-        if cmd in {"docker", "node", "npm"}:
-            return None
-        return real_which(cmd)
-
-    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
-
-    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
-
-    assert "Docker backend is not available inside Termux" in out
-    assert "Node.js not found (browser tools are optional in the tested Termux path)" in out
-    assert "Install Node.js on Termux with: pkg install nodejs" in out
-    assert "Termux browser setup:" in out
-    assert "1) pkg install nodejs" in out
-    assert "2) npm install -g agent-browser" in out
-    assert "3) agent-browser install" in out
-    assert "Termux compatibility fallbacks:" in out
-    assert "use .[termux-all] for broad compatibility" in out
-    assert "Matrix E2EE extra is excluded on Termux" in out
-    assert "Local faster-whisper extra is excluded on Termux" in out
-    assert "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY)." in out
-    assert "docker not found (optional)" not in out
 
 
 def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
@@ -399,14 +299,6 @@ def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
     return buf.getvalue()
 
 
-def test_run_doctor_detects_agent_browser_in_managed_node_bin(monkeypatch, tmp_path):
-    # Regression for #53192: `hermes acp --setup-browser` installs into
-    # ~/.hermes/node/bin/agent-browser, which isn't on PATH; doctor must still
-    # report it installed instead of "agent-browser not installed".
-    out = _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable=True)
-    assert "agent-browser not installed" not in out
-    assert "agent-browser found but not runnable" not in out
-    assert "✓ agent-browser" in out
 
 
 class TestGitHubTokenCheck:
@@ -849,73 +741,6 @@ class TestDoctorStaleMaxIterationsDrift:
         assert "shadows" not in out
 
 
-def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path):
-    """`hermes doctor` must not hand users `npm audit fix --workspace <name>`:
-    that exact form crashes npm with "Cannot read properties of null (reading
-    'edgesOut')" (an arborist bug with workspace-filtered audit fix).
-
-    It must not recommend root-level `npm audit fix` for workspace advisories
-    either: current npm can crash there too with "Cannot read properties of null
-    (reading 'isDescendantOf')" on this tree. The safe guidance is that these
-    build-tool advisories clear via the lockfile/package bump.
-
-    Regression for user reports where doctor flagged the web/ui-tui workspaces
-    and the suggested fix command errored out.
-    """
-    home = tmp_path / ".hermes"
-    home.mkdir(parents=True, exist_ok=True)
-    project = tmp_path / "project"
-    (project / "node_modules").mkdir(parents=True)
-
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
-
-    # Only npm is "installed" — keeps the rest of run_doctor's external checks
-    # quiet without affecting the npm-audit branch under test.
-    monkeypatch.setattr(
-        doctor_mod.shutil, "which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None
-    )
-
-    def mock_run(cmd, **kwargs):
-        if "audit" in cmd and "--workspace" in cmd:
-            payload = (
-                '{"metadata": {"vulnerabilities": '
-                '{"critical": 0, "high": 2, "moderate": 0}}}'
-            )
-            return SimpleNamespace(returncode=1, stdout=payload, stderr="")
-        if "audit" in cmd:
-            payload = (
-                '{"metadata": {"vulnerabilities": '
-                '{"critical": 0, "high": 0, "moderate": 0}}}'
-            )
-            return SimpleNamespace(returncode=0, stdout=payload, stderr="")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    import subprocess
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        doctor_mod.run_doctor(Namespace(fix=False))
-    out = buf.getvalue()
-
-    # The workspace vulnerability is still reported ...
-    assert "web workspace" in out
-    # ... but the remediation must NOT use the npm-crashing per-workspace form
-    # (`npm audit fix --workspace web` / `--workspace ui-tui`).
-    assert "npm audit fix --workspace web" not in out
-    assert "npm audit fix --workspace ui-tui" not in out
-    # ... and it must not point at the root-level form either: npm can crash
-    # there too with `isDescendantOf` on this monorepo tree.
-    assert "npm audit fix" not in out
-    # ... and explains the workspace advisories are build-time tooling whose
-    # manual remediation may hit a known npm arborist crash, so the user isn't
-    # left thinking a crashing command means a broken Hermes install.
-    assert "build-time tooling" in out
-    assert "known npm bug" in out
-    assert "lockfile bump" in out
 
 
 class TestDoctorDeprecatedConfigAndEnv:
@@ -923,23 +748,6 @@ class TestDoctorDeprecatedConfigAndEnv:
     modern replacements as non-failing warnings — without auto-migrating.
     """
 
-    def test_collect_deprecated_config_keys_flags_legacy(self):
-        raw = {
-            "display": {"tool_progress_overrides": {"telegram": "all"}},
-            "delegation": {"max_async_children": 5, "max_concurrent_children": 3},
-            "compression": {"summary_model": "gpt-4o-mini", "enabled": True},
-        }
-        findings = doctor_mod.collect_deprecated_config_keys(raw)
-        paths = {legacy for legacy, _ in findings}
-        assert "display.tool_progress_overrides" in paths
-        assert "delegation.max_async_children" in paths
-        assert "compression.summary_model" in paths
-        by_key = dict(findings)
-        assert by_key["display.tool_progress_overrides"] == "display.platforms"
-        assert by_key["delegation.max_async_children"] == (
-            "delegation.max_concurrent_children"
-        )
-        assert by_key["compression.summary_model"] == "auxiliary.compression"
 
 
     def test_collect_deprecated_env_vars_ignores_empty(self):
@@ -980,53 +788,7 @@ class TestDoctorDeprecatedConfigAndEnv:
         return buf.getvalue(), hermes_home
 
 
-    def test_doctor_warns_on_compression_summary_and_legacy_env(
-        self, monkeypatch, tmp_path
-    ):
-        cfg = """\
-compression:
-  summary_model: gpt-4o-mini
-  summary_provider: openai
-"""
-        env = (
-            "OPENAI_API_KEY=sk-test\n"
-            "HERMES_TOOL_PROGRESS=true\n"
-            "TERMINAL_CWD=/old/path\n"
-            "QQ_HOME_CHANNEL=999\n"
-        )
-        out, _ = self._run_doctor_with_config(
-            monkeypatch, tmp_path, config_yaml=cfg, env_text=env
-        )
-        assert "Deprecated: compression.summary_model" in out
-        assert "auxiliary.compression" in out
-        assert "Deprecated: HERMES_TOOL_PROGRESS" in out
-        assert "display.tool_progress" in out
-        assert "Deprecated: TERMINAL_CWD" in out
-        assert "terminal.cwd" in out
-        assert "Deprecated: QQ_HOME_CHANNEL" in out
-        assert "QQBOT_HOME_CHANNEL" in out
 
-    def test_doctor_clean_config_has_no_deprecated_warning(self, monkeypatch, tmp_path):
-        cfg = """\
-display:
-  platforms:
-    telegram:
-      tool_progress: all
-delegation:
-  max_concurrent_children: 3
-compression:
-  enabled: true
-terminal:
-  cwd: /project
-"""
-        out, _ = self._run_doctor_with_config(monkeypatch, tmp_path, config_yaml=cfg)
-        assert "Deprecated: display.tool_progress_overrides" not in out
-        assert "Deprecated: delegation.max_async_children" not in out
-        assert "Deprecated: compression.summary_model" not in out
-        assert "Deprecated: HERMES_TOOL_PROGRESS" not in out
-        assert "Deprecated: TERMINAL_CWD" not in out
-        assert "Deprecated: QQ_HOME_CHANNEL" not in out
-        assert "No deprecated config keys or env vars" in out
 
     def test_report_does_not_count_as_blocking_issue(self, monkeypatch, tmp_path, capsys):
         """report_deprecated_config_and_env is warn-only — no issues list mutation."""

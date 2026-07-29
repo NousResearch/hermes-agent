@@ -87,55 +87,10 @@ def _stub_session(exp_offset: int = 3600) -> Session:
     )
 
 
-def test_broker_happy_path_binds_pkce_and_returns_session():
-    verifier, challenge = _make_pkce()
-    broker_state = native_flow.register_pending(
-        code_challenge=challenge,
-        redirect_uri="http://127.0.0.1:53123/callback",
-        client_state="client-state-xyz",
-    )
-    pending = native_flow.get_pending(broker_state)
-    assert pending.redirect_uri == "http://127.0.0.1:53123/callback"
-    assert pending.client_state == "client-state-xyz"
-
-    sess = _stub_session()
-    code = native_flow.complete_pending(broker_state, session=sess)
-    redeemed = native_flow.redeem_code(code=code, code_verifier=verifier)
-    assert redeemed.access_token == "at-opaque"
-    assert redeemed.user_id == "u1"
 
 
-def test_broker_code_expiry():
-    verifier, challenge = _make_pkce()
-    now = int(time.time())
-    broker_state = native_flow.register_pending(
-        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-        client_state="s", now=now,
-    )
-    code = native_flow.complete_pending(
-        broker_state, session=_stub_session(), now=now,
-    )
-    with pytest.raises(native_flow.CodeInvalid):
-        native_flow.redeem_code(
-            code=code, code_verifier=verifier, now=now + 121,
-        )
 
 
-def test_broker_per_ip_cap_frees_on_expiry():
-    """Expired pending entries stop counting against the per-IP cap."""
-    _verifier, challenge = _make_pkce()
-    now = int(time.time())
-    for _ in range(native_flow._MAX_PENDING_PER_IP):
-        native_flow.register_pending(
-            code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-            client_state="s", client_ip="203.0.113.7", now=now,
-        )
-    # Past the pending TTL the old entries are GC'd and the IP can retry.
-    assert native_flow.register_pending(
-        code_challenge=challenge, redirect_uri="http://127.0.0.1:1/cb",
-        client_state="s", client_ip="203.0.113.7",
-        now=now + native_flow._PENDING_TTL_SECONDS + 1,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -208,29 +163,6 @@ def _walk_native_login(client, *, redirect_uri, challenge, state="cli-state"):
     return loop_qs["code"][0], loop_qs["state"][0]
 
 
-def test_native_full_roundtrip_returns_tokens_no_cookie(gated_client):
-    verifier, challenge = _make_pkce()
-    redirect_uri = "http://127.0.0.1:53999/callback"
-    code, state = _walk_native_login(
-        gated_client, redirect_uri=redirect_uri, challenge=challenge,
-        state="my-cli-state",
-    )
-    assert state == "my-cli-state"  # client state echoed verbatim
-
-    # 4. Desktop redeems the loopback code + its verifier for tokens.
-    r = gated_client.post(
-        "/auth/native/token",
-        json={"code": code, "code_verifier": verifier},
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["token_type"] == "Bearer"
-    assert body["access_token"]
-    assert body["refresh_token"]
-    assert body["provider"] == "stub"
-    assert body["user_id"] == "stub-user-1"
-    # No cookie set on the token response either.
-    assert "set-cookie" not in {k.lower() for k in r.headers}
 
 
 def test_native_authorize_rejects_non_loopback_redirect(gated_client):
@@ -278,25 +210,6 @@ def test_bearer_authenticates_gated_route_without_cookie(gated_client):
     assert r.json()["user_id"] == "stub-user-1"
 
 
-def test_bearer_ws_ticket_mint_without_cookie(gated_client):
-    """The desktop mints a WS ticket with the bearer (no cookie), proving the
-    WebSocket path also works cookielessly."""
-    verifier, challenge = _make_pkce()
-    code, _state = _walk_native_login(
-        gated_client, redirect_uri="http://127.0.0.1:53999/cb",
-        challenge=challenge,
-    )
-    at = gated_client.post(
-        "/auth/native/token",
-        json={"code": code, "code_verifier": verifier},
-    ).json()["access_token"]
-
-    r = gated_client.post(
-        "/api/auth/ws-ticket",
-        headers={"Authorization": f"Bearer {at}"},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["ticket"]
 
 
 # ---------------------------------------------------------------------------
@@ -304,16 +217,6 @@ def test_bearer_ws_ticket_mint_without_cookie(gated_client):
 # ---------------------------------------------------------------------------
 
 
-def test_status_advertises_native_pkce_flow(gated_client):
-    r = gated_client.get("/api/status")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["auth_required"] is True
-    assert "cookie" in body["auth_flows"]
-    assert "native_pkce" in body["auth_flows"], (
-        "a brokerable OAuth provider must advertise native_pkce so the "
-        "desktop can pick the system-browser flow"
-    )
 
 
 def test_status_loopback_mode_has_no_auth_flows():

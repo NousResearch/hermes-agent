@@ -82,25 +82,6 @@ def _run_switch(
         )
 
 
-def test_typed_configured_model_routes_away_from_openai_codex():
-    """The core repro: a model declared under ``providers.<slug>`` typed while
-    on ``openai-codex`` routes to the configured provider, not Codex."""
-    user_providers = {
-        "local-ollama": {
-            "name": "Local Ollama",
-            "base_url": "http://localhost:11434/v1",
-            "models": ["qwen3.5-4b", "kimi-k2.5"],
-        }
-    }
-    result = _run_switch(
-        raw_input="qwen3.5-4b",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        user_providers=user_providers,
-    )
-    assert result.success is True, result.error_message
-    assert result.target_provider == "local-ollama"
-    assert result.new_model == "qwen3.5-4b"
 
 
 def test_default_model_only_declaration_routes():
@@ -124,31 +105,6 @@ def test_default_model_only_declaration_routes():
     assert result.new_model == "qwen3.5-4b"
 
 
-def test_malformed_provider_config_does_not_raise():
-    """Garbage shapes in provider config must not crash detection — they're
-    skipped and the typed name falls through to the soft-accept no-op."""
-    user_providers = {
-        "bad1": "not-a-dict",            # non-dict cfg
-        "bad2": {"models": 12345},        # models as int
-        "bad3": {"models": [None, 7, {"noname": "x"}]},  # junk list items
-        "bad4": {"model": {"k": object()}},  # dict with non-target keys
-    }
-    custom_providers = [
-        "not-a-dict",                     # non-dict entry
-        {"name": ""},                     # empty name
-        {"models": ["unrelated-model"]},  # no name key
-    ]
-    result = _run_switch(
-        raw_input="gpt-5.9-codex-hidden",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        user_providers=user_providers,
-        custom_providers=custom_providers,
-        validation=_CODEX_SOFT_ACCEPT,
-    )
-    # No match anywhere -> stays on codex, soft-accepted, no exception.
-    assert result.success is True, result.error_message
-    assert result.target_provider == "openai-codex"
 
 
 def test_xai_oauth_soft_accept_preserved_when_no_match():

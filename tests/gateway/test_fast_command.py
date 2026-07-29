@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 import gateway.run as gateway_run
+from agent.agent_init import _merge_custom_provider_extra_body
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
@@ -18,9 +19,15 @@ from gateway.session import SessionSource
 class _CapturingAgent:
     last_init = None
     last_run = None
+    custom_providers = []
 
     def __init__(self, *args, **kwargs):
         type(self).last_init = dict(kwargs)
+        self.model = kwargs["model"]
+        self.provider = kwargs.get("provider")
+        self.base_url = kwargs.get("base_url")
+        self.request_overrides = dict(kwargs.get("request_overrides") or {})
+        _merge_custom_provider_extra_body(self, type(self).custom_providers)
         self.tools = []
 
     def run_conversation(
@@ -37,6 +44,7 @@ class _CapturingAgent:
             "task_id": task_id,
             "persist_user_message": persist_user_message,
             "persist_user_timestamp": persist_user_timestamp,
+            "request_overrides": dict(self.request_overrides),
         }
         return {
             "final_response": "ok",
@@ -253,6 +261,78 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
     assert result["final_response"] == "ok"
     assert _CapturingAgent.last_init["service_tier"] == "priority"
     assert _CapturingAgent.last_init["request_overrides"] == {"service_tier": "priority"}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_preserves_custom_provider_extra_body_across_turn_refresh(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+    runtime_config = {"agent": {"service_tier": "fast"}}
+
+    monkeypatch.setattr(
+        _CapturingAgent,
+        "custom_providers",
+        [
+            {
+                "name": "test-provider",
+                "base_url": "https://example.test/v1",
+                "model": "gpt-5.4",
+                "extra_body": {"content_filter": False},
+            }
+        ],
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: runtime_config,
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://example.test/v1",
+            "api_key": "***",
+        },
+    )
+
+    import hermes_cli.tools_config as tools_config
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+    async def run_turn():
+        return await runner._run_agent(
+            message="hi",
+            context_prompt="",
+            history=[],
+            source=_make_source(),
+            session_id="session-1",
+            session_key="agent:main:telegram:dm:12345",
+        )
+
+    result = await run_turn()
+
+    assert result["final_response"] == "ok"
+    assert _CapturingAgent.last_run["request_overrides"] == {
+        "extra_body": {"content_filter": False},
+        "service_tier": "priority",
+    }
+
+    runtime_config.clear()
+    result = await run_turn()
+
+    assert result["final_response"] == "ok"
+    assert _CapturingAgent.last_run["request_overrides"] == {
+        "extra_body": {"content_filter": False},
+    }
 
 
 @pytest.mark.asyncio

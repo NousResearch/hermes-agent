@@ -752,10 +752,19 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
         return (direct.provider, direct.model, key)
 
     # Reverse lookup so full names ("kimi-k2.5") route through direct aliases instead of
-    # falling through to the catalog/OpenRouter.
+    # falling through to the catalog/OpenRouter. Several aliases may expose one model id on
+    # different providers: prefer the one served by current_provider, since insertion order is
+    # not a routing decision and the wrong alias hands back another provider's base_url.
+    reverse_fallback: Optional[tuple[str, str, str]] = None
     for alias_name, da in DIRECT_ALIASES.items():
-        if da.model.lower() == key:
+        if da.model.lower() != key:
+            continue
+        if da.provider == current_provider:
             return (da.provider, da.model, alias_name)
+        if reverse_fallback is None:
+            reverse_fallback = (da.provider, da.model, alias_name)
+    if reverse_fallback is not None:
+        return reverse_fallback
 
     process_catalog, process_aliases = _external_process_catalog(current_provider)
     if process_catalog:
@@ -1232,7 +1241,12 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     except AmbiguousAliasError as err:
         return st.fail(_ambiguous_alias_message(err), target_provider=st.target_provider)
     if alias_result is not None:
-        _, st.new_model, st.resolved_alias = alias_result
+        alias_provider, st.new_model, alias_name = alias_result
+        # Adopt the alias (and with it its base_url and key) only when it belongs to the provider
+        # the user named: a reverse model-id match may land on another provider's alias, and
+        # honouring it would send the turn to that provider's endpoint under this one's identity.
+        if alias_provider == st.target_provider:
+            st.resolved_alias = alias_name
     return None
 
 

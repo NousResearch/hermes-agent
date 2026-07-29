@@ -29,6 +29,13 @@ class _FakeBadRequest(Exception):
         ("Forbidden: bot was blocked by the user", "forbidden"),
         ("Forbidden: user is deactivated", "forbidden"),
         ("Bad Request: not enough rights to send text messages", "forbidden"),
+        (
+            "Photon sidecar /send returned 403 (target_not_allowed, "
+            "retryable=False): shared/free-tier Photon lines cannot "
+            "initiate outbound sends to new targets — upgrade to a "
+            "dedicated line or use another delivery channel",
+            "forbidden",
+        ),
         ("Bad Request: chat not found", "not_found"),
         ("Bad Request: message to edit not found", "not_found"),
         ("Too Many Requests: retry after 12", "rate_limited"),

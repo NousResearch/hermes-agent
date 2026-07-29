@@ -200,7 +200,11 @@ def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
             "jsonrpc": "2.0",
             "id": 2,
             "result": {
-                "structuredContent": {"schema_version": "1", "overall": "ok"}
+                "structuredContent": {
+                    "schema_version": "1",
+                    "overall": "ok",
+                    "checks": [],
+                }
             },
         }),
     ]

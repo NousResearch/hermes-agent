@@ -694,6 +694,35 @@ class TestKeyHandlerNeverBlocks:
             "to prevent blocking on AudioRecorder._lock"
         )
 
+    def test_start_recording_pauses_wake_word_first(self):
+        """Source check: manual push-to-talk must hand the mic off from an
+        active wake-word listener BEFORE opening the recorder.
+
+        _on_wake_word already does this (it owns the mic when it fires), but
+        manual push-to-talk (Ctrl+B) can run while the wake detector's own
+        input stream is still open — two independent sd.InputStream opens on
+        the same device raises a PortAudio error on single-owner-capture
+        platforms (e.g. Windows) instead of just recording.
+        """
+        with open("cli.py") as f:
+            source = f.read()
+
+        start_idx = source.index("def _start_recording():")
+        end_idx = source.index("threading.Thread(target=_start_recording", start_idx)
+        closure_src = source[start_idx:end_idx]
+
+        pause_idx = closure_src.find("pause_listening")
+        start_recording_idx = closure_src.find("cli_ref._voice_start_recording()")
+        assert pause_idx != -1, (
+            "manual push-to-talk start path must call pause_listening() to "
+            "release the wake-word listener's microphone before recording"
+        )
+        assert start_recording_idx != -1
+        assert pause_idx < start_recording_idx, (
+            "pause_listening must run BEFORE _voice_start_recording opens "
+            "the AudioRecorder's own input stream on the same microphone"
+        )
+
     def test_processing_set_atomically_with_recording_false(self):
         """Source check: _voice_stop_and_transcribe must set _voice_processing = True
         in the same lock block where it sets _voice_recording = False."""

@@ -182,3 +182,70 @@ class TestPersistDisabledHardStop:
                 assert db.get_messages("s-review") == []
             finally:
                 db.close()
+
+
+class TestBackgroundReviewCompressionIsolation:
+    """Exercise the real AIAgent/ContextCompressor wiring, not a fork stub."""
+
+    def test_review_compressor_is_detached_from_parent_session_db(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import run_agent
+        from hermes_state import SessionDB
+
+        captured = {}
+
+        class _InlineThread:
+            def __init__(self, *, target=None, daemon=None, name=None):
+                self._target = target
+
+            def start(self):
+                if self._target:
+                    self._target()
+
+        def _capture_review_state(review_agent, *args, **kwargs):
+            compressor = review_agent.context_compressor
+            captured.update(
+                compression_enabled=review_agent.compression_enabled,
+                agent_session_db=review_agent._session_db,
+                compressor_session_db=getattr(compressor, "_session_db", "missing"),
+                compressor_session_id=getattr(compressor, "_session_id", "missing"),
+            )
+            raise RuntimeError("stop after capturing review isolation state")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                    parent = run_agent.AIAgent(
+                        api_key="test-key",
+                        base_url="https://openrouter.ai/api/v1",
+                        model="test/model",
+                        quiet_mode=True,
+                        session_db=db,
+                        session_id="parent-session",
+                        skip_context_files=True,
+                        skip_memory=True,
+                    )
+                setattr(parent, "_cached_system_prompt", "stable parent prompt")
+
+                with patch.object(
+                    run_agent.AIAgent, "run_conversation", _capture_review_state
+                ), patch("threading.Thread", _InlineThread):
+                    parent._spawn_background_review(
+                        messages_snapshot=[],
+                        review_memory=True,
+                        review_skills=False,
+                    )
+
+                assert captured == {
+                    "compression_enabled": True,
+                    "agent_session_db": None,
+                    "compressor_session_db": None,
+                    "compressor_session_id": "",
+                }
+            finally:
+                db.close()

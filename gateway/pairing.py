@@ -550,20 +550,40 @@ class PairingStore:
 
             return self._finish_approval(platform, pending, matched_key, matched_entry)
 
+    @staticmethod
+    def looks_like_request_id(value: str) -> bool:
+        """True when ``value`` has the shape of a ``list_pending`` request id.
+
+        Request ids are ``secrets.token_hex(8)`` (16 lowercase hex chars);
+        pairing codes are 8 chars from an unambiguous uppercase alphabet that
+        excludes every hex letter's ambiguity partner. The two shapes cannot
+        collide, so callers accepting either can dispatch on this.
+        """
+        value = str(value or "").strip()
+        return len(value) == 16 and all(c in "0123456789abcdefABCDEF" for c in value)
+
     def approve_request(self, platform: str, request_id: str) -> Optional[dict]:
         """
         Approve a pending pairing request by its server-side request id.
 
-        This is for admin surfaces (`pairing list`, dashboard approve buttons)
-        that show pending requests but must not reveal the one-time code sent
-        to the user. Returns ``{user_id, user_name}`` on success and ``None``
-        for invalid/expired requests or platform lockout.
+        This is the grant path for authenticated admin surfaces (``hermes
+        pairing list``, the dashboard/desktop approve buttons), which show
+        pending requests but must never reveal the one-time code DM'd to the
+        user. Returns ``{user_id, user_name}`` on success, ``None`` for an
+        unknown/expired request id.
+
+        Unlike :meth:`approve_code` this does NOT count a miss toward the
+        brute-force lockout, and is not itself gated by one. The lockout
+        protects the 8-char code space against guessing over a messaging
+        channel; a request id is only ever obtained by an admin already
+        authenticated to this store, so a stale id means "the row you clicked
+        expired", not an attack. Counting it here let a few GUI clicks on a
+        stale list lock the operator out of the CLI's code path too.
         """
         with self._lock:
             self._cleanup_expired(platform)
             request_id = str(request_id or "").strip().lower()
-
-            if self._is_locked_out(platform):
+            if not request_id:
                 return None
 
             pending = self._load_json(self._pending_path(platform))
@@ -575,17 +595,15 @@ class PairingStore:
                 if secrets.compare_digest(str(entry_id).lower(), request_id):
                     return self._finish_approval(platform, pending, entry_id, entry)
 
-            self._record_failed_attempt(platform)
             return None
 
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform.
 
-        Codes are stored hashed and are never returned. Modern entries expose a
-        server-side ``request_id`` that an admin can pass to approve the
-        listed request directly. ``code`` remains as a backward-compatible alias
-        for ``request_id`` for older dashboard clients. ``code_hash_prefix`` is
-        diagnostic-only and is not an approvable code.
+        Codes are stored hashed and are never returned. Each entry exposes a
+        server-side ``request_id`` that an authenticated admin surface passes
+        to :meth:`approve_request`. Legacy pre-hash entries have no approvable
+        id — they report an empty ``request_id`` and age out at TTL.
         """
         results = []
         with self._lock:
@@ -600,16 +618,12 @@ class PairingStore:
                     if not isinstance(created_at, (int, float)):
                         continue
                     age_min = int((time.time() - created_at) / 60)
-                    hash_val = info.get("hash")
-                    salt_val = info.get("salt")
-                    is_modern = isinstance(hash_val, str) and isinstance(salt_val, str)
-                    request_id = str(entry_id) if is_modern else ""
-                    code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
+                    is_modern = isinstance(info.get("hash"), str) and isinstance(
+                        info.get("salt"), str
+                    )
                     results.append({
                         "platform": p,
-                        "request_id": request_id,
-                        "code": request_id,
-                        "code_hash_prefix": code_display,
+                        "request_id": str(entry_id) if is_modern else "",
                         "user_id": info.get("user_id", ""),
                         "user_name": info.get("user_name", ""),
                         "age_minutes": age_min,

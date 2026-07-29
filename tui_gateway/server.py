@@ -12540,11 +12540,11 @@ def _run_prompt_submit(
                 and _voice_tts_enabled()
             ):
                 try:
-                    from hermes_cli.voice import speak_text
-
                     spoken = raw
+                    # Barge-aware: spoken interruptions must cut this
+                    # fallback playback too, not just the streaming path.
                     threading.Thread(
-                        target=speak_text, args=(spoken,), daemon=True
+                        target=_speak_text_with_barge, args=(spoken,), daemon=True
                     ).start()
                 except ImportError:
                     logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
@@ -17918,6 +17918,39 @@ def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -
         logger.debug("TTS barge-in monitor failed: %s", e)
 
 
+def _speak_text_with_barge(text: str) -> None:
+    """Speak *text* via hermes_cli.voice.speak_text with spoken barge-in.
+
+    The streaming-TTS turn pipeline arms ``_tts_stream_barge_in_monitor``;
+    the fallback whole-reply path (streaming couldn't start) and the
+    ``voice.tts`` RPC previously called ``speak_text`` bare — speech over
+    those paths was UNINTERRUPTIBLE by voice. Run the same monitor beside
+    the speak thread: it cuts playback (``stop_playback`` kills the file
+    player; the stop event drains a streaming dispatch inside speak_text),
+    captures the interruption, and emits ``voice.transcript`` /
+    the stop-phrase signal exactly like the streaming path.
+    """
+    from hermes_cli.voice import speak_text
+
+    stop = threading.Event()
+    done = threading.Event()
+
+    def _speak():
+        try:
+            speak_text(text, stop)
+        except TypeError:
+            # Older wrapper without the stop_event parameter.
+            speak_text(text)
+        finally:
+            done.set()
+
+    threading.Thread(target=_speak, daemon=True).start()
+    if _voice_mode_enabled() and _voice_cfg_dict().get("barge_in", True):
+        threading.Thread(
+            target=_tts_stream_barge_in_monitor, args=(stop, done), daemon=True
+        ).start()
+
+
 def _voice_cfg_dict() -> dict:
     """Shape-safe accessor for the ``voice:`` block in config.yaml.
 
@@ -18550,9 +18583,13 @@ def _(rid, params: dict) -> dict:
     if not text:
         return _err(rid, 4020, "text required")
     try:
-        from hermes_cli.voice import speak_text
+        # Import check up front so a missing voice module still returns the
+        # documented 5026 instead of failing silently in the thread.
+        import hermes_cli.voice  # noqa: F401
 
-        threading.Thread(target=speak_text, args=(text,), daemon=True).start()
+        threading.Thread(
+            target=_speak_text_with_barge, args=(text,), daemon=True
+        ).start()
         return _ok(rid, {"status": "speaking"})
     except ImportError:
         return _err(rid, 5026, "voice module not available")

@@ -881,7 +881,7 @@ def _continuous_on_silence() -> None:
 # ── TTS API ──────────────────────────────────────────────────────────
 
 
-def _speak_text_streaming(text: str) -> bool:
+def _speak_text_streaming(text: str, stop_event: Optional[threading.Event] = None) -> bool:
     """Speak ``text`` via the generic streaming dispatcher; True on success.
 
     Bridges the one-shot ``speak_text`` contract onto the shared
@@ -890,6 +890,11 @@ def _speak_text_streaming(text: str) -> bool:
     pipeline's done event fires — same blocking semantics the sync path
     has, so callers (and the mic re-arm logic in ``speak_text``) see no
     behavioral difference beyond earlier first audio.
+
+    ``stop_event`` (optional) is wired straight into the pipeline so
+    external barge-in / stop paths can cut streaming playback — without
+    it the pipeline's stop event was private and speech over this path
+    was uninterruptible (the desktop/TUI fallback-speak hole).
 
     Returns False when playback produced nothing (caller falls back to the
     whole-file sync path).
@@ -902,13 +907,14 @@ def _speak_text_streaming(text: str) -> bool:
     text_queue: "_queue.Queue" = _queue.Queue()
     text_queue.put(text)
     text_queue.put(None)  # end-of-text sentinel
-    stop_event = _threading.Event()
+    if stop_event is None:
+        stop_event = _threading.Event()
     done_event = _threading.Event()
     stream_tts_to_speaker(text_queue, stop_event, done_event)
     return done_event.is_set()
 
 
-def speak_text(text: str) -> None:
+def speak_text(text: str, stop_event: Optional[threading.Event] = None) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
     Mirrors cli.py:_voice_speak_response exactly — same markdown strip
@@ -963,7 +969,7 @@ def speak_text(text: str) -> None:
             from tools.tts_tool import _load_tts_config
 
             if resolve_streaming_provider(_load_tts_config()) is not None:
-                if _speak_text_streaming(text):
+                if _speak_text_streaming(text, stop_event):
                     return
         except Exception as e:
             _debug(f"speak_text: streaming dispatch unavailable ({e}); using sync path")
